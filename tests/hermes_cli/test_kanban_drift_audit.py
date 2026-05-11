@@ -90,7 +90,7 @@ def test_audit_classifies_only_allowed_mismatch_classes(kanban_home):
     assert first and second
 
 
-def test_unknown_projection_label_fails_closed_and_blocks_flip_closeout(kanban_home):
+def test_projection_authority_claim_fails_closed_and_blocks_flip_closeout(kanban_home):
     with kb.connect() as conn:
         kb.create_task(conn, title="sample", tenant="brain-os", public_id="CH-426")
         report = audit.audit_drift(
@@ -101,9 +101,12 @@ def test_unknown_projection_label_fails_closed_and_blocks_flip_closeout(kanban_h
             now=1_700_000_000,
         )
 
-    assert report.result_class == "unknown"
+    assert report.result_class == "projection_authority_claim"
     assert report.blocking is True
-    assert any(f.result_class == "unknown" and f.blocks_flip_closeout for f in report.findings)
+    assert any(
+        f.result_class == "projection_authority_claim" and f.blocks_flip_closeout
+        for f in report.findings
+    )
 
     verification = closeout.verify_closeout_transition(
         "closed",
@@ -116,7 +119,38 @@ def test_unknown_projection_label_fails_closed_and_blocks_flip_closeout(kanban_h
         current_phase="review_ready",
     )
     assert verification.allowed is False
-    assert "drift_audit_unknown" in verification.blockers
+    assert "drift_audit_projection_authority_claim" in verification.blockers
+
+
+def test_projection_authority_claim_is_specific_fail_closed_class(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="sample", tenant="brain-os", public_id="BO-007")
+        report = audit.audit_drift(
+            conn,
+            domain="brain-os",
+            mode="gating",
+            projection_snapshot={
+                "records": [
+                    {
+                        "surface": "linear_compatibility_shadow",
+                        "authority": "linear authority",
+                        "task_ids": ["BO-007"],
+                        "body": "Linear compatibility projection claims canonical source of truth",
+                    }
+                ]
+            },
+            now=1_700_000_000,
+        )
+
+    assert report.result_class == "projection_authority_claim"
+    assert report.blocking is True
+    finding = report.findings[0]
+    assert finding.result_class == "projection_authority_claim"
+    assert finding.surface == "linear_compatibility_shadow"
+    assert finding.blocks_flip_closeout is True
+
+    blockers = audit.closeout_blocks_from_audit(report.to_dict())
+    assert "drift_audit_projection_authority_claim" in blockers
 
 
 def test_projection_lag_is_reported_without_promoting_projection_to_authority(kanban_home):

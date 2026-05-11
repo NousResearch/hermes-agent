@@ -40,6 +40,7 @@ MISMATCH_CLASSES = (
     "stale_snapshot",
     "secret_hygiene",
     "repo_truth_mismatch",
+    "projection_authority_claim",
     "unknown",
 )
 VALID_MODES = ("gating", "informational")
@@ -53,7 +54,19 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)sk-[a-z0-9_-]{8,}"),
     re.compile(r"(?i)xox[baprs]-[a-z0-9-]{8,}"),
 )
-_PROJECTION_AUTHORITY_RE = re.compile(r"(?i)\b(projection_only|non[-_ ]authoritative|compatibility[-_ ]only)\b")
+_PROJECTION_AUTHORITY_RE = re.compile(
+    r"\b(projection[_-]only|projection[-_ ]only|non[-_ ]authoritative|compatibility[-_ ]only)\b",
+    re.IGNORECASE,
+)
+_PROJECTION_AUTHORITY_CLAIM_RE = re.compile(
+    r"\b("
+    r"(?<!non[-_ ])authoritative[-_ ]?(?:source|surface|mirror|projection)|"
+    r"source[-_ ]of[-_ ]truth|ssot|authority[-_ ]surface|"
+    r"linear[-_ ]authority|github[-_ ]authority|dashboard[-_ ]authority|"
+    r"projection[-_ ]authority|canonical[-_ ](?:truth|source)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -389,7 +402,19 @@ def _audit_projection_records(
             for key in ("authority", "authority_layer", "label")
             if record.get(key)
         )
-        if not _PROJECTION_AUTHORITY_RE.search(" ".join([authority, body])):
+        authority_text = " ".join([authority, body])
+        has_non_authoritative_label = bool(_PROJECTION_AUTHORITY_RE.search(authority_text))
+        has_authority_claim = bool(_PROJECTION_AUTHORITY_CLAIM_RE.search(authority_text))
+        if has_authority_claim:
+            findings.append(
+                DriftFinding(
+                    "projection_authority_claim",
+                    ids=_record_ids(record),
+                    detail="projection/legacy surface claims authority; Kanban remains the only task authority",
+                    surface=surface,
+                )
+            )
+        if not has_non_authoritative_label and not has_authority_claim:
             findings.append(
                 DriftFinding(
                     "unknown",

@@ -41,6 +41,23 @@ def test_native_create_run_slash_json_smoke(monkeypatch, tmp_path):
     assert data["authority"]["admission_snapshot"]["executor_dispatch"] == "forbidden_during_admission"
 
 
+def test_native_create_accepts_worker_profile_alias_for_top_level_wrapper(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    kb.init_db()
+
+    out = run_slash(
+        "native-create 'CLI native work' "
+        "--tenant hermes --repo NousResearch/hermes-agent --worker-profile yuuka "
+        "--executor hermes-direct --closeout-policy pr_review_handoff_then_done_closeout "
+        "--base-branch main --worktree-branch ch417-kanban-native-create --dry-run --json"
+    )
+    data = json.loads(out)
+
+    assert data["status"] == "would_create"
+    assert data["authority"]["admission_snapshot"]["profile"] == "yuuka"
+    assert data["side_effects"]["kanban_task_written"] is False
+
+
 def test_native_admission_dry_run_is_linear_free_and_no_write(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     kb.init_db()

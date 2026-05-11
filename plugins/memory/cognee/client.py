@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
+import sqlite3
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict
 
 from hermes_cli.config import cfg_get, load_config
@@ -106,7 +109,7 @@ class CogneeClientConfig:
         Uses direct assignment (not ``setdefault``) for the provider's own
         env vars so that values stay correct even when another component
         (e.g. an inference provider) has already set the same var before
-        the memory provider was initialized.
+        the memory provider was initialised.
         """
 
         if self.api_key:
@@ -124,6 +127,11 @@ class CogneeClientConfig:
                 os.environ["EMBEDDING_MODEL"] = "gemini/gemini-embedding-001"
                 os.environ["EMBEDDING_DIMENSIONS"] = "768"
                 os.environ["EMBEDDING_API_KEY"] = gemini_key
+
+        # SQLite multi-process safety — force WAL mode + non-zero busy timeout
+        # so the gateway and agent can both write to Cognee's databases.
+        os.environ.setdefault("DATABASE_CONNECT_ARGS", json.dumps({"timeout": 60}))
+        ensure_wal_mode(timeout_ms=5000)
 
 
 def _loop_worker(loop: asyncio.AbstractEventLoop) -> None:
@@ -164,6 +172,74 @@ def stop_event_loop(timeout: float = 2.0) -> None:
         loop.call_soon_threadsafe(loop.stop)
     if thread and thread.is_alive():
         thread.join(timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# WAL mode enforcement for multi-process SQLite safety
+# ---------------------------------------------------------------------------
+
+_COGNEE_DB_GLOBS = (
+    ".cognee_system/databases/**/*.lance.db",
+    ".data_storage/**/cache.db",
+    ".cognee_system/**/*.sqlite",
+)
+
+
+def _find_cognee_databases() -> list[str]:
+    """Yield paths to known Cognee SQLite databases on disk."""
+    import cognee
+
+    if hasattr(cognee, "__file__") and cognee.__file__:
+        root = Path(cognee.__file__).resolve().parent
+        found: list[str] = []
+        for pattern in _COGNEE_DB_GLOBS:
+            found.extend(str(p) for p in root.glob(pattern))
+        return found
+    return []
+
+
+def ensure_wal_mode(timeout_ms: int = 5000) -> None:
+    """Set WAL journal mode + busy timeout on all Cognee SQLite databases.
+
+    SQLite's default ``delete`` journal mode serialises all writers, causing
+    ``database is locked`` when two processes (e.g. gateway + agent) access
+    Cognee concurrently.  WAL mode allows one writer + multiple readers,
+    and a non-zero busy timeout makes writers retry instead of failing fast.
+
+    This is idempotent — WAL mode is stored in the database file header and
+    persists across restarts.  Safe to call on every ``initialize()``.
+    """
+    try:
+        import cognee
+    except Exception:
+        logger.debug("Cognee not importable — skipping WAL setup")
+        return
+
+    dbs = _find_cognee_databases(cognee)
+    if not dbs:
+        logger.debug("No Cognee SQLite databases found for WAL setup")
+        return
+
+    for path in dbs:
+        try:
+            conn = sqlite3.connect(str(path), timeout=timeout_ms / 1000)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
+            conn.close()
+            logger.debug("WAL mode set on %s", path)
+        except Exception as exc:
+            logger.warning("Could not set WAL on %s: %s", path, exc)
+
+
+def _find_cognee_databases(cognee_module) -> list[str]:
+    """Yield paths to known Cognee SQLite databases on disk."""
+    if hasattr(cognee_module, "__file__") and cognee_module.__file__:
+        root = Path(cognee_module.__file__).resolve().parent
+        found: list[str] = []
+        for pattern in _COGNEE_DB_GLOBS:
+            found.extend(str(p) for p in root.glob(pattern))
+        return found
+    return []
 
 
 def _call_accepting_kwargs(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:

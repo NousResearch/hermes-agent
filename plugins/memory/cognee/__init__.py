@@ -18,6 +18,7 @@ from .client import (
     cognee_forget,
     cognee_recall,
     cognee_remember,
+    ensure_wal_mode,
     run_async,
     serialize_result,
     stop_event_loop,

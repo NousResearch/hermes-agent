@@ -235,6 +235,28 @@ If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. D
 
 Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/browser_auth/camofox/` (or the equivalent under `$HERMES_HOME` for non-default profiles). The actual browser profile data lives on the Camofox server side, keyed by that `userId`. To fully reset a persistent profile, clear it on the Camofox server and remove the corresponding Hermes profile's state directory.
 
+#### Externally managed Camofox sessions
+
+If another app owns the visible Camofox browser, configure Hermes to use that same Camofox identity:
+
+```yaml
+browser:
+  camofox:
+    user_id: shared-camofox
+    session_key: visible-tab
+    adopt_existing_tab: true
+```
+
+You can also set the equivalent environment variables:
+
+```bash
+CAMOFOX_USER_ID=shared-camofox
+CAMOFOX_SESSION_KEY=visible-tab
+CAMOFOX_ADOPT_EXISTING_TAB=true
+```
+
+When `user_id` is set, Hermes treats the Camofox session as externally managed and skips destructive cleanup. Set `adopt_existing_tab` when gateway restarts should recover the already-open tab before creating a new one.
+
 #### VNC live view
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.

@@ -98,6 +98,16 @@ def get_vnc_url() -> Optional[str]:
     return _vnc_url
 
 
+def _get_camofox_config() -> Dict[str, Any]:
+    """Return the ``browser.camofox`` config block, or an empty dict."""
+    try:
+        camofox_cfg = load_config().get("browser", {}).get("camofox", {})
+    except Exception as exc:
+        logger.warning("camofox config check failed, defaulting to disabled: %s", exc)
+        return {}
+    return camofox_cfg if isinstance(camofox_cfg, dict) else {}
+
+
 def _managed_persistence_enabled() -> bool:
     """Return whether Hermes-managed persistence is enabled for Camofox.
 
@@ -107,12 +117,46 @@ def _managed_persistence_enabled() -> bool:
 
     Controlled by ``browser.camofox.managed_persistence`` in config.yaml.
     """
-    try:
-        camofox_cfg = load_config().get("browser", {}).get("camofox", {})
-    except Exception as exc:
-        logger.warning("managed_persistence check failed, defaulting to disabled: %s", exc)
+    return bool(_get_camofox_config().get("managed_persistence"))
+
+
+def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Return an externally configured Camofox identity, if one is set.
+
+    Integrations that own the visible Camofox browser can set a shared user ID
+    so Hermes operates in the same browser profile instead of creating a
+    separate private session.
+    """
+    user_id = os.getenv("CAMOFOX_USER_ID", "").strip() or str(camofox_cfg.get("user_id") or "").strip()
+    if not user_id:
+        return None
+
+    session_key = (
+        os.getenv("CAMOFOX_SESSION_KEY", "").strip()
+        or str(camofox_cfg.get("session_key") or "").strip()
+        or f"task_{(task_id or 'default')[:16]}"
+    )
+    return {"user_id": user_id, "session_key": session_key}
+
+
+def _env_flag(name: str) -> Optional[bool]:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
         return False
-    return bool(camofox_cfg.get("managed_persistence"))
+    logger.debug("Ignoring invalid boolean env %s=%r", name, raw)
+    return None
+
+
+def _adopt_existing_tab_enabled(camofox_cfg: Dict[str, Any]) -> bool:
+    """Return whether Hermes should recover an existing Camofox tab ID."""
+    env_value = _env_flag("CAMOFOX_ADOPT_EXISTING_TAB")
+    if env_value is not None:
+        return env_value
+    return bool(camofox_cfg.get("adopt_existing_tab"))
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +165,44 @@ def _managed_persistence_enabled() -> bool:
 # Maps task_id -> {"user_id": str, "tab_id": str|None}
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
+
+
+def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach process-local state to an already-open managed Camofox tab.
+
+    Some integrations own the visible Camofox tab outside Hermes. Gateway
+    restarts can leave this module's in-memory session cache empty even though
+    Camofox still has that tab, so rehydrate tab_id before creating a new tab.
+    """
+    if session.get("tab_id") or not session.get("adopt_existing_tab"):
+        return session
+
+    if not get_camofox_url():
+        return session
+
+    try:
+        tabs = _get("/tabs", params={"userId": session["user_id"]}, timeout=5).get("tabs", [])
+    except Exception as exc:
+        logger.debug("Camofox tab adoption failed for %s: %s", session.get("user_id"), exc)
+        return session
+
+    if not isinstance(tabs, list) or not tabs:
+        return session
+
+    session_key = session.get("session_key")
+    matching_tabs = [
+        tab
+        for tab in tabs
+        if isinstance(tab, dict) and tab.get("listItemId") == session_key
+    ]
+    candidates = matching_tabs or [tab for tab in tabs if isinstance(tab, dict)]
+    latest = candidates[-1] if candidates else None
+    tab_id = latest.get("tabId") if isinstance(latest, dict) else None
+    if isinstance(tab_id, str) and tab_id:
+        session["tab_id"] = tab_id
+        logger.debug("Adopted existing Camofox tab %s for %s", tab_id, session.get("user_id"))
+
+    return session
 
 
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
@@ -133,14 +215,26 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     task_id = task_id or "default"
     with _sessions_lock:
         if task_id in _sessions:
-            return _sessions[task_id]
-        if _managed_persistence_enabled():
+            return _adopt_existing_tab(_sessions[task_id])
+
+        camofox_cfg = _get_camofox_config()
+        identity_override = _camofox_identity_override(task_id, camofox_cfg)
+        if identity_override:
+            session = {
+                "user_id": identity_override["user_id"],
+                "tab_id": None,
+                "session_key": identity_override["session_key"],
+                "managed": True,
+                "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
+            }
+        elif bool(camofox_cfg.get("managed_persistence")):
             identity = get_camofox_identity(task_id)
             session = {
                 "user_id": identity["user_id"],
                 "tab_id": None,
                 "session_key": identity["session_key"],
                 "managed": True,
+                "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
             }
         else:
             session = {
@@ -148,9 +242,10 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "tab_id": None,
                 "session_key": f"task_{task_id[:16]}",
                 "managed": False,
+                "adopt_existing_tab": False,
             }
         _sessions[task_id] = session
-        return session
+        return _adopt_existing_tab(session)
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
@@ -190,7 +285,8 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     does nothing and returns ``False`` so the caller can fall back to
     :func:`camofox_close`.
     """
-    if _managed_persistence_enabled():
+    camofox_cfg = _get_camofox_config()
+    if bool(camofox_cfg.get("managed_persistence")) or _camofox_identity_override(task_id, camofox_cfg):
         _drop_session(task_id)
         logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
         return True

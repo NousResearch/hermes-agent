@@ -20,6 +20,7 @@ Serverless GPU cloud platform for running ML workloads. Use when you need on-dem
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `modal>=0.64.0` |
+| Platforms | linux, macos, windows |
 | Tags | `Infrastructure`, `Serverless`, `GPU`, `Cloud`, `Deployment`, `Modal` |
 
 ## Reference: full SKILL.md

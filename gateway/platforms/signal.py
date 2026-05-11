@@ -99,11 +99,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 _EXT_TO_MIME = {
@@ -192,6 +192,15 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
+        # Stored here so the reaction hooks can skip unauthorized senders
+        # (reactions fire before run.py's auth gate, so without this check
+        # every inbound DM from any contact gets a 👀 reaction).
+        # "*" means all users allowed (open mode); empty means no restriction
+        # recorded at adapter level (run.py still enforces auth separately).
+        dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
+        self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
+
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
 
@@ -248,7 +257,9 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
@@ -533,6 +544,18 @@ class SignalAdapter(BasePlatformAdapter):
                         media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
+
+        # Skip envelopes with no meaningful content (no text, no attachments).
+        # Catches profile key updates, empty messages, and other metadata-only
+        # envelopes that still carry a dataMessage wrapper but have nothing
+        # worth processing. See issue: signal-cli logs "Profile key update" +
+        # Hermes receives msg='' triggering a full agent turn for nothing.
+        if (not text or not text.strip()) and not media_urls:
+            logger.debug(
+                "Signal: skipping contentless envelope from %s (%d attachments)",
+                redact_phone(sender), len(media_urls) if media_urls else 0,
+            )
+            return
 
         # Build session source
         source = self.build_source(
@@ -1416,8 +1439,28 @@ class SignalAdapter(BasePlatformAdapter):
             return None
         return (author, ts)
 
+    def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
+        """Check if message reactions are enabled for this event.
+
+        Two gates:
+        1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
+        2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
+           messages from senders in that list.  This prevents unauthorized
+           contacts from seeing the 👀 reaction (which fires before run.py's
+           auth gate and would otherwise reveal that a bot is listening).
+        """
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
+            return False
+        if event is not None:
+            sender = getattr(getattr(event, "source", None), "user_id", None)
+            if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
+                return False
+        return True
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""
+        if not self._reactions_enabled(event):
+            return
         target = self._extract_reaction_target(event)
         if target:
             await self.send_reaction(event.source.chat_id, "👀", *target)
@@ -1428,6 +1471,8 @@ class SignalAdapter(BasePlatformAdapter):
         On CANCELLED we leave the 👀 in place — no terminal outcome means
         the reaction should keep reflecting "in progress" (matches Telegram).
         """
+        if not self._reactions_enabled(event):
+            return
         if outcome == ProcessingOutcome.CANCELLED:
             return
         target = self._extract_reaction_target(event)

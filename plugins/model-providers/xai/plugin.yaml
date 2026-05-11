@@ -1,0 +1,5 @@
+name: xai-provider
+kind: model-provider
+version: 1.0.0
+description: xAI Grok (Responses API)
+author: Nous Research

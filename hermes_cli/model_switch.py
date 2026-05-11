@@ -190,11 +190,18 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             model: "minimax-m2.7"
             provider: custom
             base_url: "https://ollama.com/v1"
+
+    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``)
+    and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
+    into DirectAlias objects.  The provider is parsed from the ``provider/``
+    prefix in the value; if no slash, the current provider is used.
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
+
+        # --- model_aliases (dict-based format) ---
         user_aliases = cfg.get("model_aliases")
         if isinstance(user_aliases, dict):
             for name, entry in user_aliases.items():
@@ -206,6 +213,30 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                    )
+
+        # --- model.aliases (string-based format, from config set) ---
+        model_section = cfg.get("model", {})
+        if isinstance(model_section, dict):
+            simple_aliases = model_section.get("aliases")
+            if isinstance(simple_aliases, dict):
+                current_provider = model_section.get("provider", "")
+                for name, value in simple_aliases.items():
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    key = name.strip().lower()
+                    if key in merged:
+                        continue  # don't override explicit model_aliases entries
+                    val = value.strip()
+                    if "/" in val:
+                        provider, model = val.split("/", 1)
+                    else:
+                        provider = current_provider
+                        model = val
+                    merged[key] = DirectAlias(
+                        model=model.strip(),
+                        provider=provider.strip() or current_provider,
+                        base_url="",
                     )
     except Exception:
         pass
@@ -768,6 +799,12 @@ def switch_model(
                         )
 
         # --- Step d: Aggregator catalog search ---
+        # Track whether the live catalog of the CURRENT provider resolved the
+        # model — if so, step e must not second-guess and switch providers.
+        # Critical for flat-namespace resellers like opencode-go / opencode-zen
+        # whose live /v1/models returns bare IDs (e.g. "deepseek-v4-flash") that
+        # coincidentally match entries in native providers' static catalogs.
+        resolved_in_current_catalog = False
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
             if catalog:
@@ -775,6 +812,7 @@ def switch_model(
                 for mid in catalog:
                     if mid.lower() == new_model_lower:
                         new_model = mid
+                        resolved_in_current_catalog = True
                         break
                 else:
                     for mid in catalog:
@@ -782,11 +820,12 @@ def switch_model(
                             _, bare = mid.split("/", 1)
                             if bare.lower() == new_model_lower:
                                 new_model = mid
+                                resolved_in_current_catalog = True
                                 break
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in ("custom", "local") or (
+        is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -794,6 +833,7 @@ def switch_model(
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
+            and not resolved_in_current_catalog
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
@@ -849,10 +889,9 @@ def switch_model(
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
             # base_url adjustments for OpenCode, etc.).
-            if runtime.get("provider") != "custom":
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-                api_mode = runtime.get("api_mode", "")
+            api_key = runtime.get("api_key", "")
+            base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -891,12 +930,37 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
-            for up in user_providers:
-                if isinstance(up, dict) and up.get("provider") == target_provider:
-                    cfg_models = up.get("models", [])
-                    if new_model in cfg_models or any(
-                        m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
-                    ):
+            # user_providers is a dict: {provider_slug: config_dict}
+            for slug, cfg in user_providers.items():
+                if slug == target_provider:
+                    cfg_models = cfg.get("models", {})
+                    # Direct membership works for dict (keys) and list (strings)
+                    if new_model in cfg_models:
+                        override = True
+                        break
+                    # Also accept if models is a list of dicts with 'name' field
+                    if isinstance(cfg_models, list):
+                        if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
+                            override = True
+                            break
+        # Also check custom_providers list — models declared there should be accepted
+        # even if the remote /v1/models endpoint doesn't list them.
+        if not override and custom_providers and isinstance(custom_providers, list):
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                # Match by provider slug (custom:<name>) or by base_url
+                entry_name = entry.get("name", "")
+                entry_slug = f"custom:{entry_name}" if entry_name else ""
+                entry_url = entry.get("base_url", "")
+                if entry_slug == target_provider or entry_url == base_url:
+                    # Check if the requested model matches the entry's model
+                    entry_model = entry.get("model", "")
+                    entry_models = entry.get("models", {})
+                    if new_model == entry_model:
+                        override = True
+                        break
+                    if isinstance(entry_models, dict) and new_model in entry_models:
                         override = True
                         break
         if override:
@@ -1015,6 +1079,7 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        get_curated_nous_model_ids,
     )
 
     results: List[dict] = []
@@ -1052,14 +1117,56 @@ def list_authenticated_providers(
         if normed:
             _builtin_endpoints.add(normed)
 
+    def _has_fast_aws_sdk_signal() -> bool:
+        """Return True when explicit AWS auth config is present.
+
+        This intentionally avoids botocore's full credential chain. Provider
+        picker/model-switch discovery can run for non-Bedrock providers, and
+        botocore may otherwise probe EC2 IMDS (169.254.169.254) on local
+        machines before returning no credentials.
+        """
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
+            return True
+        if (
+            os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+            and os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        ):
+            return True
+        return any(
+            os.environ.get(name, "").strip()
+            for name in (
+                "AWS_PROFILE",
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "AWS_WEB_IDENTITY_TOKEN_FILE",
+            )
+        )
+
+    def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
+        """Credential check for AWS SDK providers in non-runtime discovery."""
+        slug_norm = str(slug or "").strip().lower()
+        current_norm = str(current_provider or "").strip().lower()
+        if _has_fast_aws_sdk_signal():
+            return True
+        if slug_norm != current_norm:
+            return False
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return bool(has_aws_credentials())
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
-    if "nous" not in curated:
-        curated["nous"] = curated["openrouter"]
+    # "nous" pulls from the remote model-catalog manifest published at
+    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+    # newly added Portal models surface in the /model picker without
+    # requiring a Hermes release. Falls back to the in-repo
+    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
@@ -1179,7 +1286,9 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.extra_env_vars:
+        if overlay.auth_type == "aws_sdk":
+            has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
@@ -1198,11 +1307,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
                 providers_store = store.get("providers", {})
-                pool_store = store.get("credential_pool", {})
-                if store and (
-                    pid in providers_store or hermes_slug in providers_store
-                    or pid in pool_store or hermes_slug in pool_store
-                ):
+                if store and (pid in providers_store or hermes_slug in providers_store):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
@@ -1241,7 +1346,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+            # Use live OAuth-backed discovery so the gateway /model picker
+            # matches what the user's authenticated Codex/Copilot backend
+            # actually serves — including ChatGPT-Pro-only Codex slugs
+            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
+            # catalog. ``provider_model_ids()`` falls back to the curated
+            # list when the live endpoint is unreachable, so this is safe
+            # for unauthenticated and offline cases too.
             model_ids = provider_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
@@ -1298,11 +1410,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 _cp_store = _load_auth_store()
                 _cp_providers_store = _cp_store.get("providers", {})
-                _cp_pool_store = _cp_store.get("credential_pool", {})
-                if _cp_store and (
-                    _cp.slug in _cp_providers_store
-                    or _cp.slug in _cp_pool_store
-                ):
+                if _cp_store and _cp.slug in _cp_providers_store:
                     _cp_has_creds = True
             except Exception:
                 pass
@@ -1319,11 +1427,7 @@ def list_authenticated_providers(
         # credentials come from the boto3 credential chain (env vars,
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
-            try:
-                from agent.bedrock_adapter import has_aws_credentials
-                _cp_has_creds = has_aws_credentials()
-            except Exception:
-                pass
+            _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
         if not _cp_has_creds:
             continue
@@ -1412,14 +1516,17 @@ def list_authenticated_providers(
                         models_list = list(fb)
 
             # Prefer the endpoint's live /models list when credentials are
-            # available. This keeps OpenAI-compatible relays (for example CRS)
-            # in sync when the server catalog changes without requiring the
-            # user to mirror every model into config.yaml.
+            # available, unless the provider explicitly opts out via
+            # discover_models: false (e.g. dedicated endpoints that expose
+            # the entire aggregator catalog via /models).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            if api_url and api_key:
+            discover = ep_cfg.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in {"false", "no", "0"}
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1540,7 +1647,8 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
 
         _section4_emitted_slugs: set = set()
-        for grp in groups.values():
+        for grp_key, grp in groups.items():
+            api_url, api_key = grp_key
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
@@ -1578,6 +1686,18 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # Live model discovery from custom provider endpoints (matches
+            # Section 3 behavior for user ``providers:`` entries).
+            if api_url and api_key:
+                try:
+                    from hermes_cli.models import fetch_api_models
+
+                    live_models = fetch_api_models(api_key, api_url)
+                    if live_models:
+                        grp["models"] = live_models
+                        grp["total_models"] = len(live_models)
+                except Exception:
+                    pass
             results.append({
                 "slug": slug,
                 "name": grp["name"],
@@ -1595,3 +1715,63 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
+
+
+def list_picker_providers(
+    current_provider: str = "",
+    current_base_url: str = "",
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+    max_models: int = 8,
+    current_model: str = "",
+) -> List[dict]:
+    """Interactive-picker variant of :func:`list_authenticated_providers`.
+
+    Post-processes the base list so the ``/model`` picker (Telegram/Discord
+    inline keyboards) only surfaces models that are actually callable in the
+    current install:
+
+    - OpenRouter's model list is replaced with the output of
+      :func:`hermes_cli.models.fetch_openrouter_models`, which filters the
+      curated ``OPENROUTER_MODELS`` snapshot against the live OpenRouter
+      catalog.  IDs the live catalog no longer carries drop out, so the
+      picker never offers a model the user can't call.
+    - Provider rows whose model list ends up empty are dropped, except
+      custom endpoints (``is_user_defined=True`` with an ``api_url``) where
+      the user may supply their own model set through config.
+
+    All other providers and metadata fields are passed through unchanged.
+    The typed ``/model <name>`` path is unaffected -- only the interactive
+    picker payload is narrowed.
+    """
+    from hermes_cli.models import fetch_openrouter_models
+
+    providers = list_authenticated_providers(
+        current_provider=current_provider,
+        current_base_url=current_base_url,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=max_models,
+        current_model=current_model,
+    )
+
+    filtered: List[dict] = []
+    for p in providers:
+        slug = str(p.get("slug", "")).lower()
+        if slug == "openrouter":
+            try:
+                live = fetch_openrouter_models()
+                live_ids = [mid for mid, _ in live]
+            except Exception:
+                live_ids = list(p.get("models", []))
+            p = dict(p)
+            p["models"] = live_ids[:max_models]
+            p["total_models"] = len(live_ids)
+
+        has_models = bool(p.get("models"))
+        is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
+        if not has_models and not is_custom_endpoint:
+            continue
+        filtered.append(p)
+
+    return filtered

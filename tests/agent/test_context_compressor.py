@@ -191,6 +191,30 @@ class TestNonStringContent:
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
 
+    def test_summary_prompt_avoids_filter_sensitive_handoff_framing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "Your output will be injected" not in prompt
+        assert "Do NOT respond" not in prompt
+        assert "DIFFERENT assistant" not in prompt
+        assert "different assistant" not in prompt
+        assert "Treat the conversation turns below as source material" in prompt
+        assert "structured checkpoint summary" in prompt
+
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -375,6 +399,229 @@ class TestSummaryFallbackToMainModel:
         assert mock_call.call_count == 2
         assert result is None
         assert c._summary_model_fallen_back is True
+
+    def test_json_decode_error_falls_back_to_main_and_succeeds(self):
+        """JSONDecodeError from the OpenAI SDK's ``response.json()`` (raised
+        when a misconfigured proxy returns HTML/plain-text with
+        ``Content-Type: application/json``) should trigger the same
+        retry-on-main path as 404/timeout.  Issue #22244."""
+        import json as _json
+
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # Simulate the SDK raising a raw JSONDecodeError with a realistic
+        # error message ("Expecting value: line X column Y char Z").
+        err_json = _json.JSONDecodeError(
+            "Expecting value", "<!DOCTYPE html><html>...</html>", 0
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-via-broken-proxy",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_json, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure recorded so /usage / gateway warnings can surface it
+        assert c._last_aux_model_failure_model == "aux-via-broken-proxy"
+        assert c._last_aux_model_failure_error is not None
+        # The 220-char cap is shared with other fallback branches
+        assert len(c._last_aux_model_failure_error) <= 220
+
+    def test_json_decode_error_substring_match_in_wrapped_exception(self):
+        """When the OpenAI SDK wraps the raw JSONDecodeError inside its own
+        ``APIResponseValidationError`` (or similar), ``isinstance`` no longer
+        matches but the substring "expecting value" still appears in
+        ``str(e)``.  We detect this case by string match and fall back the
+        same way."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # A plain Exception with the canonical JSON decode error text — what
+        # the SDK's APIResponseValidationError looks like at str() time.
+        err_wrapped = Exception("Expecting value: line 1 column 1 (char 0)")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_wrapped, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_json_decode_error_on_main_uses_short_cooldown(self):
+        """When already on the main model (no separate summary_model, or
+        fallback already happened), a JSONDecodeError should set the short
+        30s cooldown, not the default 60s — provider bodies tend to
+        recover quickly when an upstream proxy comes back online."""
+        import json as _json
+
+        err_json = _json.JSONDecodeError("Expecting value", "<html/>", 0)
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → already on main, no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err_json,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Short JSON-decode cooldown is 30s, not the default 60s.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+
+class TestStreamingClosedFallback:
+    """httpcore / httpx streaming premature-close errors must be classified the
+    same as timeouts so the compressor retries on the main model instead of
+    entering a 60-second cooldown.  Issue #18458.
+
+    ``_is_connection_error`` is patched here because the test venv may not
+    have ``openai`` installed (the real function does ``from openai import ...``
+    inside its body).  We test the *wiring* — that `_generate_summary` calls
+    ``_is_connection_error`` and acts on its result — not the classifier itself
+    (that's covered in ``test_auxiliary_client.py::TestIsConnectionError``).
+    """
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_incomplete_chunked_read_falls_back_to_main(self):
+        """``httpcore.RemoteProtocolError: incomplete chunked read`` triggers
+        the retry-on-main path when ``_is_connection_error`` returns True."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err = Exception("RemoteProtocolError: incomplete chunked read")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-stream-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-stream-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_peer_closed_connection_falls_back_to_main(self):
+        """``peer closed connection`` triggers the retry-on-main path."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary ok"
+
+        err = Exception("peer closed connection without sending complete message body")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+
+    def test_streaming_closed_on_main_uses_short_cooldown(self):
+        """When already on the main model, a streaming-closed error should use
+        the 30s cooldown, not the default 60s — these errors are transient."""
+        err = Exception("RemoteProtocolError: response ended prematurely")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Streaming-closed should use the 30s short cooldown.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+    def test_non_streaming_unknown_error_still_uses_long_cooldown(self):
+        """Unclassified errors should retain the 60s default cooldown to
+        prevent hammering a broken provider."""
+        err = Exception("Internal Server Error: something unexpected happened")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=False,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        assert c._summary_failure_cooldown_until == 1060.0
 
 
 class TestAuxModelFallbackSurfacedToCallers:
@@ -639,6 +886,68 @@ class TestCompressWithClient:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     assert tc["id"] in answered_ids
+
+    def test_sanitizer_matches_responses_call_id_when_id_differs(self, compressor):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
+            "call_123"
+        ]
+
+    def test_user_role_summary_carries_end_marker(self):
+        """When the summary lands as standalone role='user' (e.g. head ends
+        with assistant/tool), the message body must include the explicit
+        '--- END OF CONTEXT SUMMARY ---' marker. Without it, weak models
+        read the verbatim past user request quoted in '## Active Task' as
+        fresh input (#11475, #14521).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        # head_last=assistant, tail_first=assistant (same shape as the
+        # existing consecutive-user test) → role resolves to "user".
+        msgs = [
+            {"role": "user", "content": "msg 0"},
+            {"role": "assistant", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "assistant", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        summary_msg = next(
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        )
+        assert summary_msg["role"] == "user"
+        assert "END OF CONTEXT SUMMARY" in summary_msg["content"]
+        assert summary_msg["content"].rstrip().endswith(
+            "respond to the message below, not the summary above ---"
+        )
 
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
@@ -1119,6 +1428,34 @@ class TestTokenBudgetTailProtection:
         # At least one old tool result should have been pruned
         assert pruned >= 1
 
+    def test_prune_short_conv_protects_entire_tail(self, budget_compressor):
+        """Regression guard for PR #17025.
+
+        When ``len(messages) <= protect_tail_count`` and a token budget is
+        also set, every message must be protected. The previous code used
+        ``min(protect_tail_count, len(result) - 1)`` which capped the floor
+        one below the full length, leaving the oldest message eligible for
+        pruning.
+        """
+        c = budget_compressor
+        # 4 messages, protect_tail_count=4 -- nothing should be pruned.
+        # Oldest message is a large tool result; on the buggy path it falls
+        # outside the protected window and gets summarized.
+        messages = [
+            {"role": "tool", "content": "x" * 5000, "tool_call_id": "c0"},
+            {"role": "assistant", "content": "ack"},
+            {"role": "user", "content": "recent"},
+            {"role": "assistant", "content": "reply"},
+        ]
+        result, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=4,
+            protect_tail_tokens=1_000_000,  # budget large enough to protect all
+        )
+        assert pruned == 0
+        # Tool result at index 0 must be preserved verbatim
+        assert result[0]["content"] == "x" * 5000
+
     def test_prune_without_token_budget_uses_message_count(self, budget_compressor):
         """Without protect_tail_tokens, falls back to message-count behavior."""
         c = budget_compressor
@@ -1228,6 +1565,47 @@ class TestTokenBudgetTailProtection:
         cut = c._find_tail_cut_by_tokens(messages, head_end)
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
+
+    def test_generous_budget_protects_everything_floor_does_not_override(
+        self, budget_compressor
+    ):
+        """A budget that covers the whole transcript must prune nothing —
+        ``protect_tail_count`` is a minimum floor, not a ceiling."""
+        c = budget_compressor
+
+        # 100 alternating assistant/tool messages.  Each tool result has
+        # *unique* content so the dedup pass (Pass 1, which is independent
+        # of prune_boundary) is a no-op and we isolate the boundary logic.
+        messages = []
+        for i in range(50):
+            messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": f"c{i}",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }],
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "content": f"unique-tool-output-{i:03d}-" + ("x" * 250),
+            })
+
+        # Budget large enough to cover the whole transcript many times over,
+        # so the budget walk completes without hitting its break condition
+        # and the boundary lands at 0 ("protect everything").
+        _, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=20,
+            protect_tail_tokens=10_000_000,
+        )
+
+        assert pruned == 0, (
+            "budget said protect everything, but the floor still pruned "
+            f"{pruned} messages — protect_tail_count is acting as a ceiling, "
+            "not a minimum floor"
+        )
 
 
 class TestUpdateModelBudgets:

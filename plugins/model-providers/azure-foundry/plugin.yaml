@@ -1,0 +1,5 @@
+name: azure-foundry-provider
+kind: model-provider
+version: 1.0.0
+description: Azure AI Foundry
+author: Nous Research

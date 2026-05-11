@@ -1056,9 +1056,12 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # Set to a provider name to activate: "honcho", "openviking",
+        # "mem0", "hindsight", "holographic", "retaindb",
+        # "byterover", "supermemory".
         # Only ONE external provider is allowed at a time.
+        # Active providers may own generic target=user writes; target=memory
+        # remains the built-in local store for agent notes.
         "provider": "",
     },
 

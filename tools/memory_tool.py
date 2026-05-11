@@ -518,6 +518,11 @@ MEMORY_SCHEMA = {
         "Save durable information to persistent memory that survives across sessions. "
         "Memory is injected into future turns, so keep it compact and focused on facts "
         "that will still matter later.\n\n"
+        "ROUTING: User profile facts/preferences/corrections belong in target='user'. "
+        "When an external memory provider is active, Hermes may route those user-profile "
+        "writes to that provider as the primary durable owner instead of USER.md. "
+        "Local environment, tool, project, and runtime notes belong in target='memory' "
+        "and are stored in the local agent memory file.\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
         "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
@@ -528,11 +533,12 @@ MEMORY_SCHEMA = {
         "The most valuable memory prevents the user from having to repeat themselves.\n\n"
         "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
         "state to memory; use session_search to recall those from past transcripts.\n"
+        "Session transcripts and session_search results are recall sources, not durable curated memory.\n"
         "If you've discovered a new way to do something, solved a problem that could be "
         "necessary later, save it as a skill with the skill tool.\n\n"
         "TWO TARGETS:\n"
-        "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
-        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
+        "- 'user': provider-backed user profile facts -- name, role, preferences, communication style, pet peeves\n"
+        "- 'memory': local agent notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
         "remove (delete -- old_text identifies it).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
@@ -580,7 +586,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

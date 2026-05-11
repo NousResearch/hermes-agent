@@ -4,6 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from agent.memory_provider import MemoryWriteIntent
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
@@ -395,6 +396,59 @@ class TestConcludeToolDispatch:
             "User prefers dark mode",
             peer="user",
         )
+
+    def test_honcho_claims_generic_user_profile_adds(self):
+        provider = HonchoMemoryProvider()
+        intent = MemoryWriteIntent(
+            action="add",
+            target="user",
+            content="User prefers dark mode",
+        )
+
+        assert provider.wants_memory_write(intent) is True
+
+    def test_honcho_provider_routed_write_uses_create_conclusion(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = True
+
+        result = provider.handle_memory_write(
+            MemoryWriteIntent(
+                action="add",
+                target="user",
+                content="User prefers dark mode",
+            )
+        )
+
+        assert result.handled is True
+        assert result.success is True
+        assert result.provider == "honcho"
+        provider._manager.create_conclusion.assert_called_once_with(
+            "telegram:123",
+            "User prefers dark mode",
+            peer="user",
+        )
+
+    def test_honcho_provider_routed_write_reports_failure(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = False
+
+        result = provider.handle_memory_write(
+            MemoryWriteIntent(
+                action="add",
+                target="user",
+                content="User prefers dark mode",
+            )
+        )
+
+        assert result.handled is True
+        assert result.success is False
+        assert "failed" in result.error.lower()
 
     def test_honcho_conclude_can_target_ai_peer(self):
         provider = HonchoMemoryProvider()

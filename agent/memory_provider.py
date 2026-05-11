@@ -34,9 +34,53 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MemoryWriteIntent:
+    """A durable write requested through the generic memory tool."""
+
+    action: str
+    target: str
+    content: str = ""
+    old_text: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemoryWriteResult:
+    """Result of a provider-routed memory write."""
+
+    handled: bool
+    success: bool = False
+    provider: str = ""
+    message: str = ""
+    error: str = ""
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def not_handled(cls, provider: str = "") -> "MemoryWriteResult":
+        return cls(handled=False, provider=provider)
+
+    def to_tool_payload(self, intent: MemoryWriteIntent) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "success": self.success,
+            "target": intent.target,
+            "action": intent.action,
+        }
+        if self.provider:
+            payload["provider"] = self.provider
+        if self.message:
+            payload["message"] = self.message
+        if self.error:
+            payload["error"] = self.error
+        if self.details:
+            payload.update(self.details)
+        return payload
 
 
 class MemoryProvider(ABC):
@@ -223,6 +267,24 @@ class MemoryProvider(ABC):
         result: the subagent's final response
         child_session_id: the subagent's session_id
         """
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        """Return True when this provider wants to own a generic memory write.
+
+        This is the synchronous provider-first path used before the built-in
+        MEMORY.md/USER.md store is mutated. Providers should only return True
+        for writes they can durably commit or fail clearly.
+        """
+        return False
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        """Durably handle a generic memory write this provider claimed.
+
+        Default is not-handled for backwards compatibility. Providers that
+        return ``wants_memory_write(intent)`` as True should override this and
+        return a success or failure result; failures stop local fallback.
+        """
+        return MemoryWriteResult.not_handled(self.name)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Return config fields this provider needs for setup.

@@ -4,7 +4,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult
 from agent.memory_manager import MemoryManager
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,34 @@ class MetadataMemoryProvider(FakeMemoryProvider):
 
     def on_memory_write(self, action, target, content, metadata=None):
         self.memory_writes.append((action, target, content, metadata or {}))
+
+
+class ClaimingMemoryProvider(FakeMemoryProvider):
+    """Provider that can claim durable user-profile writes."""
+
+    def __init__(self, name="claiming", fail=False):
+        super().__init__(name)
+        self.fail = fail
+        self.claimed_intents = []
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        return intent.action == "add" and intent.target == "user"
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        self.claimed_intents.append(intent)
+        if self.fail:
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error="provider write failed",
+            )
+        return MemoryWriteResult(
+            handled=True,
+            success=True,
+            provider=self.name,
+            message="User profile memory saved by provider.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -991,6 +1019,63 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "user", "test")
         # Good provider still received the call despite bad provider crashing
         assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestProviderAwareMemoryRouting:
+    """Provider-first durable write routing for generic memory tool intents."""
+
+    def test_provider_claims_user_profile_add(self):
+        mgr = MemoryManager()
+        provider = ClaimingMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        intent = MemoryWriteIntent(
+            action="add",
+            target="user",
+            content="User prefers concise summaries.",
+            metadata={"session_id": "sess-1"},
+        )
+
+        result = mgr.handle_memory_write(intent)
+
+        assert result.handled is True
+        assert result.success is True
+        assert result.provider == "external"
+        assert provider.claimed_intents == [intent]
+
+    def test_unclaimed_agent_memory_write_falls_back_to_local_owner(self):
+        mgr = MemoryManager()
+        provider = ClaimingMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        result = mgr.handle_memory_write(
+            MemoryWriteIntent(
+                action="add",
+                target="memory",
+                content="Project uses pytest.",
+            )
+        )
+
+        assert result.handled is False
+        assert provider.claimed_intents == []
+
+    def test_provider_failure_is_returned_as_handled_failure(self):
+        mgr = MemoryManager()
+        provider = ClaimingMemoryProvider("external", fail=True)
+        mgr.add_provider(provider)
+
+        result = mgr.handle_memory_write(
+            MemoryWriteIntent(
+                action="add",
+                target="user",
+                content="User prefers dark mode.",
+            )
+        )
+
+        assert result.handled is True
+        assert result.success is False
+        assert result.provider == "external"
+        assert result.error == "provider write failed"
 
 
 class TestHonchoCadenceTracking:

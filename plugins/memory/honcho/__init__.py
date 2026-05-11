@@ -23,7 +23,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -1149,6 +1149,64 @@ class HonchoMemoryProvider(MemoryProvider):
             target=_sync, daemon=True, name="honcho-sync"
         )
         self._sync_thread.start()
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        """Claim generic user-profile adds as Honcho conclusions."""
+        return (
+            intent.action == "add"
+            and intent.target == "user"
+            and bool((intent.content or "").strip())
+            and not self._cron_skipped
+        )
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        """Persist a generic user-profile memory write as a Honcho conclusion."""
+        if not self.wants_memory_write(intent):
+            return MemoryWriteResult.not_handled(self.name)
+
+        if not self._session_initialized:
+            if not self._ensure_session():
+                return MemoryWriteResult(
+                    handled=True,
+                    success=False,
+                    provider=self.name,
+                    error="Honcho session could not be initialized.",
+                )
+
+        if not self._manager or not self._session_key:
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error="Honcho is not active for this session.",
+            )
+
+        content = intent.content.strip()
+        try:
+            ok = self._manager.create_conclusion(self._session_key, content, peer="user")
+        except Exception as e:
+            logger.debug("Honcho provider-routed memory write failed: %s", e)
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error=f"Honcho conclusion write failed: {e}",
+            )
+
+        if not ok:
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error="Honcho conclusion write failed.",
+            )
+
+        return MemoryWriteResult(
+            handled=True,
+            success=True,
+            provider=self.name,
+            message="User profile memory saved to Honcho.",
+        )
 
     def on_memory_write(
         self,

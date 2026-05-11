@@ -28,9 +28,10 @@ from __future__ import annotations
 import logging
 import re
 import inspect
+from dataclasses import replace as dataclass_replace
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -453,6 +454,54 @@ class MemoryManager:
                     provider.name, e,
                 )
         return "\n\n".join(parts)
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        """Offer a durable generic memory-tool write to external providers.
+
+        This is provider-first routing: if an external provider claims an
+        intent, its result is authoritative. A claimed failure is returned to
+        the tool caller and must not fall back to local USER.md/MEMORY.md.
+        Unclaimed writes remain owned by the built-in local store.
+        """
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                wants_write = provider.wants_memory_write(intent)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' wants_memory_write failed: %s",
+                    provider.name, e,
+                )
+                continue
+            if not wants_write:
+                continue
+
+            try:
+                result = provider.handle_memory_write(intent)
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' handle_memory_write failed: %s",
+                    provider.name, e,
+                )
+                return MemoryWriteResult(
+                    handled=True,
+                    success=False,
+                    provider=provider.name,
+                    error=f"{provider.name} memory write failed: {e}",
+                )
+
+            if result and result.handled:
+                if not result.provider:
+                    result = dataclass_replace(result, provider=provider.name)
+                return result
+
+            logger.debug(
+                "Memory provider '%s' claimed but did not handle memory write",
+                provider.name,
+            )
+
+        return MemoryWriteResult.not_handled()
 
     @staticmethod
     def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:

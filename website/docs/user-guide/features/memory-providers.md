@@ -6,7 +6,7 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time. The built-in memory remains active for local agent notes, while the active provider can become the primary durable owner for user-profile writes.
 
 ## Quick Start
 
@@ -33,10 +33,10 @@ When a memory provider is active, Hermes automatically:
 2. **Prefetches relevant memories** before each turn (background, non-blocking)
 3. **Syncs conversation turns** to the provider after each response
 4. **Extracts memories on session end** (for providers that support it)
-5. **Mirrors built-in memory writes** to the external provider
+5. **Routes provider-owned memory writes** before local files are mutated
 6. **Adds provider-specific tools** so the agent can search, store, and manage memories
 
-The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
+The generic `memory` tool is provider-aware. User profile facts and preferences (`target="user"`) are offered to the active provider first; if the provider accepts the write and fails, Hermes returns a tool error instead of silently falling back to USER.md. Local agent notes (`target="memory"`) continue to use MEMORY.md, with legacy mirror hooks available for providers that want a copy of local writes.
 
 ## Available Providers
 

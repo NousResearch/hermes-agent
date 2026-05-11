@@ -20,8 +20,11 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 
 import run_agent
 from run_agent import AIAgent
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.memory_manager import MemoryManager
+from tools.memory_tool import MemoryStore
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +45,50 @@ def _make_tool_defs(*names: str) -> list:
         }
         for n in names
     ]
+
+
+class _RoutingProvider(MemoryProvider):
+    """Test provider that claims generic user-profile add intents."""
+
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.intents = []
+        self.mirrors = []
+
+    @property
+    def name(self) -> str:
+        return "routing-provider"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        return intent.action == "add" and intent.target == "user"
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        self.intents.append(intent)
+        if self.fail:
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error="provider unavailable",
+            )
+        return MemoryWriteResult(
+            handled=True,
+            success=True,
+            provider=self.name,
+            message="Provider stored user profile memory.",
+        )
+
+    def on_memory_write(self, action, target, content, metadata=None):
+        self.mirrors.append((action, target, content, metadata or {}))
 
 
 def test_is_destructive_command_treats_cp_as_mutating():
@@ -93,6 +140,80 @@ def agent_with_memory_tool():
         )
         a.client = MagicMock()
         return a
+
+
+class TestProviderAwareGenericMemoryTool:
+    def _attach_memory(self, agent, tmp_path, monkeypatch, provider):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        manager = MemoryManager()
+        manager.add_provider(provider)
+        agent._memory_store = store
+        agent._memory_manager = manager
+        return store
+
+    def test_user_profile_add_routes_to_active_provider_without_local_write(
+        self, agent_with_memory_tool, tmp_path, monkeypatch
+    ):
+        provider = _RoutingProvider()
+        store = self._attach_memory(agent_with_memory_tool, tmp_path, monkeypatch, provider)
+
+        result = json.loads(
+            agent_with_memory_tool._execute_memory_tool_call(
+                {
+                    "action": "add",
+                    "target": "user",
+                    "content": "User prefers direct answers.",
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "routing-provider"
+        assert store.user_entries == []
+        assert provider.intents[0].content == "User prefers direct answers."
+        assert provider.mirrors == []
+
+    def test_agent_memory_add_stays_local_with_external_provider(
+        self, agent_with_memory_tool, tmp_path, monkeypatch
+    ):
+        provider = _RoutingProvider()
+        store = self._attach_memory(agent_with_memory_tool, tmp_path, monkeypatch, provider)
+
+        result = json.loads(
+            agent_with_memory_tool._execute_memory_tool_call(
+                {
+                    "action": "add",
+                    "target": "memory",
+                    "content": "This project uses pytest.",
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert store.memory_entries == ["This project uses pytest."]
+        assert provider.intents == []
+
+    def test_provider_failure_does_not_fall_back_to_local_user_memory(
+        self, agent_with_memory_tool, tmp_path, monkeypatch
+    ):
+        provider = _RoutingProvider(fail=True)
+        store = self._attach_memory(agent_with_memory_tool, tmp_path, monkeypatch, provider)
+
+        result = json.loads(
+            agent_with_memory_tool._execute_memory_tool_call(
+                {
+                    "action": "add",
+                    "target": "user",
+                    "content": "User prefers dark mode.",
+                }
+            )
+        )
+
+        assert result["success"] is False
+        assert "provider unavailable" in result["error"]
+        assert store.user_entries == []
 
 
 def test_aiagent_reuses_existing_errors_log_handler():

@@ -80,8 +80,49 @@ class MyMemoryProvider(MemoryProvider):
 | `sync_turn(user, assistant)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
-| `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
+| `wants_memory_write(intent)` | Before built-in memory writes | Claim durable writes your provider should own |
+| `handle_memory_write(intent)` | After claiming a write | Commit provider-owned memory writes synchronously |
+| `on_memory_write(action, target, content)` | Successful local memory writes | Mirror local writes to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+## Provider-Owned Generic Memory Writes
+
+The generic `memory` tool routes validated writes through `MemoryManager` before mutating MEMORY.md or USER.md. This lets an active provider own user-profile facts without keyword hacks or provider-specific prompt instructions.
+
+Use `wants_memory_write()` only for intents your backend can durably handle. If `handle_memory_write()` returns `success=False` for a claimed intent, Hermes returns that error to the model/user and does not fall back to local memory.
+
+```python
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult
+
+class MyMemoryProvider(MemoryProvider):
+    # ...
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        return (
+            intent.action == "add"
+            and intent.target == "user"
+            and bool(intent.content.strip())
+        )
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        try:
+            self._client.create_user_fact(intent.content.strip())
+        except Exception as exc:
+            return MemoryWriteResult(
+                handled=True,
+                success=False,
+                provider=self.name,
+                error=f"{self.name} write failed: {exc}",
+            )
+        return MemoryWriteResult(
+            handled=True,
+            success=True,
+            provider=self.name,
+            message="User profile memory saved.",
+        )
+```
+
+Keep `on_memory_write()` for mirror semantics only. It fires after a local MEMORY.md/USER.md write succeeds and is not the provider-first ownership path.
 
 ## Config Schema
 

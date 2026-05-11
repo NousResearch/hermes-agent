@@ -1078,7 +1078,7 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        _MODELS_DEV_PREFERRED, _merge_models_dev_for_provider, provider_model_ids,
     )
 
     results: List[dict] = []
@@ -1241,7 +1241,7 @@ def list_authenticated_providers(
         # show up in the picker without requiring a Hermes release.
         model_ids = curated.get(hermes_id, [])
         if hermes_id in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_id, model_ids)
+            model_ids = _merge_models_dev_for_provider(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1365,7 +1365,7 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
             # Merge with models.dev for preferred providers (same rationale as above).
             if hermes_slug in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+                model_ids = _merge_models_dev_for_provider(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 

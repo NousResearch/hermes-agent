@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.models import (
+    _MODELS_DEV_CURATED_FIRST,
     _MODELS_DEV_PREFERRED,
     _merge_with_models_dev,
     provider_model_ids,
@@ -97,6 +98,57 @@ class TestProviderModelIdsPreferred:
             out = provider_model_ids("opencode-zen")
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out
+
+    def test_nvidia_profile_fallback_does_not_hide_curated_models(self):
+        """Offline NVIDIA profile fallback must still include curated NIM models."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "", "base_url": ""},
+        ), patch("agent.models_dev.list_agentic_models", return_value=[]):
+            out = provider_model_ids("nvidia")
+
+        assert "moonshotai/kimi-k2.6" in out
+        assert "deepseek-ai/deepseek-v4-pro" in out
+        assert "deepseek-ai/deepseek-v4-flash" in out
+        assert "nvidia/nemotron-3-super-120b-a12b" in out
+        # Keep legacy provider-profile fallback entries too.
+        assert "nvidia/llama-3.1-nemotron-70b-instruct" in out
+
+    def test_nvidia_keeps_curated_models_before_models_dev_extras(self):
+        """Short model pickers must show curated NVIDIA agentic models first."""
+        assert "nvidia" in _MODELS_DEV_CURATED_FIRST
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "", "base_url": ""},
+        ), patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["vendor/extra-a", "vendor/extra-b"],
+        ):
+            out = provider_model_ids("nvidia")
+
+        assert out.index("moonshotai/kimi-k2.6") < out.index("vendor/extra-a")
+        assert out.index("deepseek-ai/deepseek-v4-pro") < out.index("vendor/extra-a")
+        assert out.index("deepseek-ai/deepseek-v4-flash") < out.index("vendor/extra-a")
+        assert out.index("deepseek-ai/deepseek-v4-pro") < out.index(
+            "deepseek-ai/deepseek-v4-flash"
+        )
+        assert out.index("deepseek-ai/deepseek-v4-flash") < out.index(
+            "deepseek-ai/deepseek-v3.2"
+        )
+
+    def test_deepseek_profile_fallback_does_not_hide_v4_models(self):
+        """Offline DeepSeek profile fallback must still include V4 models."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "", "base_url": ""},
+        ), patch("agent.models_dev.list_agentic_models", return_value=[]):
+            out = provider_model_ids("deepseek")
+
+        assert "deepseek-v4-pro" in out
+        assert "deepseek-v4-flash" in out
+        # Keep legacy aliases too.
+        assert "deepseek-chat" in out
+        assert "deepseek-reasoner" in out
 
 
 class TestOpenRouterAndNousUnchanged:

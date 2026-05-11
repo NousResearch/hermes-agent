@@ -223,6 +223,33 @@ def test_passthrough_kwargs_to_base(monkeypatch):
     assert captured["max_models"] == 12
 
 
+def test_nvidia_picker_keeps_curated_models_visible(monkeypatch):
+    """NVIDIA's broad models.dev catalog must not bury curated NIM picks."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"nvidia": {"env": ["NVIDIA_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.list_agentic_models",
+        lambda provider: [f"vendor/extra-{i}" for i in range(20)],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: [],
+    )
+
+    result = model_switch.list_picker_providers(max_models=8)
+
+    nvidia = next(row for row in result if row["slug"] == "nvidia")
+    assert "deepseek-ai/deepseek-v4-pro" in nvidia["models"]
+    assert "deepseek-ai/deepseek-v4-flash" in nvidia["models"]
+    assert "moonshotai/kimi-k2.6" in nvidia["models"]
+    assert nvidia["models"].index("deepseek-ai/deepseek-v4-pro") < nvidia["models"].index(
+        "deepseek-ai/deepseek-v4-flash"
+    )
+
+
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
@@ -230,6 +257,8 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models",
+                        lambda *a, **kw: None)
 
     result = model_switch.list_picker_providers(
         current_provider="custom:ollama",

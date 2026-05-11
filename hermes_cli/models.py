@@ -238,8 +238,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-nano-30b-a3b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
         # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
+        # (group by vendor — users get familiar picks on NIM)
         "qwen/qwen3.5-397b-a17b",
+        "deepseek-ai/deepseek-v4-pro",
+        "deepseek-ai/deepseek-v4-flash",
         "deepseek-ai/deepseek-v3.2",
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m2.5",
@@ -1886,6 +1888,14 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
+_MODELS_DEV_CURATED_FIRST: frozenset[str] = frozenset({
+    # NVIDIA's public models.dev catalog contains many broad NIM/VLM entries.
+    # Keep Hermes' hand-picked agentic NIM models visible in short pickers and
+    # append live-discovered extras after them.
+    "nvidia",
+})
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -1921,6 +1931,40 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
         seen_lower.add(key)
         merged.append(mid)
     return merged
+
+
+def _merge_model_id_lists(*model_lists: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Merge model ID lists in order with case-insensitive deduplication."""
+    seen_lower: set[str] = set()
+    merged: list[str] = []
+    for model_list in model_lists:
+        if not model_list:
+            continue
+        for mid in model_list:
+            if not isinstance(mid, str) or not mid.strip():
+                continue
+            key = mid.lower()
+            if key in seen_lower:
+                continue
+            seen_lower.add(key)
+            merged.append(mid)
+    return merged
+
+
+def _merge_models_dev_for_provider(provider: str, curated: list[str]) -> list[str]:
+    """Merge models.dev with curated IDs using provider-specific ordering."""
+    if provider not in _MODELS_DEV_CURATED_FIRST:
+        return _merge_with_models_dev(provider, curated)
+
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev = list_agentic_models(provider)
+    except Exception:
+        mdev = []
+
+    if not mdev:
+        return list(curated)
+    return _merge_model_id_lists(curated, mdev)
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -2066,15 +2110,25 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 live = _p.fetch_models(api_key=api_key)
                 if live:
                     return live
-            # Use profile's fallback_models if defined
+            # Use profile fallbacks without letting stale plugin-level lists
+            # shadow the curated catalog in this module. The generic profile
+            # path is reached by providers such as NVIDIA and DeepSeek, whose
+            # fast-moving model lists are also maintained in _PROVIDER_MODELS
+            # and refreshed through models.dev. Returning _p.fallback_models
+            # directly would hide newer curated IDs when the live /models
+            # endpoint is unreachable or rate-limited.
             if _p.fallback_models:
-                return list(_p.fallback_models)
+                curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+                fallback = _merge_model_id_lists(curated_static, _p.fallback_models)
+                if normalized in _MODELS_DEV_PREFERRED:
+                    return _merge_models_dev_for_provider(normalized, fallback)
+                return fallback
     except Exception:
         pass
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        return _merge_models_dev_for_provider(normalized, curated_static)
     return curated_static
 
 

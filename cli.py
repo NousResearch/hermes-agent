@@ -3717,7 +3717,7 @@ class HermesCLI:
         if self._command_running:
             _cprint(f"{_DIM}Wait for the current command to finish before opening the editor.{_RST}")
             return False
-        if self._sudo_state or self._secret_state or self._approval_state or self._slash_confirm_state or self._clarify_state:
+        if self._sudo_state or self._secret_state or self._approval_state or getattr(self, "_slash_confirm_state", None) or self._clarify_state:
             _cprint(f"{_DIM}Finish the active prompt before opening the editor.{_RST}")
             return False
         target_buffer = buffer or getattr(app, "current_buffer", None)
@@ -10774,7 +10774,7 @@ class HermesCLI:
             return _state_fragment("class:sudo-prompt", "🔑")
         if self._approval_state:
             return _state_fragment("class:prompt-working", "⚠")
-        if self._slash_confirm_state:
+        if getattr(self, "_slash_confirm_state", None):
             return _state_fragment("class:prompt-working", "⚠")
         if self._clarify_freetext:
             return _state_fragment("class:clarify-selected", "✎")
@@ -10842,7 +10842,7 @@ class HermesCLI:
         sudo_widget,
         secret_widget,
         approval_widget,
-        slash_confirm_widget,
+        slash_confirm_widget=None,
         clarify_widget,
         model_picker_widget=None,
         spinner_widget=None,

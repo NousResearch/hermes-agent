@@ -4,6 +4,10 @@ Status: in_progress
 Owner: Hermes main / Codex worker
 Started: 2026-05-11 23:08
 Branch: feat/managed-agent-sandbox-workers
+Multica project: Hermes Agent / 966bde1c-667a-42e9-8088-56e3cbe97b79
+Multica parent: JEF-219 / ee176b2d-8671-4506-87b6-b3fd37af0bbf
+Multica implementation: JEF-220 / 3f996e02-fd46-4d94-a3cf-86c0dbfd9da3
+Multica review gate: JEF-221 / 36a751a2-0899-437d-bcda-5f97e4857f03
 
 ## Scope
 Implement the first production-safe slice of the Managed-Agents style Multica/Hermes blueprint inside Hermes Agent's Kanban worker runtime:

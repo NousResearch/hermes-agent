@@ -117,6 +117,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status, note }),
     }),
+  getSkillGovernanceProposals: (params: { decision_status?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.decision_status) qs.set("decision_status", params.decision_status);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return fetchJSON<SkillGovernanceProposal[]>(`/api/skills/governance/proposals${query ? `?${query}` : ""}`);
+  },
+  getSkillGovernanceProposal: (proposalId: string) =>
+    fetchJSON<SkillGovernanceProposal>(`/api/skills/governance/proposals/${encodeURIComponent(proposalId)}`),
+  decideSkillGovernanceProposal: (proposalId: string, status: string, note?: string) =>
+    fetchJSON<SkillGovernanceProposal>(`/api/skills/governance/proposals/${encodeURIComponent(proposalId)}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, note }),
+    }),
   toggleSkill: (name: string, enabled: boolean) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
@@ -343,6 +358,48 @@ export interface SkillChangeEvent {
 
 export interface SkillChangeDetail extends SkillChangeEvent {
   diff_text?: string;
+}
+
+export interface SkillGovernanceProposal {
+  schema_version: number;
+  proposal_id: string;
+  created_at: string;
+  updated_at: string;
+  source: string;
+  source_run_id: string | null;
+  source_paths: Record<string, string>;
+  action: string;
+  title: string;
+  pm_summary: string;
+  rationale: string;
+  risk_level: "low" | "medium" | "high" | "unknown" | string;
+  impact_summary: string;
+  pin_policy_status: string;
+  target_skills: string[];
+  created_skills: string[];
+  archived_skills: string[];
+  affected_skills: string[];
+  pinned_skills: string[];
+  evidence: string[];
+  artifact_paths: Record<string, string>;
+  diff_path: string | null;
+  backup_path: string | null;
+  rollback_path: string | null;
+  codex_review_status: string;
+  codex_review_path: string | null;
+  codex_review_summary: string;
+  codex_review_warnings: string[];
+  codex_review_errors: string[];
+  recommended_decision: string;
+  decision_status: "pending" | "approved" | "rejected" | "deferred" | "needs_changes" | "bad_test_target" | string;
+  decision_by: string | null;
+  decision_at: string | null;
+  decision_note: string | null;
+  decision_history: Array<Record<string, unknown>>;
+  metadata: Record<string, unknown>;
+  allowed_decision_statuses?: string[];
+  artifact_texts?: Record<string, string>;
+  diff_text?: string | null;
 }
 
 export interface ToolsetInfo {

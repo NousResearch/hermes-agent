@@ -10,9 +10,12 @@ import {
   History,
   FileText,
   CheckCircle2,
+  GitPullRequest,
+  ShieldCheck,
+  AlertTriangle,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillChangeDetail, SkillChangeEvent, SkillInfo, ToolsetInfo } from "@/lib/api";
+import type { SkillChangeDetail, SkillChangeEvent, SkillGovernanceProposal, SkillInfo, ToolsetInfo } from "@/lib/api";
 import {
   formatSkillChangeTime,
   latestChangeBySkill,
@@ -20,6 +23,17 @@ import {
   reasonKindLabel,
   reviewStatusLabel,
 } from "@/lib/skillChanges";
+import {
+  allowedProposalDecisionStatuses,
+  extractFetchErrorMessage,
+  proposalDecisionActionLabel,
+  proposalDecisionActionStatuses,
+  proposalDecisionTransitionHint,
+  proposalDecisionNote,
+  proposalPreviewText,
+  proposalStatusLabel,
+  unavailableProposalDecisionStatuses,
+} from "@/lib/skillGovernance";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,6 +80,26 @@ function prettyCategory(raw: string | null | undefined, generalLabel: string): s
     .join(" ");
 }
 
+function proposalRiskVariant(risk: string): "default" | "secondary" | "destructive" | "outline" {
+  if (risk === "high") return "destructive";
+  if (risk === "medium") return "outline";
+  if (risk === "low") return "secondary";
+  return "secondary";
+}
+
+function proposalStatusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "approved") return "default";
+  if (status === "rejected") return "destructive";
+  if (status === "pending" || status === "needs_changes") return "outline";
+  return "secondary";
+}
+
+function proposalActionVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "approved") return "default";
+  if (status === "rejected") return "destructive";
+  if (status === "deferred") return "secondary";
+  return "outline";
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +110,9 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [skillChanges, setSkillChanges] = useState<SkillChangeEvent[]>([]);
+  const [governanceProposals, setGovernanceProposals] = useState<SkillGovernanceProposal[]>([]);
+  const [selectedProposal, setSelectedProposal] = useState<SkillGovernanceProposal | null>(null);
+  const [decidingProposal, setDecidingProposal] = useState<string | null>(null);
   const [selectedChange, setSelectedChange] = useState<SkillChangeDetail | null>(null);
   const [loadingChangeDetail, setLoadingChangeDetail] = useState(false);
   const [reviewingChange, setReviewingChange] = useState<string | null>(null);
@@ -96,11 +133,22 @@ export default function SkillsPage() {
         () => api.getSkillChanges({ limit: 20 }),
         () => showToast("Skill change history unavailable", "error"),
       ),
+      api.getSkillGovernanceProposals({ limit: 20 }).catch(() => {
+        showToast("Curator proposals unavailable", "error");
+        return [] as SkillGovernanceProposal[];
+      }),
     ])
-      .then(([s, tsets, changes]) => {
+      .then(([s, tsets, changes, proposals]) => {
         setSkills(s);
         setToolsets(tsets);
         setSkillChanges(changes);
+        setGovernanceProposals(proposals);
+        setSelectedProposal(proposals[0] ?? null);
+        if (proposals[0]) {
+          api.getSkillGovernanceProposal(proposals[0].proposal_id)
+            .then(setSelectedProposal)
+            .catch(() => undefined);
+        }
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
@@ -161,6 +209,37 @@ export default function SkillsPage() {
     }
   };
 
+  const handleSelectProposal = async (proposal: SkillGovernanceProposal) => {
+    try {
+      const detail = await api.getSkillGovernanceProposal(proposal.proposal_id);
+      setSelectedProposal(detail);
+    } catch {
+      showToast(`Failed to load proposal ${proposal.proposal_id}`, "error");
+    }
+  };
+
+  const handleProposalDecision = async (proposalId: string, status: string) => {
+    setDecidingProposal(proposalId);
+    try {
+      const updated = await api.decideSkillGovernanceProposal(
+        proposalId,
+        status,
+        proposalDecisionNote(status),
+      );
+      setGovernanceProposals((prev) =>
+        prev.map((proposal) => (proposal.proposal_id === proposalId ? { ...proposal, ...updated } : proposal))
+      );
+      setSelectedProposal((prev) =>
+        prev?.proposal_id === proposalId ? { ...prev, ...updated } : prev
+      );
+      showToast(`Proposal marked ${proposalStatusLabel(status).toLowerCase()}`, "success");
+    } catch (error) {
+      showToast(extractFetchErrorMessage(error), "error");
+    } finally {
+      setDecidingProposal(null);
+    }
+  };
+
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
 
@@ -217,6 +296,12 @@ export default function SkillsPage() {
   const enabledCount = skills.filter((s) => s.enabled).length;
   const latestChanges = useMemo(() => latestChangeBySkill(skillChanges), [skillChanges]);
   const unreviewedChangeCount = skillChanges.filter((event) => event.review_status === "unreviewed").length;
+  const pendingProposalCount = governanceProposals.filter((proposal) => proposal.decision_status === "pending").length;
+  const selectedProposalPreview = selectedProposal ? proposalPreviewText(selectedProposal) : null;
+  const selectedAllowedProposalDecisions = selectedProposal ? allowedProposalDecisionStatuses(selectedProposal) : [];
+  const selectedProposalDecisionActions = selectedProposal ? proposalDecisionActionStatuses(selectedProposal) : [];
+  const selectedUnavailableProposalDecisions = selectedProposal ? unavailableProposalDecisionStatuses(selectedProposal) : [];
+  const selectedProposalTransitionHint = selectedProposal ? proposalDecisionTransitionHint(selectedProposal) : null;
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -328,6 +413,196 @@ export default function SkillsPage() {
           ))}
         </div>
       )}
+
+      {/* Curator proposal inbox */}
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <GitPullRequest className="h-4 w-4 text-muted-foreground" />
+              Curator proposals
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Badge variant={pendingProposalCount > 0 ? "outline" : "secondary"} className="text-[10px]">
+                {pendingProposalCount} pending
+              </Badge>
+              <Badge variant="secondary" className="text-[10px]">
+                decision-only MVP
+              </Badge>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="px-4 pb-4 pt-0">
+          {governanceProposals.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No Curator proposals imported yet. Run a dry-run importer to turn Curator reports into PM-reviewable cards.
+            </p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.95fr)]">
+              <div className="grid gap-2">
+                {governanceProposals.slice(0, 8).map((proposal) => (
+                  <button
+                    key={proposal.proposal_id}
+                    type="button"
+                    className={`text-left rounded-md border px-3 py-2 transition-colors hover:bg-muted/40 ${
+                      selectedProposal?.proposal_id === proposal.proposal_id ? "border-primary/70 bg-primary/5" : "border-border"
+                    }`}
+                    onClick={() => handleSelectProposal(proposal)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono-ui text-xs text-foreground truncate">{proposal.title}</span>
+                          <Badge variant={proposalRiskVariant(proposal.risk_level)} className="text-[10px]">
+                            {proposal.risk_level} risk
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                          {proposal.pm_summary || proposal.rationale}
+                        </p>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          {proposal.target_skills.length} affected · {proposal.action} · {proposal.source_run_id || proposal.source}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <Badge variant={proposalStatusVariant(proposal.decision_status)} className="text-[10px]">
+                          {proposalStatusLabel(proposal.decision_status)}
+                        </Badge>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          {formatSkillChangeTime(proposal.updated_at)}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-md border border-border bg-muted/20 p-3 min-h-[220px]">
+                {selectedProposal ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-mono-ui text-sm">{selectedProposal.title}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedProposal.action} · {selectedProposal.source} · schema v{selectedProposal.schema_version}
+                        </p>
+                      </div>
+                      <Badge variant={proposalStatusVariant(selectedProposal.decision_status)} className="text-[10px]">
+                        {proposalStatusLabel(selectedProposal.decision_status)}
+                      </Badge>
+                    </div>
+
+                    <div className="grid gap-2 text-xs text-muted-foreground">
+                      <p>{selectedProposal.pm_summary || selectedProposal.rationale}</p>
+                      {selectedProposal.impact_summary && <p>Impact: {selectedProposal.impact_summary}</p>}
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={proposalRiskVariant(selectedProposal.risk_level)} className="text-[10px]">
+                          {selectedProposal.risk_level} risk
+                        </Badge>
+                        <Badge variant="secondary" className="text-[10px]">
+                          Codex: {selectedProposal.codex_review_status}
+                        </Badge>
+                        <Badge variant="secondary" className="text-[10px]">
+                          Pins: {selectedProposal.pin_policy_status}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {selectedProposal.target_skills.length > 0 && (
+                      <div>
+                        <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Affected skills</p>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedProposal.target_skills.map((skill) => (
+                            <Badge key={skill} variant="secondary" className="text-[10px] font-mono">
+                              {skill}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedProposal.evidence.length > 0 && (
+                      <div>
+                        <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Evidence</p>
+                        <ul className="list-disc pl-4 text-xs text-muted-foreground">
+                          {selectedProposal.evidence.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {selectedProposalPreview && (
+                      <div>
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {selectedProposalPreview.title}
+                          </p>
+                          {selectedProposalPreview.kind !== "diff" && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              not an apply diff
+                            </Badge>
+                          )}
+                        </div>
+                        <pre className="max-h-72 overflow-auto rounded border border-border bg-background/80 p-3 text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                          {selectedProposalPreview.body}
+                        </pre>
+                      </div>
+                    )}
+
+                    <div className="rounded border border-border bg-background/70 p-2 text-[11px] text-muted-foreground">
+                      <div className="flex items-start gap-2">
+                        <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <p>
+                          MVP records the PM decision only. It does not apply, archive, delete, unpin, repin, or mutate any skill.
+                        </p>
+                      </div>
+                    </div>
+
+                    {selectedProposal.decision_note && (
+                      <div className="rounded border border-border bg-background/70 p-2 text-[11px] text-muted-foreground">
+                        Decision note: {selectedProposal.decision_note}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <p className="basis-full text-[10px] text-muted-foreground">
+                        Allowed now: {selectedAllowedProposalDecisions.map(proposalStatusLabel).join(", ")}
+                      </p>
+                      {selectedProposalTransitionHint && (
+                        <p className="basis-full text-[11px] text-muted-foreground">
+                          {selectedProposalTransitionHint}
+                        </p>
+                      )}
+                      {selectedProposalDecisionActions.map((status) => (
+                        <Button
+                          key={status}
+                          size="sm"
+                          variant={proposalActionVariant(status)}
+                          disabled={decidingProposal === selectedProposal.proposal_id}
+                          onClick={() => handleProposalDecision(selectedProposal.proposal_id, status)}
+                        >
+                          {status === "bad_test_target" && <AlertTriangle className="h-3.5 w-3.5" />}
+                          {proposalDecisionActionLabel(status)}
+                        </Button>
+                      ))}
+                      {selectedUnavailableProposalDecisions.length > 0 && (
+                        <p className="basis-full text-[10px] text-muted-foreground">
+                          Unavailable now: {selectedUnavailableProposalDecisions.map(proposalStatusLabel).join(", ")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Select a Curator proposal to inspect rationale, risk, evidence, affected skills, and decision state.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Skill change ledger */}
       <Card>

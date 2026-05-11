@@ -1797,11 +1797,22 @@ class SkillChangeReviewUpdate(BaseModel):
     note: Optional[str] = None
 
 
+class SkillGovernanceDecisionUpdate(BaseModel):
+    status: str
+    note: Optional[str] = None
+    decided_by: Optional[str] = None
+
+
 _SKILL_CHANGE_LIMIT_MAX = 100
+_SKILL_GOVERNANCE_PROPOSAL_LIMIT_MAX = 100
 
 
 def _clamp_skill_change_limit(limit: int) -> int:
     return max(0, min(limit, _SKILL_CHANGE_LIMIT_MAX))
+
+
+def _clamp_skill_governance_proposal_limit(limit: int) -> int:
+    return max(0, min(limit, _SKILL_GOVERNANCE_PROPOSAL_LIMIT_MAX))
 
 
 @app.get("/api/skills/changes")
@@ -1843,6 +1854,50 @@ async def review_skill_change(event_id: str, body: SkillChangeReviewUpdate):
     if event is None:
         raise HTTPException(status_code=404, detail="Skill change event not found")
     return event
+
+
+@app.get("/api/skills/governance/proposals")
+async def get_skill_governance_proposals(
+    decision_status: Optional[str] = None,
+    limit: int = 50,
+):
+    from tools.skill_governance_proposals import list_skill_governance_proposals
+
+    try:
+        return list_skill_governance_proposals(
+            decision_status=decision_status,
+            limit=_clamp_skill_governance_proposal_limit(limit),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/skills/governance/proposals/{proposal_id}")
+async def get_skill_governance_proposal_detail(proposal_id: str):
+    from tools.skill_governance_proposals import get_skill_governance_proposal
+
+    proposal = get_skill_governance_proposal(proposal_id, include_artifacts=True)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Skill Governance proposal not found")
+    return proposal
+
+
+@app.post("/api/skills/governance/proposals/{proposal_id}/decision")
+async def decide_skill_governance_proposal(proposal_id: str, body: SkillGovernanceDecisionUpdate):
+    from tools.skill_governance_proposals import get_skill_governance_proposal, record_skill_governance_decision
+
+    try:
+        proposal = record_skill_governance_decision(
+            proposal_id,
+            body.status,
+            note=body.note,
+            decided_by=body.decided_by or "hermes-user",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Skill Governance proposal not found")
+    return get_skill_governance_proposal(proposal_id, include_artifacts=True) or proposal
 
 
 @app.get("/api/skills")
@@ -1982,6 +2037,13 @@ async def get_usage_analytics(days: int = 30):
         return {"daily": daily, "by_model": by_model, "totals": totals, "period_days": days}
     finally:
         db.close()
+
+
+@app.api_route("/api/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def api_not_found(full_path: str):
+    """Keep malformed/unknown API paths from falling through to the SPA shell."""
+    return JSONResponse({"detail": "API endpoint not found"}, status_code=404)
+
 
 
 def mount_spa(application: FastAPI):

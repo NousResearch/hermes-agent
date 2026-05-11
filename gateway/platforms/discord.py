@@ -115,7 +115,7 @@ def _build_allowed_mentions():
         raw = os.getenv(name, "").strip().lower()
         if not raw:
             return default
-        return raw in ("true", "1", "yes", "on")
+        return raw in {"true", "1", "yes", "on"}
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
@@ -708,7 +708,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
@@ -769,7 +769,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # answer regardless of who is mentioned.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in ("true", "1", "yes")
+                    ).lower() in {"true", "1", "yes"}
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
                         _channel_id = str(message.channel.id)
                         _parent_id = None
@@ -1317,7 +1317,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
@@ -3137,9 +3137,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # UX so users don't see commands they can't invoke. Off by default
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
-        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in (
+        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
             "true", "1", "yes", "on",
-        ):
+        }:
             self._apply_owner_only_visibility(tree)
 
     def _apply_owner_only_visibility(self, tree) -> None:
@@ -3526,9 +3526,9 @@ class DiscordAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -4200,7 +4200,7 @@ class DiscordAdapter(BasePlatformAdapter):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -4282,7 +4282,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     # Determine extension from content type (image/png -> .png)
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
                     cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
@@ -4296,7 +4296,7 @@ class DiscordAdapter(BasePlatformAdapter):
             elif content_type.startswith("audio/"):
                 try:
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
+                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
                         ext = ".ogg"
                     cached_path = await self._cache_discord_audio(att, ext)
                     media_urls.append(cached_path)
@@ -4339,7 +4339,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             logger.info("[Discord] Cached user document: %s", cached_path)
                             # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"

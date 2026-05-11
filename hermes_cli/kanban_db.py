@@ -1844,7 +1844,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(p["status"] in {"done", "archived"} for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),

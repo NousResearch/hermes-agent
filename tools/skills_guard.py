@@ -814,7 +814,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             ))
 
         # Executable permission on non-script files
-        if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
+        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",

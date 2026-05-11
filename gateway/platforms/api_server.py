@@ -449,7 +449,7 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
-        if request.method in ("POST", "PUT", "PATCH"):
+        if request.method in {"POST", "PUT", "PATCH"}:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
@@ -646,7 +646,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
-            if profile and profile not in ("default", "custom"):
+            if profile and profile not in {"default", "custom"}:
                 return profile
         except Exception:
             pass
@@ -1003,7 +1003,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     system_prompt = content
                 else:
                     system_prompt = system_prompt + "\n" + content
-            elif role in ("user", "assistant"):
+            elif role in {"user", "assistant"}:
                 try:
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
@@ -2381,7 +2381,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if cron_err:
             return cron_err
         try:
-            include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
+            include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:

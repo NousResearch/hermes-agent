@@ -575,7 +575,7 @@ def _build_fal_payload(
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
-    if size_style in ("image_size_preset", "gpt_literal"):
+    if size_style in {"image_size_preset", "gpt_literal"}:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio":
         payload["aspect_ratio"] = sizes[aspect]

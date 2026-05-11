@@ -288,7 +288,7 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
-        if not role or role in ("session_meta", "system"):
+        if not role or role in {"session_meta", "system"}:
             continue
         ts = msg.get("timestamp")
         if ts is not None:
@@ -472,7 +472,7 @@ if _config_path.exists():
                     # gateway resolves these to Path.home() later (line ~255).
                     # Writing the raw placeholder here would just be noise.
                     # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
+                    if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
                         continue
                     # Expand shell tilde in cwd so subprocess.Popen never
                     # receives a literal "~/" which the kernel rejects.
@@ -616,7 +616,7 @@ os.environ["HERMES_EXEC_ASK"] = "1"
 # to home directory.  MESSAGING_CWD is accepted as a backward-compat
 # fallback (deprecated — the warning above tells users to migrate).
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
+if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
     _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = _fallback
 
@@ -849,7 +849,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
         if line.startswith("name:"):
             raw = line.split(":", 1)[1].strip()
             # Strip YAML quote wrappers if present
-            if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
+            if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
                 raw = raw[1:-1]
             declared_name = raw.strip()
             break
@@ -891,7 +891,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
-                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
+                if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 slug, declared_name = _skill_slug_from_frontmatter(skill_md)
                 if not slug or not declared_name:
@@ -1033,7 +1033,7 @@ def _parse_session_key(session_key: str) -> "dict | None":
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
-        if len(parts) > 5 and parts[3] in ("dm", "thread"):
+        if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
     return None
@@ -1561,7 +1561,7 @@ class GatewayRunner:
             enabled_chats.clear()
             enabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
-                if mode in ("voice_only", "all") and key.startswith(prefix)
+                if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
@@ -1991,7 +1991,7 @@ class GatewayRunner:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
         # process to pick up.  "interrupt" mode drops them (current behaviour).
-        return self._restart_requested and self._busy_input_mode in ("queue", "steer")
+        return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
 
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
@@ -2401,7 +2401,7 @@ class GatewayRunner:
                     raw = cfg_get(cfg, "display", "background_process_notifications")
                     if raw is False:
                         mode = "off"
-                    elif raw not in (None, ""):
+                    elif raw not in {None, ""}:
                         mode = str(raw)
             except Exception:
                 pass
@@ -3247,7 +3247,7 @@ class GatewayRunner:
         # for this process's lifetime.
         try:
             _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
-            _redact_on = _redact_raw.lower() in ("1", "true", "yes", "on")
+            _redact_on = _redact_raw.lower() in {"1", "true", "yes", "on"}
             if _redact_on:
                 logger.info(
                     "Secret redaction: ENABLED (tool output, logs, and chat "
@@ -3329,8 +3329,8 @@ class GatewayRunner:
         _any_allowlist = any(
             os.getenv(v) for v in _builtin_allowed_vars + _plugin_allowed_vars
         )
-        _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
-            os.getenv(v, "").lower() in ("true", "1", "yes")
+        _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"} or any(
+            os.getenv(v, "").lower() in {"true", "1", "yes"}
             for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
         if not _any_allowlist and not _allow_all:
@@ -4379,7 +4379,7 @@ class GatewayRunner:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        task_terminal = task and task.status in ("done", "archived")
+                        task_terminal = task and task.status in {"done", "archived"}
                         if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
@@ -4479,7 +4479,7 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: config loader unavailable; disabled")
             return
         env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
-        if env_override in ("0", "false", "no", "off"):
+        if env_override in {"0", "false", "no", "off"}:
             logger.info("kanban dispatcher: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
             return
 
@@ -5156,12 +5156,12 @@ class GatewayRunner:
                 try:
                     _gw_cfg = _load_gateway_config()
                     _raw = cfg_get(_gw_cfg, "display", "platforms", "telegram", "notifications")
-                    if _raw not in (None, ""):
+                    if _raw not in {None, ""}:
                         _notify_mode = str(_raw).strip().lower()
                 except Exception:
                     pass
             _notify_mode = _notify_mode or "important"
-            if _notify_mode not in ("all", "important"):
+            if _notify_mode not in {"all", "important"}:
                 logger.warning(
                     "Unknown telegram notifications mode '%s', "
                     "defaulting to 'important' (valid: all, important)",
@@ -5338,7 +5338,7 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
         user_id = source.user_id
@@ -5411,12 +5411,12 @@ class GatewayRunner:
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
             return True
 
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in ("mentions", "all"):
+            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
         # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
@@ -5447,7 +5447,7 @@ class GatewayRunner:
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
@@ -5742,9 +5742,9 @@ class GatewayRunner:
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
-            if cmd in ("approve", "yes"):
+            if cmd in {"approve", "yes"}:
                 response_text = "y"
-            elif cmd in ("deny", "no"):
+            elif cmd in {"deny", "no"}:
                 response_text = "n"
             else:
                 _recognized_cmd = None
@@ -5826,17 +5826,17 @@ class GatewayRunner:
             _raw_reply = (event.text or "").strip()
             _cmd_reply = event.get_command()
             _confirm_choice = None
-            if _cmd_reply in ("approve", "yes", "ok", "confirm"):
+            if _cmd_reply in {"approve", "yes", "ok", "confirm"}:
                 _confirm_choice = "once"
-            elif _cmd_reply in ("always", "remember"):
+            elif _cmd_reply in {"always", "remember"}:
                 _confirm_choice = "always"
-            elif _cmd_reply in ("cancel", "no", "deny", "nevermind"):
+            elif _cmd_reply in {"cancel", "no", "deny", "nevermind"}:
                 _confirm_choice = "cancel"
-            elif _raw_reply.lower() in ("approve", "approve once", "once"):
+            elif _raw_reply.lower() in {"approve", "approve once", "once"}:
                 _confirm_choice = "once"
-            elif _raw_reply.lower() in ("always", "always approve"):
+            elif _raw_reply.lower() in {"always", "always approve"}:
                 _confirm_choice = "always"
-            elif _raw_reply.lower() in ("cancel", "nevermind", "no"):
+            elif _raw_reply.lower() in {"cancel", "nevermind", "no"}:
                 _confirm_choice = "cancel"
             if _confirm_choice is not None:
                 _resolved = await _slash_confirm_mod.resolve(
@@ -5972,7 +5972,7 @@ class GatewayRunner:
             # Semantics: each /queue invocation produces its own full agent
             # turn, processed in FIFO order after the current run (and any
             # earlier /queue items) finishes.  Messages are NOT merged.
-            if event.get_command() in ("queue", "q"):
+            if event.get_command() in {"queue", "q"}:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
@@ -6045,7 +6045,7 @@ class GatewayRunner:
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
             # Route directly to the approval handler so the event is signalled.
-            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+            if _cmd_def_inner and _cmd_def_inner.name in {"approve", "deny"}:
                 if _cmd_def_inner.name == "approve":
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
@@ -6076,7 +6076,7 @@ class GatewayRunner:
             # continuation prompt against the current turn.
             if _cmd_def_inner and _cmd_def_inner.name == "goal":
                 _goal_arg = (event.get_command_args() or "").strip().lower()
-                if not _goal_arg or _goal_arg in ("status", "pause", "resume", "clear", "stop", "done"):
+                if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
@@ -6088,7 +6088,7 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose"):
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
@@ -6711,7 +6711,7 @@ class GatewayRunner:
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
+                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
                     audio_paths.append(path)
 
             if image_paths:
@@ -6780,7 +6780,7 @@ class GatewayRunner:
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype in ("", "application/octet-stream"):
+                if mtype in {"", "application/octet-stream"}:
                     _ext = os.path.splitext(path)[1].lower()
                     if _ext in _TEXT_EXTENSIONS:
                         mtype = "text/plain"
@@ -7164,7 +7164,7 @@ class GatewayRunner:
                     if isinstance(_comp_cfg, dict):
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
-                        ).lower() in ("true", "1", "yes")
+                        ).lower() in {"true", "1", "yes"}
                         _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
                         if _raw_hard_limit is not None:
                             try:
@@ -7287,7 +7287,7 @@ class GatewayRunner:
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}
                                 for m in history
-                                if m.get("role") in ("user", "assistant")
+                                if m.get("role") in {"user", "assistant"}
                                 and m.get("content")
                             ]
 
@@ -7651,7 +7651,7 @@ class GatewayRunner:
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
-                    if evt_type in ("watch_match", "watch_disabled"):
+                    if evt_type in {"watch_match", "watch_disabled"}:
                         _watch_events.append(evt)
                     # else: completion events are handled by the watcher task
                 for evt in _watch_events:
@@ -7893,7 +7893,7 @@ class GatewayRunner:
                     status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
-            elif status_code in (400, 500):
+            elif status_code in {400, 500}:
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
@@ -8255,7 +8255,7 @@ class GatewayRunner:
         policy = _policy_for_source(self.config, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = (source.chat_type if source else "") or "dm"
-        scope = "DM" if chat_type.lower() in ("dm", "direct", "private", "") else "group/channel"
+        scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
         user_id = (source.user_id if source else None) or "?"
 
         if not policy.enabled:
@@ -9193,7 +9193,7 @@ class GatewayRunner:
                 return "\n".join(p for p in parts if p)
             return str(value)
 
-        if args in ("none", "default", "neutral"):
+        if args in {"none", "default", "neutral"}:
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
@@ -9345,7 +9345,7 @@ class GatewayRunner:
                 return t("gateway.goal.no_resume")
             return t("gateway.goal.resumed", goal=state.goal)
 
-        if lower in ("clear", "stop", "done"):
+        if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
             try:
@@ -9598,13 +9598,13 @@ class GatewayRunner:
 
         adapter = self.adapters.get(platform)
 
-        if args in ("on", "enable"):
+        if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.enabled_voice_only")
-        elif args in ("off", "disable"):
+        elif args in {"off", "disable"}:
             self._voice_mode[voice_key] = "off"
             self._save_voice_modes()
             if adapter:
@@ -9616,7 +9616,7 @@ class GatewayRunner:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
-        elif args in ("channel", "join"):
+        elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
@@ -10390,12 +10390,12 @@ class GatewayRunner:
 
         # Display toggle (per-platform)
         platform_key = _platform_config_key(event.source.platform)
-        if args in ("show", "on"):
+        if args in {"show", "on"}:
             self._show_reasoning = True
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
             return t("gateway.reasoning.display_set_on", platform=platform_key)
 
-        if args in ("hide", "off"):
+        if args in {"hide", "off"}:
             self._show_reasoning = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
             return t("gateway.reasoning.display_set_off", platform=platform_key)
@@ -10411,7 +10411,7 @@ class GatewayRunner:
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
+        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
             parsed = {"enabled": True, "effort": effort}
         else:
             return t(
@@ -10603,7 +10603,7 @@ class GatewayRunner:
 
         effective = resolve_footer_config(user_config, platform_key)
 
-        if arg in ("status", "?"):
+        if arg in {"status", "?"}:
             state = t("gateway.footer.state_on") if effective["enabled"] else t("gateway.footer.state_off")
             fields = ", ".join(effective.get("fields") or [])
             return t(
@@ -10613,9 +10613,9 @@ class GatewayRunner:
                 platform=platform_key,
             )
 
-        if arg in ("on", "enable", "true", "1"):
+        if arg in {"on", "enable", "true", "1"}:
             new_state = True
-        elif arg in ("off", "disable", "false", "0"):
+        elif arg in {"off", "disable", "false", "0"}:
             new_state = False
         elif arg == "":
             new_state = not effective["enabled"]
@@ -10683,7 +10683,7 @@ class GatewayRunner:
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
                 for m in history
-                if m.get("role") in ("user", "assistant") and m.get("content")
+                if m.get("role") in {"user", "assistant"} and m.get("content")
             ]
 
             tmp_agent = AIAgent(
@@ -11597,7 +11597,7 @@ class GatewayRunner:
         history = self.session_store.load_transcript(session_entry.session_id)
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
-            msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
+            msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
             lines = [
                 t("gateway.usage.header_session_info"),
@@ -12151,9 +12151,9 @@ class GatewayRunner:
         resolve_all = "all" in args
         remaining = [a for a in args if a != "all"]
 
-        if any(a in ("always", "permanent", "permanently") for a in remaining):
+        if any(a in {"always", "permanent", "permanently"} for a in remaining):
             choice = "always"
-        elif any(a in ("session", "ses") for a in remaining):
+        elif any(a in {"session", "ses"} for a in remaining):
             choice = "session"
         else:
             choice = "once"
@@ -13270,8 +13270,8 @@ class GatewayRunner:
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
                 should_notify = (
-                    notify_mode in ("all", "result")
-                    or (notify_mode == "error" and session.exit_code not in (0, None))
+                    notify_mode in {"all", "result"}
+                    or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
@@ -13866,7 +13866,7 @@ class GatewayRunner:
         for msg in history:
             role = msg.get("role")
             content = msg.get("content")
-            if role in ("user", "assistant") and content:
+            if role in {"user", "assistant"} and content:
                 api_messages.append({"role": role, "content": content})
 
         api_messages.append({"role": "user", "content": message})
@@ -14257,7 +14257,7 @@ class GatewayRunner:
 
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in ("tool.started",):
+            if event_type not in {"tool.started",}:
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -14954,7 +14954,7 @@ class GatewayRunner:
                 
                 # Skip metadata entries (tool definitions, session info)
                 # -- these are for transcript logging, not for the LLM
-                if role in ("session_meta",):
+                if role in {"session_meta",}:
                     continue
                 
                 # Skip system messages -- the agent rebuilds its own system prompt
@@ -14991,7 +14991,7 @@ class GatewayRunner:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = set()
             for _hm in agent_history:
-                if _hm.get("role") in ("tool", "function"):
+                if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
                         for _match in re.finditer(r'MEDIA:(\S+)', _hc):
@@ -15263,7 +15263,7 @@ class GatewayRunner:
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
-                    if msg.get("role") in ("tool", "function"):
+                    if msg.get("role") in {"tool", "function"}:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):

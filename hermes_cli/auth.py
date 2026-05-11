@@ -1450,7 +1450,7 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in ("copilot", "lmstudio"):
+        if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2541,7 +2541,7 @@ def refresh_codex_oauth_pure(
         # A 401/403 from the token endpoint always means the refresh token
         # is invalid/expired — force relogin even if the body error code
         # wasn't one of the known strings above.
-        if response.status_code in (401, 403) and not relogin_required:
+        if response.status_code in {401, 403} and not relogin_required:
             relogin_required = True
         raise AuthError(
             message,
@@ -2947,7 +2947,7 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
         "expires_at",
     ):
         value = shared.get(key)
-        if value not in (None, ""):
+        if value not in {None, ""}:
             state[key] = value
     return True
 
@@ -3986,7 +3986,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in ("kimi-coding", "kimi-coding-cn"):
+    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -4090,7 +4090,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in ("kimi-coding", "kimi-coding-cn"):
+    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -4510,7 +4510,7 @@ def _login_openai_codex(
                     reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     reuse = "y"
-                if reuse in ("", "y", "yes"):
+                if reuse in {"", "y", "yes"}:
                     config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
                     print()
                     print("Login successful!")
@@ -4531,7 +4531,7 @@ def _login_openai_codex(
                 do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "n"
-            if do_import in ("y", "yes"):
+            if do_import in {"y", "yes"}:
                 _save_codex_tokens(cli_tokens)
                 base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
                 config_path = _update_config_for_provider("openai-codex", base_url)
@@ -4623,7 +4623,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break
-                elif poll_resp.status_code in (403, 404):
+                elif poll_resp.status_code in {403, 404}:
                     continue  # User hasn't completed login yet
                 else:
                     raise AuthError(
@@ -5188,7 +5188,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 do_import = input("Import these credentials? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "y"
-            if do_import in ("", "y", "yes"):
+            if do_import in {"", "y", "yes"}:
                 print("Rehydrating Nous session from shared credentials...")
                 auth_state = _try_import_shared_nous_state(
                     timeout_seconds=timeout_seconds,

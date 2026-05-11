@@ -239,7 +239,7 @@ class ChunkedUploader:
         :raises UploadFileTooLargeError: When the file exceeds the platform limit.
         :raises RuntimeError: On other API or I/O failures.
         """
-        if chat_type not in ("c2c", "group"):
+        if chat_type not in {"c2c", "group"}:
             raise ValueError(
                 f"ChunkedUploader: unsupported chat_type {chat_type!r}"
             )

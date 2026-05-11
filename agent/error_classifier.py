@@ -83,7 +83,7 @@ class ClassifiedError:
 
     @property
     def is_auth(self) -> bool:
-        return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
+        return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
 
 
@@ -688,10 +688,10 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
-    if status_code in (500, 502):
+    if status_code in {500, 502}:
         return result_fn(FailoverReason.server_error, retryable=True)
 
-    if status_code in (503, 529):
+    if status_code in {503, 529}:
         return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Other 4xx — non-retryable
@@ -810,7 +810,7 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
-    is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
+    is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
     # still being far below their actual token budget.
@@ -841,14 +841,14 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
-    if code_lower in ("resource_exhausted", "throttled", "rate_limit_exceeded"):
+    if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
             should_rotate_credential=True,
         )
 
-    if code_lower in ("insufficient_quota", "billing_not_active", "payment_required"):
+    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -856,14 +856,14 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
-    if code_lower in ("model_not_found", "model_not_available", "invalid_model"):
+    if code_lower in {"model_not_found", "model_not_available", "invalid_model"}:
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,
             should_fallback=True,
         )
 
-    if code_lower in ("context_length_exceeded", "max_tokens_exceeded"):
+    if code_lower in {"context_length_exceeded", "max_tokens_exceeded"}:
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,

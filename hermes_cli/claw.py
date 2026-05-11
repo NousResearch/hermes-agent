@@ -298,7 +298,7 @@ def claw_command(args):
 
     if action == "migrate":
         _cmd_migrate(args)
-    elif action in ("cleanup", "clean"):
+    elif action in {"cleanup", "clean"}:
         _cmd_cleanup(args)
     else:
         print("Usage: hermes claw <command> [options]")

@@ -598,7 +598,7 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
                 return result
         return value
 
-    if expected_type in ("integer", "number"):
+    if expected_type in {"integer", "number"}:
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)

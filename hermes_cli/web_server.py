@@ -179,7 +179,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
-    if bound_host in ("0.0.0.0", "::"):
+    if bound_host in {"0.0.0.0", "::"}:
         return True
 
     # Loopback bind: accept the loopback names
@@ -385,7 +385,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in ("_config_version",):
+        if full_key in {"_config_version",}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -576,13 +576,13 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override
             # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in (None, "stopped"):
+            if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
     # If there was no runtime info at all but the health probe confirmed alive,
@@ -1075,7 +1075,7 @@ async def set_model_assignment(body: ModelAssignment):
     model = (body.model or "").strip()
     task = (body.task or "").strip().lower()
 
-    if scope not in ("main", "auxiliary"):
+    if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     try:
@@ -1568,7 +1568,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     # AND forget the Claude Code import. We don't touch ~/.claude/* directly
     # — that's owned by the Claude Code CLI; users can re-auth there if they
     # want to undo a disconnect.
-    if provider_id in ("anthropic", "claude-code"):
+    if provider_id in {"anthropic", "claude-code"}:
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
@@ -2024,7 +2024,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 if poll.status_code == 200:
                     code_resp = poll.json()
                     break
-                if poll.status_code in (403, 404):
+                if poll.status_code in {403, 404}:
                     continue  # user hasn't authorized yet
                 raise RuntimeError(f"deviceauth/token poll returned {poll.status_code}")
 
@@ -3003,7 +3003,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 def _is_public_bind() -> bool:
     """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -3585,7 +3585,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if isinstance(radius, str) and radius.strip():
         layout["radius"] = radius
     density = layout_src.get("density")
-    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+    if isinstance(density, str) and density in {"compact", "comfortable", "spacious"}:
         layout["density"] = density
 
     # Color overrides — keep only valid keys with string values.
@@ -3918,7 +3918,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             pass
 
         can_remove_update = (
-            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+            source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
         )
 
         # Check if this plugin provides tools that require auth

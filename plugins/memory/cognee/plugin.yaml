@@ -1,0 +1,7 @@
+name: cognee
+version: 1.0.0
+description: "Cognee — open-source memory control plane с векторным + графовым хранилищем"
+pip_dependencies:
+  - cognee>=1.0.9
+hooks:
+  - on_session_end

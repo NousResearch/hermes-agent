@@ -470,6 +470,9 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert '"end_coords"' in opengui_parser
     assert '<bbox>' in opengui_parser
     assert '<point>' in opengui_parser
+    assert 'extractPredictionMetadata' in opengui_parser
+    assert '"action_summary"' in opengui_parser
+    assert '"reflection"' in opengui_parser
     assert 'update_working_memory' in opengui_parser
     assert 'hermes_opengui_working_memory' in chat_client
     assert 'executeParsedOpenGuiWorkingMemoryUpdate' in chat_client

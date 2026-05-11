@@ -13,6 +13,7 @@ internal object OpenGuiActionCompat {
     )
 
     fun parse(rawText: String): ParsedOpenGuiAction {
+        val metadata = extractPredictionMetadata(rawText)
         val call = extractFunctionCall(rawText)
             ?: throw IllegalArgumentException("OpenGUI action text must contain a function call such as click(...)")
         val normalizedCall = normalizeActionSyntax(call)
@@ -45,9 +46,48 @@ internal object OpenGuiActionCompat {
             durationMs = longFrom(args, "duration_ms", "duration", "wait_ms", "seconds")?.let { value ->
                 if (args.containsKey("seconds")) value * 1000L else value
             },
+            summary = metadata.summary,
+            thought = metadata.thought,
+            reflection = metadata.reflection,
+            actionSummary = metadata.actionSummary,
             requiresUserIntervention = canonicalType == "call_user",
             terminal = canonicalType == "finished",
         )
+    }
+
+    private fun extractPredictionMetadata(rawText: String): OpenGuiPredictionMetadata {
+        val stripped = normalizeActionSyntax(stripCodeFence(rawText).trim())
+        val summary = sectionBeforeAction(
+            stripped,
+            Regex("""(?is)\bSummary\s*:\s*([\s\S]*?)(?=\s*(?:Thought|Reflection|Action_Summary|Action)\s*:|$)"""),
+        )
+        val actionSummary = sectionBeforeAction(
+            stripped,
+            Regex("""(?is)\bAction_Summary\s*:\s*([\s\S]*?)(?=\s*Action\s*:|$)"""),
+        )
+        val thought = sectionBeforeAction(
+            stripped,
+            Regex("""(?is)\bThought\s*:\s*([\s\S]*?)(?=\s*Action\s*:|$)"""),
+        ).ifBlank { actionSummary }
+        val reflection = sectionBeforeAction(
+            stripped,
+            Regex("""(?is)\bReflection\s*:\s*([\s\S]*?)(?=\s*(?:Action_Summary|Action)\s*:|$)"""),
+        )
+        return OpenGuiPredictionMetadata(
+            summary = summary,
+            thought = thought,
+            reflection = reflection,
+            actionSummary = actionSummary,
+        )
+    }
+
+    private fun sectionBeforeAction(text: String, regex: Regex): String {
+        return regex.find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.trim('"', '\'')
+            .orEmpty()
     }
 
     private fun extractFunctionCall(rawText: String): String? {
@@ -283,6 +323,10 @@ internal data class ParsedOpenGuiAction(
     val packageName: String,
     val direction: String,
     val durationMs: Long?,
+    val summary: String,
+    val thought: String,
+    val reflection: String,
+    val actionSummary: String,
     val requiresUserIntervention: Boolean,
     val terminal: Boolean,
 ) {
@@ -302,9 +346,20 @@ internal data class ParsedOpenGuiAction(
                 startCoords?.let { json.put("start_coords", it.toJsonArray()) }
                 endCoords?.let { json.put("end_coords", it.toJsonArray()) }
                 durationMs?.let { json.put("duration_ms", it) }
+                summary.takeIf { it.isNotBlank() }?.let { json.put("summary", it) }
+                thought.takeIf { it.isNotBlank() }?.let { json.put("thought", it) }
+                reflection.takeIf { it.isNotBlank() }?.let { json.put("reflection", it) }
+                actionSummary.takeIf { it.isNotBlank() }?.let { json.put("action_summary", it) }
             }
     }
 }
+
+internal data class OpenGuiPredictionMetadata(
+    val summary: String,
+    val thought: String,
+    val reflection: String,
+    val actionSummary: String,
+)
 
 internal data class NormalizedOpenGuiPoint(
     val x: Double,

@@ -279,6 +279,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("scope"):
+        result["scope"] = job["scope"]
+    if job.get("job_ref"):
+        result["job_ref"] = job["job_ref"]
+    if job.get("run_as_profile"):
+        result["run_as_profile"] = job["run_as_profile"]
     return result
 
 
@@ -302,6 +308,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    scope: Optional[str] = None,
+    run_as_profile: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -368,11 +376,15 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                scope=scope or "profile",
+                run_as_profile=run_as_profile,
             )
             return json.dumps(
                 {
                     "success": True,
                     "job_id": job["id"],
+                    "scope": job.get("scope", "profile"),
+                    "job_ref": job.get("job_ref"),
                     "name": job["name"],
                     "skill": job.get("skill"),
                     "skills": job.get("skills", []),
@@ -387,13 +399,23 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            s = scope or "profile"
+            if s == "global":
+                from cron.jobs import global_store as _gs
+                jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled, store=_gs())]
+            elif s == "visible":
+                from cron.jobs import list_visible_jobs
+                jobs = [_format_job(job) for job in list_visible_jobs(include_disabled=include_disabled)]
+            else:
+                jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         job = get_job(job_id)
+        if not job and (scope or "").lower() == "global":
+            job = get_job(f"global:{job_id}")
         if not job:
             return json.dumps(
                 {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
@@ -682,6 +704,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        scope=args.get("scope"),
+        run_as_profile=args.get("run_as_profile"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

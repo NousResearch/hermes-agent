@@ -1,6 +1,6 @@
 # Managed-Agent Sandbox-Capable Workers
 
-Status: in_progress
+Status: done
 Owner: Hermes main / Codex worker
 Started: 2026-05-11 23:08
 Branch: feat/managed-agent-sandbox-workers
@@ -80,3 +80,4 @@ Acceptance:
 - 2026-05-11 review fix: Codex review found three blockers; fixed `checkpoint_policy=off` evidence suppression, changed manifest evidence to stop traversal at caps, and restricted scratch rollback discard guidance to managed Kanban workspace roots only.
 - 2026-05-11 second review fix: Codex re-review found two blockers; added a directory traversal cap for manifest evidence and made scratch rollback auto-discard require a strict child path under the managed workspace root (root itself is not deletable).
 - 2026-05-11 verification after second review fix: `python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -q` => 141 passed, 4 dependency deprecation warnings. `git diff --check` => clean.
+- 2026-05-11 final review gate: Codex read-only review of HEAD reported no blocking findings. It verified `checkpoint_policy=off` evidence suppression, file-heavy and directory-heavy manifest traversal caps, strict-child scratch rollback safety, and no overclaiming of OS/container sandbox isolation.

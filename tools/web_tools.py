@@ -204,7 +204,18 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "readability":
+        return _readability_importable()
     return False
+
+
+def _readability_importable() -> bool:
+    """Return True when the ``readability`` package can be imported."""
+    try:
+        import readability  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def _ddgs_package_importable() -> bool:
@@ -1033,6 +1044,143 @@ def _exa_search(query: str, limit: int = 10) -> dict:
     return {"success": True, "data": {"web": web_results}}
 
 
+def _fix_encoding(resp: "httpx.Response") -> Optional[str]:
+    """Re-detect response encoding using charset-normalizer.
+
+    Returns the decoded text if a better encoding is found, or None if the
+    original httpx decode is likely correct.  Handles GBK, Shift-JIS, EUC-KR,
+    and 60+ other encodings — not just Chinese.
+    """
+    try:
+        from charset_normalizer import from_bytes
+    except ImportError:
+        return None
+
+    result = from_bytes(resp.content[:8192])
+    if not result:
+        return None
+
+    best = result.best()
+    if not best:
+        return None
+
+    detected_encoding = best.encoding
+
+    # If httpx already decoded with the same encoding, nothing to fix
+    _norm_detected = detected_encoding.lower().replace("-", "").replace("_", "")
+    _norm_httpx = (resp.encoding or "").lower().replace("-", "").replace("_", "")
+    if _norm_detected == _norm_httpx:
+        return None
+
+    # Skip if charset-normalizer is just guessing UTF-8 (low confidence)
+    if detected_encoding.lower() in ("utf-8", "utf8") and best.encoding_aliases:
+        pass  # confident enough
+
+    try:
+        return resp.content.decode(detected_encoding, errors="replace")
+    except (LookupError, UnicodeDecodeError):
+        return None
+
+
+def _readability_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using readability-lxml + httpx (local, no API key).
+
+    Fetches HTML with httpx, then uses readability-lxml to extract the main
+    article content. Falls back to raw HTML title/body on failure.
+    """
+    import readability as _readability
+    from html.parser import HTMLParser
+
+    class _TitleExtractor(HTMLParser):
+        """Minimal HTML title extractor — avoids full lxml parse overhead."""
+        def __init__(self):
+            super().__init__()
+            self._in_title = False
+            self.title = ""
+        def handle_starttag(self, tag, attrs):
+            if tag == "title":
+                self._in_title = True
+        def handle_endtag(self, tag):
+            if tag == "title":
+                self._in_title = False
+        def handle_data(self, data):
+            if self._in_title:
+                self.title += data
+
+    results: List[Dict[str, Any]] = []
+    for url in urls:
+        try:
+            resp = httpx.get(url, follow_redirects=True, timeout=30,
+                             headers={"User-Agent": "Mozilla/5.0 (compatible; Hermes/1.0)"})
+            resp.raise_for_status()
+            html = resp.text
+
+            # Encoding fix: httpx may mis-detect non-UTF-8 pages (e.g. GBK, Shift-JIS,
+            # EUC-KR).  Use charset-normalizer for robust auto-detection when the
+            # response encoding looks wrong (iso-8859-1 fallback or garbled UTF-8).
+            _encoding_fixed = False
+            if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
+                # httpx defaults to iso-8859-1 when no charset is declared — almost
+                # always wrong for CJK content.  Use charset-normalizer to detect.
+                _encoding_fixed = _fix_encoding(resp)
+                if _encoding_fixed:
+                    html = _encoding_fixed
+                    _encoding_fixed = True
+            if not _encoding_fixed and resp.encoding and resp.encoding.lower() == "utf-8":
+                # httpx decoded as UTF-8, but it may be garbled (e.g. GBK bytes that
+                # happen to be valid UTF-8 but produce mojibake).  Heuristic: if the
+                # decoded text contains very few CJK / non-ASCII letters relative to
+                # what charset-normalizer detects, re-decode.
+                _fixed = _fix_encoding(resp)
+                if _fixed and _fixed != html:
+                    import re as _re
+                    cjk_fixed = len(_re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', _fixed[:2000]))
+                    cjk_cur = len(_re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', html[:2000]))
+                    if cjk_fixed > cjk_cur + 5:
+                        html = _fixed
+
+            # Extract title
+            te = _TitleExtractor()
+            try:
+                te.feed(html)
+            except Exception:
+                pass
+            title = te.title.strip()
+
+            # Extract main content via readability
+            try:
+                doc = _readability.Document(html)
+                summary_html = doc.summary()
+                title = doc.title() or title or ""
+
+                # Convert HTML summary to rough text (strip tags)
+                import re
+                content = re.sub(r'<[^>]+>', '', summary_html)
+                # Collapse whitespace
+                content = re.sub(r'\s+', ' ', content).strip()
+            except Exception:
+                # Readability failed — use raw text (truncated)
+                content = re.sub(r'<[^>]+>', '', html)
+                content = re.sub(r'\s+', ' ', content).strip()[:5000]
+                if not title:
+                    title = ""
+
+            results.append({
+                "url": url,
+                "title": title,
+                "content": content,
+            })
+        except Exception as e:
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": f"Readability extract failed: {str(e)[:200]}",
+            })
+
+    return results
+
+
 def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     """Extract content from URLs using the Exa SDK.
 
@@ -1397,6 +1545,9 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "readability":
+                logger.info("Readability extract: %d URL(s)", len(safe_urls))
+                results = _readability_extract(safe_urls)
             elif backend in ("searxng", "brave-free", "ddgs"):
                 # These backends are search-only — they cannot extract URL content
                 _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]

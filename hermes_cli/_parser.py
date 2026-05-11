@@ -229,6 +229,118 @@ def build_top_level_parser():
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # =========================================================================
+    # Shared argument helper — used by both chat and code parsers
+    # =========================================================================
+    def _add_session_args(p):
+        p.add_argument("-q", "--query", help="Single query (non-interactive mode)")
+        p.add_argument("--image", help="Optional local image path to attach to a single query")
+        _inherited_flag(p, "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)")
+        p.add_argument("-t", "--toolsets", help="Comma-separated toolsets to enable")
+        _inherited_flag(
+            p, "-s", "--skills",
+            action="append",
+            default=argparse.SUPPRESS,
+            help="Preload one or more skills for the session (repeat flag or comma-separate)",
+        )
+        _inherited_flag(
+            p, "--provider",
+            default=None,
+            help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
+        )
+        p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+        p.add_argument(
+            "-Q", "--quiet",
+            action="store_true",
+            help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
+        )
+        p.add_argument(
+            "--resume", "-r",
+            metavar="SESSION_ID",
+            default=argparse.SUPPRESS,
+            help="Resume a previous session by ID (shown on exit)",
+        )
+        p.add_argument(
+            "--continue", "-c",
+            dest="continue_last",
+            nargs="?",
+            const=True,
+            default=argparse.SUPPRESS,
+            metavar="SESSION_NAME",
+            help="Resume a session by name, or the most recent if no name given",
+        )
+        p.add_argument(
+            "--worktree", "-w",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Run in an isolated git worktree (for parallel agents on the same repo)",
+        )
+        _inherited_flag(
+            p, "--accept-hooks",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help=(
+                "Auto-approve any unseen shell hooks declared in config.yaml "
+                "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
+                "hooks_auto_accept: in config.yaml)."
+            ),
+        )
+        p.add_argument(
+            "--checkpoints",
+            action="store_true",
+            default=False,
+            help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)",
+        )
+        p.add_argument(
+            "--max-turns",
+            type=int,
+            default=None,
+            metavar="N",
+            help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        )
+        _inherited_flag(
+            p, "--yolo",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Bypass all dangerous command approval prompts (use at your own risk)",
+        )
+        _inherited_flag(
+            p, "--pass-session-id",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Include the session ID in the agent's system prompt",
+        )
+        _inherited_flag(
+            p, "--ignore-user-config",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
+        )
+        _inherited_flag(
+            p, "--ignore-rules",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+        )
+        p.add_argument(
+            "--source",
+            default=None,
+            help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
+        )
+        _inherited_flag(
+            p, "--tui",
+            action="store_true",
+            default=False,
+            help="Launch the modern TUI instead of the classic REPL",
+        )
+        _inherited_flag(
+            p, "--dev",
+            dest="tui_dev",
+            action="store_true",
+            default=False,
+            help="With --tui: run TypeScript sources via tsx (skip dist build)",
+        )
+
+    # =========================================================================
     # chat command
     # =========================================================================
     chat_parser = subparsers.add_parser(
@@ -236,141 +348,16 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
-        "-q", "--query", help="Single query (non-interactive mode)"
+    _add_session_args(chat_parser)
+
+    # =========================================================================
+    # code command — identical to chat but defaults to the hermes-coding toolset
+    # =========================================================================
+    code_parser = subparsers.add_parser(
+        "code",
+        help="Coding-focused session (core coding tools plus reporting and cron)",
+        description="Start a coding-focused session with the hermes-coding toolset",
     )
-    chat_parser.add_argument(
-        "--image", help="Optional local image path to attach to a single query"
-    )
-    _inherited_flag(
-        chat_parser,
-        "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)",
-    )
-    chat_parser.add_argument(
-        "-t", "--toolsets", help="Comma-separated toolsets to enable"
-    )
-    _inherited_flag(
-        chat_parser,
-        "-s",
-        "--skills",
-        action="append",
-        default=argparse.SUPPRESS,
-        help="Preload one or more skills for the session (repeat flag or comma-separate)",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--provider",
-        # No `choices=` here: user-defined providers from config.yaml `providers:`
-        # are also valid values, and runtime resolution (resolve_runtime_provider)
-        # handles validation/error reporting consistently with the top-level
-        # `--provider` flag.
-        default=None,
-        help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
-    )
-    chat_parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Verbose output"
-    )
-    chat_parser.add_argument(
-        "-Q",
-        "--quiet",
-        action="store_true",
-        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
-    )
-    chat_parser.add_argument(
-        "--resume",
-        "-r",
-        metavar="SESSION_ID",
-        default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)",
-    )
-    chat_parser.add_argument(
-        "--continue",
-        "-c",
-        dest="continue_last",
-        nargs="?",
-        const=True,
-        default=argparse.SUPPRESS,
-        metavar="SESSION_NAME",
-        help="Resume a session by name, or the most recent if no name given",
-    )
-    chat_parser.add_argument(
-        "--worktree",
-        "-w",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Run in an isolated git worktree (for parallel agents on the same repo)",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--accept-hooks",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help=(
-            "Auto-approve any unseen shell hooks declared in config.yaml "
-            "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
-            "hooks_auto_accept: in config.yaml)."
-        ),
-    )
-    chat_parser.add_argument(
-        "--checkpoints",
-        action="store_true",
-        default=False,
-        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)",
-    )
-    chat_parser.add_argument(
-        "--max-turns",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--yolo",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Bypass all dangerous command approval prompts (use at your own risk)",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--pass-session-id",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Include the session ID in the agent's system prompt",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--ignore-user-config",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--ignore-rules",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
-    )
-    chat_parser.add_argument(
-        "--source",
-        default=None,
-        help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--tui",
-        action="store_true",
-        default=False,
-        help="Launch the modern TUI instead of the classic REPL",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--dev",
-        dest="tui_dev",
-        action="store_true",
-        default=False,
-        help="With --tui: run TypeScript sources via tsx (skip dist build)",
-    )
+    _add_session_args(code_parser)
 
     return parser, subparsers, chat_parser

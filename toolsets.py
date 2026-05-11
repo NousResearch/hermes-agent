@@ -336,6 +336,34 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-coding": {
+        "description": "Coding-focused CLI — file ops, terminal, web, skills; no browser/HA/TTS/kanban",
+        "tools": [
+            # Web
+            "web_search", "web_extract",
+            # Terminal + process
+            "terminal", "process",
+            # File manipulation
+            "read_file", "write_file", "patch", "search_files",
+            # Vision (useful for reading screenshots/diagrams)
+            "vision_analyze",
+            # Skills
+            "skills_list", "skill_view", "skill_manage",
+            # Planning & memory
+            "todo", "memory",
+            # Session history
+            "session_search",
+            # UX
+            "clarify",
+            # Code execution + sub-agents
+            "execute_code", "delegate_task",
+            # Hermes features preserved: cron jobs + cross-platform messaging
+            "cronjob",
+            "send_message",
+        ],
+        "includes": []
+    },
+
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [

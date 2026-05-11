@@ -4906,10 +4906,6 @@ def set_config_value(key: str, value: str):
     print(f"✓ Set {key} = {value} in {config_path}")
 
 
-# =============================================================================
-# Command handler
-# =============================================================================
-
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)

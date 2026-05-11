@@ -227,7 +227,7 @@ class TestArgparseFlagsRegistered:
         """E2E: the real hermes parser accepts both flags."""
         from hermes_cli._parser import build_top_level_parser
 
-        parser, _subparsers, chat_parser = build_top_level_parser()
+        parser, subparsers, chat_parser = build_top_level_parser()
 
         top_dests = {a.dest for a in parser._actions}
         chat_dests = {a.dest for a in chat_parser._actions}
@@ -235,6 +235,7 @@ class TestArgparseFlagsRegistered:
         assert "ignore_rules" in top_dests
         assert "ignore_user_config" in chat_dests
         assert "ignore_rules" in chat_dests
+        assert "code" in subparsers.choices
 
         # And the cmd_chat env-var wiring must be present
         import inspect
@@ -242,3 +243,4 @@ class TestArgparseFlagsRegistered:
         src = inspect.getsource(hm)
         assert "HERMES_IGNORE_USER_CONFIG" in src
         assert "HERMES_IGNORE_RULES" in src
+        assert 'args.toolsets = "hermes-coding"' in src

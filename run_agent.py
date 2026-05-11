@@ -36,6 +36,7 @@ import ssl
 import sys
 import tempfile
 import time
+import queue
 import threading
 from types import SimpleNamespace
 import urllib.request
@@ -883,6 +884,102 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+# ─── Async Message Queue ────────────────────────────────────────────────────
+#
+# Inspired by OpenClaw's KeyedAsyncQueue.
+# Decouples message ingestion (gateway) from message processing (agent).
+# This allows the gateway to accept messages instantly without blocking,
+# while the agent processes them at natural yield points in its loop.
+#
+# Priority levels:
+#   immediate (0) → interrupt the agent immediately, break the loop
+#   high    (1) → steer injection mid-run (non-blocking)
+#   normal  (2) → queue for next turn (append as user message)
+#
+class ChatQueue:
+    """
+    Thread-safe async message queue for gateway → agent communication.
+
+    Messages are stored with a priority. The agent checks the queue at
+    natural yield points:
+      - Before each API call (top of while loop)
+      - After tool execution completes
+      - During concurrent tool wait loops (every 2s poll)
+
+    This replaces the old approach where the gateway called agent.interrupt()
+    directly, which only worked when the agent was at a specific checkpoint.
+    With ChatQueue, messages are ALWAYS processed — even if the agent is in
+    the middle of a long-running tool (the interrupt check happens at the
+    next yield point).
+    """
+
+    def __init__(self):
+        self._queue = queue.PriorityQueue()
+        self._lock = threading.Lock()
+        self._steer_pending = None   # non-None = there's a steer waiting
+
+    def push(self, event, priority: str = "normal") -> None:
+        """
+        Push a message event into the queue.
+
+        Args:
+            event: MessageEvent or similar object with .text attribute
+            priority: "immediate" | "high" | "normal"
+        """
+        priority_map = {"immediate": 0, "high": 1, "normal": 2}
+        p = priority_map.get(priority, 2)
+        self._queue.put((p, event))
+        if priority == "high":
+            # Steer messages are stored separately so the agent can retrieve
+            # them without needing to drain the full queue
+            with self._lock:
+                self._steer_pending = event
+
+    def pop_immediate(self):
+        """Pop the highest-priority immediate message if one exists. Non-blocking."""
+        try:
+            p, event = self._queue.get_nowait()
+            if p == 0:
+                return event
+            else:
+                # Put it back if it's not immediate
+                self._queue.put((p, event))
+                return None
+        except queue.Empty:
+            return None
+
+    def pop_all_normal(self):
+        """Pop all normal-priority messages. Returns list of events."""
+        results = []
+        while True:
+            try:
+                p, event = self._queue.get_nowait()
+                if p == 2:
+                    results.append(event)
+                else:
+                    # Re-queue non-normal
+                    self._queue.put((p, event))
+                    break
+            except queue.Empty:
+                break
+        return results
+
+    def get_steer(self):
+        """Atomically pop and return any pending steer message."""
+        with self._lock:
+            s = self._steer_pending
+            self._steer_pending = None
+            return s
+
+    def has_messages(self):
+        """Return True if any messages are queued."""
+        return not self._queue.empty()
+
+    def is_empty(self):
+        """Return True if the queue is empty."""
+        return self._queue.empty()
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1180,6 +1277,9 @@ class AIAgent:
         self._interrupt_message = None  # Optional message that triggered interrupt
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
         self._interrupt_thread_signal_pending = False
+        # Async message queue: decouples gateway message ingestion from agent processing.
+        # See ChatQueue class docstring for details. Replaces direct interrupt() calls.
+        self._chat_queue = ChatQueue()
         self._client_lock = threading.RLock()
 
         # /steer mechanism — inject a user note into the next tool result
@@ -4509,6 +4609,51 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+
+    def _check_chat_queue(self) -> bool:
+        """
+        Check the async message queue for pending gateway messages.
+
+        Called at natural yield points in the agent loop:
+          - Top of the main while loop (before each API call)
+          - After tool execution completes
+          - During concurrent tool wait loops
+
+        Returns True if an immediate interrupt was found (caller should
+        break out of the loop immediately). Returns False if the queue
+        is empty or only contained normal/steer messages.
+
+        This is the core of the async message queue design: messages sent
+        by the gateway during agent execution are stored in the queue and
+        processed at the NEXT yield point, rather than requiring the agent
+        to be at a specific checkpoint when the message arrives.
+        """
+        # Fast path: if the queue is empty, do nothing
+        if self._chat_queue.is_empty():
+            return False
+
+        # Priority 0 (immediate): interrupt immediately
+        immediate_event = self._chat_queue.pop_immediate()
+        if immediate_event is not None:
+            event_text = getattr(immediate_event, "text", None) or ""
+            self.interrupt(event_text)
+            return True
+
+        # Priority 1 (high/steer): inject via steer() — non-blocking
+        steer_event = self._chat_queue.get_steer()
+        if steer_event is not None:
+            steer_text = getattr(steer_event, "text", None) or ""
+            if steer_text.strip():
+                try:
+                    self.steer(steer_text)
+                except Exception:
+                    pass
+
+        # Priority 2 (normal): messages will be picked up as part of the
+        # normal turn flow via _pending_messages in the gateway session.
+        # No action needed here — the gateway's merge_pending_message_event
+        # already handled this at queue insertion time.
+        return False
 
     def steer(self, text: str) -> bool:
         """
@@ -9499,6 +9644,14 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # Early interrupt check: abort before starting any tool. This ensures
+        # even tools without their own interrupt checks (web_search, read_file,
+        # etc.) can be stopped quickly when the user sends /stop or a new message.
+        if self._interrupt_requested:
+            return json.dumps({
+                "error": f"[Tool execution cancelled — {function_name} was skipped due to user interrupt]"
+            }, ensure_ascii=False)
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         if not pre_tool_block_checked:
@@ -9840,7 +9993,7 @@ class AIAgent:
                     _interrupt_logged = False
                     while True:
                         done, not_done = concurrent.futures.wait(
-                            futures, timeout=5.0,
+                            futures, timeout=2.0,
                         )
                         if not not_done:
                             break
@@ -9863,6 +10016,15 @@ class AIAgent:
                             # Give already-running tools a moment to notice the
                             # per-thread interrupt signal and exit gracefully.
                             concurrent.futures.wait(not_done, timeout=3.0)
+                            break
+
+                        # Also check the async message queue during concurrent wait.
+                        # This ensures immediate messages can stop a long batch
+                        # even when individual tools don't have their own interrupt checks.
+                        if self._check_chat_queue():
+                            for f in not_done:
+                                f.cancel()
+                            concurrent.futures.wait(not_done, timeout=1.0)
                             break
 
                         _conc_elapsed = int(time.time() - _conc_start)
@@ -10977,6 +11139,13 @@ class AIAgent:
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
+
+            # Check async message queue — processes gateway messages that arrived
+            # during tool execution. This is the core of the async queue design:
+            # messages are stored and processed at the next yield point, rather
+            # than requiring the agent to be at a specific checkpoint.
+            if self._check_chat_queue():
+                break
 
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:

@@ -1360,12 +1360,16 @@ def list_authenticated_providers(
                 model_ids = _ids if _ids is not None else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        elif overlay.auth_type == "api_key":
+            # For simple API-key providers, reuse the shared live discovery
+            # path so `/model` stays aligned with `/v1/models` when the
+            # provider exposes fresh inventory, while still falling back to
+            # curated + models.dev entries when the endpoint is unavailable.
+            model_ids = provider_model_ids(hermes_slug)
         else:
-            # Use curated list — look up by Hermes slug, fall back to overlay key
+            # OAuth/external-process providers without a dedicated live path
+            # keep the curated floor so the picker stays populated offline.
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
-            # Merge with models.dev for preferred providers (same rationale as above).
-            if hermes_slug in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 

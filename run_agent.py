@@ -1895,6 +1895,24 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+
+        # Adaptive context window: observe response.model after each LLM
+        # call and re-budget the compressor when the upstream router
+        # resolves to a different backend (e.g. openrouter/auto picking
+        # Llama-3.3-70B one call and Qwen-2.5 the next, each with a
+        # different context_length). Off by default.
+        _compression_cfg_for_adapt = _agent_cfg.get("compression", {}) or {}
+        self._adaptive_context_enabled = bool(
+            _compression_cfg_for_adapt.get("adaptive_context_window", False)
+        )
+        self._adaptive_context = None
+        if self._adaptive_context_enabled:
+            try:
+                from agent.adaptive_context import AdaptiveContextTracker
+                self._adaptive_context = AdaptiveContextTracker()
+            except Exception as _ace_err:
+                logger.debug("adaptive_context_window: init failed (%s)", _ace_err)
+                self._adaptive_context_enabled = False
         try:
             self._tool_guardrails = ToolCallGuardrailController(
                 ToolCallGuardrailConfig.from_mapping(
@@ -12604,7 +12622,36 @@ class AIAgent:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                    
+
+                    # Adaptive context window: if the router picked a
+                    # different backend this call, rebudget the compressor
+                    # to the new backend's context_length.
+                    if self._adaptive_context is not None and response is not None:
+                        try:
+                            _new_model = self._adaptive_context.observe(
+                                getattr(response, "model", None)
+                            )
+                            if _new_model:
+                                from agent.model_metadata import get_model_context_length
+                                _new_ctx = get_model_context_length(
+                                    _new_model,
+                                    base_url=self.base_url,
+                                    api_key=getattr(self, "api_key", ""),
+                                    provider=self.provider,
+                                )
+                                _cc = getattr(self, "context_compressor", None)
+                                if _cc is not None and _new_ctx:
+                                    _cc.update_model(
+                                        model=_new_model,
+                                        context_length=_new_ctx,
+                                        base_url=self.base_url,
+                                        api_key=getattr(self, "api_key", ""),
+                                        provider=self.provider,
+                                        api_mode=self.api_mode,
+                                    )
+                        except Exception as _ace_loop:
+                            logger.debug("adaptive-context observe failed: %s", _ace_loop)
+
                     # Validate response shape before proceeding
                     response_invalid = False
                     error_details = []

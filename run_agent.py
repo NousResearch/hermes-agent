@@ -11562,6 +11562,31 @@ class AIAgent:
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
+        # Auto-load skills whose frontmatter 'triggers' patterns match this message.
+        # Fail-safe: any error here is caught so it never breaks the main loop.
+        # Only runs on the first turn of a session (no history) to avoid redundant
+        # re-injection on every follow-up message.
+        if not conversation_history and user_message:
+            try:
+                from agent.skill_trigger_loader import (
+                    format_triggered_skills_block,
+                    get_triggered_skills,
+                )
+                _triggered = get_triggered_skills(user_message)
+                if _triggered:
+                    _block = format_triggered_skills_block(_triggered)
+                    if _block:
+                        # Inject as a system message prepended before the user turn.
+                        # Using role="system" keeps it out of the visible transcript
+                        # while ensuring the model sees it before any tool calls.
+                        messages.insert(0, {"role": "system", "content": _block})
+                        logger.debug(
+                            "skill_trigger_loader: injected %d skill(s) into context",
+                            len(_triggered),
+                        )
+            except Exception as _e:
+                logger.debug("skill_trigger_loader: injection skipped (%s)", _e)
+
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)

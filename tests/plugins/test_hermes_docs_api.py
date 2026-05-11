@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -488,6 +488,39 @@ def test_sidechat_brokered_persists_assistant_response(docs_home, sample_folder)
         assert data["brokered"] is True
     finally:
         mod._broker_override = original
+
+
+def test_call_docs_agent_uses_docs_profile_cli(monkeypatch, docs_home):
+    """The real broker path should invoke Hermes with the docs profile."""
+    mod = _load_plugin_module()
+    docs_profile = docs_home / "profiles" / "docs"
+    docs_profile.mkdir(parents=True)
+    (docs_profile / "config.yaml").write_text("model: test\n", encoding="utf-8")
+
+    calls = {}
+
+    def _fake_run(args, capture_output, text, timeout, check):
+        calls["args"] = args
+        calls["capture_output"] = capture_output
+        calls["text"] = text
+        calls["timeout"] = timeout
+        calls["check"] = check
+        return SimpleNamespace(returncode=0, stdout="Docs response\n", stderr="")
+
+    monkeypatch.setattr(mod.sys, "executable", str(docs_home / "bin" / "python"))
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/local/bin/hermes")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+    result = mod._call_docs_agent("Hello", {"workspace": "WS", "document": "a.md"})
+
+    assert result == "Docs response"
+    assert calls["args"][:5] == ["/usr/local/bin/hermes", "-p", "docs", "chat", "-q"]
+    assert "Workspace: WS" in calls["args"][5]
+    assert "Document: a.md" in calls["args"][5]
+    assert calls["capture_output"] is True
+    assert calls["text"] is True
+    assert calls["timeout"] == 90
+    assert calls["check"] is False
 
 
 def test_sidechat_fallback_when_broker_raises(docs_home, sample_folder):

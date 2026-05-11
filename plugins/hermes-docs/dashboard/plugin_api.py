@@ -21,11 +21,15 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -82,17 +86,9 @@ def _call_docs_agent(user_msg: str, context: dict) -> str:
     if _broker_override is not None:
         return _broker_override(user_msg, context)
 
-    # Lazy import — run_agent pulls in heavy optional deps; skip at module load.
-    try:
-        from run_agent import AIAgent  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(f"run_agent not importable: {exc}") from exc
-
     docs_home = _docs_profile_home()
     if docs_home is None:
         raise RuntimeError("docs profile not found")
-
-    import os  # noqa: PLC0415
 
     parts = [f"Workspace: {context.get('workspace', '(unnamed)')}"]
     if context.get("document"):
@@ -106,23 +102,27 @@ def _call_docs_agent(user_msg: str, context: dict) -> str:
         f"User: {user_msg}"
     )
 
-    env_backup = os.environ.get("HERMES_HOME")
-    try:
-        os.environ["HERMES_HOME"] = str(docs_home)
-        agent = AIAgent(
-            max_iterations=10,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            enabled_toolsets=[],  # side chat is text-only; no tools needed
-        )
-        response: str = agent.chat(full_prompt)
-    finally:
-        if env_backup is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = env_backup
+    hermes_cmd = Path(sys.executable).with_name("hermes")
+    executable = str(hermes_cmd) if hermes_cmd.exists() else shutil.which("hermes")
+    if not executable:
+        raise RuntimeError("hermes executable not found")
 
+    completed = subprocess.run(
+        [executable, "-p", "docs", "chat", "-q", full_prompt],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if completed.returncode != 0:
+        error = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            f"docs agent exited with status {completed.returncode}: {error[:500]}"
+        )
+
+    response = completed.stdout.strip()
+    if not response:
+        raise RuntimeError("docs agent returned an empty response")
     return response
 
 # ---------------------------------------------------------------------------
@@ -537,7 +537,9 @@ async def sidechat(workspace_id: str, body: SideChatMessage):
     # Attempt to route to the local docs agent profile.
     brokered = False
     try:
-        response_text = _call_docs_agent(body.content, broker_context)
+        response_text = await to_thread.run_sync(
+            _call_docs_agent, body.content, broker_context
+        )
         brokered = True
     except Exception as exc:
         log.debug("docs agent broker unavailable (%s); using stub response", exc)

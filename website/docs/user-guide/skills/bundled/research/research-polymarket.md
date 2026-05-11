@@ -18,6 +18,7 @@ Query Polymarket: markets, prices, orderbooks, history.
 | Path | `skills/research/polymarket` |
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

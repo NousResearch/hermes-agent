@@ -1,0 +1,67 @@
+name: OSV-Scanner
+
+# Scans lockfiles (uv.lock, package-lock.json) against the OSV vulnerability
+# database. Runs on every PR that touches a lockfile and on a weekly schedule
+# against main.
+#
+# This is detection-only — OSV-Scanner does NOT open PRs or modify pins.
+# It reports known CVEs in currently-pinned dependency versions so we can
+# decide when and how to patch on our own schedule. Our pinning strategy
+# (full SHA / exact version) is preserved; only the notification signal
+# is added.
+#
+# Complements the existing supply-chain-audit.yml workflow (which scans
+# for malicious code patterns in PR diffs) by covering the orthogonal
+# "currently-pinned dep became known-vulnerable" case.
+#
+# Uses Google's officially-recommended reusable workflow, pinned by SHA.
+# Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
+# fail-on-vuln is disabled so the job does not block merges on pre-existing
+# vulnerabilities in pinned deps that we may need to patch deliberately.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'ui-tui/package.json'
+      - 'ui-tui/package-lock.json'
+      - 'website/package.json'
+      - 'website/package-lock.json'
+      - '.github/workflows/osv-scanner.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'ui-tui/package-lock.json'
+      - 'website/package-lock.json'
+  schedule:
+    # Weekly scan against main — catches CVEs published after merge for
+    # deps that haven't changed since.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  # Required by the reusable workflow to upload SARIF to the Security tab.
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Scan lockfiles
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@c51854704019a247608d928f370c98740469d4b5  # v2.3.5
+    with:
+      # Scan explicit lockfiles rather than recursing, so we only look at
+      # the three sources of truth and skip vendored / test / worktree dirs.
+      scan-args: |-
+        --lockfile=uv.lock
+        --lockfile=ui-tui/package-lock.json
+        --lockfile=website/package-lock.json
+      fail-on-vuln: false

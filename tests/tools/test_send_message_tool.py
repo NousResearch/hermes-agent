@@ -140,6 +140,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -178,6 +179,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_mirror_receives_current_session_user_id(self):
@@ -483,7 +485,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -738,6 +740,64 @@ class TestSendTelegramHtmlDetection:
         assert result["success"] is True
         assert bot.send_message.await_count == 2
         sleep_mock.assert_awaited_once()
+
+
+class TestSendTelegramThreadIdMapping:
+    """General-topic mapping in _send_telegram (issue #22267).
+
+    Telegram forum supergroups address the General topic as
+    ``message_thread_id="1"`` on incoming updates, but the Bot API rejects
+    sends with ``message_thread_id=1`` ("Message thread not found"). The
+    gateway adapter's ``_message_thread_id_for_send`` helper maps "1" to
+    ``None`` for that reason; the standalone ``_send_telegram`` helper used
+    by the ``send_message`` tool needs the same mapping.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        return bot
+
+    def test_general_topic_thread_id_omitted(self, monkeypatch):
+        """thread_id="1" must be dropped before calling the Bot API."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="1"))
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_non_general_topic_thread_id_preserved(self, monkeypatch):
+        """Real forum-topic thread ids (>1) still pass through as ints."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="17585"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["message_thread_id"] == 17585
+
+    def test_no_thread_id_no_kwarg(self, monkeypatch):
+        """With no thread_id, message_thread_id must not appear in kwargs."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_general_topic_thread_id_int_input_also_dropped(self, monkeypatch):
+        """thread_id passed as the int 1 (not str) must still be dropped."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id=1))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -1992,3 +2052,283 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+
+
+# ── _send_via_adapter standalone fallback ────────────────────────────────
+
+
+class _FakePlatform:
+    """Stand-in for the gateway.config.Platform enum.  Holds the .value
+    attribute consulted by ``_send_via_adapter`` for registry lookups."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class TestSendViaAdapterStandaloneFallback:
+    """Coverage for the out-of-process plugin-platform send path.
+
+    When the gateway runner is not in this process (e.g. ``hermes cron``
+    runs separately from ``hermes gateway``), ``_send_via_adapter`` should
+    fall through to the plugin's ``standalone_sender_fn`` registered on
+    its ``PlatformEntry``.  Without the hook, the existing error string
+    is returned (with a more helpful tail).
+    """
+
+    @staticmethod
+    def _make_entry(send_fn):
+        from gateway.platform_registry import PlatformEntry
+
+        return PlatformEntry(
+            name="fakeplatform",
+            label="Fake",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=send_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):
+        """Registry has hook, runner ref returns None: the hook is awaited."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            recorded["pconfig"] = pconfig
+            recorded["chat_id"] = chat_id
+            recorded["message"] = message
+            recorded["kwargs"] = kwargs
+            return {"success": True, "message_id": "msg-42"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            pconfig = SimpleNamespace(extra={})
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                pconfig,
+                "room/123",
+                "hello cron",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"success": True, "message_id": "msg-42"}
+        assert recorded["chat_id"] == "room/123"
+        assert recorded["message"] == "hello cron"
+        assert recorded["pconfig"] is pconfig
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
+        """thread_id, media_files, and force_document all reach the hook."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, *, thread_id=None,
+                            media_files=None, force_document=False):
+            recorded["thread_id"] = thread_id
+            recorded["media_files"] = media_files
+            recorded["force_document"] = force_document
+            return {"success": True, "message_id": "x"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+                thread_id="thread-7",
+                media_files=["/tmp/a.png"],
+                force_document=True,
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert recorded["thread_id"] == "thread-7"
+        assert recorded["media_files"] == ["/tmp/a.png"]
+        assert recorded["force_document"] is True
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):
+        """Registry entry has no hook: the fall-through error explains both
+        options (gateway-running and standalone hook)."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.register(self._make_entry(None))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert "error" in result
+        assert "fakeplatform" in result["error"]
+        assert "standalone_sender_fn" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
+        """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def boom(pconfig, chat_id, message, **kwargs):
+            raise ValueError("boom!")
+
+        platform_registry.register(self._make_entry(boom))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"error": "Plugin standalone send failed: boom!"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_return_shape_passed_through(self, monkeypatch):
+        """Hook returns success dict: passed through unchanged."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            return {"success": True, "message_id": "abc-123", "extra_field": "preserved"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result["success"] is True
+        assert result["message_id"] == "abc-123"
+        assert result["extra_field"] == "preserved"
+
+
+# ---------------------------------------------------------------------------
+# _check_send_message — availability gating
+# ---------------------------------------------------------------------------
+
+class TestCheckSendMessage:
+    """The tool's check_fn governs whether the model sees ``send_message`` as
+    callable for a given session. The four passing conditions are:
+
+    1. ``HERMES_KANBAN_TASK`` is set (worker spawned by the kanban dispatcher
+       — parent gateway is by definition running, but the worker's
+       ``HERMES_HOME`` may be a profile dir without a ``gateway.pid``).
+    2. ``HERMES_SESSION_PLATFORM`` resolves to a non-empty, non-``local`` value
+       (the session is wired to a messaging platform like Telegram).
+    3. ``is_gateway_running()`` returns True (CLI / orchestrator profile with
+       a live gateway colocated under the same ``HERMES_HOME``).
+    4. None of the above → False, tool is hidden.
+    """
+
+    def test_kanban_task_env_grants_access(self, monkeypatch):
+        """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
+        allowed regardless of session_platform / gateway-pid state."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is True
+
+    def test_kanban_task_env_short_circuits_before_gateway_check(self, monkeypatch):
+        """Honoring HERMES_KANBAN_TASK must not depend on importing or calling
+        gateway.status — the worker may run with a HERMES_HOME that has no
+        gateway.pid, and we don't want that import path to be load-bearing."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
+
+        with patch("gateway.session_context.get_session_env",
+                   side_effect=AssertionError("session_context not consulted "
+                                              "when HERMES_KANBAN_TASK is set")), \
+             patch("gateway.status.is_gateway_running",
+                   side_effect=AssertionError("gateway.status not consulted "
+                                              "when HERMES_KANBAN_TASK is set")):
+            assert _check_send_message() is True
+
+    def test_messaging_platform_session_grants_access(self, monkeypatch):
+        """Telegram/Discord/etc. sessions pass via the platform branch even
+        without HERMES_KANBAN_TASK."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value="telegram"), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is True
+
+    def test_local_platform_falls_through_to_gateway_check(self, monkeypatch):
+        """``HERMES_SESSION_PLATFORM=local`` means CLI-style — must defer to
+        is_gateway_running() rather than auto-grant."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value="local"), \
+             patch("gateway.status.is_gateway_running", return_value=True) as gw_mock:
+            assert _check_send_message() is True
+            gw_mock.assert_called_once()
+
+    def test_running_gateway_grants_access(self, monkeypatch):
+        """Plain CLI session (no kanban task, empty platform) with a live
+        gateway: tool is callable."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=True):
+            assert _check_send_message() is True
+
+    def test_no_signals_means_unavailable(self, monkeypatch):
+        """No kanban task, no platform, no gateway: tool is hidden."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is False
+
+    def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
+        """If gateway.status can't be imported (unusual deployment / partial
+        install), the check returns False rather than raising."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running",
+                   side_effect=ImportError("simulated")):
+            assert _check_send_message() is False

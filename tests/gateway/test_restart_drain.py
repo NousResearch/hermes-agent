@@ -258,6 +258,40 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_when_flag_disabled():
+    """Active-session ping is muted when gateway_restart_notification=False on the platform."""
+    from gateway.config import Platform
+
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled():
+    """Home-channel ping during shutdown is muted when the flag is False."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
     """Shutdown notifications should route from persisted origin, not reparsed keys."""
     runner, adapter = make_restart_runner()

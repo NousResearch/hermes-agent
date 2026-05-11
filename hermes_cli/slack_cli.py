@@ -18,6 +18,7 @@ for reinstall when scopes/commands change.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -47,6 +48,11 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
             "background_color": "#1a1a2e",
         },
         "features": {
+            "app_home": {
+                "home_tab_enabled": False,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": False,
+            },
             "bot_user": {
                 "display_name": bot_name[:80],
                 "always_online": True,
@@ -68,6 +74,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "files:read",
                     "files:write",
                     "groups:history",
+                    "groups:read",
                     "im:history",
                     "im:read",
                     "im:write",
@@ -128,7 +135,7 @@ def slack_manifest_command(args) -> int:
 
                 target = Path(get_hermes_home()) / "slack-manifest.json"
             except Exception:
-                target = Path.home() / ".hermes" / "slack-manifest.json"
+                target = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
         else:
             target = Path(write_target).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)

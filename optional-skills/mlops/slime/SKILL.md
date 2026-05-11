@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [sglang-router>=0.2.3, ray, torch>=2.0.0, transformers>=4.40.0]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Reinforcement Learning, Megatron-LM, SGLang, GRPO, Post-Training, GLM]

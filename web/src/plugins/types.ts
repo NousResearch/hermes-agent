@@ -22,6 +22,12 @@ export interface PluginManifest {
   entry: string;
   css?: string | null;
   has_api: boolean;
+  /**
+   * Optional Subresource Integrity hash (e.g. "sha384-..."). When set,
+   * the browser will refuse to execute the plugin bundle if its hash
+   * does not match. This protects against tampered plugin delivery.
+   */
+  integrity?: string;
   source: string;
 }
 

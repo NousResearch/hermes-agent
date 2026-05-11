@@ -5,7 +5,14 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
-import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
+import {
+  DEFAULT_VOICE_RECORD_KEY,
+  isActionMod,
+  isMac,
+  isMacActionFallback,
+  isVoiceToggleKey,
+  type ParsedVoiceRecordKey
+} from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -239,6 +246,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
 }: TextInputProps) {
@@ -699,6 +707,15 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
+      // Configured voice shortcut wins over composer-level defaults like
+      // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
+      // actually get voice toggled instead of a paste (Copilot round-7
+      // follow-up on #19835). The pass-through predicate is a no-op for
+      // ordinary typing and plain paste when voice is unbound to 'v'.
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        return
+      }
+
       if (
         eventRaw === '\x1bv' ||
         eventRaw === '\x1bV' ||
@@ -741,22 +758,6 @@ export function TextInput({
           return
         }
 
-        return
-      }
-
-      // Ctrl chords claimed by useInputHandlers — pass through instead of
-      // letting them fall into readline-style nav or a literal char insert.
-      // Ctrl+B = voice toggle, Ctrl+X = delete queued message while editing.
-      if (
-        (k.ctrl && inp === 'c') ||
-        (k.ctrl && inp === 'b') ||
-        (k.ctrl && inp === 'x') ||
-        k.tab ||
-        (k.shift && k.tab) ||
-        k.pageUp ||
-        k.pageDown ||
-        k.escape
-      ) {
         return
       }
 
@@ -969,10 +970,15 @@ export function TextInput({
           return
         }
 
-        // Right-click → route through the same path as Alt+V so the composer
-        // clipboard RPC (text or image) handles it.
+        // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
+          const decision = decideRightClickAction(vRef.current, selRange())
+          if (decision.action === 'copy') {
+            void writeClipboardText(decision.text)
+
+            return
+          }
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1041,7 +1047,50 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+  voiceRecordKey?: ParsedVoiceRecordKey
 }
+
+export type RightClickDecision =
+  | { action: 'copy'; text: string }
+  | { action: 'paste' }
+
+/**
+ * Decide what right-click should do on the composer:
+ *   - non-empty selection → copy that text to the clipboard
+ *   - no selection (or empty/collapsed range) → fall through to paste
+ *
+ * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
+ * right-click pastes only when there is nothing selected to copy.
+ *
+ * Callers pass the already-normalized range from `selRange()` (start <= end,
+ * or null when collapsed), so this helper does not need to re-normalize.
+ */
+export function decideRightClickAction(
+  value: string,
+  range: { end: number; start: number } | null
+): RightClickDecision {
+  if (range && range.end > range.start) {
+    const text = value.slice(range.start, range.end)
+    if (text) {
+      return { action: 'copy', text }
+    }
+  }
+  return { action: 'paste' }
+}
+
+export const shouldPassThroughToGlobalHandler = (
+  input: string,
+  key: Key,
+  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+): boolean =>
+  (key.ctrl && input === 'c') ||
+  (key.ctrl && input === 'x') ||
+  key.tab ||
+  (key.shift && key.tab) ||
+  key.pageUp ||
+  key.pageDown ||
+  key.escape ||
+  isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

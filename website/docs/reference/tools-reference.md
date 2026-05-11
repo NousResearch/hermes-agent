@@ -6,12 +6,12 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 68 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts:** 10 browser tools (core) + 2 browser-cdp tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools, 5 Yuanbao tools, 2 Discord tools, and 15 standalone tools across other toolsets.
+**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
 
 :::tip MCP Tools
-In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
+In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
 :::
 
 ## `browser` toolset
@@ -29,9 +29,9 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_vision` | Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snaps… | — |
 
-## `browser-cdp` toolset
+## `browser` toolset (CDP-gated tools)
 
-Registered only when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -99,6 +99,13 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `ha_list_entities` | List Home Assistant entities. Optionally filter by domain (light, switch, climate, sensor, binary_sensor, cover, fan, etc.) or by area name (living room, kitchen, bedroom, etc.). | — |
 | `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
 
+## `computer_use` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `computer_use` | Background macOS desktop control via cua-driver — screenshots (SOM / vision / AX), click / drag / scroll / type / key / wait, list_apps, focus_app. Does NOT steal the user's cursor or keyboard focus. Works with any tool-capable model. macOS only. | `cua-driver` on `$PATH` (install via `hermes tools`). |
+
+
 :::note
 **Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
 :::
@@ -108,6 +115,20 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
+
+## `kanban` toolset
+
+Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set). Lets workers mark tasks done with structured handoffs, block for human input, heartbeat during long ops, comment on threads, and (for orchestrators) fan out into child tasks. See [Kanban Multi-Agent](/docs/user-guide/features/kanban) for the full workflow.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` |
+| `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` |
+| `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` |
+| `kanban_heartbeat` | Send a progress heartbeat during a long-running operation so the dispatcher knows the worker is still alive. | `HERMES_KANBAN_TASK` |
+| `kanban_comment` | Add a comment to the task thread without changing its state — useful for surfacing intermediate findings. | `HERMES_KANBAN_TASK` |
+| `kanban_create` | (Orchestrator only) Fan out child tasks from the current task. | `HERMES_KANBAN_TASK` + orchestrator role |
+| `kanban_link` | (Orchestrator only) Link related tasks together (blocks/blocked-by/related). | `HERMES_KANBAN_TASK` + orchestrator role |
 
 ## `memory` toolset
 
@@ -174,6 +195,14 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `vision_analyze` | Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content. | — |
+
+## `video` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets video` or include `video` in your `toolsets:` config.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `video_analyze` | Analyze video content from a URL or file path — captions, scene breakdowns, key timestamps, and visual descriptions. | — |
 
 ## `web` toolset
 

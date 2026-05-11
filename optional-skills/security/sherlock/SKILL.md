@@ -4,6 +4,7 @@ description: OSINT username search across 400+ social networks. Hunt down social
 version: 1.0.0
 author: unmodeled-tyler
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [osint, security, username, social-media, reconnaissance]

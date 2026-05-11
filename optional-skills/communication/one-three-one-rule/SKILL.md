@@ -8,6 +8,7 @@ description: >
   and one concrete recommendation with definition of done and implementation plan.
   Use when the user asks for a "1-3-1", says "give me options", or needs help
   choosing between competing approaches.
+platforms: [linux, macos, windows]
 version: 1.0.0
 author: Willard Moore
 license: MIT

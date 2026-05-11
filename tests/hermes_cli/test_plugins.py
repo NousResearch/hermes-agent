@@ -21,6 +21,7 @@ from hermes_cli.plugins import (
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
+    resolve_plugin_command_result,
     discover_plugins,
     invoke_hook,
 )
@@ -329,6 +330,7 @@ class TestPluginHooks:
         assert "post_api_request" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
+        assert "transform_llm_output" in VALID_HOOKS
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
@@ -1061,6 +1063,45 @@ class TestPluginCommands:
         assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
 
 
+class TestPluginCommandResultResolution:
+    def test_returns_sync_values_unchanged(self):
+        assert resolve_plugin_command_result("ok") == "ok"
+
+    def test_awaits_async_result_without_running_loop(self):
+        async def _handler():
+            return "async-ok"
+
+        assert resolve_plugin_command_result(_handler()) == "async-ok"
+
+    def test_awaits_async_result_with_running_loop(self, monkeypatch):
+        class _Loop:
+            pass
+
+        async def _handler():
+            return "threaded-ok"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        assert resolve_plugin_command_result(_handler()) == "threaded-ok"
+
+    def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
+        """Threaded path must abort a hung async handler instead of blocking the caller."""
+        import asyncio as _asyncio
+
+        class _Loop:
+            pass
+
+        async def _slow_handler():
+            await _asyncio.sleep(10)
+            return "should-not-reach"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+
+        import pytest
+        with pytest.raises(TimeoutError):
+            resolve_plugin_command_result(_slow_handler())
+
+
 # ── TestPluginDispatchTool ────────────────────────────────────────────────
 
 
@@ -1191,3 +1232,77 @@ class TestPluginDispatchTool:
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
+
+
+class TestPluginDebugLogging:
+    """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
+
+    def test_debug_handler_not_installed_when_env_var_absent(self, monkeypatch):
+        """Without the env var, no stderr handler is attached."""
+        monkeypatch.delenv("HERMES_PLUGINS_DEBUG", raising=False)
+        from hermes_cli import plugins as plugins_mod
+
+        # Snapshot, then force a re-evaluation.
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is False
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is False
+            # No new stderr handler was attached.
+            assert plugins_mod.logger.handlers == original_handlers
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
+        """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is True
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is True
+            assert plugins_mod.logger.level == logging.DEBUG
+            new_handlers = [
+                h for h in plugins_mod.logger.handlers if h not in original_handlers
+            ]
+            assert len(new_handlers) == 1
+            assert isinstance(new_handlers[0], logging.StreamHandler)
+            assert new_handlers[0].level == logging.DEBUG
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_idempotent(self, monkeypatch):
+        """Calling install twice (without force) does not double-attach."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            count_after_first = len(plugins_mod.logger.handlers)
+            plugins_mod._install_plugin_debug_handler()  # no force
+            count_after_second = len(plugins_mod.logger.handlers)
+            assert count_after_first == count_after_second
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers

@@ -6,6 +6,7 @@ description: >
   heart rate, HRV, sleep staging, and 40+ derived EXG scores) into responses.
   Requires a BCI wearable (Muse 2/S or OpenBCI) and the NeuroSkill desktop app
   running locally.
+platforms: [linux, macos, windows]
 version: 1.0.0
 author: Hermes Agent + Nous Research
 license: MIT

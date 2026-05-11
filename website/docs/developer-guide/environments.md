@@ -172,7 +172,7 @@ parser = get_parser("hermes")  # or "mistral", "llama3_json", "qwen", "deepseek_
 content, tool_calls = parser.parse(raw_model_output)
 ```
 
-Available parsers: `hermes`, `mistral`, `llama3_json`, `qwen`, `qwen3_coder`, `deepseek_v3`, `deepseek_v3_1`, `kimi_k2`, `longcat`, `glm45`, `glm47`.
+Available parsers: `hermes`, `mistral`, `llama3_json`, `llama4_json`, `qwen`, `qwen3_coder`, `deepseek_v3`, `deepseek_v3_1` (alias `deepseek_v31`), `kimi_k2`, `longcat`, `glm45`, `glm47`.
 
 In Phase 1 (OpenAI server type), parsers are not needed — the server handles tool call parsing natively.
 

@@ -10,7 +10,7 @@ Shares credentials with the optional telephony skill — same env vars:
 
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
-  - SMS_WEBHOOK_HOST     (default 0.0.0.0)
+  - SMS_WEBHOOK_HOST     (default 127.0.0.1)
   - SMS_WEBHOOK_URL      (public URL for Twilio signature validation — required)
   - SMS_INSECURE_NO_SIGNATURE  (true to disable signature validation — dev only)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
-DEFAULT_WEBHOOK_HOST = "0.0.0.0"
+DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 
 
 def check_sms_requirements() -> bool:
@@ -91,19 +91,23 @@ class SmsAdapter(BasePlatformAdapter):
         from aiohttp import web
 
         if not self._from_number:
-            logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
+            msg = "[sms] TWILIO_PHONE_NUMBER not set — cannot send replies"
+            logger.error(msg)
+            self._set_fatal_error("sms_missing_phone_number", msg, retryable=False)
             return False
 
         insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
 
         if not self._webhook_url and not insecure_no_sig:
-            logger.error(
+            msg = (
                 "[sms] Refusing to start: SMS_WEBHOOK_URL is required for Twilio "
                 "signature validation. Set it to the public URL configured in your "
                 "Twilio console (e.g. https://example.com/webhooks/twilio). "
                 "For local development without validation, set "
-                "SMS_INSECURE_NO_SIGNATURE=true (NOT recommended for production).",
+                "SMS_INSECURE_NO_SIGNATURE=true (NOT recommended for production)."
             )
+            logger.error(msg)
+            self._set_fatal_error("sms_missing_webhook_url", msg, retryable=False)
             return False
 
         if insecure_no_sig and not self._webhook_url:

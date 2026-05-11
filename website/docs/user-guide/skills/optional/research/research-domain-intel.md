@@ -16,6 +16,7 @@ Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL cert
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/domain-intel` |
 | Path | `optional-skills/research/domain-intel` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

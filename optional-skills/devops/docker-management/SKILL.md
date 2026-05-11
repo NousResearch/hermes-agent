@@ -4,6 +4,7 @@ description: Manage Docker containers, images, volumes, networks, and Compose st
 version: 1.0.0
 author: sprmn24
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [docker, containers, devops, infrastructure, compose, images, volumes, networks, debugging]

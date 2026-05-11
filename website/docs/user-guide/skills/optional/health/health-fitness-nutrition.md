@@ -18,6 +18,7 @@ Gym workout planner and nutrition tracker. Search 690+ exercises by muscle, equi
 | Path | `optional-skills/health/fitness-nutrition` |
 | Version | `1.0.0` |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `health`, `fitness`, `nutrition`, `gym`, `workout`, `diet`, `exercise` |
 
 ## Reference: full SKILL.md

@@ -147,7 +147,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     4. Match skills to their resolved paths
     """
     # Filter to skills.sh entries that need resolution
-    skills_sh = [s for s in skills if s["source"] in ("skills.sh", "skills-sh")]
+    skills_sh = [s for s in skills if s["source"] in {"skills.sh", "skills-sh"}]
     if not skills_sh:
         return skills
 
@@ -304,7 +304,7 @@ def main():
     }
 
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
 
     elapsed = time.time() - overall_start

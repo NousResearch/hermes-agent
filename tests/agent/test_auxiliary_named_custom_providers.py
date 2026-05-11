@@ -427,3 +427,68 @@ class TestProvidersDictApiModeAnthropicMessages:
         assert isinstance(sync_client, OpenAI)
         async_client, _ = resolve_provider_client("localchat", async_mode=True)
         assert isinstance(async_client, AsyncOpenAI)
+
+
+class TestCustomProviderAliasCollision:
+    """A user-declared custom_providers entry whose name matches a built-in
+    *alias* (not a canonical provider) must win over the built-in.
+
+    Regression guard for #15743: users who defined fallback_model pointing at
+    a custom_providers entry named ``kimi`` were having requests routed to
+    the built-in kimi-coding endpoint because ``_normalize_aux_provider``
+    rewrote ``kimi`` → ``kimi-coding`` before the named-custom lookup.
+    """
+
+    def test_custom_named_kimi_wins_over_builtin_alias(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                    "models": {"my-kimi-model": {"context_length": 200000}},
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, model = resolve_provider_client("kimi", model="my-kimi-model", raw_codex=True)
+        assert isinstance(client, OpenAI)
+        assert "my-custom-kimi.example.com" in str(client.base_url)
+        assert client.api_key == "my-kimi-key"
+        assert model == "my-kimi-model"
+
+    def test_bare_kimi_without_custom_still_routes_to_builtin(self, tmp_path, monkeypatch):
+        """Regression guard: bare 'kimi' with no custom entry must still
+        reach the built-in kimi-coding provider."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client("kimi", model="kimi-k2-0905-preview", raw_codex=True)
+        assert client is not None
+        base_url = str(client.base_url)
+        # Built-in kimi-coding points at api.moonshot.ai
+        assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
+
+    def test_explicit_overrides_applied_on_api_key_branch(self, tmp_path, monkeypatch):
+        """Explicit base_url/api_key from the caller must override the
+        registered provider's defaults on the API-key branch.  Used by
+        _try_activate_fallback to route a fallback through a built-in
+        provider name but targeting a user-supplied endpoint."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, _ = resolve_provider_client(
+            "kimi-coding", model="kimi-k2", raw_codex=True,
+            explicit_base_url="https://override.example.com",
+            explicit_api_key="override-key",
+        )
+        assert isinstance(client, OpenAI)
+        assert "override.example.com" in str(client.base_url)
+        assert client.api_key == "override-key"

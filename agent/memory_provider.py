@@ -1,17 +1,16 @@
 """Abstract base class for pluggable memory providers.
 
-Memory providers give the agent persistent recall across sessions. One
-external provider is active at a time alongside the always-on built-in
-memory (MEMORY.md / USER.md). The MemoryManager enforces this limit.
+Memory providers give the agent persistent recall across sessions.
+The MemoryManager enforces a one-external-provider limit to prevent
+tool schema bloat and conflicting memory backends.
 
-Built-in memory is always active as the first provider and cannot be removed.
-External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never
-disable the built-in store. Only one external provider runs at a time to
-prevent tool schema bloat and conflicting memory backends.
+External providers (Honcho, Hindsight, Mem0, etc.) are registered
+and managed via MemoryManager. Only one external provider runs at a
+time.
 
 Registration:
-  1. Built-in: BuiltinMemoryProvider — always present, not removable.
-  2. Plugins: Ship in plugins/memory/<name>/, activated by memory.provider config.
+  Plugins ship in plugins/memory/<name>/ and are activated via
+  the memory.provider config key.
 
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up

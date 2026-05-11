@@ -582,14 +582,19 @@ chmod 600 ~/.hermes/.env
 
 ### Network Isolation
 
-For maximum security, run the gateway on a separate machine or VM:
+For maximum security, run the gateway on a separate machine or VM. Set `terminal.backend: ssh` in `config.yaml`, then provide host details via environment variables in `~/.hermes/.env`:
 
 ```yaml
+# ~/.hermes/config.yaml
 terminal:
   backend: ssh
-  ssh_host: "agent-worker.local"
-  ssh_user: "hermes"
-  ssh_key: "~/.ssh/hermes_agent_key"
 ```
 
-This keeps the gateway's messaging connections separate from the agent's command execution.
+```bash
+# ~/.hermes/.env
+TERMINAL_SSH_HOST=agent-worker.local
+TERMINAL_SSH_USER=hermes
+TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
+```
+
+The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.

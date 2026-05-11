@@ -18,9 +18,9 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
 - **Nous Portal** — Nous Research's own inference endpoint
-- **OpenAI** — GPT-4o, o1, o3, etc.
-- **Anthropic** — Claude models (via OpenRouter or compatible proxy)
-- **Google** — Gemini models (via OpenRouter or compatible proxy)
+- **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
+- **Anthropic** — Claude models (direct API, OAuth via `hermes login anthropic`, OpenRouter, or any compatible proxy)
+- **Google** — Gemini models (direct API via `gemini` provider, the `google-gemini-cli` OAuth provider, OpenRouter, or compatible proxy)
 - **z.ai / ZhipuAI** — GLM models
 - **Kimi / Moonshot AI** — Kimi models
 - **MiniMax** — global and China endpoints
@@ -35,6 +35,24 @@ Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [E
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+
+### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
+
+Prefer an MCP bridge over `/browser connect`.
+
+Recommended pattern:
+
+- run Hermes inside WSL2
+- keep using your normal signed-in Chrome on Windows
+- add `chrome-devtools-mcp` as an MCP server through `cmd.exe` or `powershell.exe`
+- let Hermes use the resulting MCP browser tools
+
+This is more reliable than trying to force Hermes core browser transport to attach directly across the WSL2/Windows boundary.
+
+See:
+
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
 
 ### Does it work on Android / Termux?
 
@@ -418,8 +436,8 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 
 **Solution:**
 ```bash
-# Install messaging dependencies
-pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
+# Install core messaging gateway dependencies
+pip install "hermes-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080

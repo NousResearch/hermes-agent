@@ -6,6 +6,7 @@ import styles from "./styles.module.css";
 interface Skill {
   name: string;
   description: string;
+  overview?: string;
   category: string;
   categoryLabel: string;
   source: string;
@@ -13,6 +14,10 @@ interface Skill {
   platforms: string[];
   author: string;
   version: string;
+  license?: string;
+  envVars?: string[];
+  commands?: string[];
+  docsPath?: string;
 }
 
 const allSkills: Skill[] = skills as Skill[];
@@ -179,6 +184,37 @@ function SkillCard({
 
         {expanded && (
           <div className={styles.cardDetail}>
+            {skill.overview && (
+              <div className={styles.overviewBlock}>
+                <span className={styles.detailLabel}>Overview</span>
+                <p className={styles.overviewText}>{skill.overview}</p>
+              </div>
+            )}
+            {(skill.envVars?.length || skill.commands?.length) ? (
+              <div className={styles.prereqBlock}>
+                <span className={styles.detailLabel}>Prerequisites</span>
+                {skill.envVars?.length ? (
+                  <div className={styles.prereqRow}>
+                    <span className={styles.prereqKind}>env</span>
+                    <span className={styles.prereqList}>
+                      {skill.envVars.map((v) => (
+                        <code key={v} className={styles.prereqItem}>{v}</code>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+                {skill.commands?.length ? (
+                  <div className={styles.prereqRow}>
+                    <span className={styles.prereqKind}>cmd</span>
+                    <span className={styles.prereqList}>
+                      {skill.commands.map((c) => (
+                        <code key={c} className={styles.prereqItem}>{c}</code>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {skill.tags?.length > 0 && (
               <div className={styles.tagRow}>
                 {skill.tags.map((tag) => (
@@ -207,9 +243,24 @@ function SkillCard({
                 <span className={styles.authorValue}>{skill.version}</span>
               </div>
             )}
+            {skill.license && (
+              <div className={styles.authorRow}>
+                <span className={styles.authorLabel}>License</span>
+                <span className={styles.authorValue}>{skill.license}</span>
+              </div>
+            )}
             <div className={styles.installHint}>
               <code>hermes skills install {skill.name}</code>
             </div>
+            {skill.docsPath && (
+              <a
+                className={styles.docsLink}
+                href={`/docs/user-guide/skills/${skill.docsPath}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                View full documentation →
+              </a>
+            )}
           </div>
         )}
       </div>
@@ -289,7 +340,7 @@ export default function SkillsDashboard() {
       if (sourceFilter !== "all" && s.source !== sourceFilter) return false;
       if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
       if (q) {
-        const haystack = [s.name, s.description, s.categoryLabel, s.author, ...(s.tags || [])]
+        const haystack = [s.name, s.description, s.overview, s.categoryLabel, s.author, ...(s.tags || [])]
           .join(" ")
           .toLowerCase();
         return haystack.includes(q);

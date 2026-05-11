@@ -311,9 +311,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   /** All selectable themes (shown in the picker). Starts with just the
    *  built-ins; the API call below merges in user themes. */
-  const [availableThemes, setAvailableThemes] = useState<
-    Array<{ description: string; label: string; name: string }>
-  >(() =>
+  const [availableThemes, setAvailableThemes] = useState<ThemeSummary[]>(() =>
     Object.values(BUILTIN_THEMES).map((t) => ({
       name: t.name,
       label: t.label,
@@ -360,6 +358,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
               name: t.name,
               label: t.label,
               description: t.description,
+              definition: t.definition,
             })),
           );
           // Index any definitions the server shipped (user themes).
@@ -430,8 +429,15 @@ const ThemeContext = createContext<ThemeContextValue>({
 });
 
 interface ThemeContextValue {
-  availableThemes: Array<{ description: string; label: string; name: string }>;
+  availableThemes: ThemeSummary[];
   setTheme: (name: string) => void;
   theme: DashboardTheme;
   themeName: string;
+}
+
+interface ThemeSummary {
+  description: string;
+  label: string;
+  name: string;
+  definition?: DashboardTheme;
 }

@@ -19,6 +19,7 @@ Run 150+ AI apps via inference.sh CLI (infsh) — image generation, video creati
 | Version | `1.0.0` |
 | Author | okaris |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `AI`, `image-generation`, `video`, `LLM`, `search`, `inference`, `FLUX`, `Veo`, `Claude` |
 
 ## Reference: full SKILL.md

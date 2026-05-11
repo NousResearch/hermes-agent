@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
 
+from acp_adapter import session as acp_session
 from acp_adapter.session import SessionManager, SessionState
 from hermes_state import SessionDB
 
@@ -42,6 +43,27 @@ class TestCreateSession:
         state = manager.create_session(cwd="/tmp/work")
         assert calls == [(state.session_id, "/tmp/work")]
 
+
+    def test_register_task_cwd_translates_windows_drive_for_wsl_tools(self, monkeypatch):
+        captured = {}
+
+        def fake_register_task_env_overrides(task_id, overrides):
+            captured["task_id"] = task_id
+            captured["overrides"] = overrides
+
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr(
+            "tools.terminal_tool.register_task_env_overrides",
+            fake_register_task_env_overrides,
+        )
+
+        acp_session._register_task_cwd("session-1", r"E:\Projects\AI\paperclip")
+
+        assert captured == {
+            "task_id": "session-1",
+            "overrides": {"cwd": "/mnt/e/Projects/AI/paperclip"},
+        }
+
     def test_session_ids_are_unique(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()
@@ -55,6 +77,59 @@ class TestCreateSession:
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
 
+
+
+
+# ---------------------------------------------------------------------------
+# WSL cwd translation
+# ---------------------------------------------------------------------------
+
+
+class TestWslCwdTranslation:
+    def test_translate_acp_cwd_converts_windows_drive_path_when_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == "/mnt/e/Projects/AI/paperclip"
+
+    def test_translate_acp_cwd_handles_forward_slashes_when_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd("D:/work/project") == "/mnt/d/work/project"
+
+    def test_translate_acp_cwd_leaves_windows_drive_path_unchanged_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+
+        assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == r"E:\Projects\AI\paperclip"
+
+    def test_translate_acp_cwd_leaves_posix_path_unchanged_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd("/mnt/e/Projects/AI/paperclip") == "/mnt/e/Projects/AI/paperclip"
+
+    def test_create_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        state = manager.create_session(cwd=r"E:\Projects\AI\paperclip")
+
+        assert state.cwd == "/mnt/e/Projects/AI/paperclip"
+
+    def test_fork_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        original = manager.create_session(cwd="/tmp/base")
+
+        forked = manager.fork_session(original.session_id, cwd=r"D:\work\project")
+
+        assert forked is not None
+        assert forked.cwd == "/mnt/d/work/project"
+
+    def test_update_cwd_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        state = manager.create_session(cwd="/tmp/old")
+
+        updated = manager.update_cwd(state.session_id, cwd=r"C:\Users\foo\project")
+
+        assert updated is not None
+        assert updated.cwd == "/mnt/c/Users/foo/project"
 
 # ---------------------------------------------------------------------------
 # fork
@@ -112,6 +187,31 @@ class TestListAndCleanup:
     def test_list_sessions_hides_empty_threads(self, manager):
         manager.create_session(cwd="/empty")
         assert manager.list_sessions() == []
+
+    def test_save_session_preserves_existing_messages_on_encode_failure(self, manager):
+        """Regression for #13675: a bad message in state.history must not
+        clobber the previously-persisted transcript.  replace_messages()
+        wraps DELETE + INSERT in a single rolled-back-on-exception txn.
+        """
+        state = manager.create_session()
+        state.history.append({"role": "user", "content": "original"})
+        manager.save_session(state.session_id)
+
+        # Now swap history with a message whose tool_calls is non-JSON-serializable.
+        # _execute_write rolls back; the previously persisted "original" stays.
+        state.history = [
+            {"role": "user", "content": "replacement"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"bad": object()}],
+            },
+        ]
+        manager.save_session(state.session_id)
+
+        db = manager._get_db()
+        messages = db.get_messages_as_conversation(state.session_id)
+        assert messages == [{"role": "user", "content": "original"}]
 
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
@@ -379,6 +479,39 @@ class TestPersistence:
         assert len(restored.history) == 2
         assert restored.history[0].get("tool_calls") is not None
         assert restored.history[1].get("tool_call_id") == "tc_1"
+
+    def test_assistant_reasoning_fields_persisted(self, manager):
+        """ACP session restore should preserve assistant reasoning context."""
+        state = manager.create_session()
+        state.history.append({
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        })
+        manager.save_session(state.session_id)
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+        assert restored.history == [{
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        }]
 
     def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
         """Restored ACP sessions should keep their original runtime provider."""

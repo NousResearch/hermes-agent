@@ -43,7 +43,7 @@ class NodeServer:
 
     def __init__(
         self,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 18789,
         token_path: Optional[Path] = None,
         display_name: str = "hermes-meet-node",
@@ -76,6 +76,13 @@ class NodeServer:
             json.dumps({"token": tok, "generated_at": time.time()}, indent=2),
             encoding="utf-8",
         )
+        # Restrict to owner-read-write only — the token grants full RPC
+        # access to the meet bot (start, transcribe, speak in meetings).
+        try:
+            tmp.chmod(0o600)
+        except (OSError, NotImplementedError):
+            # Best-effort on non-POSIX filesystems; mode is set on POSIX.
+            pass
         tmp.replace(self.token_path)
         self._token = tok
         return tok

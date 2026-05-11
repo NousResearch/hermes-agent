@@ -380,7 +380,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
@@ -570,7 +570,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = redact_sensitive_text(result.content, code_file=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -993,7 +993,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
+                    m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
 
         if count >= 3:
@@ -1042,7 +1042,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1055,19 +1055,48 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": (
+        "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
+        "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
+        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
+        "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
+        "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
+        "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
+        "REQUIRED PARAMETERS: mode, patch."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
-            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
-            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
-            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
-            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+                "default": "replace",
+            },
+            "path": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. File path to edit.",
+            },
+            "old_string": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.",
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                "default": False,
+            },
+            "patch": {
+                "type": "string",
+                "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
         },
-        "required": ["mode"]
-    }
+        "required": ["mode"],
+    },
 }
 
 SEARCH_FILES_SCHEMA = {
@@ -1097,7 +1126,25 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "write_file: missing required field 'path'. Re-emit the tool call with "
+            "both 'path' and 'content' set."
+        )
+    if "content" not in args:
+        return tool_error(
+            "write_file: missing required field 'content'. The tool call included a "
+            "path but no content argument — this is almost always a dropped-arg bug "
+            "under context pressure. Re-emit the tool call with the full content "
+            "payload, or use execute_code with hermes_tools.write_file() for very "
+            "large files."
+        )
+    if not isinstance(args["content"], str):
+        return tool_error(
+            f"write_file: 'content' must be a string, got "
+            f"{type(args['content']).__name__}."
+        )
+    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
 
 
 def _handle_patch(args, **kw):
@@ -1119,7 +1166,7 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

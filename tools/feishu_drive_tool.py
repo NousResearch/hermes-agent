@@ -28,10 +28,12 @@ def get_client():
 
 
 def _check_feishu():
+    # See ``tools/feishu_doc_tool.py::_check_feishu`` — ``find_spec`` keeps
+    # CLI startup fast (the SDK itself takes ~5s to import eagerly).
+    import importlib.util
     try:
-        import lark_oapi  # noqa: F401
-        return True
-    except ImportError:
+        return importlib.util.find_spec("lark_oapi") is not None
+    except (ImportError, ValueError):
         return False
 
 

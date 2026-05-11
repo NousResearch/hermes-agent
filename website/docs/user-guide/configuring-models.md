@@ -161,12 +161,39 @@ Inside any `hermes chat` session:
 
 `--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place.
 
+### Custom aliases
+
+Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform:
+
+```yaml
+# ~/.hermes/config.yaml
+model_aliases:
+  fav:
+    model: claude-sonnet-4.6
+    provider: anthropic
+  grok:
+    model: grok-4
+    provider: x-ai
+```
+
+Or from the shell (short form, `provider/model`):
+
+```bash
+hermes config set model.aliases.fav anthropic/claude-opus-4.6
+hermes config set model.aliases.grok x-ai/grok-4
+```
+
+Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/docs/reference/slash-commands#custom-model-aliases) for the full reference.
+
 ### `hermes model` subcommand
 
 ```bash
-hermes model list                   # list authenticated providers + models
-hermes model set anthropic/claude-opus-4.7 --provider openrouter
+hermes model            # Interactive provider + model picker (the canonical way to switch defaults)
 ```
+
+`hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.model` in `~/.hermes/config.yaml`.
+
+To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model` and `hermes status`.
 
 ### Direct config edit
 

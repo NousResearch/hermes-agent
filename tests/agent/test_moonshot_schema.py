@@ -115,9 +115,15 @@ class TestMissingTypeFilled:
 
 
 class TestAnyOfParentType:
-    """Rule 2: type must not appear at the anyOf parent level."""
+    """Rule 2: type must not appear at the anyOf parent level.
 
-    def test_parent_type_stripped_when_anyof_present(self):
+    When an anyOf contains a null-type branch, Moonshot rejects it.
+    The sanitizer collapses the anyOf: single non-null branch is promoted,
+    multiple non-null branches have null removed from the list.
+    """
+
+    def test_anyof_null_branch_collapsed_to_single_type(self):
+        """anyOf [string, null] → plain string (anyOf removed)."""
         params = {
             "type": "object",
             "properties": {
@@ -132,25 +138,46 @@ class TestAnyOfParentType:
         }
         out = sanitize_moonshot_tool_parameters(params)
         from_format = out["properties"]["from_format"]
-        assert "type" not in from_format
-        assert "anyOf" in from_format
+        # null branch removed, anyOf collapsed to the single non-null type
+        assert "anyOf" not in from_format
+        assert from_format["type"] == "string"
 
-    def test_anyof_children_missing_type_get_filled(self):
+    def test_anyof_multiple_non_null_preserved(self):
+        """anyOf [string, integer] (no null) → kept as-is with parent type stripped."""
         params = {
             "type": "object",
             "properties": {
-                "value": {
+                "mode": {
                     "anyOf": [
                         {"type": "string"},
-                        {"description": "A typeless option"},
+                        {"type": "integer"},
                     ],
                 },
             },
         }
         out = sanitize_moonshot_tool_parameters(params)
-        children = out["properties"]["value"]["anyOf"]
-        assert children[0]["type"] == "string"
-        assert "type" in children[1]
+        mode = out["properties"]["mode"]
+        assert "anyOf" in mode
+        assert "type" not in mode  # parent type stripped
+
+    def test_anyof_enum_with_null_collapsed(self):
+        """anyOf [{enum: [...], type: string}, {type: null}] → enum + type only."""
+        params = {
+            "type": "object",
+            "properties": {
+                "db_type": {
+                    "anyOf": [
+                        {"enum": ["mysql", "postgresql", ""]},
+                        {"type": "null"},
+                    ],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert "anyOf" not in db_type
+        assert db_type["type"] == "string"
+        assert db_type["enum"] == ["mysql", "postgresql"]  # "" stripped by enum cleanup
 
 
 class TestTopLevelGuarantees:
@@ -226,7 +253,7 @@ class TestRealWorldMCPShape:
     """End-to-end: a realistic MCP-style schema that used to 400 on Moonshot."""
 
     def test_combined_rewrites(self):
-        # Shape: missing type on a property, anyOf with parent type, array
+        # Shape: missing type on a property, anyOf with parent type + null, array
         # items without type — all in one tool.
         params = {
             "type": "object",
@@ -248,7 +275,125 @@ class TestRealWorldMCPShape:
         }
         out = sanitize_moonshot_tool_parameters(params)
         assert out["properties"]["query"]["type"] == "string"
-        assert "type" not in out["properties"]["filter"]
-        assert out["properties"]["filter"]["anyOf"][0]["type"] == "string"
+        # anyOf with null collapsed to plain type
+        assert "anyOf" not in out["properties"]["filter"]
+        assert out["properties"]["filter"]["type"] == "string"
         assert out["properties"]["tags"]["items"]["type"] == "string"
         assert out["required"] == ["query"]
+
+
+class TestEnumNullStripping:
+    """Rule 3: Moonshot rejects null/empty-string inside enum arrays."""
+
+    def test_enum_null_value_stripped(self):
+        """enum containing Python None must have it removed for Moonshot."""
+        params = {
+            "type": "object",
+            "properties": {
+                "db_type": {
+                    "type": "string",
+                    "enum": ["mysql", "postgresql", None],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert None not in db_type["enum"]
+        assert "mysql" in db_type["enum"]
+        assert "postgresql" in db_type["enum"]
+
+    def test_enum_empty_string_stripped(self):
+        """enum containing empty string '' must have it removed for Moonshot."""
+        params = {
+            "type": "object",
+            "properties": {
+                "db_type": {
+                    "type": "string",
+                    "enum": ["mysql", "postgresql", ""],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert "" not in db_type["enum"]
+        assert db_type["enum"] == ["mysql", "postgresql"]
+
+    def test_enum_all_null_becomes_no_enum(self):
+        """enum that only had null/empty values is dropped entirely."""
+        params = {
+            "type": "object",
+            "properties": {
+                "val": {
+                    "type": "string",
+                    "enum": [None, ""],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert "enum" not in out["properties"]["val"]
+
+    def test_dataslayer_db_type_after_mcp_normalize(self):
+        """Real-world: dataslayer db_type anyOf+enum after MCP normalization."""
+        # This is the exact shape after _normalize_mcp_input_schema runs:
+        # anyOf collapsed, but enum still has null + empty string
+        params = {
+            "type": "object",
+            "properties": {
+                "datasource": {"type": "string"},
+                "db_type": {
+                    "enum": ["mysql", "mariadb", "postgresql", "sqlserver", "oracle", "", None],
+                    "type": "string",
+                    "nullable": True,
+                    "default": None,
+                },
+            },
+            "required": ["datasource"],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert "nullable" not in db_type, "nullable keyword must be stripped"
+        assert None not in db_type["enum"]
+        assert "" not in db_type["enum"]
+        assert db_type["enum"] == ["mysql", "mariadb", "postgresql", "sqlserver", "oracle"]
+        assert db_type["type"] == "string"
+
+    def test_enum_on_object_type_not_stripped(self):
+        """enum on non-scalar types (object) should NOT be touched."""
+        params = {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {},
+                    "enum": [{}, None],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # object-typed enum should pass through unchanged
+        assert "enum" in out["properties"]["config"]
+
+    def test_anyof_collapse_still_runs_nullable_and_enum_cleanup(self):
+        """After anyOf collapses to a single non-null branch, the merged
+        node must still have ``nullable`` stripped and null/empty-string
+        values removed from enum — not skipped by the early anyOf return.
+        """
+        params = {
+            "type": "object",
+            "properties": {
+                "db_type": {
+                    "anyOf": [
+                        {"enum": ["mysql", "postgresql", "", None]},
+                        {"type": "null"},
+                    ],
+                    "nullable": True,
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert "anyOf" not in db_type
+        assert "nullable" not in db_type, "nullable must be stripped after anyOf collapse"
+        assert db_type["type"] == "string"
+        assert db_type["enum"] == ["mysql", "postgresql"], \
+            "null/empty enum values must be stripped after anyOf collapse"

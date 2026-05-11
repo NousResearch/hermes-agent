@@ -19,6 +19,7 @@ Create, triage, label, assign GitHub issues via gh or REST.
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Issues`, `Project-Management`, `Bug-Tracking`, `Triage` |
 | Related skills | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth), [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow) |
 

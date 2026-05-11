@@ -19,6 +19,7 @@ Generate project ideas via creative constraints.
 | Version | `1.0.0` |
 | Author | SHL0MS |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Creative`, `Ideation`, `Projects`, `Brainstorming`, `Inspiration` |
 
 ## Reference: full SKILL.md

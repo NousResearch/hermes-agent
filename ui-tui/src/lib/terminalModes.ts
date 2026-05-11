@@ -1,10 +1,18 @@
 import { writeSync } from 'node:fs'
 
 export const TERMINAL_MODE_RESET =
+  '\x1b[0\'z' + // DEC locator reporting
+  '\x1b[0\'{' + // selectable locator events
+  '\x1b[?2029l' + // passive mouse
+  '\x1b[?1016l' + // SGR-pixels mouse
+  '\x1b[?1015l' + // urxvt decimal mouse
   '\x1b[?1006l' + // SGR mouse
+  '\x1b[?1005l' + // UTF-8 extended mouse
   '\x1b[?1003l' + // any-motion mouse
   '\x1b[?1002l' + // button-motion mouse
+  '\x1b[?1001l' + // highlight mouse
   '\x1b[?1000l' + // click mouse
+  '\x1b[?9l' + // X10 mouse
   '\x1b[?1004l' + // focus events
   '\x1b[?2004l' + // bracketed paste
   '\x1b[?1049l' + // alternate screen

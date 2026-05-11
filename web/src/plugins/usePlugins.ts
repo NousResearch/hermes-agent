@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { api } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 import type { PluginManifest, RegisteredPlugin } from "./types";
 import {
   getPluginComponent,
@@ -43,7 +43,7 @@ export function usePlugins() {
     for (const manifest of manifests) {
       // Inject CSS if specified.
       if (manifest.css) {
-        const cssUrl = `/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
         if (!document.querySelector(`link[href="${cssUrl}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
@@ -55,7 +55,7 @@ export function usePlugins() {
       // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.
-      const baseUrl = `/dashboard-plugins/${manifest.name}/${manifest.entry}`;
+      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
       const scriptSrc = import.meta.env.DEV
         ? `${baseUrl}?hermes_dv=${Date.now()}`
         : baseUrl;
@@ -68,6 +68,16 @@ export function usePlugins() {
       script.setAttribute("data-hermes-plugin", manifest.name);
       script.src = scriptSrc;
       script.async = true;
+      // SRI integrity verification — defense against compromised plugin
+      // delivery. Plugin manifests can declare an integrity hash
+      // (e.g. "sha384-...") which the browser verifies before executing.
+      // Without this, a man-in-the-middle or compromised plugin server
+      // can substitute the JS bundle silently. Opt-in: when no integrity
+      // is declared in the manifest, behavior is unchanged.
+      if (manifest.integrity && typeof manifest.integrity === "string") {
+        script.integrity = manifest.integrity;
+        script.crossOrigin = "anonymous";
+      }
       script.onerror = () => {
         setPluginLoadError(manifest.name, "LOAD_FAILED");
         console.warn(

@@ -23,6 +23,12 @@ The curator is triggered by an inactivity check, not a cron daemon. On CLI sessi
 
 If both are true, it spawns a background fork of `AIAgent` — the same pattern used by the memory/skill self-improvement nudges. The fork runs in its own prompt cache and never touches the active conversation.
 
+:::info First-run behavior
+On a brand-new install (or the first time a pre-curator install ticks after `hermes update`), the curator **does not run immediately**. The first observation seeds `last_run_at` to "now" and defers the first real pass by one full `interval_hours`. This gives you a full interval to review your skill library, pin anything important, or opt out entirely before the curator ever touches it.
+
+If you want to see what the curator *would* do before it runs for real, run `hermes curator run --dry-run` — it produces the same review report without mutating the library.
+:::
+
 A run has two phases:
 
 1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (30) become `stale`; skills unused for `archive_after_days` (90) are moved to `~/.hermes/skills/.archive/`.
@@ -78,14 +84,45 @@ Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That
 
 ```bash
 hermes curator status         # last run, counts, pinned list, LRU top 5
-hermes curator run            # trigger a review now (background by default)
-hermes curator run --sync     # same, but block until the LLM pass finishes
+hermes curator run            # trigger a review now (blocks until the LLM pass finishes)
+hermes curator run --background  # fire-and-forget: start the LLM pass in a background thread
+hermes curator run --dry-run  # preview only — report without any mutations
+hermes curator backup         # take a manual snapshot of ~/.hermes/skills/
+hermes curator rollback       # restore from the newest snapshot
+hermes curator rollback --list     # list available snapshots
+hermes curator rollback --id <ts>  # restore a specific snapshot
+hermes curator rollback -y         # skip the confirmation prompt
 hermes curator pause          # stop runs until resumed
 hermes curator resume
 hermes curator pin <skill>    # never auto-transition this skill
 hermes curator unpin <skill>
 hermes curator restore <skill>  # move an archived skill back to active
 ```
+
+## Backups and rollback
+
+Before every real curator pass, Hermes takes a tar.gz snapshot of `~/.hermes/skills/` at `~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz`. If a pass archives or consolidates something you didn't want touched, you can undo the whole run with one command:
+
+```bash
+hermes curator rollback        # restore newest snapshot (with confirmation)
+hermes curator rollback -y     # skip the prompt
+hermes curator rollback --list # see all snapshots with reason + size
+```
+
+The rollback itself is reversible: before replacing the skills tree, Hermes takes another snapshot tagged `pre-rollback to <target-id>`, so a mistaken rollback can be undone by rolling forward to that one with `--id`.
+
+You can also take manual snapshots at any time with `hermes curator backup --reason "before-refactor"`. The `--reason` string lands in the snapshot's `manifest.json` and is shown in `--list`.
+
+Snapshots are pruned to `curator.backup.keep` (default 5) to keep disk usage bounded:
+
+```yaml
+curator:
+  backup:
+    enabled: true
+    keep: 5
+```
+
+Set `curator.backup.enabled: false` to disable automatic snapshotting. The manual `hermes curator backup` command still works when backups are disabled only if you set `enabled: true` first — the flag gates both paths symmetrically so there's no way to accidentally skip the pre-run snapshot on mutating runs.
 
 `hermes curator status` also lists the five least-recently-used skills — a quick way to see what's likely to become stale next.
 
@@ -104,14 +141,26 @@ Everything else in `~/.hermes/skills/` is fair game for the curator. This includ
 - Skills you created manually with a hand-written `SKILL.md`.
 - Skills added via external skill directories you've pointed Hermes at.
 
+:::warning Your hand-written skills look the same as agent-saved ones
+Provenance here is **binary** (bundled/hub vs. everything else). The curator cannot tell a hand-authored skill you rely on for private workflows apart from a skill the self-improvement loop saved mid-session. Both land in the "agent-created" bucket.
+
+Before the first real pass (7 days after installation by default), take a moment to:
+
+1. Run `hermes curator run --dry-run` to see exactly what the curator would propose.
+2. Use `hermes curator pin <name>` to fence off anything you don't want touched.
+3. Or set `curator.enabled: false` in `config.yaml` if you'd rather manage the library yourself.
+
+Archives are always recoverable via `hermes curator restore <name>`, but it's easier to pin up-front than to chase down a consolidation after the fact.
+:::
+
 If you want to protect a specific skill from ever being touched — for example a hand-authored skill you rely on — use `hermes curator pin <name>`. See the next section.
 
 ## Pinning a skill
 
-Pinning is a hard fence against both automated and agent-driven changes. Once a skill is pinned:
+Pinning protects a skill from deletion — both the curator's automated archive passes and the agent's `skill_manage(action="delete")` tool call. Once a skill is pinned:
 
 - The **curator** skips it during auto-transitions (`active → stale → archived`), and its LLM review pass is instructed to leave it alone.
-- The **agent's `skill_manage` tool** refuses every write action on it. Calls to `edit`, `patch`, `delete`, `write_file`, and `remove_file` return a refusal that tells the model to ask the user to run `hermes curator unpin <name>`. This prevents the agent from silently rewriting a skill mid-conversation.
+- The **agent's `skill_manage` tool** refuses `delete` on it, pointing the user at `hermes curator unpin <name>`. Patches and edits still go through, so the agent can improve a pinned skill's content as pitfalls come up without a pin/unpin/re-pin dance.
 
 Pin and unpin with:
 
@@ -124,7 +173,7 @@ The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills
 
 Only **agent-created** skills can be pinned — bundled and hub-installed skills are never subject to curator mutation in the first place, and `hermes curator pin` will refuse with an explanatory message if you try.
 
-If you need to update a pinned skill yourself, edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin only guards the agent's tool path, not your own filesystem access.
+If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
 
 ## Usage telemetry
 

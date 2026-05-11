@@ -1,0 +1,350 @@
+# Hermes statiese boodskap-katalogus -- Afrikaans
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  choose_long:     "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"
+  choose_short:    "      [o]eenmalig  |  [s]sessie  |  [d]weier"
+  prompt_long:     "      Keuse [o/s/a/D]: "
+  prompt_short:    "      Keuse [o/s/D]: "
+  timeout:         "      ⏱ Tyd verstreke - opdrag word geweier"
+  allowed_once:    "      ✓ Eenmalig toegelaat"
+  allowed_session: "      ✓ Vir hierdie sessie toegelaat"
+  allowed_always:  "      ✓ By permanente toelaatlys gevoeg"
+  denied:          "      ✗ Geweier"
+  cancelled:       "      ✗ Gekanselleer"
+  blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
+
+gateway:
+  approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
+  draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
+  goal_cleared:     "✓ Doelwit verwyder."
+  no_active_goal:   "Geen aktiewe doelwit nie."
+  config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
+  config_save_failed: "⚠️ Kon nie konfigurasie stoor nie: {error}"
+
+  model:
+    error_prefix:           "Fout: {error}"
+    switched:               "Model verander na `{model}`"
+    provider_label:         "Verskaffer: {provider}"
+    context_label:          "Konteks: {tokens} tokens"
+    max_output_label:       "Maks. uitvoer: {tokens} tokens"
+    cost_label:             "Koste: {cost}"
+    capabilities_label:     "Vermoëns: {capabilities}"
+    prompt_caching_enabled: "Prompt-kasing: geaktiveer"
+    warning_prefix:         "Waarskuwing: {warning}"
+    saved_global:           "Gestoor in config.yaml (`--global`)"
+    session_only_hint:      "_(slegs sessie — voeg `--global` by om permanent te stoor)_"
+    current_label:          "Huidig: `{model}` op {provider}"
+    current_tag:            " (huidig)"
+    more_models_suffix:     " (+{count} meer)"
+    usage_switch_model:     "`/model <name>` — verander model"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — verander verskaffer"
+    usage_persist:          "`/model <name> --global` — stoor permanent"
+
+  agents:
+    header:                "🤖 **Aktiewe Agente & Take**"
+    active_agents:         "**Aktiewe agente:** {count}"
+    this_chat:             " · hierdie geselsie"
+    more:                  "... en nog {count}"
+    running_processes:     "**Lopende agtergrondprosesse:** {count}"
+    async_jobs:            "**Asinchrone werke van die gateway:** {count}"
+    none:                  "Geen aktiewe agente of lopende take nie."
+    state_starting:        "begin"
+    state_running:         "loop"
+
+  approve:
+    no_pending:            "Geen hangende opdrag om goed te keur nie."
+    once_singular:         "✅ Opdrag goedgekeur. Die agent gaan voort..."
+    once_plural:           "✅ Opdragte goedgekeur ({count} opdragte). Die agent gaan voort..."
+    session_singular:      "✅ Opdrag goedgekeur (patroon goedgekeur vir hierdie sessie). Die agent gaan voort..."
+    session_plural:        "✅ Opdragte goedgekeur (patroon goedgekeur vir hierdie sessie) ({count} opdragte). Die agent gaan voort..."
+    always_singular:       "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
+    always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
+
+  background:
+    usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
+    started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
+
+  branch:
+    db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
+    no_conversation:       "Geen gesprek om te vertak nie — stuur eers 'n boodskap."
+    create_failed:         "Kon nie tak skep nie: {error}"
+    switch_failed:         "Tak is geskep, maar oorskakeling het misluk."
+    branched_one:          "⑂ Vertak na **{title}** ({count} boodskap gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
+    branched_many:         "⑂ Vertak na **{title}** ({count} boodskappe gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
+
+  commands:
+    usage:                 "Gebruik: `/commands [page]`"
+    skill_header:          "⚡ **Vaardigheidsopdragte**:"
+    default_desc:          "Vaardigheidsopdrag"
+    none:                  "Geen opdragte beskikbaar nie."
+    header:                "📚 **Opdragte** ({total} altesaam, bladsy {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← vorige"
+    nav_next:              "volgende → `/commands {page}`"
+    out_of_range:          "_(Versoekte bladsy {requested} was buite reikwydte; bladsy {page} word vertoon.)_"
+
+  compress:
+    not_enough:            "Nie genoeg gesprek om saam te pers nie (ten minste 4 boodskappe nodig)."
+    no_provider:           "Geen verskaffer opgestel nie -- kan nie saampers nie."
+    nothing_to_do:         "Niks om saam te pers nie (die transkripsie is steeds heeltemal beskermde konteks)."
+    focus_line:            "Fokus: \"{topic}\""
+    summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
+    aux_failed:            "ℹ️ Opgestelde saamperseringsmodel `{model}` het misluk ({error}). Herstel met jou hoofmodel — konteks is intakt — maar jy mag dalk `auxiliary.compression.model` in config.yaml wil nagaan."
+    failed:                "Saampersing het misluk: {error}"
+
+  debug:
+    upload_failed:         "✗ Kon nie ontfoutverslag oplaai nie: {error}"
+    header:                "**Ontfoutverslag opgelaai:**"
+    auto_delete:           "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
+    full_logs_hint:        "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
+    share_hint:            "Deel hierdie skakels met die Hermes-span vir ondersteuning."
+
+  deny:
+    stale:                 "❌ Opdrag geweier (goedkeuring was verouderd)."
+    no_pending:            "Geen hangende opdrag om te weier nie."
+    denied_singular:       "❌ Opdrag geweier."
+    denied_plural:         "❌ Opdragte geweier ({count} opdragte)."
+
+  fast:
+    not_supported:         "⚡ /fast is slegs beskikbaar vir OpenAI-modelle wat Priority Processing ondersteun."
+    status:                "⚡ Priority Processing\n\nHuidige modus: `{mode}`\n\n_Gebruik:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Onbekende argument: `{arg}`\n\n**Geldige opsies:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (slegs hierdie sessie)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
+    usage:                 "Gebruik: `/footer [on|off|status]`"
+    saved:                 "📎 Looptyd-voetstuk: **{state}**{example}\n_(globaal gestoor — neem effek by die volgende boodskap)_"
+    example_line:          "\nVoorbeeld: `{preview}`"
+    state_on:              "AAN"
+    state_off:             "AF"
+
+  goal:
+    unavailable:           "Doelwitte is nie beskikbaar in hierdie sessie nie."
+    no_goal_set:           "Geen doelwit gestel nie."
+    paused:                "⏸ Doelwit gepouse: {goal}"
+    no_resume:             "Geen doelwit om voort te sit nie."
+    resumed:               "▶ Doelwit hervat: {goal}\nStuur enige boodskap om voort te gaan, of wag — ek sal die volgende stap met die volgende beurt neem."
+    invalid:               "Ongeldige doelwit: {error}"
+    set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes-opdragte**\n"
+    skill_header:          "\n⚡ **Vaardigheidsopdragte** ({count} aktief):"
+    more_use_commands:     "\n... en nog {count}. Gebruik `/commands` vir die volledige bladsy-lys."
+
+  insights:
+    invalid_days:          "Ongeldige --days waarde: {value}"
+    error:                 "Fout met genereer van insigte: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban-fout: {error}"
+    subscribed_suffix:     "(ingeteken — jy sal in kennis gestel word wanneer {task_id} voltooi of vasval)"
+    truncated_suffix:      "… (afgekap; gebruik `hermes kanban …` in jou terminale vir volle uitvoer)"
+    no_output:             "(geen uitvoer)"
+
+  personality:
+    none_configured:       "Geen persoonlikhede opgestel in `{path}/config.yaml` nie"
+    header:                "🎭 **Beskikbare Persoonlikhede**\n"
+    none_option:           "• `none` — (geen persoonlikheidslaag)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nGebruik: `/personality <name>`"
+    save_failed:           "⚠️ Kon nie persoonlikheidsverandering stoor nie: {error}"
+    cleared:               "🎭 Persoonlikheid verwyder — basis-agentgedrag word gebruik.\n_(neem effek by die volgende boodskap)_"
+    set_to:                "🎭 Persoonlikheid gestel op **{name}**\n_(neem effek by die volgende boodskap)_"
+    unknown:               "Onbekende persoonlikheid: `{name}`\n\nBeskikbaar: {available}"
+
+  profile:
+    header:                "👤 **Profiel:** `{profile}`"
+    home:                  "📂 **Tuiste:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (verstek)"
+    level_disabled:            "none (gedeaktiveer)"
+    scope_session:             "sessie-oorskryf"
+    scope_global:              "globale konfigurasie"
+    status:                    "🧠 **Redenering-instellings**\n\n**Inspanning:** `{level}`\n**Bereik:** {scope}\n**Vertoon:** {display}\n\n_Gebruik:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "aan ✓"
+    display_off:               "af"
+    display_set_on:            "🧠 ✓ Redenering-vertoon: **AAN**\nDie model se denke sal voor elke antwoord op **{platform}** vertoon word."
+    display_set_off:           "🧠 ✓ Redenering-vertoon: **AF** vir **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` word nie ondersteun nie. Gebruik `/reasoning <level> --global` om die globale verstek te verander."
+    reset_done:                "🧠 ✓ Sessie-redenering-oorskryf verwyder; val terug op globale konfigurasie."
+    unknown_arg:               "⚠️ Onbekende argument: `{arg}`\n\n**Geldige vlakke:** none, minimal, low, medium, high, xhigh\n**Vertoon:** show, hide\n**Permanent:** voeg `--global` by om verby hierdie sessie te stoor"
+    set_global:                "🧠 ✓ Redenering-inspanning gestel op `{effort}` (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
+    set_global_save_failed:    "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — konfigurasie-stoor het misluk)\n_(neem effek by die volgende boodskap)_"
+    set_session:               "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — voeg `--global` by om permanent te stoor)\n_(neem effek by die volgende boodskap)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp gekanselleer. MCP-gereedskap onveranderd."
+    always_followup:       "ℹ️ Toekomstige `/reload-mcp`-oproepe sal sonder bevestiging loop. Heraktiveer via `approvals.mcp_reload_confirm: true` in config.yaml."
+    confirm_prompt:        "⚠️ **Bevestig /reload-mcp**\n\nOm MCP-bedieners te herlaai, herbou die gereedskapsstel vir hierdie sessie en **maak die verskaffer se prompt-kasie ongeldig** — die volgende boodskap sal alle invoertokens herstuur. Op modelle met lang konteks of hoë redenering kan dit duur wees.\n\nKies:\n• **Eenmaal Goedkeur** — herlaai nou\n• **Altyd Goedkeur** — herlaai nou en stop hierdie prompt permanent\n• **Kanselleer** — laat MCP-gereedskap onveranderd\n\n_Teks-alternatief: antwoord `/approve`, `/always`, of `/cancel`._"
+    header:                "🔄 **MCP-bedieners herlaai**\n"
+    reconnected:           "♻️ Herverbind: {names}"
+    added:                 "➕ Bygevoeg: {names}"
+    removed:               "➖ Verwyder: {names}"
+    none_connected:        "Geen MCP-bedieners verbind nie."
+    tools_available:       "\n🔧 {tools} gereedskap beskikbaar van {servers} bediener(s)"
+    failed:                "❌ MCP-herlaai het misluk: {error}"
+
+  reload_skills:
+    header:                "🔄 **Vaardighede herlaai**\n"
+    no_new:                "Geen nuwe vaardighede opgespoor nie."
+    total:                 "\n📚 {count} vaardigheid(e) beskikbaar"
+    added_header:          "➕ **Bygevoegde Vaardighede:**"
+    removed_header:        "➖ **Verwyderde Vaardighede:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Vaardigheids-herlaai het misluk: {error}"
+
+  reset:
+    header_default:        "✨ Sessie herstel! Begin van voor."
+    header_new:            "✨ Nuwe sessie begin!"
+    header_titled:         "✨ Nuwe sessie begin: {title}"
+    title_rejected:        "\n⚠️ Titel verwerp: {error}"
+    title_error_untitled:  "\n⚠️ {error} — sessie sonder titel begin."
+    title_empty_untitled:  "\n⚠️ Titel is leeg na opruiming — sessie sonder titel begin."
+    tip:                   "\n✦ Wenk: {tip}"
+
+  restart:
+    in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
+    restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
+    no_named_sessions:     "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
+    list_header:           "📋 **Benoemde Sessies**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nGebruik: `/resume <session name>`"
+    list_failed:           "Kon nie sessies lys nie: {error}"
+    not_found:             "Geen sessie gevind wat by '**{name}**' pas nie.\nGebruik `/resume` sonder argumente om beskikbare sessies te sien."
+    already_on:            "📌 Reeds op sessie **{name}**."
+    switch_failed:         "Kon nie sessie verander nie."
+    resumed_one:           "↻ Sessie **{title}** hervat ({count} boodskap). Gesprek herstel."
+    resumed_many:          "↻ Sessie **{title}** hervat ({count} boodskappe). Gesprek herstel."
+    resumed_no_count:      "↻ Sessie **{title}** hervat. Gesprek herstel."
+
+  retry:
+    no_previous:           "Geen vorige boodskap om te herhaal nie."
+
+  rollback:
+    not_enabled:           "Kontrolepunte is nie geaktiveer nie.\nAktiveer in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Geen kontrolepunte vir {cwd} gevind nie"
+    invalid_number:        "Ongeldige kontrolepunt-nommer. Gebruik 1-{max}."
+    restored:              "✅ Herstel na kontrolepunt {hash}: {reason}\n'n Voor-terugrol-momentopname is outomaties gestoor."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Kon nie tuiste-kanaal stoor nie: {error}"
+    success:               "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
+
+  status:
+    header:                "📊 **Hermes Gateway Status**"
+    session_id:            "**Sessie-ID:** `{session_id}`"
+    title:                 "**Titel:** {title}"
+    created:               "**Geskep:** {timestamp}"
+    last_activity:         "**Laaste aktiwiteit:** {timestamp}"
+    tokens:                "**Tokens:** {tokens}"
+    agent_running:         "**Agent loop:** {state}"
+    state_yes:             "Ja ⚡"
+    state_no:              "Nee"
+    queued:                "**Opgehoopte opvolge:** {count}"
+    platforms:             "**Verbinde Platforms:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."
+    stopped:               "⚡ Gestop. Jy kan met hierdie sessie voortgaan."
+    no_active:             "Geen aktiewe taak om te stop nie."
+
+  title:
+    db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Titel is leeg na opruiming. Gebruik asseblief drukbare karakters."
+    set_to:                "✏️ Sessie-titel gestel: **{title}**"
+    not_found:             "Sessie nie in databasis gevind nie."
+    current_with_title:    "📌 Sessie: `{session_id}`\nTitel: **{title}**"
+    current_no_title:      "📌 Sessie: `{session_id}`\nGeen titel gestel nie. Gebruik: `/title My Sessie Naam`"
+
+  topic:
+    not_telegram_dm:         "Die /topic-opdrag is slegs beskikbaar in Telegram-privaatgesprekke."
+    no_session_db:           "Sessie-databasis is nie beskikbaar nie."
+    unauthorized:            "Jy het nie toestemming om /topic op hierdie bot te gebruik nie."
+    restore_needs_topic:     "Om 'n sessie te herstel, skep of open eers 'n Telegram-onderwerp en stuur dan /topic <session-id> binne daardie onderwerp. Om 'n nuwe onderwerp te skep, open All Messages en stuur enige boodskap daar."
+    topics_disabled:         "Telegram-onderwerpe is nog nie vir hierdie bot geaktiveer nie.\n\nHoe om dit te aktiveer:\n1. Open @BotFather.\n2. Kies jou bot.\n3. Open Bot Settings → Threads Settings.\n4. Skakel Threaded Mode aan en maak seker gebruikers mag nuwe drade skep.\n\nStuur dan weer /topic."
+    topics_user_disallowed:  "Telegram-onderwerpe is geaktiveer, maar gebruikers mag nie onderwerpe skep nie.\n\nOpen @BotFather → kies jou bot → Bot Settings → Threads Settings, en skakel dan 'Disallow users to create new threads' af.\n\nStuur dan weer /topic."
+    enable_failed:           "Kon nie Telegram-onderwerpmodus aktiveer nie: {error}"
+    bound_status:            "Hierdie onderwerp is gekoppel aan:\nSessie: {label}\nID: {session_id}\n\nGebruik /new om hierdie onderwerp met 'n vars sessie te vervang.\nVir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
+    thread_ready:            "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike Hermes-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
+    untitled_session:        "Sessie sonder titel"
+
+  undo:
+    nothing:               "Niks om ongedaan te maak nie."
+    removed:               "↩️ {count} boodskap(pe) ongedaan gemaak.\nVerwyder: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
+    not_git_repo:            "✗ Nie 'n git-bewaarplek nie — kan nie opdateer nie."
+    hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
+    start_failed:            "✗ Kon nie opdatering begin nie: {error}"
+    starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+
+  usage:
+    rate_limits:              "⏱️ **Tariefperke:** {state}"
+    header_session:           "📊 **Sessie-tokengebruik**"
+    label_model:              "Model: `{model}`"
+    label_input_tokens:       "Invoertokens: {count}"
+    label_cache_read:         "Kasie-leestokens: {count}"
+    label_cache_write:        "Kasie-skryftokens: {count}"
+    label_output_tokens:      "Uitvoertokens: {count}"
+    label_total:              "Totaal: {count}"
+    label_api_calls:          "API-oproepe: {count}"
+    label_cost:               "Koste: {prefix}${amount}"
+    label_cost_included:      "Koste: ingesluit"
+    label_context:            "Konteks: {used} / {total} ({pct}%)"
+    label_compressions:       "Saamperserings: {count}"
+    header_session_info:      "📊 **Sessie-inligting**"
+    label_messages:           "Boodskappe: {count}"
+    label_estimated_context:  "Geskatte konteks: ~{count} tokens"
+    detailed_after_first:     "_(Gedetailleerde gebruik beskikbaar na die eerste agent-antwoord)_"
+    no_data:                  "Geen gebruiksdata beskikbaar vir hierdie sessie nie."
+
+  verbose:
+    not_enabled:           "Die `/verbose`-opdrag is nie vir boodskapplatforms geaktiveer nie.\n\nAktiveer dit in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Gereedskap-vordering: **AF** — geen gereedskap-aktiwiteit word vertoon nie."
+    mode_new:              "⚙️ Gereedskap-vordering: **NUUT** — vertoon wanneer gereedskap verander (voorskoulengte: `display.tool_preview_length`, verstek 40)."
+    mode_all:              "⚙️ Gereedskap-vordering: **ALMAL** — elke gereedskaps-oproep vertoon (voorskoulengte: `display.tool_preview_length`, verstek 40)."
+    mode_verbose:          "⚙️ Gereedskap-vordering: **OMSLAGTIG** — elke gereedskaps-oproep met volle argumente."
+    saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
+    save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
+
+  voice:
+    enabled_voice_only:    "Stemmodus geaktiveer.\nEk sal met stem antwoord wanneer jy stemboodskappe stuur.\nGebruik /voice tts om stemantwoorde vir alle boodskappe te kry."
+    disabled_text:         "Stemmodus gedeaktiveer. Slegs teks-antwoorde."
+    tts_enabled:           "Outo-TTS geaktiveer.\nAlle antwoorde sal 'n stemboodskap insluit."
+    status_mode:           "Stemmodus: {label}"
+    status_channel:        "Stemkanaal: #{channel}"
+    status_participants:   "Deelnemers: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (praat)"
+    enabled_short:         "Stemmodus geaktiveer."
+    disabled_short:        "Stemmodus gedeaktiveer."
+    label_off:             "Af (slegs teks)"
+    label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
+    label_all:             "TTS (stemantwoord op alle boodskappe)"
+
+  yolo:
+    disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie — gevaarlike opdragte sal goedkeuring vereis."
+    enabled:                    "⚡ YOLO-modus **AAN** vir hierdie sessie — alle opdragte word outomaties goedgekeur. Gebruik versigtig."
+
+  shared:
+    session_db_unavailable:      "Sessie-databasis is nie beskikbaar nie."
+    session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
+    session_not_found:           "Sessie nie in databasis gevind nie."
+    warn_passthrough:            "⚠️ {error}"

@@ -471,6 +471,32 @@ class TestImport:
         with pytest.raises(SystemExit):
             run_import(args)
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_restores_secret_files_with_0600_perms(self, tmp_path, monkeypatch):
+        """Secret files must end up at 0600 after restore (zipfile drops mode bits)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: openrouter\n",
+            ".env": "OPENROUTER_API_KEY=sk-secret\n",
+            "auth.json": '{"providers": {"nous": "token"}}',
+            "state.db": b"SQLite format 3\x00",
+            "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-ant-secret\n",
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        for rel in (".env", "auth.json", "state.db", "profiles/coder/.env"):
+            mode = (hermes_home / rel).stat().st_mode & 0o777
+            assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
+
 
 # ---------------------------------------------------------------------------
 # Round-trip test
@@ -1347,6 +1373,53 @@ class TestPreUpdateBackup:
     def test_returns_none_if_root_missing(self, tmp_path):
         from hermes_cli.backup import create_pre_update_backup
         assert create_pre_update_backup(hermes_home=tmp_path / "does-not-exist") is None
+
+    def test_keep_zero_does_not_delete_freshly_created_backup(self, hermes_home):
+        """Regression: ``backup_keep: 0`` previously triggered ``backups[0:]``
+        in the pruner — wiping the just-created zip and leaving the user
+        with no recovery point.  The floor (keep>=1) preserves the new file
+        regardless of misconfiguration; users who don't want backups should
+        set ``pre_update_backup: false`` instead.
+        """
+        from hermes_cli.backup import create_pre_update_backup
+        out = create_pre_update_backup(hermes_home=hermes_home, keep=0)
+        assert out is not None
+        assert out.exists(), (
+            "keep=0 silently deleted the freshly-created backup; floor "
+            "should preserve the just-written file."
+        )
+
+    def test_keep_negative_does_not_delete_freshly_created_backup(self, hermes_home):
+        """Mirror coverage: any value <1 should be floored, not literally
+        applied as a slice index."""
+        from hermes_cli.backup import create_pre_update_backup
+        out = create_pre_update_backup(hermes_home=hermes_home, keep=-3)
+        assert out is not None
+        assert out.exists()
+
+    def test_keep_zero_still_prunes_older_backups(self, hermes_home):
+        """The floor preserves the new backup but should NOT regress the
+        rotation behaviour for older zips: a third call with keep=0 must
+        still remove pre-existing backups beyond the (floored) limit of 1.
+        """
+        import time as _t
+        from hermes_cli.backup import create_pre_update_backup
+
+        first = create_pre_update_backup(hermes_home=hermes_home, keep=5)
+        _t.sleep(1.05)
+        second = create_pre_update_backup(hermes_home=hermes_home, keep=5)
+        _t.sleep(1.05)
+        third = create_pre_update_backup(hermes_home=hermes_home, keep=0)
+
+        remaining = {
+            p.name for p in (hermes_home / "backups").iterdir()
+            if p.name.startswith("pre-update-")
+        }
+        assert third.name in remaining, "Floor must preserve the new backup"
+        assert first.name not in remaining and second.name not in remaining, (
+            f"keep=0 floor of 1 should still prune older backups; "
+            f"remaining={remaining}"
+        )
 
 
 class TestRunPreUpdateBackup:

@@ -113,3 +113,123 @@ class TestOuterExceptEIO:
         assert not (getattr(exc, "errno", None) == errno.EIO)
         assert "is not registered" not in str(exc)
         assert "Bad file descriptor" not in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Signal handler – guarded logger.debug (#13710 regression)
+# ---------------------------------------------------------------------------
+#
+# CPython's logging module is not reentrant-safe.  ``Logger.isEnabledFor``
+# caches level results in ``Logger._cache``; under shutdown races the cache
+# can be cleared (``Logger._clear_cache``) or mid-mutation when the signal
+# fires, raising ``KeyError: <level_int>`` (e.g. ``KeyError: 10`` for DEBUG)
+# from inside the handler.  If that KeyError escapes, it bypasses the
+# ``raise KeyboardInterrupt()`` on the next line, which in turn bypasses
+# prompt_toolkit's normal interrupt unwind and surfaces as the EIO cascade
+# from #13710.
+#
+# The fix: wrap the ``logger.debug`` call in the signal handler in a bare
+# ``try/except Exception: pass`` so logging can never raise through it.
+#
+# These tests verify the contract: the handler must raise KeyboardInterrupt
+# (and nothing else) regardless of whether logger.debug succeeds or blows up.
+
+
+def _make_signal_handler(logger, agent_state):
+    """Build a standalone copy of ``_signal_handler``.
+
+    The real handler is defined as a closure inside ``CLI._run_interactive``;
+    we reconstruct an equivalent here so the unit tests don't need a full
+    CLI instance.  Mirrors cli.py:_signal_handler as of #13710 regression
+    fix — guarded logger.debug + agent interrupt + KeyboardInterrupt.
+    """
+    def _signal_handler(signum, frame):
+        # Guarded: logging must never raise through a signal handler.
+        try:
+            logger.debug("Received signal %s, triggering graceful shutdown", signum)
+        except Exception:
+            pass  # never let logging raise from a signal handler (#13710 regression)
+        try:
+            if agent_state.get("agent") and agent_state.get("running"):
+                agent_state["agent"].interrupt(f"received signal {signum}")
+        except Exception:
+            pass  # never block signal handling
+        raise KeyboardInterrupt()
+    return _signal_handler
+
+
+class TestSignalHandlerLoggingRace:
+    """#13710 regression — logger.debug in signal handler must not escape.
+
+    If the DEBUG-level ``logging._cache`` lookup races with a concurrent
+    ``_clear_cache`` (e.g. from another thread reconfiguring logging during
+    shutdown), ``logger.debug`` can raise ``KeyError: 10``.  The signal
+    handler must swallow that and still raise KeyboardInterrupt.
+    """
+
+    def test_keyboard_interrupt_raised_on_normal_path(self):
+        """Sanity: handler raises KeyboardInterrupt when logging works."""
+        logger = MagicMock()
+        handler = _make_signal_handler(logger, {})
+        with pytest.raises(KeyboardInterrupt):
+            handler(15, None)  # SIGTERM
+        logger.debug.assert_called_once()
+
+    def test_keyboard_interrupt_raised_when_logger_raises_keyerror(self):
+        """logger.debug raising KeyError(10) must not escape — KeyboardInterrupt wins.
+
+        This is the exact failure signature from the #13710 regression: the
+        CPython 3.11 ``Logger._cache[level]`` race surfaces as KeyError on
+        the integer level value, and previously propagated out of the
+        signal handler before the ``raise KeyboardInterrupt()`` could fire.
+        """
+        logger = MagicMock()
+        logger.debug.side_effect = KeyError(10)  # DEBUG level int
+        handler = _make_signal_handler(logger, {})
+        # Must still raise KeyboardInterrupt, NOT KeyError.
+        with pytest.raises(KeyboardInterrupt):
+            handler(15, None)
+
+    def test_keyboard_interrupt_raised_when_logger_raises_generic(self):
+        """Any Exception from logger.debug must be swallowed by the guard."""
+        logger = MagicMock()
+        logger.debug.side_effect = RuntimeError("logging is shutting down")
+        handler = _make_signal_handler(logger, {})
+        with pytest.raises(KeyboardInterrupt):
+            handler(15, None)
+
+    def test_agent_interrupt_still_fires_when_logger_raises(self):
+        """Even if logger.debug blows up, the agent interrupt must still run.
+
+        The whole point of the grace window is cleaning up the agent's
+        subprocess group.  A logging race must not skip that step.
+        """
+        logger = MagicMock()
+        logger.debug.side_effect = KeyError(10)
+        agent = MagicMock()
+        handler = _make_signal_handler(logger, {"agent": agent, "running": True})
+        with pytest.raises(KeyboardInterrupt):
+            handler(15, None)
+        agent.interrupt.assert_called_once_with("received signal 15")
+
+    def test_agent_interrupt_failure_also_does_not_escape(self):
+        """Defense-in-depth: agent.interrupt() raising must not escape either."""
+        logger = MagicMock()
+        agent = MagicMock()
+        agent.interrupt.side_effect = RuntimeError("agent already torn down")
+        handler = _make_signal_handler(logger, {"agent": agent, "running": True})
+        with pytest.raises(KeyboardInterrupt):
+            handler(15, None)
+
+    def test_base_exception_from_logger_is_not_swallowed(self):
+        """BaseException (e.g. SystemExit) must still propagate — only Exception is caught.
+
+        The guard uses ``except Exception`` deliberately; BaseException
+        subclasses like SystemExit or a nested KeyboardInterrupt should
+        still be honored so we don't mask real shutdown signals.
+        """
+        logger = MagicMock()
+        logger.debug.side_effect = SystemExit(1)
+        handler = _make_signal_handler(logger, {})
+        with pytest.raises(SystemExit):
+            handler(15, None)

@@ -15,7 +15,7 @@ import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import type { CompletionItem, ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -37,6 +37,27 @@ const expandSnips = (snips: PasteSnippet[]) => {
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
+
+export function completionSubmitReplacement(
+  value: string,
+  row: CompletionItem | null | undefined,
+  replaceFrom: number
+): null | string {
+  if (!row?.text) {
+    return null
+  }
+
+  const candidate = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
+  const next = value.slice(0, replaceFrom) + candidate
+
+  // Exact slash commands keep a completion row open by appending a trailing
+  // space. Treat that as already-complete input so Enter can submit.
+  if (next.trimEnd() === value.trimEnd()) {
+    return null
+  }
+
+  return next !== value ? next : null
+}
 
 export function useSubmission(opts: UseSubmissionOptions) {
   const {
@@ -361,15 +382,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
   const submit = useCallback(
     (value: string) => {
       if (composerState.completions.length) {
-        const row = composerState.completions[composerState.compIdx]
+        const next = completionSubmitReplacement(
+          value,
+          composerState.completions[composerState.compIdx],
+          composerState.compReplace
+        )
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next !== null) {
+          return composerActions.setInput(next)
         }
       }
 

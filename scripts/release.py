@@ -67,6 +67,8 @@ AUTHOR_MAP = {
     "40222899+rahimsais@users.noreply.github.com": "rahimsais",
     "alfred@Alfreds-Mac-mini.local": "NivOO5",
     "231191380+NivOO5@users.noreply.github.com": "NivOO5",
+    "jameshuang@gmail.com": "kjames2001",
+    "62420081+kjames2001@users.noreply.github.com": "kjames2001",
     "ra2157218@gmail.com": "Abd0r",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",

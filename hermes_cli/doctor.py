@@ -729,13 +729,12 @@ def run_doctor(args):
     hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok(f"{_DHH} directory exists")
+    elif should_fix:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        check_ok(f"Created {_DHH} directory")
+        fixed_count += 1
     else:
-        if should_fix:
-            hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH} directory")
-            fixed_count += 1
-        else:
-            check_warn(f"{_DHH} not found", "(will be created on first use)")
+        check_warn(f"{_DHH} not found", "(will be created on first use)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
@@ -743,13 +742,12 @@ def run_doctor(args):
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
             check_ok(f"{_DHH}/{subdir_name}/ exists")
+        elif should_fix:
+            subdir_path.mkdir(parents=True, exist_ok=True)
+            check_ok(f"Created {_DHH}/{subdir_name}/")
+            fixed_count += 1
         else:
-            if should_fix:
-                subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created {_DHH}/{subdir_name}/")
-                fixed_count += 1
-            else:
-                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+            check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -955,14 +953,12 @@ def run_doctor(args):
         else:
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
+    elif _safe_which("docker"):
+        check_ok("docker", "(optional)")
+    elif _is_termux():
+        check_info("Docker backend is not available inside Termux (expected on Android)")
     else:
-        if _safe_which("docker"):
-            check_ok("docker", "(optional)")
-        else:
-            if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
-            else:
-                check_warn("docker not found", "(optional)")
+        check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -1058,15 +1054,14 @@ def run_doctor(args):
         elif shutil.which("agent-browser"):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
+        elif _is_termux():
+            check_info("agent-browser is not installed (expected in the tested Termux path)")
+            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=True):
+                check_info(step)
         else:
-            if _is_termux():
-                check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-                check_info("Termux browser setup:")
-                for step in _termux_browser_setup_steps(node_installed=True):
-                    check_info(step)
-            else:
-                check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(run: npm install)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
@@ -1117,15 +1112,14 @@ def run_doctor(args):
                                 f"Install with: cd {PROJECT_ROOT} && "
                                 "npx playwright install --with-deps chromium"
                             )
+    elif _is_termux():
+        check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+        check_info("Install Node.js on Termux with: pkg install nodejs")
+        check_info("Termux browser setup:")
+        for step in _termux_browser_setup_steps(node_installed=False):
+            check_info(step)
     else:
-        if _is_termux():
-            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-            check_info("Install Node.js on Termux with: pkg install nodejs")
-            check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=False):
-                check_info(step)
-        else:
-            check_warn("Node.js not found", "(optional, needed for browser tools)")
+        check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")

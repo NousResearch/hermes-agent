@@ -246,7 +246,7 @@ class ThreadParticipationTracker:
         thread_list = list(self._threads)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
-            self._threads = {thread_id: None for thread_id in thread_list}
+            self._threads = dict.fromkeys(thread_list)
         atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:

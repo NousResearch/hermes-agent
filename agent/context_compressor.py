@@ -1316,8 +1316,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
-        if cut_idx > fallback_cut:
-            cut_idx = fallback_cut
+        cut_idx = min(cut_idx, fallback_cut)
 
         # If the token budget would protect everything (small conversations),
         # force a cut after the head so compression can still remove middle turns.

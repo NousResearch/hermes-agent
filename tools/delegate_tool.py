@@ -1239,7 +1239,7 @@ def _dump_subagent_timeout_diagnostic(
         if tool_names:
             _w(f"  loaded tool count: {len(tool_names)}")
             try:
-                _w(f"  loaded tools:      {sorted(list(tool_names))}")
+                _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
                 pass
         _w("")

@@ -2130,15 +2130,14 @@ if __name__ == "__main__":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
+        elif firecrawl_url_available:
+            print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
+        elif firecrawl_key_available:
+            print("   Using direct Firecrawl cloud API")
+        elif tool_gateway_available:
+            print(f"   Using Firecrawl tool-gateway: {_get_firecrawl_gateway_url()}")
         else:
-            if firecrawl_url_available:
-                print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
-            elif firecrawl_key_available:
-                print("   Using direct Firecrawl cloud API")
-            elif tool_gateway_available:
-                print(f"   Using Firecrawl tool-gateway: {_get_firecrawl_gateway_url()}")
-            else:
-                print("   Firecrawl backend selected but not configured")
+            print("   Firecrawl backend selected but not configured")
     else:
         print("❌ No web search backend configured")
         print(

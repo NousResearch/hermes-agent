@@ -1428,10 +1428,9 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
             if toolset_key not in ts_list:
                 ts_list.append(toolset_key)
                 changed = True
-        else:
-            if toolset_key in ts_list:
-                ts_list.remove(toolset_key)
-                changed = True
+        elif toolset_key in ts_list:
+            ts_list.remove(toolset_key)
+            changed = True
 
     # If enabling and no platforms have toolset lists yet, add to "cli" at minimum
     if enable and not changed and not platform_toolsets:

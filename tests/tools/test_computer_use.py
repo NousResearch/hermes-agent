@@ -83,6 +83,20 @@ class TestSchema:
         assert props["max_elements"]["type"] == "integer"
         assert props["max_elements"].get("minimum", 1) >= 1
 
+    def test_schema_max_elements_documents_default_and_upper_bound(self):
+        """Schema description must agree with the runtime. The original PR
+        text said "Default 100" without a corresponding `default` field, and
+        had no upper bound — both Copilot findings.
+        """
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        from tools.computer_use.tool import (
+            _DEFAULT_MAX_ELEMENTS,
+            _MAX_ALLOWED_MAX_ELEMENTS,
+        )
+        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
+        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
+        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):
@@ -442,6 +456,94 @@ class TestCaptureResponse:
             assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS, (
                 f"bad max_elements={bad!r} disabled the cap"
             )
+
+    def test_capture_ax_clamps_oversized_max_elements_to_hard_cap(self):
+        """A caller passing a very large `max_elements` must not be able to
+        disable the safeguard. The cap is clamped to a hard upper bound so
+        the context-blow-up protection cannot be bypassed by argument.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(5000)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 10_000}
+            )
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        assert parsed["total_elements"] == 5000
+        assert parsed["truncated_elements"] == 5000 - cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+
+    def test_capture_ax_summary_indices_match_returned_elements(self):
+        """When `max_elements` is below the human-summary's own line cap, the
+        summary must not index elements that aren't in the returned array.
+        Otherwise the model sees `#15` in the summary and finds no matching
+        entry in `elements`.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 5}
+            )
+        parsed = json.loads(out)
+        returned_indices = {e["index"] for e in parsed["elements"]}
+        summary_lines = parsed["summary"].splitlines()
+        indexed_lines = [ln for ln in summary_lines if ln.lstrip().startswith("#")]
+        for ln in indexed_lines:
+            idx_token = ln.lstrip().split()[0].lstrip("#")
+            idx = int(idx_token)
+            assert idx in returned_indices, (
+                f"summary references #{idx} but it is absent from elements payload "
+                f"(returned: {sorted(returned_indices)})"
+            )
+
+    def test_capture_multimodal_summary_omits_truncation_note(self):
+        """The som/vision multimodal envelope returns a screenshot, not an
+        `elements` array — so a "response truncated to N of M elements"
+        claim in the summary would be inaccurate.
+        """
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        fake_png = "iVBORw0KGgo="
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(600)
+        ]
+
+        class FakeBackend:
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None):
+                return CaptureResult(
+                    mode=mode, width=800, height=600,
+                    png_b64=fake_png, elements=list(elements),
+                    app="Obsidian",
+                )
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
+
+        assert isinstance(out, dict) and out["_multimodal"] is True
+        text_part = next(p for p in out["content"] if p.get("type") == "text")
+        assert "truncated to" not in text_part["text"], (
+            "multimodal response carries an image, not an elements array; "
+            "the truncation note describes a payload field that isn't present"
+        )
+        assert "truncated to" not in out["text_summary"]
 
 
 # ---------------------------------------------------------------------------

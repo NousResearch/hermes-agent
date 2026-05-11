@@ -79,18 +79,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "integer",
                 "description": (
                     "Optional cap on the AX `elements` array returned by "
-                    "`action='capture'`. Default 100. Dense UIs (Electron "
-                    "apps such as Obsidian or VS Code, JetBrains IDEs) can "
-                    "publish 500+ AX nodes — capping prevents a single "
-                    "capture from blowing session context. When the cap "
-                    "trims the response, `total_elements` and "
-                    "`truncated_elements` are surfaced in the result so "
-                    "you can re-call with `app=` to narrow scope or raise "
-                    "`max_elements` when the full tree is required. Has no "
-                    "effect on `mode='som'` / `mode='vision'` (those return "
-                    "a screenshot, not the elements array)."
+                    "`action='capture'`. Default 100, hard maximum 1000. "
+                    "Dense UIs (Electron apps such as Obsidian or VS Code, "
+                    "JetBrains IDEs) can publish 500+ AX nodes — capping "
+                    "prevents a single capture from blowing session "
+                    "context. When the cap trims the response, "
+                    "`total_elements` and `truncated_elements` are "
+                    "surfaced in the result so you can re-call with "
+                    "`app=` to narrow scope or raise `max_elements` when "
+                    "the full tree is required. Has no effect on "
+                    "`mode='som'` / `mode='vision'` when a screenshot is "
+                    "included in the response; only the rare image-"
+                    "missing fallback returns an `elements` array and is "
+                    "subject to the cap."
                 ),
+                "default": 100,
                 "minimum": 1,
+                "maximum": 1000,
             },
             # ── click / drag / scroll targeting ────────────────────
             "element": {

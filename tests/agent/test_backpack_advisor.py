@@ -1,7 +1,16 @@
 import pytest
 
 from agent import backpack_advisor
-from agent.backpack_advisor import build_backpack_candidate_hints, build_candidate_hints, should_build_backpack_candidate_hints
+from agent.backpack_advisor import (
+    BACKPACK_ADVISOR_STRATEGY_VERSION,
+    build_backpack_candidate_hints,
+    build_candidate_hints,
+    should_build_backpack_candidate_hints,
+)
+
+
+def test_grouped_strategy_has_formal_version():
+    assert BACKPACK_ADVISOR_STRATEGY_VERSION == "grouped-hints-v1"
 
 
 @pytest.mark.parametrize(
@@ -133,6 +142,136 @@ def test_build_candidate_hints_prefers_read_file_for_known_path():
     assert "SKILL.md content" not in hints
 
 
+def test_file_read_request_returns_grouped_reasoned_tool_set():
+    catalog = [
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+        {"id": "skill.design-md", "kind": "skill", "name": "design-md", "description": "Review README and SKILL.md design docs"},
+    ]
+
+    hints = build_candidate_hints("读一下 README.md", catalog, limit=5)
+
+    assert "Group 1: local file inspection" in hints
+    assert "reason: user asked to read a local file." in hints
+    assert "select: tool_backpack select read_file,search_files" in hints
+    assert hints.index("tool.read_file") < hints.index("tool.search_files")
+    assert "skill.design-md" not in hints
+
+
+def test_file_search_request_returns_search_first_tool_set():
+    catalog = [
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+    ]
+
+    hints = build_candidate_hints("搜索 README.md", catalog, limit=5)
+
+    assert "Group 1: local file inspection" in hints
+    assert "reason: user asked to search local files or repository content." in hints
+    assert "select: tool_backpack select search_files,read_file" in hints
+    assert hints.index("tool.search_files") < hints.index("tool.read_file")
+
+
+def test_debug_failure_request_returns_debugging_group_and_repo_tools():
+    catalog = [
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+        {"id": "tool.terminal", "kind": "tool", "name": "terminal", "description": "Run shell commands and tests"},
+        {"id": "skill.systematic-debugging", "kind": "skill", "name": "systematic-debugging", "description": "Diagnose failures and root causes"},
+    ]
+
+    hints = build_candidate_hints("这个测试失败怎么办", catalog, limit=5)
+
+    assert "Group 1: debugging workflow" in hints
+    assert "reason: user described a failing test or error." in hints
+    assert "select: skill_backpack select systematic-debugging" in hints
+    assert "Group 2: repo diagnosis tools" in hints
+    assert "select: tool_backpack select search_files,read_file,terminal" in hints
+
+
+def test_english_traceback_request_returns_debugging_group():
+    catalog = [
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+        {"id": "skill.systematic-debugging", "kind": "skill", "name": "systematic-debugging", "description": "Diagnose failures and root causes"},
+    ]
+
+    hints = build_candidate_hints("Traceback in parser", catalog, limit=5)
+
+    assert "Group 1: debugging workflow" in hints
+    assert "skill.systematic-debugging" in hints
+
+
+def test_grouped_hints_respect_candidate_limit():
+    catalog = [
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+    ]
+
+    hints = build_candidate_hints("读一下 README.md", catalog, limit=1)
+
+    assert "tool.read_file" in hints
+    assert "tool.search_files" not in hints
+    assert "select: tool_backpack select read_file" in hints
+
+
+def test_implementation_request_returns_workflow_and_repo_edit_groups():
+    catalog = [
+        {"id": "tool.search_files", "kind": "tool", "name": "search_files", "description": "Search names and content"},
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+        {"id": "tool.patch", "kind": "tool", "name": "patch", "description": "Apply file patch"},
+        {"id": "tool.terminal", "kind": "tool", "name": "terminal", "description": "Run shell commands and tests"},
+        {"id": "skill.test-driven-development", "kind": "skill", "name": "test-driven-development", "description": "Write tests before code changes"},
+    ]
+
+    hints = build_candidate_hints("实现这个功能", catalog, limit=5)
+
+    assert "Group 1: implementation workflow" in hints
+    assert "select: skill_backpack select test-driven-development" in hints
+    assert "Group 2: repo edit tools" in hints
+    assert "select: tool_backpack select search_files,read_file,patch,terminal" in hints
+
+
+def test_url_request_returns_web_lookup_group():
+    catalog = [
+        {"id": "tool.web_search", "kind": "tool", "name": "web_search", "description": "Search web"},
+        {"id": "tool.web_extract", "kind": "tool", "name": "web_extract", "description": "Extract web page"},
+        {"id": "tool.browser_navigate", "kind": "tool", "name": "browser_navigate", "description": "Open page"},
+    ]
+
+    hints = build_candidate_hints("看一下 https://example.com", catalog, limit=5)
+
+    assert "Group 1: web lookup" in hints
+    assert "reason: user provided a URL or asked for current web information." in hints
+    assert "select: tool_backpack select web_extract,web_search" in hints
+    assert "tool.browser_navigate" not in hints
+
+
+def test_url_token_without_lookup_intent_does_not_return_web_lookup_group():
+    catalog = [
+        {"id": "tool.web_search", "kind": "tool", "name": "web_search", "description": "Search web"},
+        {"id": "tool.web_extract", "kind": "tool", "name": "web_extract", "description": "Extract web page"},
+    ]
+
+    hints = build_candidate_hints("fix URL parser", catalog, limit=5)
+
+    assert "Group 1: web lookup" not in hints
+
+
+def test_ranked_fallback_candidates_are_still_grouped():
+    catalog = [
+        {"id": "tool.session_search", "kind": "tool", "name": "session_search", "description": "Search previous sessions"},
+        {"id": "skill.backpack-manager", "kind": "skill", "name": "backpack-manager", "description": "Manage Backpack routing"},
+    ]
+
+    hints = build_candidate_hints("之前我们怎么处理 Backpack 的", catalog, limit=5)
+
+    assert "Group 1: fallback candidates" in hints
+    assert "reason: no specialized group matched; these are the highest-ranked candidates." in hints
+    assert "select: tool_backpack select session_search" in hints
+    assert "select: skill_backpack select backpack-manager" in hints
+    assert "1. tool.session_search - use tool_backpack select session_search" not in hints
+
+
 def test_build_candidate_hints_limits_output_to_five_candidates():
     catalog = [
         {"id": f"tool.tool_{index}", "kind": "tool", "name": f"tool_{index}", "description": "Search files and read content"}
@@ -141,6 +280,6 @@ def test_build_candidate_hints_limits_output_to_five_candidates():
 
     hints = build_candidate_hints("Search files and read content.", catalog, limit=5)
 
-    assert hints.count("\n") < 8
+    assert "Group 1: fallback candidates" in hints
     assert "5. tool.tool_" in hints
     assert "6. tool.tool_" not in hints

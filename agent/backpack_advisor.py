@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 
+BACKPACK_ADVISOR_STRATEGY_VERSION = "grouped-hints-v1"
+
 BACKPACK_GATEWAY_GUIDANCE = (
     "Backpack gateways are available. Backpack candidate hints are injected into "
     "the current user turn when useful. Treat them as hints only: prefer the first "
@@ -187,21 +189,257 @@ def should_build_backpack_candidate_hints(request: str) -> bool:
 
 
 def build_candidate_hints(request: str, catalog: list[dict[str, Any]], limit: int = 5) -> str:
+    grouped = _build_grouped_candidate_hints(request, catalog, limit=limit)
+    if grouped:
+        return grouped
+
     ranked = _rank(request, catalog)
     if not ranked:
         return ""
-    lines = [
-        "Backpack candidate hints:",
-        "Hints only; select explicitly through tool_backpack or skill_backpack.",
-    ]
-    for index, item in enumerate(ranked[:limit], start=1):
-        selector = _selector(item)
+    return _format_grouped_hints(
+        [
+            {
+                "title": "fallback candidates",
+                "reason": "no specialized group matched; these are the highest-ranked candidates.",
+                "items": ranked[:limit],
+                "lines": _fallback_reason_lines(ranked[:limit]),
+            }
+        ]
+    )
+
+
+def _build_grouped_candidate_hints(request: str, catalog: list[dict[str, Any]], limit: int = 5) -> str:
+    request_text = request.lower()
+    request_tokens = _tokens(request)
+    groups = []
+
+    if _is_file_inspection_request(request_text, request_tokens):
+        search_first = _is_file_search_request(request_text, request_tokens)
+        names = ["search_files", "read_file"] if search_first else ["read_file", "search_files"]
+        tools = _available_items(catalog, "tool", names)
+        if tools:
+            groups.append(
+                {
+                    "title": "local file inspection",
+                    "reason": "user asked to search local files or repository content."
+                    if search_first
+                    else "user asked to read a local file.",
+                    "items": tools,
+                    "lines": _tool_reason_lines(
+                        tools,
+                        {
+                            "read_file": "read the known file path.",
+                            "search_files": "locate the file if the path is ambiguous.",
+                        },
+                    ),
+                }
+            )
+
+    if _is_debug_failure_request(request_text, request_tokens):
+        skills = _available_items(catalog, "skill", ["systematic-debugging"])
+        if skills:
+            groups.append(
+                {
+                    "title": "debugging workflow",
+                    "reason": "user described a failing test or error.",
+                    "items": skills,
+                    "lines": ["1. skill.systematic-debugging - diagnose the failure before changing code."],
+                }
+            )
+        tools = _available_items(catalog, "tool", ["search_files", "read_file", "terminal"])
+        if tools:
+            groups.append(
+                {
+                    "title": "repo diagnosis tools",
+                    "reason": "debugging usually needs locating files, reading code, and running targeted checks.",
+                    "items": tools,
+                    "lines": _tool_reason_lines(
+                        tools,
+                        {
+                            "search_files": "find related tests, source files, or symbols.",
+                            "read_file": "inspect relevant source or test files.",
+                            "terminal": "run the targeted test or reproduction command.",
+                        },
+                    ),
+                }
+            )
+
+    if _is_implementation_request(request_text, request_tokens):
+        skills = _available_items(catalog, "skill", ["test-driven-development"])
+        if skills:
+            groups.append(
+                {
+                    "title": "implementation workflow",
+                    "reason": "user asked for a code change or feature implementation.",
+                    "items": skills,
+                    "lines": ["1. skill.test-driven-development - write or update the failing test before implementation."],
+                }
+            )
+        tools = _available_items(catalog, "tool", ["search_files", "read_file", "patch", "terminal"])
+        if tools:
+            groups.append(
+                {
+                    "title": "repo edit tools",
+                    "reason": "implementation usually needs locating files, reading code, patching, and verifying.",
+                    "items": tools,
+                    "lines": _tool_reason_lines(
+                        tools,
+                        {
+                            "search_files": "locate relevant files and symbols.",
+                            "read_file": "inspect current implementation before editing.",
+                            "patch": "apply the source change.",
+                            "terminal": "run tests or build verification.",
+                        },
+                    ),
+                }
+            )
+
+    if _is_web_lookup_request(request_text, request_tokens):
+        tools = _available_items(catalog, "tool", ["web_extract", "web_search"])
+        if tools:
+            groups.append(
+                {
+                    "title": "web lookup",
+                    "reason": "user provided a URL or asked for current web information.",
+                    "items": tools,
+                    "lines": _tool_reason_lines(
+                        tools,
+                        {
+                            "web_extract": "read the provided URL directly.",
+                            "web_search": "search the web when the exact page is unknown.",
+                        },
+                    ),
+                }
+            )
+
+    if not groups:
+        return ""
+    return _format_grouped_hints(_limit_groups(groups, limit))
+
+
+def _limit_groups(groups: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    remaining = max(1, limit)
+    limited = []
+    for group in groups:
+        if remaining <= 0 or len(limited) >= 3:
+            break
+        items = group["items"][:remaining]
+        if not items:
+            continue
+        next_group = dict(group)
+        next_group["items"] = items
+        next_group["lines"] = group["lines"][: len(items)]
+        limited.append(next_group)
+        remaining -= len(items)
+    return limited
+
+
+def _available_items(catalog: list[dict[str, Any]], kind: str, names: list[str]) -> list[dict[str, Any]]:
+    by_name = {
+        str(item.get("name") or str(item.get("id") or "").split(".", 1)[-1]): item
+        for item in catalog
+        if item.get("kind") == kind
+    }
+    return [by_name[name] for name in names if name in by_name]
+
+
+def _tool_reason_lines(items: list[dict[str, Any]], reasons: dict[str, str]) -> list[str]:
+    lines = []
+    for index, item in enumerate(items, start=1):
+        name = str(item.get("name") or str(item.get("id") or "").split(".", 1)[-1])
+        lines.append(f"{index}. tool.{name} - {reasons.get(name, 'use when relevant to the task.')}")
+    return lines
+
+
+def _fallback_reason_lines(items: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for index, item in enumerate(items, start=1):
         description = str(item.get("description") or "").splitlines()[0].strip()
         if len(description) > 90:
             description = description[:87].rstrip() + "..."
         suffix = f" - {description}" if description else ""
-        lines.append(f"{index}. {item['id']} - use {selector}{suffix}")
+        lines.append(f"{index}. {item['id']}{suffix}")
+    return lines
+
+
+def _format_grouped_hints(groups: list[dict[str, Any]]) -> str:
+    lines = [
+        f"Backpack candidate hints ({BACKPACK_ADVISOR_STRATEGY_VERSION}):",
+        "Hints only; select explicitly through tool_backpack or skill_backpack.",
+    ]
+    for index, group in enumerate(groups, start=1):
+        items = group["items"]
+        if not items:
+            continue
+        lines.extend(
+            [
+                f"Group {index}: {group['title']}",
+                f"reason: {group['reason']}",
+            ]
+        )
+        lines.extend(f"select: {selector}" for selector in _group_selectors(items))
+        kinds = {item.get("kind") for item in items}
+        if kinds == {"tool"}:
+            lines.append("tools:")
+        elif kinds == {"skill"}:
+            lines.append("skills:")
+        else:
+            lines.append("candidates:")
+        lines.extend(group["lines"])
     return "\n".join(lines)
+
+
+def _group_selectors(items: list[dict[str, Any]]) -> list[str]:
+    tool_names = [
+        str(item.get("name") or str(item.get("id") or "").split(".", 1)[-1])
+        for item in items
+        if item.get("kind") == "tool"
+    ]
+    skill_names = [
+        str(item.get("name") or str(item.get("id") or "").split(".", 1)[-1])
+        for item in items
+        if item.get("kind") == "skill"
+    ]
+    selectors = []
+    if tool_names:
+        selectors.append(f"tool_backpack select {','.join(tool_names)}")
+    selectors.extend(f"skill_backpack select {name}" for name in skill_names)
+    return selectors
+
+
+def _is_file_inspection_request(request_text: str, request_tokens: set[str]) -> bool:
+    if not _has_file_object(request_text, request_tokens):
+        return False
+    if _is_file_search_request(request_text, request_tokens):
+        return True
+    if request_tokens & {"explain", "look", "open", "read", "says", "summarize", "understand", "inspect"}:
+        return True
+    return _has_any_phrase(request_text, ("读", "打开", "看一下", "解释"))
+
+
+def _is_file_search_request(request_text: str, request_tokens: set[str]) -> bool:
+    return bool(request_tokens & {"find", "search", "locate"}) or _has_any_phrase(request_text, ("搜索", "查找"))
+
+
+def _is_debug_failure_request(request_text: str, request_tokens: set[str]) -> bool:
+    return bool(
+        request_tokens
+        & {"broken", "cause", "debug", "diagnose", "error", "exception", "failing", "fails", "failure", "traceback", "unexpected"}
+    ) or "stack trace" in request_text or _has_any_phrase(request_text, ("报错", "失败", "异常", "找原因"))
+
+
+def _is_implementation_request(request_text: str, request_tokens: set[str]) -> bool:
+    return bool(request_tokens & {"fix", "implement", "change", "edit", "patch"}) or _has_any_phrase(
+        request_text, ("修", "改", "实现")
+    )
+
+
+def _is_web_lookup_request(request_text: str, request_tokens: set[str]) -> bool:
+    if re.search(r"https?://", request_text):
+        return True
+    if _is_implementation_request(request_text, request_tokens):
+        return False
+    return bool(request_tokens & {"web", "lookup"})
 
 
 def _tool_catalog() -> list[dict[str, Any]]:

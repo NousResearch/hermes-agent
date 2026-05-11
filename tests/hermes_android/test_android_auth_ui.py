@@ -107,7 +107,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider)' in auth_view_model
     assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
-    assert 'Intent.createChooser(browserIntent, "Open Corr3xt sign-in")' in auth_view_model
+    assert 'putExtra(Browser.EXTRA_APPLICATION_ID' in auth_view_model
     assert 'copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)' in auth_view_model
     assert 'fun copyPendingSignInUrl()' in auth_view_model
     assert 'ClipData.newPlainText("Hermes Corr3xt sign-in URL", target)' in auth_view_model
@@ -170,7 +170,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
-    assert "Intent.createChooser(browserIntent, \"Open provider setup page\")" in auth_view_model
+    assert "getApplication<Application>().startActivity(browserIntent)" in auth_view_model
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
     assert "ClipData.newPlainText(\"Hermes ${option.label} setup URL\", setupUrl)" in auth_view_model
     assert "strings.setUpApiKeyFor(option.label)" in auth_screen
@@ -190,7 +190,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "viewModel::copyProviderKeyPage" in settings_screen
     assert "Intent.ACTION_VIEW" in settings_view_model
     assert "Uri.parse(target)" in settings_view_model
-    assert "Intent.createChooser" in settings_view_model
+    assert "putExtra(Browser.EXTRA_APPLICATION_ID" in settings_view_model
     assert "ClipboardManager" in settings_view_model
     assert "ClipData.newPlainText" in settings_view_model
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model

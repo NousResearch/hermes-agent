@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 from hermes_android.auth_bridge import (
@@ -122,3 +123,49 @@ def test_auth_bridge_supports_qwen_oauth_bundle_via_home_scoped_cli_file(tmp_pat
 
     clear_provider_auth_bundle("qwen-oauth")
     assert not auth_file.exists()
+
+
+def test_auth_bridge_refreshes_expiring_qwen_oauth_bundle(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    auth_file = Path(tmp_path) / ".qwen" / "oauth_creds.json"
+    auth_file.parent.mkdir()
+    auth_file.write_text(
+        json.dumps(
+            {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "token_type": "Bearer",
+                "resource_url": "portal.qwen.ai",
+                "expiry_date": int((time.time() - 60) * 1000),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_refresh(tokens):
+        assert tokens["refresh_token"] == "old-refresh"
+        refreshed = {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "token_type": "Bearer",
+            "resource_url": "portal.qwen.ai",
+            "expiry_date": int((time.time() + 3600) * 1000),
+        }
+        auth_file.write_text(json.dumps(refreshed), encoding="utf-8")
+        return refreshed
+
+    monkeypatch.setattr("hermes_android.auth_bridge._refresh_qwen_tokens", fake_refresh)
+
+    bundle = read_provider_auth_bundle("qwen-oauth")
+
+    assert bundle["configured"] is True
+    assert bundle["api_key"] == "new-access"
+    assert bundle["access_token"] == "new-access"
+    assert bundle["refresh_token"] == "new-refresh"
+    assert bundle["refresh_error"] == ""
+    saved = json.loads(auth_file.read_text(encoding="utf-8"))
+    assert saved["access_token"] == "new-access"

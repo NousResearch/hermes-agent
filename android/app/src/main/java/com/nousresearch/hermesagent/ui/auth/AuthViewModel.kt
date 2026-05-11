@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Browser
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
@@ -159,9 +160,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         )
         val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pendingRequest.startUrl)).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-        val chooserIntent = Intent.createChooser(browserIntent, "Open Corr3xt sign-in").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
         }
 
         viewModelScope.launch {
@@ -208,7 +208,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
             authSessionStore.savePendingRequest(pendingRequest)
             try {
-                getApplication<Application>().startActivity(chooserIntent)
+                getApplication<Application>().startActivity(browserIntent)
                 _uiState.update { current ->
                     current.copy(
                         corr3xtBaseUrl = normalizedBaseUrl,
@@ -306,12 +306,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-        val chooserIntent = Intent.createChooser(browserIntent, "Open provider setup page").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
         }
         runCatching {
-            getApplication<Application>().startActivity(chooserIntent)
+            getApplication<Application>().startActivity(browserIntent)
         }.onSuccess {
             _uiState.update {
                 it.copy(globalStatus = "Opened ${option.label} setup page. If your browser stalls, copy the setup URL and paste it into another browser.")

@@ -221,6 +221,13 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
+    # These e2e tests exercise command dispatch/reset behavior, not the
+    # destructive-slash confirmation gate. Real GatewayRunner instances read
+    # this from config.yaml; object.__new__ fixtures must pin it explicitly so
+    # /new reaches _handle_reset_command instead of stopping at a confirm prompt.
+    runner._read_user_config = MagicMock(
+        return_value={"approvals": {"destructive_slash_confirm": False}}
+    )
 
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)

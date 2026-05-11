@@ -31,6 +31,95 @@ _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.D
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
 
+def _find_matching_brace(text: str, start: int) -> int:
+    """Return position of matching ``}`` for ``{`` at *start*, or -1.
+
+    Properly skips string contents (including escaped quotes) so that
+    braces inside JSON string values are never counted as structural
+    delimiters.  This is the root fix for the fragile regex in
+    ``_TOOL_CALL_BLOCK_RE``, which uses ``.*?`` (lazy) and can match a
+    ``}`` embedded inside a string value, producing truncated JSON.
+    """
+    if start >= len(text) or text[start] != "{":
+        return -1
+    depth = 1
+    i = start + 1
+    in_string = False
+    escape = False
+    while i < len(text) and depth > 0:
+        ch = text[i]
+        if escape:
+            escape = False
+        elif ch == "\\" and in_string:
+            escape = True
+        elif ch == '"' and not escape:
+            in_string = not in_string
+        elif not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+        i += 1
+    return i - 1 if depth == 0 else -1
+
+
+def _extract_tool_call_blocks(text: str) -> list[tuple[int, int, str]]:
+    """Find ``<tool_call>`` blocks using brace-depth scanning.
+
+    Returns a list of ``(start, end, json_str)`` tuples where *start*
+    points at ``<`` of the opening tag and *end* points just past the
+    closing ``>`` of ``</tool_call>``.
+
+    Unlike the regex equivalent (``_TOOL_CALL_BLOCK_RE``), this scanner
+    properly handles:
+    - Nested JSON objects (brace depth tracking)
+    - ``<tool_call>`` or ``</tool_call>`` appearing inside JSON string
+      values (string-aware scanning)
+    - ``}`` characters inside JSON string values (not counted as
+      structural delimiters)
+    - Multiple ``<tool_call>`` blocks in the same text
+    """
+    results: list[tuple[int, int, str]] = []
+    pos = 0
+    while True:
+        start = text.find("<tool_call>", pos)
+        if start == -1:
+            break
+
+        content_start = start + len("<tool_call>")
+
+        # Find the opening JSON brace after the tag.
+        brace_start = -1
+        for i in range(content_start, len(text)):
+            if text[i] == "{":
+                brace_start = i
+                break
+            if text[i] not in " \t\n\r":
+                break  # Non-whitespace before brace → not a valid tool_call block
+        if brace_start == -1:
+            pos = start + 1
+            continue
+
+        brace_end = _find_matching_brace(text, brace_start)
+        if brace_end == -1:
+            pos = start + 1
+            continue
+
+        # Expect whitespace (optional) then </tool_call>.
+        after = brace_end + 1
+        while after < len(text) and text[after] in " \t\n\r":
+            after += 1
+        if text[after : after + len("</tool_call>")] != "</tool_call>":
+            pos = start + 1
+            continue
+
+        block_end = after + len("</tool_call>")
+        results.append((start, block_end, text[brace_start : brace_end + 1]))
+        pos = block_end
+
+    return results
+
+
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -246,10 +335,11 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             )
         )
 
-    for m in _TOOL_CALL_BLOCK_RE.finditer(text):
-        raw = m.group(1)
-        _try_add_tool_call(raw)
-        consumed_spans.append((m.start(), m.end()))
+    # Use brace-depth scanner instead of regex -- handles nested JSON and
+    # </tool_call> appearing inside JSON string values (see #22696).
+    for block_start, block_end, json_str in _extract_tool_call_blocks(text):
+        _try_add_tool_call(json_str)
+        consumed_spans.append((block_start, block_end))
 
     # Only try bare-JSON fallback when no XML blocks were found.
     if not extracted:

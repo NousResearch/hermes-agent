@@ -205,3 +205,145 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+class TestToolCallBlockExtraction:
+    """Unit tests for _extract_tool_call_blocks, _find_matching_brace,
+    and _extract_tool_calls_from_text."""
+
+    # -- _find_matching_brace ------------------------------------------------
+
+    def test_find_brace_simple(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        assert _find_matching_brace("{a}", 0) == 2
+
+    def test_find_brace_nested_objects(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        assert _find_matching_brace('{"a": {"b": "c"}}', 0) == 16
+
+    def test_find_brace_ignores_braces_in_strings(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        # A } inside a JSON string value should not be treated as structural
+        assert _find_matching_brace('{"a": "}"}', 0) == 9
+
+    def test_find_brace_ignores_tag_in_string(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        assert _find_matching_brace('{"a": "</tool_call>"}', 0) == 20
+
+    def test_find_brace_escaped_quotes(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        import json
+        obj = {"text": 'he said "hello"'}
+        s = json.dumps(obj)
+        assert _find_matching_brace(s, 0) == len(s) - 1
+
+    def test_find_brace_unmatched(self):
+        from agent.copilot_acp_client import _find_matching_brace
+        assert _find_matching_brace("{abc", 0) == -1
+        assert _find_matching_brace("not a brace", 0) == -1
+
+    # -- _extract_tool_call_blocks ------------------------------------------
+
+    def test_extract_simple(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        import json
+        blocks = _extract_tool_call_blocks('<tool_call>{"name": "x"}</tool_call>')
+        assert len(blocks) == 1
+        assert json.loads(blocks[0][2])["name"] == "x"
+
+    def test_extract_tag_inside_string_value(self):
+        """Regression test for the reported bug: </tool_call> and } inside a
+        JSON string value should not confuse the scanner."""
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        import json
+        text = (
+            '<tool_call>{"name": "github_api", "arguments": '
+            '{"query": "repo:owner/name } </tool_call> broken"}}</tool_call>'
+        )
+        blocks = _extract_tool_call_blocks(text)
+        assert len(blocks) == 1
+        assert json.loads(blocks[0][2])["name"] == "github_api"
+
+    def test_extract_nested_json(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        import json
+        text = (
+            '<tool_call>{"name": "read", "args": '
+            '{"path": "/a/b", "opts": {"rec": true}}}</tool_call>'
+        )
+        blocks = _extract_tool_call_blocks(text)
+        assert len(blocks) == 1
+        assert json.loads(blocks[0][2])["args"]["opts"]["rec"] is True
+
+    def test_extract_multiple_blocks(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        text = '<tool_call>{"name": "a"}</tool_call> x <tool_call>{"name": "b"}</tool_call>'
+        blocks = _extract_tool_call_blocks(text)
+        assert len(blocks) == 2
+
+    def test_extract_no_blocks(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        assert _extract_tool_call_blocks("just text") == []
+        assert _extract_tool_call_blocks("use the <tool_call> tag") == []
+
+    def test_extract_whitespace_tolerant(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        blocks = _extract_tool_call_blocks('<tool_call>  {"name": "x"}  </tool_call>')
+        assert len(blocks) == 1
+
+    def test_extract_no_closing_tag(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        assert _extract_tool_call_blocks('<tool_call>{"name": "x"}') == []
+
+    def test_extract_escaped_quotes(self):
+        from agent.copilot_acp_client import _extract_tool_call_blocks
+        import json
+        inner = {"text": 'he said "hello"'}
+        s = json.dumps({"name": "echo", "args": inner})
+        blocks = _extract_tool_call_blocks(f"<tool_call>{s}</tool_call>")
+        assert len(blocks) == 1
+        parsed = json.loads(blocks[0][2])
+        assert parsed["args"]["text"] == 'he said "hello"'
+
+    # -- _extract_tool_calls_from_text (full pipeline) -----------------------
+
+    def test_pipeline_tag_inside_string(self):
+        from agent.copilot_acp_client import _extract_tool_calls_from_text
+        import json
+        tc = {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "arguments": json.dumps({"content": "</tool_call> inside"}),
+            },
+        }
+        text = f'Before <tool_call>{json.dumps(tc)}</tool_call> After'
+        calls, cleaned = _extract_tool_calls_from_text(text)
+        assert len(calls) == 1
+        assert calls[0].function.name == "write_file"
+        assert "Before" in cleaned
+        assert "After" in cleaned
+
+    def test_pipeline_standard(self):
+        from agent.copilot_acp_client import _extract_tool_calls_from_text
+        import json
+        tc = {"id": "c1", "type": "function", "function": {"name": "search", "arguments": '{"q":"t"}'}}
+        text = f'Pre <tool_call>{json.dumps(tc)}</tool_call> Post'
+        calls, cleaned = _extract_tool_calls_from_text(text)
+        assert len(calls) == 1
+        assert calls[0].function.name == "search"
+        assert "Pre" in cleaned
+        assert "Post" in cleaned
+
+    def test_pipeline_empty_text(self):
+        from agent.copilot_acp_client import _extract_tool_calls_from_text
+        calls, cleaned = _extract_tool_calls_from_text("")
+        assert calls == []
+        assert cleaned == ""
+
+    def test_pipeline_no_calls(self):
+        from agent.copilot_acp_client import _extract_tool_calls_from_text
+        calls, cleaned = _extract_tool_calls_from_text("some regular text")
+        assert calls == []
+        assert cleaned == "some regular text"

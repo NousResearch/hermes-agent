@@ -160,6 +160,11 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+# GFM table: a row of |cells| followed by a separator row (---|:---|...)
+_TABLE_MARKDOWN_RE = re.compile(r"^\|.+\|.*\n\|[-: |]+\|", re.MULTILINE)
+# Multi-line fenced code block (opening fence + 2+ content lines + closing fence)
+# Empty or 1-line blocks render fine in post/md; route 3+ content lines to CardKit 2.0.
+_CODE_BLOCK_RE = re.compile(r"^```[^\n]*\n(.*\n){2,}```", re.MULTILINE | re.DOTALL)
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -1724,9 +1729,28 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card send failed; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if msg_type == "interactive" and not self._response_succeeded(response):
+                    logger.warning("[Feishu] Interactive card rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1773,6 +1797,15 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive card update rejected by API; falling back to plain text")
+                fallback_body = self._build_update_message_body(
+                    msg_type="text",
+                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -4175,6 +4208,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Route tables and multi-line code blocks to CardKit 2.0 interactive format.
+        # Feishu's post/md tag does not support table syntax and truncates code
+        # blocks after ~6 lines; CardKit 2.0's markdown element handles both.
+        if _TABLE_MARKDOWN_RE.search(content) or _CODE_BLOCK_RE.search(content):
+            return "interactive", self._build_card_payload(content)
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -4466,7 +4504,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    raise
+                if msg_type == "interactive":
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
@@ -4654,6 +4694,22 @@ class FeishuAdapter(BasePlatformAdapter):
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
         content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)
+
+    def _build_card_payload(self, content: str) -> str:
+        """Build a CardKit 2.0 interactive card with a markdown element.
+
+        CardKit 2.0's ``tag: markdown`` element natively supports GFM tables and
+        fenced code blocks with scrollable rendering — unlike the ``post/md`` tag
+        which silently drops tables and truncates code after ~6 lines.
+        """
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "body": {
+                "elements": [{"tag": "markdown", "content": content}]
+            },
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     @staticmethod
     def _resolve_outbound_file_routing(

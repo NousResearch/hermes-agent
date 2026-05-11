@@ -4823,3 +4823,117 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+# ---------------------------------------------------------------------------
+# Tests for CardKit 2.0 routing — tables and multi-line code blocks
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundCardkitRouting(unittest.TestCase):
+    """_build_outbound_payload routes tables / code blocks to interactive."""
+
+    def setUp(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.adapter = FeishuAdapter(PlatformConfig())
+
+    # -- Table detection --------------------------------------------------
+
+    def test_gfm_table_routes_to_interactive(self):
+        msg_type, payload = self.adapter._build_outbound_payload(
+            "| 名称 | 价格 |\n|------|------|\n| AAPL | 150  |"
+        )
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertIn("tag", card["body"]["elements"][0])
+        self.assertEqual(card["body"]["elements"][0]["tag"], "markdown")
+
+    def test_plain_text_no_table_no_codeblock_routes_to_text(self):
+        msg_type, payload = self.adapter._build_outbound_payload(
+            "Hello, this is a normal message without any tables or code blocks."
+        )
+        self.assertEqual(msg_type, "text")
+
+    def test_pipe_in_inline_text_does_not_trigger_table(self):
+        """Pipes in prose should not match the table regex."""
+        msg_type, _ = self.adapter._build_outbound_payload(
+            "This is a message with a | pipe character in it, but no real table."
+        )
+        self.assertNotEqual(msg_type, "interactive")
+
+    # -- Code block detection ---------------------------------------------
+
+    def test_multi_line_code_block_routes_to_interactive(self):
+        msg_type, payload = self.adapter._build_outbound_payload(
+            "```python\nimport os\nprint('hello')\n```"
+        )
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertIn("import os", card["body"]["elements"][0]["content"])
+
+    def test_short_code_block_stays_post_or_text(self):
+        """Code blocks with only 1 content line stay in post or text."""
+        msg_type, _ = self.adapter._build_outbound_payload(
+            "```python\nprint('hi')\n```"
+        )
+        self.assertIn(msg_type, ("post", "text"))
+
+    def test_inline_code_does_not_trigger_code_block(self):
+        msg_type, _ = self.adapter._build_outbound_payload(
+            "Use the `print()` function to output text."
+        )
+        self.assertNotEqual(msg_type, "interactive")
+
+    # -- _build_card_payload output --------------------------------------
+
+    def test_build_card_payload_produces_valid_cardkit2_json(self):
+        payload = self.adapter._build_card_payload("**bold** and _italic_")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        elements = card["body"]["elements"]
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertEqual(elements[0]["content"], "**bold** and _italic_")
+
+    def test_build_card_payload_preserves_table_syntax(self):
+        table_md = "| A | B |\n|---|---|\n| 1 | 2 |"
+        payload = self.adapter._build_card_payload(table_md)
+        card = json.loads(payload)
+        self.assertIn("| A | B |", card["body"]["elements"][0]["content"])
+
+    # -- Regex correctness -----------------------------------------------
+
+    def test_table_regex_matches_gfm_separator_variants(self):
+        import re
+        from gateway.platforms.feishu import _TABLE_MARKDOWN_RE
+
+        # Left, center, right alignment
+        self.assertTrue(_TABLE_MARKDOWN_RE.search("|col|\n|---|"))
+        self.assertTrue(_TABLE_MARKDOWN_RE.search("|col|\n|:---|"))
+        self.assertTrue(_TABLE_MARKDOWN_RE.search("|col|\n|:---:|"))
+        self.assertTrue(_TABLE_MARKDOWN_RE.search("|col|\n|---:|"))
+
+    def test_code_block_regex_matches_only_four_plus_total_lines(self):
+        import re
+        from gateway.platforms.feishu import _CODE_BLOCK_RE
+
+        # 4 lines total (open + 2 content + close) → matches `(.*\n){2,}`
+        self.assertTrue(_CODE_BLOCK_RE.search("```\na\nb\n```"))
+        # 6 lines total
+        self.assertTrue(_CODE_BLOCK_RE.search("```\na\nb\nc\nd\n```"))
+        # 3 lines total (open + 1 content + close) → doesn't match
+        self.assertIsNone(_CODE_BLOCK_RE.search("```\na\n```"))
+        # 2 lines total (empty block) → doesn't match
+        self.assertIsNone(_CODE_BLOCK_RE.search("```\n```"))
+        # Inline backticks → doesn't match
+        self.assertIsNone(_CODE_BLOCK_RE.search("`code`"))
+
+    def test_table_then_interactive_fallback_on_code_block(self):
+        """Combined content: table + code block → interactive."""
+        content = "| X | Y |\n|---|---|\n| 1 | 2 |\n\n```\nline1\nline2\n```"
+        msg_type, payload = self.adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "interactive")

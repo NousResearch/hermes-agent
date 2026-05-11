@@ -91,8 +91,8 @@ export interface Translations {
       keys: string;
       logs: string;
       models: string;
+      openDesign: string;
       profiles: string;
-      plugins: string;
       sessions: string;
       skills: string;
     };
@@ -101,7 +101,6 @@ export interface Translations {
     navigation: string;
     openDocumentation: string;
     openNavigation: string;
-    pluginNavSection: string;
     sessionsActiveCount: string;
     statusOverview: string;
     system: string;
@@ -246,46 +245,6 @@ export interface Translations {
     };
   };
 
-  // ── Plugins page ──
-  pluginsPage: {
-    contextEngineLabel: string;
-    dashboardSlots: string;
-    disableRuntime: string;
-    enableAfterInstall: string;
-    enableRuntime: string;
-    forceReinstall: string;
-    headline: string;
-    identifierLabel: string;
-    inactive: string;
-    installBtn: string;
-    installHeading: string;
-    installHint: string;
-    memoryProviderLabel: string;
-    missingEnvWarn: string;
-    noDashboardTab: string;
-    openTab: string;
-    orphanHeading: string;
-    pluginListHeading: string;
-    providerDefaults: string;
-    providersHeading: string;
-    providersHint: string;
-    refreshDashboard: string;
-    removeConfirm: string;
-    removeHint: string;
-    rescanHeading: string;
-    rescanHint: string;
-    runtimeHeading: string;
-    saveProviders: string;
-    savedProviders: string;
-    sourceBadge: string;
-    authRequired: string;
-    authRequiredHint: string;
-    updateGit: string;
-    versionBadge: string;
-    showInSidebar: string;
-    hideFromSidebar: string;
-  };
-
   // ── Profiles page ──
   profiles: {
     newProfile: string;
@@ -315,6 +274,55 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
+  };
+
+  // ── Open Design page ──
+  openDesign: {
+    title: string;
+    description: string;
+    statusLabel: string;
+    healthy: string;
+    lastStart: string;
+    logPath: string;
+    start: string;
+    stop: string;
+    restart: string;
+    openUi: string;
+    started: string;
+    stopped: string;
+    restarted: string;
+    opened: string;
+    connection: string;
+    connectionDescription: string;
+    repoPath: string;
+    startCommand: string;
+    uiUrl: string;
+    healthUrl: string;
+    workspaceDir: string;
+    artifactsDir: string;
+    configSaved: string;
+    configSaveFailed: string;
+    loadFailed: string;
+    briefTitle: string;
+    briefDescription: string;
+    projectName: string;
+    skillLabel: string;
+    briefLabel: string;
+    briefPlaceholder: string;
+    designSystem: string;
+    designSystemPlaceholder: string;
+    pushBrief: string;
+    pushing: string;
+    briefRequired: string;
+    briefPushed: string;
+    briefPushFailed: string;
+    artifactsTitle: string;
+    artifactsDescription: string;
+    noArtifacts: string;
+    download: string;
+    environmentTitle: string;
+    environmentDescription: string;
+    noEnv: string;
   };
 
   // ── Skills page ──

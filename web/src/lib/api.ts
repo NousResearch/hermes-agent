@@ -275,61 +275,41 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Open Design
+  getOpenDesignStatus: () => fetchJSON<OpenDesignStatusResponse>("/api/open-design"),
+  getOpenDesignConfig: () => fetchJSON<OpenDesignConfig>("/api/open-design/config"),
+  saveOpenDesignConfig: (body: OpenDesignConfig) =>
+    fetchJSON<OpenDesignConfig>("/api/open-design/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  startOpenDesign: () =>
+    fetchJSON<OpenDesignStatusResponse>("/api/open-design/start", { method: "POST" }),
+  stopOpenDesign: () =>
+    fetchJSON<OpenDesignStatusResponse>("/api/open-design/stop", { method: "POST" }),
+  restartOpenDesign: () =>
+    fetchJSON<OpenDesignStatusResponse>("/api/open-design/restart", { method: "POST" }),
+  openOpenDesignUi: () =>
+    fetchJSON<{ ok: boolean; url: string }>("/api/open-design/open", { method: "POST" }),
+  getOpenDesignLogs: (lines = 200) =>
+    fetchJSON<OpenDesignLogsResponse>(`/api/open-design/logs?lines=${lines}`),
+  pushOpenDesignBrief: (body: OpenDesignBriefRequest) =>
+    fetchJSON<OpenDesignBriefResponse>("/api/open-design/brief", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getOpenDesignArtifacts: (limit = 100) =>
+    fetchJSON<OpenDesignArtifactsResponse>(`/api/open-design/artifacts?limit=${limit}`),
+  getOpenDesignArtifactUrl: (path: string) =>
+    `${BASE}/api/open-design/artifacts/file?path=${encodeURIComponent(path)}`,
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
-
-  getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
-
-  installAgentPlugin: (body: AgentPluginInstallRequest) =>
-    fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body }),
-    }),
-
-  enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/enable`,
-      { method: "POST" },
-    ),
-
-  disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/disable`,
-      { method: "POST" },
-    ),
-
-  updateAgentPlugin: (name: string) =>
-    fetchJSON<AgentPluginUpdateResponse>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/update`,
-      { method: "POST" },
-    ),
-
-  removeAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
-
-  savePluginProviders: (body: PluginProvidersPutRequest) =>
-    fetchJSON<{ ok: boolean }>("/api/dashboard/plugin-providers", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-
-  setPluginVisibility: (name: string, hidden: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
-      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hidden }),
-      },
-    ),
 
   // Dashboard themes
   getThemes: () =>
@@ -595,6 +575,63 @@ export interface SessionSearchResponse {
   results: SessionSearchResult[];
 }
 
+export interface OpenDesignConfig {
+  repo_path: string;
+  start_command: string;
+  ui_url: string;
+  health_url: string;
+  workspace_dir: string;
+  artifacts_dir: string;
+  env: Record<string, string>;
+}
+
+export interface OpenDesignStatusResponse {
+  state: string;
+  configured: boolean;
+  repo_exists: boolean;
+  process_running: boolean;
+  health_ok: boolean;
+  pid: number | null;
+  last_start_at: number | null;
+  last_error: string | null;
+  log_path: string;
+  config: OpenDesignConfig;
+  ui_url: string;
+  health_url: string;
+}
+
+export interface OpenDesignLogsResponse {
+  path: string;
+  lines: string[];
+}
+
+export interface OpenDesignBriefRequest {
+  brief: string;
+  project_name?: string;
+  skill?: string;
+  design_system?: string;
+}
+
+export interface OpenDesignBriefResponse {
+  ok: boolean;
+  project_dir: string;
+  brief_path: string;
+  files: string[];
+}
+
+export interface OpenDesignArtifact {
+  name: string;
+  path: string;
+  root: string;
+  relative_path: string;
+  size: number;
+  mtime: number;
+}
+
+export interface OpenDesignArtifactsResponse {
+  items: OpenDesignArtifact[];
+}
+
 // ── Model info types ──────────────────────────────────────────────────
 
 export interface ModelInfoResponse {
@@ -749,67 +786,8 @@ export interface PluginManifestResponse {
     override?: string;
     hidden?: boolean;
   };
-  slots?: string[];
   entry: string;
   css?: string | null;
   has_api: boolean;
   source: string;
-}
-
-export interface HubAgentPluginRow {
-  name: string;
-  version: string;
-  description: string;
-  source: string;
-  runtime_status: "disabled" | "enabled" | "inactive";
-  has_dashboard_manifest: boolean;
-  dashboard_manifest: PluginManifestResponse | null;
-  path: string;
-  can_remove: boolean;
-  can_update_git: boolean;
-  auth_required: boolean;
-  auth_command: string;
-  user_hidden: boolean;
-}
-
-export interface PluginsHubProviders {
-  memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
-  context_engine: string;
-  context_options: Array<{ name: string; description: string }>;
-}
-
-export interface PluginsHubResponse {
-  plugins: HubAgentPluginRow[];
-  orphan_dashboard_plugins: PluginManifestResponse[];
-  providers: PluginsHubProviders;
-}
-
-export interface AgentPluginInstallRequest {
-  identifier: string;
-  force?: boolean;
-  enable?: boolean;
-}
-
-export interface AgentPluginInstallResponse {
-  ok: boolean;
-  plugin_name?: string;
-  warnings?: string[];
-  missing_env?: string[];
-  after_install_path?: string | null;
-  enabled?: boolean;
-  error?: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-}
-
-export interface PluginProvidersPutRequest {
-  memory_provider?: string;
-  context_engine?: string;
 }

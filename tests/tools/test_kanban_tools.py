@@ -594,6 +594,69 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     )
 
 
+def test_dispatch_guidance_size_bounded():
+    """The dispatch-and-ticketing guidance is bounded so it doesn't blow
+    up the operator's cached prompt."""
+    from agent.prompt_builder import DISPATCH_AND_TICKETING_GUIDANCE
+    assert 1_000 < len(DISPATCH_AND_TICKETING_GUIDANCE) < 4_096, (
+        f"DISPATCH_AND_TICKETING_GUIDANCE is {len(DISPATCH_AND_TICKETING_GUIDANCE)} chars — too short (missing?) or too long"
+    )
+
+
+def test_dispatch_guidance_in_operator_prompt_with_terminal(monkeypatch, tmp_path):
+    """An operator session (no HERMES_KANBAN_TASK) that has terminal access
+    MUST have DISPATCH_AND_TICKETING_GUIDANCE in its system prompt — so the
+    LLM knows to route coding work via clawta and file tickets via kanban."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    # Force the operator-with-terminal configuration regardless of default
+    # tool autoload behavior in the test harness.
+    a.valid_tool_names = {"terminal"}
+    prompt = a._build_system_prompt()
+    assert "Dispatch and ticketing protocol" in prompt
+    assert "clawta --text" in prompt
+    assert "hermes-no-frontier-spawn" in prompt
+    assert "kanban_create" in prompt
+
+
+def test_dispatch_guidance_not_in_worker_prompt(monkeypatch, tmp_path):
+    """A kanban worker session (HERMES_KANBAN_TASK set) gets KANBAN_GUIDANCE
+    instead of DISPATCH_AND_TICKETING_GUIDANCE — workers don't dispatch
+    via clawta, they execute the work they were handed."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    # Worker has kanban_show; force the dispatch-injection condition false.
+    a.valid_tool_names = {"terminal", "kanban_show"}
+    prompt = a._build_system_prompt()
+    assert "Dispatch and ticketing protocol" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

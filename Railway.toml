@@ -1,0 +1,12 @@
+[railway]
+startCommand = "hermes gateway run"
+healthCheckTimeout = 120
+
+[build]
+dockerfile = "Dockerfile"
+
+[deploy]
+region = "us-east-1"
+
+[environment]
+HERMES_ALLOW_ROOT_GATEWAY = "true"

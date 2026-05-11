@@ -214,7 +214,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "Tap Open again for the next fallback" in auth_view_model
     assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
-    assert "HermesExternalBrowserLauncher.open" in auth_view_model
+    assert "HermesProviderSetupWebActivity.open" in auth_view_model
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
     assert "ProviderPresets.setupClipboardText(option.runtimeProvider)" in auth_view_model
     assert 'ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText)' in auth_view_model
@@ -230,6 +230,7 @@ def test_settings_opens_official_provider_key_pages():
     settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
     browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
+    provider_setup_web_activity = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesProviderSetupWebActivity.kt").read_text(encoding="utf-8")
     provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
@@ -239,7 +240,10 @@ def test_settings_opens_official_provider_key_pages():
     assert "ProviderPresets.credentialInputHelp(providerId)" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(targetUrl)" in settings_view_model
-    assert "HermesExternalBrowserLauncher.open" in settings_view_model
+    assert "HermesProviderSetupWebActivity.open" in settings_view_model
+    assert "class HermesProviderSetupWebActivity" in provider_setup_web_activity
+    assert "WebView(this)" in provider_setup_web_activity
+    assert "HermesExternalBrowserLauncher.open" in provider_setup_web_activity
     assert "Intent.createChooser" in browser_launcher
     assert "putExtra(Browser.EXTRA_APPLICATION_ID" in browser_launcher
     assert "ClipboardManager" in settings_view_model

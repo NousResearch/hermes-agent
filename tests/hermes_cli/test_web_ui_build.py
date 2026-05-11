@@ -147,3 +147,64 @@ class TestBuildWebUISkipsWhenFresh:
         assert build_kwargs["text"] is True
         assert build_kwargs["encoding"] == "utf-8"
         assert build_kwargs["errors"] == "replace"
+
+
+class TestBuildWebUIRetryAndStaleFallback:
+    """Coverage for the retry + stale-dist fallback added in #23824 / issue #23817."""
+
+    def test_retries_build_once_on_failure(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        Subprocess = __import__("subprocess")
+        # install: success; build attempt 1: fail; build attempt 2: success
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="EPERM")
+        build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._time.sleep") as mock_sleep, \
+             patch("hermes_cli.main.subprocess.run",
+                   side_effect=[install_ok, build_fail, build_ok]) as mock_run:
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        assert mock_run.call_count == 3  # install + build + retry
+        mock_sleep.assert_called_once_with(3)
+
+    def test_falls_back_to_stale_dist_when_retry_also_fails(self, tmp_path, capsys):
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        # Stale dist exists but is older than source
+        _touch(dist_dir / "index.html", offset=-100)
+        _touch(web_dir / "src" / "App.tsx")  # newer source -> build_needed=True
+
+        Subprocess = __import__("subprocess")
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="vite ENOMEM")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._time.sleep"), \
+             patch("hermes_cli.main.subprocess.run",
+                   side_effect=[install_ok, build_fail, build_fail]):
+            result = _build_web_ui(web_dir, fatal=True)
+
+        # MUST return True (serve stale) — issue #23817 — even with fatal=True,
+        # because cmd_dashboard passes fatal=True and is the primary caller.
+        assert result is True
+        out = capsys.readouterr().out
+        assert "serving stale dist as fallback" in out
+        assert "vite ENOMEM" in out  # stderr surfaced to user
+
+    def test_hard_fails_when_no_dist_to_fall_back_to(self, tmp_path, capsys):
+        web_dir, _ = _make_web_dir(tmp_path)
+
+        Subprocess = __import__("subprocess")
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        build_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="vite ENOMEM")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._time.sleep"), \
+             patch("hermes_cli.main.subprocess.run",
+                   side_effect=[install_ok, build_fail, build_fail]):
+            result = _build_web_ui(web_dir, fatal=True)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Web UI build failed" in out
+        assert "vite ENOMEM" in out
+        assert "Run manually" in out

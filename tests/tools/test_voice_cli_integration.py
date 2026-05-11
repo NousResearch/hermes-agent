@@ -2,9 +2,11 @@
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
 import ast
+import inspect
 import os
 import queue
 import threading
+import textwrap
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1035,6 +1037,26 @@ class TestDisableVoiceModeReal:
         cli = _make_voice_cli(_voice_mode=True)
         cli._disable_voice_mode()
         assert cli._voice_mode is False
+
+
+class TestVoiceProcessingStructure:
+    def test_voice_stop_and_transcribe_has_no_return_in_finally(self):
+        """Python 3.14 warns when a finally block contains a return."""
+        from cli import HermesCLI
+
+        source = textwrap.dedent(inspect.getsource(HermesCLI._voice_stop_and_transcribe))
+        tree = ast.parse(source)
+        fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+
+        returns_in_finally = []
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Try):
+                for final_node in node.finalbody:
+                    for inner in ast.walk(final_node):
+                        if isinstance(inner, ast.Return):
+                            returns_in_finally.append(inner)
+
+        assert not returns_in_finally
 
 
 class TestVoiceSpeakResponseReal:

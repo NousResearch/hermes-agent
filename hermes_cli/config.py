@@ -1360,6 +1360,20 @@ DEFAULT_CONFIG = {
         "failure_limit": 2,
     },
 
+    # Agent Office product loop layered on top of the generic Kanban kernel.
+    # When enabled, each gateway/dispatch tick can specify triage cards,
+    # route unassigned ready cards to office profiles, add supervisor
+    # diagnostics, and then run the normal dispatcher.
+    "agent_office": {
+        "enabled": True,
+        "board": "inbox",
+        "auto_specify": True,
+        "auto_route": True,
+        "auto_supervise": True,
+        "config_dir": ".hermes/agent-office-config",
+        "references_dir": ".hermes/skills/agent-office/references",
+    },
+
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:

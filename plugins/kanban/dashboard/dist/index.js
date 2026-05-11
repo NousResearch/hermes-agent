@@ -408,12 +408,33 @@
   }
 
   // -------------------------------------------------------------------------
+  // Agent Office status pill
+  // -------------------------------------------------------------------------
+
+  function AgentOfficeStatus(props) {
+    const office = props.office || {};
+    const profiles = office.profiles || {};
+    const missing = profiles.missing || [];
+    const ok = office.enabled && office.board_exists && missing.length === 0;
+    return h("div", {
+      className: "hermes-kanban-office-status office-status " + (ok ? "office-status--ok" : "office-status--warn"),
+      title: "Agent Office: auto triage, routing, supervision, and dispatch for the inbox Kanban board",
+    },
+      h("span", { className: "office-status-label" }, "Agent Office"),
+      h("span", { className: "office-status-chip" }, office.preferred_board ? `board: ${office.preferred_board}` : "board: inbox"),
+      h("span", { className: "office-status-chip" }, office.gateway_running ? "gateway on" : "gateway off"),
+      h("span", { className: "office-status-chip" }, missing.length === 0 ? "17 profiles" : `${missing.length} missing`),
+      h("span", { className: "office-status-help" }, "Drop rough ideas in Triage for the office to spec and route."),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Root page
   // -------------------------------------------------------------------------
 
   function KanbanPage() {
     const { t } = useI18n();
-    const [board, setBoard] = useState(() => readSelectedBoard() || "default");
+    const [board, setBoard] = useState(() => readSelectedBoard() || "inbox");
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -902,6 +923,7 @@
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
         }),
+        h(AgentOfficeStatus, { office: boardData && boardData.office }),
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
           onCreate: function (payload) {
@@ -2104,6 +2126,10 @@
             t.priority > 0
               ? h(Badge, { className: "hermes-kanban-priority",
                            title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
+              : null,
+            t.office_role
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-office-role-badge",
+                           title: `Agent Office role: @${t.office_role}` }, "office:", t.office_role)
               : null,
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",

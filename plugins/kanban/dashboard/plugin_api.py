@@ -48,7 +48,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
 from pydantic import BaseModel, Field
 
-from hermes_cli import kanban_db
+from hermes_cli import agent_office, kanban_db
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["office_role"] = task.assignee if task.assignee in agent_office.OFFICE_PROFILES else None
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -163,6 +164,7 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
         "id": event.id,
         "task_id": event.task_id,
         "kind": event.kind,
+        "office_kind": agent_office.office_event_alias(event.kind),
         "payload": event.payload,
         "created_at": event.created_at,
         "run_id": event.run_id,
@@ -458,6 +460,7 @@ def get_board(
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
+            "office": agent_office.status(board or "inbox"),
         }
     finally:
         conn.close()
@@ -1395,12 +1398,23 @@ def dispatch(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        result = kanban_db.dispatch_once(
+        office_result = agent_office.tick(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
         )
+        result = office_result.dispatched
         # DispatchResult is a dataclass.
         try:
-            return asdict(result)
+            payload = asdict(result)
+            payload["office"] = {
+                "specified": office_result.specified,
+                "specify_failed": office_result.specify_failed,
+                "routed": [
+                    {"task_id": tid, "assignee": assignee}
+                    for tid, assignee in office_result.routed
+                ],
+                "supervised": office_result.supervised,
+            }
+            return payload
         except TypeError:
             return {"result": str(result)}
     finally:

@@ -60,6 +60,52 @@
   color: var(--color-muted-foreground) !important;
 }
 
+
+/* ---- Agent Office ----------------------------------------------------- */
+.hermes-kanban-office-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.hermes-kanban-office-status.office-status--ok {
+  border-color: color-mix(in srgb, var(--color-success, #22c55e) 45%, var(--color-border));
+}
+
+.hermes-kanban-office-status.office-status--warn {
+  border-color: color-mix(in srgb, var(--color-warning, #f59e0b) 55%, var(--color-border));
+}
+
+.hermes-kanban-office-status .office-status-label {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.hermes-kanban-office-status .office-status-chip,
+.hermes-kanban-office-role-badge {
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-foreground);
+  padding: 0.12rem 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.hermes-kanban-office-status .office-status-help {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-office-role-badge {
+  text-transform: none;
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {

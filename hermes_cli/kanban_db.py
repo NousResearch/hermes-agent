@@ -4080,12 +4080,16 @@ def run_daemon(
 
     while not stop_event.is_set():
         try:
-            with contextlib.closing(connect()) as conn:
-                res = dispatch_once(
+            from hermes_cli import agent_office
+            board = agent_office.configured_board()
+            with contextlib.closing(connect(board=board)) as conn:
+                office_res = agent_office.tick(
                     conn,
+                    board=board,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
                 )
+                res = office_res.dispatched
             if on_tick is not None:
                 try:
                     on_tick(res)

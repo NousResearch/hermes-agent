@@ -1678,15 +1678,27 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
-        res = kb.dispatch_once(
+    from hermes_cli import agent_office
+    with kb.connect(board=getattr(args, "board", None)) as conn:
+        office_res = agent_office.tick(
             conn,
+            board=getattr(args, "board", None),
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
+        res = office_res.dispatched
     if getattr(args, "json", False):
         print(json.dumps({
+            "office": {
+                "specified": office_res.specified,
+                "specify_failed": office_res.specify_failed,
+                "routed": [
+                    {"task_id": tid, "assignee": who}
+                    for (tid, who) in office_res.routed
+                ],
+                "supervised": office_res.supervised,
+            },
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
@@ -1700,6 +1712,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "skipped_nonspawnable": res.skipped_nonspawnable,
         }, indent=2))
         return 0
+    print(f"Office specified: {len(office_res.specified)}")
+    if office_res.specify_failed:
+        print(f"Office specify failed: {len(office_res.specify_failed)}")
+    print(f"Office routed:    {len(office_res.routed)}")
+    for tid, who in office_res.routed:
+        print(f"  - {tid}  ->  {who}")
+    if office_res.supervised:
+        print(f"Office supervised: {', '.join(office_res.supervised)}")
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
     if res.crashed:

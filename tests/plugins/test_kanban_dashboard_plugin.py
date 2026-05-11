@@ -76,6 +76,32 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+    assert data["office"]["enabled"] is True
+    assert data["office"]["preferred_board"] == "inbox"
+    assert "profiles" in data["office"]
+
+
+def test_event_detail_includes_agent_office_event_alias(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Research LLM caching", "assignee": "research"},
+    ).json()["task"]
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+    assert r.status_code == 200
+    event = r.json()["events"][0]
+    assert event["kind"] == "created"
+    assert event["office_kind"] == "card.created"
+
+
+def test_dashboard_bundle_surfaces_agent_office_status_and_prefers_inbox():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "Agent Office" in js
+    assert "preferred_board" in js
+    assert "office-status" in js
 
 
 # ---------------------------------------------------------------------------

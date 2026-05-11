@@ -87,6 +87,22 @@ export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONHASHSEED=0
 
+# ── Live-gateway test guard (developer machines) ────────────────────────────
+# If a system-wide hermes pytest_live_guard plugin is installed at
+# $HOME/.hermes/pytest_live_guard.py, force-load it here so every test run
+# from this script gets the protection regardless of which worktree is
+# checked out (in-tree tests/conftest.py guard may be missing on stale
+# branches). Harmless on CI / fresh machines that don't have the file.
+if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
+  case ":${PYTHONPATH:-}:" in
+    *":$HOME/.hermes:"*) ;;
+    *) export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$HOME/.hermes" ;;
+  esac
+  if [[ ",${PYTEST_PLUGINS:-}," != *,pytest_live_guard,* ]]; then
+    export PYTEST_PLUGINS="${PYTEST_PLUGINS:+$PYTEST_PLUGINS,}pytest_live_guard"
+  fi
+fi
+
 # ── Worker count ────────────────────────────────────────────────────────────
 # CI uses `-n auto` on ubuntu-latest which gives 4 workers. A 20-core
 # workstation with `-n auto` gets 20 workers and exposes test-ordering

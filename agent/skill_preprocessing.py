@@ -7,10 +7,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
-# Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
+from agent.session_identity import resolve_binding_key
+
+# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} / ${HERMES_SESSION_KEY}
+# / ${HERMES_BINDING_KEY} tokens in SKILL.md. Tokens that don't resolve (e.g.
+# ${HERMES_SESSION_ID} with no session) are
 # left as-is so the user can debug them.
-_SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
+_SKILL_TEMPLATE_RE = re.compile(
+    r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID|HERMES_SESSION_KEY|HERMES_BINDING_KEY)\}"
+)
 
 # Matches inline shell snippets like:  !`date +%Y-%m-%d`
 # Non-greedy, single-line only -- no newlines inside the backticks.
@@ -38,8 +43,10 @@ def substitute_template_vars(
     content: str,
     skill_dir: Path | None,
     session_id: str | None,
+    session_key: str | None = None,
+    binding_key: str | None = None,
 ) -> str:
-    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
+    """Replace supported ${HERMES_*} tokens in skill content.
 
     Only substitutes tokens for which a concrete value is available --
     unresolved tokens are left in place so the author can spot them.
@@ -48,6 +55,19 @@ def substitute_template_vars(
         return content
 
     skill_dir_str = str(skill_dir) if skill_dir else None
+    resolved_session_key = session_key
+    if resolved_session_key is None:
+        try:
+            from gateway.session_context import get_session_env
+
+            resolved_session_key = get_session_env("HERMES_SESSION_KEY", "") or None
+        except Exception:
+            resolved_session_key = None
+    resolved_binding_key = binding_key or resolve_binding_key(
+        session_id=session_id,
+        session_key=resolved_session_key,
+        cwd=str(skill_dir) if skill_dir else None,
+    )
 
     def _replace(match: re.Match) -> str:
         token = match.group(1)
@@ -55,6 +75,10 @@ def substitute_template_vars(
             return skill_dir_str
         if token == "HERMES_SESSION_ID" and session_id:
             return str(session_id)
+        if token == "HERMES_SESSION_KEY" and resolved_session_key:
+            return str(resolved_session_key)
+        if token == "HERMES_BINDING_KEY" and resolved_binding_key:
+            return str(resolved_binding_key)
         return match.group(0)
 
     return _SKILL_TEMPLATE_RE.sub(_replace, content)
@@ -116,6 +140,8 @@ def preprocess_skill_content(
     content: str,
     skill_dir: Path | None,
     session_id: str | None = None,
+    session_key: str | None = None,
+    binding_key: str | None = None,
     skills_cfg: dict | None = None,
 ) -> str:
     """Apply configured SKILL.md template and inline-shell preprocessing."""
@@ -124,7 +150,7 @@ def preprocess_skill_content(
 
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
     if cfg.get("template_vars", True):
-        content = substitute_template_vars(content, skill_dir, session_id)
+        content = substitute_template_vars(content, skill_dir, session_id, session_key, binding_key)
     if cfg.get("inline_shell", False):
         timeout = int(cfg.get("inline_shell_timeout", 10) or 10)
         content = expand_inline_shell(content, skill_dir, timeout)

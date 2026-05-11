@@ -354,17 +354,25 @@ class TestSkillView:
                 "agent.skill_preprocessing.load_skills_config",
                 return_value={"template_vars": True, "inline_shell": False},
             ),
+            patch.dict(
+                "os.environ",
+                {
+                    "HERMES_SESSION_KEY": "agent:main:telegram:dm:123",
+                    "HERMES_BINDING_KEY": "binding:telegram:123",
+                },
+                clear=False,
+            ),
         ):
             skill_dir = _make_skill(
                 tmp_path,
                 "templated",
-                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID}",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID} (${HERMES_SESSION_KEY}) [${HERMES_BINDING_KEY}]",
             )
             raw = skill_view("templated", task_id="session-123")
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
+        assert f"Run {skill_dir}/scripts/do.sh in session-123 (agent:main:telegram:dm:123) [binding:telegram:123]" in result["content"]
         assert "${HERMES_SKILL_DIR}" not in result["content"]
 
     def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):

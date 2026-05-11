@@ -49,6 +49,8 @@ from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
+from agent.session_identity import resolve_binding_key
+
 
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
@@ -1710,6 +1712,18 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        raw_session_id = task_id or ""
+        try:
+            from gateway.session_context import get_session_env as _get_session_env
+
+            current_session_key = _get_session_env("HERMES_SESSION_KEY", "") or ""
+        except Exception:
+            current_session_key = os.getenv("HERMES_SESSION_KEY", "")
+        current_binding_key = resolve_binding_key(
+            session_id=raw_session_id or effective_task_id,
+            session_key=current_session_key,
+            cwd=workdir or cwd,
+        )
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -1828,6 +1842,13 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        if hasattr(env, "env"):
+            env.env["HERMES_SESSION_ID"] = raw_session_id or effective_task_id
+            if current_session_key:
+                env.env["HERMES_SESSION_KEY"] = current_session_key
+            if current_binding_key:
+                env.env["HERMES_BINDING_KEY"] = current_binding_key
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

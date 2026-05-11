@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from agent.session_identity import resolve_binding_key
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,74 @@ def get_sandbox_dir() -> Path:
         p = get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _collect_session_env() -> dict[str, str]:
+    """Return generic Hermes session metadata to expose to subprocesses."""
+    names = (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_CHAT_NAME",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_USER_ID",
+        "HERMES_SESSION_USER_NAME",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+        "HERMES_BINDING_KEY",
+    )
+    values: dict[str, str] = {}
+    try:
+        from gateway.session_context import get_session_env
+
+        for name in names:
+            value = get_session_env(name, "")
+            if value:
+                values[name] = value
+    except Exception:
+        pass
+    for name in names:
+        if name in values:
+            continue
+        value = os.getenv(name, "")
+        if value:
+            values[name] = value
+    binding_key = resolve_binding_key(
+        session_id=values.get("HERMES_SESSION_ID", ""),
+        session_key=values.get("HERMES_SESSION_KEY", ""),
+    )
+    if binding_key:
+        values["HERMES_BINDING_KEY"] = binding_key
+    return values
+
+
+def _wrap_command_with_session_env(command: str, env_values: dict[str, str]) -> str:
+    """Prefix each command with current session-scoped HERMES exports.
+
+    Persistent shells keep their original process environment, so updating
+    ``self.env`` alone is not enough when a backend/environment is reused.
+    Export the current session metadata on every command execution so shell
+    commands observe fresh binding/session values.
+    """
+    names = (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_CHAT_NAME",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_USER_ID",
+        "HERMES_SESSION_USER_NAME",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+        "HERMES_BINDING_KEY",
+    )
+    exports: list[str] = []
+    for name in names:
+        value = str(env_values.get(name, "") or "").strip()
+        if not value:
+            continue
+        exports.append(f"export {name}={shlex.quote(value)}")
+    if not exports:
+        return command
+    return f"{'; '.join(exports)}; {command}"
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +380,10 @@ class BaseEnvironment(ABC):
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
         self.timeout = timeout
-        self.env = env or {}
+        merged_env = dict(env or {})
+        for key, value in _collect_session_env().items():
+            merged_env.setdefault(key, value)
+        self.env = merged_env
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -785,6 +857,7 @@ class BaseEnvironment(ABC):
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
+        exec_command = _wrap_command_with_session_env(exec_command, self.env)
         # Guard against the `A && B &` subshell-wait trap: bash forks a
         # subshell for the compound that then waits for an infinite B (a
         # server, `yes > /dev/null`, etc.), leaking the subshell forever.
@@ -840,4 +913,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

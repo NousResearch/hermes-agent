@@ -4,8 +4,9 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import os
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from tools.environments.base import BaseEnvironment, _cwd_marker
 
@@ -195,3 +196,31 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestSessionEnvForwarding:
+    def test_base_environment_includes_session_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_KEY": "agent:main:dingtalk:dm:cid123",
+                "HERMES_SESSION_PLATFORM": "dingtalk",
+                "HERMES_SESSION_CHAT_ID": "cid123",
+            },
+            clear=False,
+        ):
+            env = _TestableEnv()
+
+        assert env.env["HERMES_SESSION_KEY"] == "agent:main:dingtalk:dm:cid123"
+        assert env.env["HERMES_SESSION_PLATFORM"] == "dingtalk"
+        assert env.env["HERMES_SESSION_CHAT_ID"] == "cid123"
+
+    def test_base_environment_builds_cli_binding_key_when_no_session_key(self):
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": "/tmp/hermes-test-home"},
+            clear=True,
+        ):
+            env = _TestableEnv()
+
+        assert env.env["HERMES_BINDING_KEY"].startswith("hermes:cli:")

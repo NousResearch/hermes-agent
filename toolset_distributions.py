@@ -19,7 +19,7 @@ Usage:
     all_dists = list_distributions()
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import random
 from toolsets import validate_toolset
 
@@ -220,7 +220,7 @@ DISTRIBUTIONS = {
 }
 
 
-def get_distribution(name: str) -> Optional[Dict[str, any]]:
+def get_distribution(name: str) -> Optional[Dict[str, Any]]:
     """
     Get a toolset distribution by name.
     
@@ -361,4 +361,3 @@ if __name__ == "__main__":
     print("-" * 40)
     print_distribution_info("image_gen")
     print_distribution_info("research")
-

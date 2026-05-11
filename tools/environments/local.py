@@ -137,6 +137,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        "VIRTUAL_ENV",
     })
     return frozenset(blocked)
 

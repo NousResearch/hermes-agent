@@ -759,6 +759,43 @@ class TestEditMessageStreamingSafety:
             "text": "final **bold**",
         }
 
+    @pytest.mark.asyncio
+    async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
+        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit, the
+        adapter must split the content across the existing message + new
+        continuation messages so the user gets the full reply.  Previously
+        the adapter best-effort truncated the content with '…' and returned
+        success=True, dropping everything past the truncation boundary
+        (#19537)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        # Continuation sends return monotonically increasing message ids.
+        _next_id = [1000]
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        # 6000-char content well over the 4096 UTF-16 limit.
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+
+        # Adapter reports success with continuations populated.
+        assert result.success is True
+        assert result.error is None
+        assert len(result.continuation_message_ids) >= 1, (
+            "expected at least one continuation message"
+        )
+        # The reported message_id is the LAST visible message (the final
+        # continuation), so subsequent edits target the most recent.
+        assert result.message_id == result.continuation_message_ids[-1]
+        # Original message_id (456) was edited with chunk 1.
+        first_edit = adapter._bot.edit_message_text.call_args
+        assert first_edit.kwargs["message_id"] == 456
+        # Continuations were sent threaded as replies for visual grouping.
+        assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
+
 # =========================================================================
 # Telegram guest mention gating
 # =========================================================================

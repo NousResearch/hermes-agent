@@ -1640,6 +1640,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CEREBRAS_API_KEY": {
+        "description": "Cerebras Cloud API key (wafer-scale inference)",
+        "prompt": "Cerebras API key",
+        "url": "https://cloud.cerebras.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "CEREBRAS_BASE_URL": {
+        "description": "Cerebras base URL override",
+        "prompt": "Cerebras base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

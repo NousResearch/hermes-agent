@@ -179,6 +179,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "cerebras": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.cerebras.ai/v1",
+        base_url_env_var="CEREBRAS_BASE_URL",
+    ),
     "gmi": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("GMI_API_KEY",),
@@ -328,6 +333,9 @@ ALIASES: Dict[str, str] = {
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+
+    # cerebras
+    "cerebras-cloud": "cerebras",
 
     # gmi
     "gmi-cloud": "gmi",

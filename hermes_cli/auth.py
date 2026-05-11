@@ -255,6 +255,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),
+    "cerebras": ProviderConfig(
+        id="cerebras",
+        name="Cerebras",
+        auth_type="api_key",
+        inference_base_url="https://api.cerebras.ai/v1",
+        api_key_env_vars=("CEREBRAS_API_KEY",),
+        base_url_env_var="CEREBRAS_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",

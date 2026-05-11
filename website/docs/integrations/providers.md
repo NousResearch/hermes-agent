@@ -25,6 +25,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
+| **Cerebras** | `CEREBRAS_API_KEY` in `~/.hermes/.env` (provider: `cerebras`; alias: `cerebras-cloud`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
@@ -302,6 +303,10 @@ hermes chat --provider tencent-tokenhub --model hy3-preview
 # Arcee AI (Trinity models)
 hermes chat --provider arcee --model trinity-large-thinking
 # Requires: ARCEEAI_API_KEY in ~/.hermes/.env
+
+# Cerebras (wafer-scale inference on open models)
+hermes chat --provider cerebras --model gpt-oss-120b
+# Requires: CEREBRAS_API_KEY in ~/.hermes/.env
 
 # GMI Cloud
 # Use the exact model ID returned by GMI's /v1/models endpoint.
@@ -1417,7 +1422,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `cerebras`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

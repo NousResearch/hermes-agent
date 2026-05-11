@@ -51,6 +51,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "cerebras",
     "gmi",
     "tencent-tokenhub",
     "custom", "local",

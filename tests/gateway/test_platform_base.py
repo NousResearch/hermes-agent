@@ -323,6 +323,15 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_strips_markdown_emphasis_wrappers(self):
+        content = "Here\n**MEDIA:/tmp/report.docx**\nAfter"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/report.docx", False)]
+        assert "MEDIA:" not in cleaned
+        assert "**" not in cleaned
+        assert "Here" in cleaned
+        assert "After" in cleaned
+
     def test_media_tag_supports_unquoted_flac_paths_with_spaces(self):
         content = "MEDIA:/tmp/Jane Doe/speech.flac"
         media, cleaned = BasePlatformAdapter.extract_media(content)
@@ -728,4 +737,3 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
-

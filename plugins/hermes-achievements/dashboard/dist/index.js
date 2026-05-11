@@ -18,24 +18,126 @@
   // shim that returns en values so the bundle still renders against an older
   // host SDK.  English fallback strings live alongside each call site.
   const useI18n = SDK.useI18n || function () { return { t: { achievements: null }, locale: "en" }; };
+  // Module-level locale tracking: set by AchievementsPage on mount, read by api()
+  // to pass Accept-Language to the backend for backend-side translations.
+  var _pluginLocale = "en";
+
+  // Module-level _ui translations from API response — set after each API fetch.
+  // Used by tx() as a fallback when useI18n doesn't expose the achievements
+  // namespace, providing full Chinese UI even without SDK i18n support.
+  var _uiData = null;
+
+  // Map dotted i18n paths (used in tx() calls) to _ui flat keys returned by
+  // the backend.  Covers every call site in the dist bundle.  Paths not in
+  // this map fall through to a simple dot-to-underscore conversion.
+  var PATH_TO_UI = {
+    "state.unlocked": "state_unlocked",
+    "state.secret": "state_secret",
+    "state.discovered": "state_discovered",
+    "tier.target": "tier_target",
+    "tier.hidden": "tier_hidden",
+    "tier.complete": "tier_complete",
+    "tier.objective": "tier_objective",
+    "hero.kicker": "hero_kicker",
+    "hero.title": "hero_title",
+    "hero.subtitle": "hero_desc",
+    "hero.scan_subtitle": "hero_desc",
+    "actions.rescan": "rescan",
+    "latest.header": "recent_unlocks",
+    "guide.tiers_header": "guide_tiers",
+    "guide.secret_header": "guide_secrets",
+    "guide.secret_body": "guide_secrets_desc",
+    "guide.scan_status_header": "loading_scan_status",
+    "guide.scan_status_body": "loading_scan_desc",
+    "guide.what_scanned_header": "loading_guide_what",
+    "guide.what_scanned_body": "loading_guide_what_desc",
+    "filters.all_categories": "filter_all_cat",
+    "filters.visibility_all": "filter_visibility_all",
+    "filters.visibility_unlocked": "filter_visibility_unlocked",
+    "filters.visibility_discovered": "filter_visibility_discovered",
+    "filters.visibility_secret": "filter_visibility_secret",
+    "card.share_text": "share_btn",
+    "card.share_label": "share_label",
+    "card.share_title": "share_label",
+    "card.how_to_reveal": "criteria_how_to_reveal",
+    "card.what_counts": "criteria_what_counts",
+    "card.evidence_label": "evidence_label",
+    "card.evidence_session_fallback": "evidence_empty",
+    "card.no_evidence": "evidence_empty",
+    "empty.no_secrets_header": "secret_empty_title",
+    "empty.no_secrets_body": "secret_empty_clue",
+    "stats.unlocked": "stat_unlocked",
+    "stats.discovered": "stat_discovered",
+    "stats.secrets": "stat_secrets",
+    "stats.highest_tier": "stat_highest",
+    "stats.latest": "stat_latest",
+    "stats.unlocked_hint": "hint_earned",
+    "stats.discovered_hint": "hint_known",
+    "stats.secrets_hint": "hint_hidden",
+    "stats.highest_tier_hint": "hint_tier_ladder",
+    "stats.latest_hint_empty": "hint_run_more",
+    "stats.none_yet": "hint_none",
+    "scan.starting_headline": "scan_pending",
+    "scan.building_headline": "scan_in_progress",
+    "scan.building_detail": "scan_detail_idle",
+    "scan.progress_detail": "scan_detail_templ",
+    "scan.idle_detail": "scan_detail_idle",
+    "share.rendering": "share_rendering",
+    "share.x_button": "share_on_x",
+    "share.copy_button": "share_copy",
+    "share.copied": "share_copied",
+    "share.download_button": "share_download",
+    "share.hint": "share_hint",
+    "share.x_title": "share_title_x",
+    "share.copy_title": "share_title_copy",
+    "progress.hidden": "state_secret",
+    "share.clipboard_unsupported": "share_hint",
+    "share.tweet_text": "share_hint",
+    "share.dialog_label": "share_label",
+    "share.header": "share_label",
+    "share.close": "share_label",
+    "share.card_alt": "share_label",
+    "share.error_generic": "share_hint",
+    "loading_stat_unlocked": "loading_stat_unlocked",
+    "loading_stat_discovered": "loading_stat_discovered",
+    "loading_stat_secrets": "loading_stat_secrets",
+    "loading_stat_highest": "loading_stat_highest",
+    "loading_stat_latest": "loading_stat_latest",
+  };
 
   // Resolve a translation by dotted path (e.g. "card.share_text"); fall back to
   // the English string passed in.  Used inside components after they call
   // useI18n() so they can still render against an older host SDK that doesn't
   // expose the achievements namespace yet.
   function tx(t, path, fallback, vars) {
-    let node = t && t.achievements;
+    // 1. Try _ui backend translations first (full coverage for zh-CN and other
+    //    languages the backend knows about — flat keys from plugin_api.py).
+    if (_uiData && path) {
+      var uiKey = PATH_TO_UI[path] || path.replace(/\./g, "_");
+      if (uiKey in _uiData) {
+        var str = _uiData[uiKey];
+        if (vars) {
+          for (var k in vars) {
+            str = str.replace(new RegExp("\\{" + k + "\\}", "g"), vars[k]);
+          }
+        }
+        return str;
+      }
+    }
+    // 2. Fall back to SDK i18n (useI18n / t.achievements) for dashboards that
+    //    expose the achievements translation namespace natively.
+    var node = t && t.achievements;
     if (node) {
-      const parts = path.split(".");
-      for (let i = 0; i < parts.length; i++) {
+      var parts = path.split(".");
+      for (var i = 0; i < parts.length; i++) {
         if (node && typeof node === "object" && parts[i] in node) {
           node = node[parts[i]];
         } else { node = null; break; }
       }
     }
-    let str = (typeof node === "string") ? node : fallback;
+    var str = (typeof node === "string") ? node : fallback;
     if (vars) {
-      for (const k in vars) {
+      for (var k in vars) {
         str = str.replace(new RegExp("\\{" + k + "\\}", "g"), vars[k]);
       }
     }
@@ -50,7 +152,18 @@
 
   async function api(path, options) {
     const url = "/api/plugins/hermes-achievements" + path;
-    const res = await fetch(url, options || {});
+    const opts = options || {};
+    const headers = new Headers(opts.headers);
+    const token = typeof window !== "undefined" && window.__HERMES_SESSION_TOKEN__;
+    if (token && !headers.has("X-Hermes-Session-Token")) {
+      headers.set("X-Hermes-Session-Token", token);
+    }
+    // Forward the plugin's locale to the backend so achievement names,
+    // descriptions, criteria, and tier labels are translated server-side.
+    if (_pluginLocale && _pluginLocale !== "en" && !headers.has("Accept-Language")) {
+      headers.set("Accept-Language", _pluginLocale);
+    }
+    const res = await fetch(url, { ...opts, headers });
     if (!res.ok) {
       const text = await res.text().catch(function () { return res.statusText; });
       throw new Error(res.status + ": " + text);
@@ -565,7 +678,8 @@
   }
 
   function AchievementsPage() {
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
+    _pluginLocale = locale || "en";
     const [data, setData] = hooks.useState(null);
     const [loading, setLoading] = hooks.useState(true);
     const [error, setError] = hooks.useState(null);
@@ -575,7 +689,7 @@
     function load() {
       setLoading(true);
       api("/achievements")
-        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
+        .then(function (payload) { _uiData = (payload && payload._ui) || null; setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); })
         .finally(function () { setLoading(false); });
     }
@@ -584,7 +698,7 @@
     // with growing unlock counts instead of flashing the loading skeleton.
     function refresh() {
       api("/achievements")
-        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
+        .then(function (payload) { _uiData = (payload && payload._ui) || null; setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); });
     }
     hooks.useEffect(load, []);

@@ -1423,7 +1423,7 @@ def get_model_context_length(
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
     # If provider is generic (openrouter/custom/empty), try to infer from URL.
     effective_provider = provider
-    if not effective_provider or effective_provider in ("openrouter", "custom"):
+    if not effective_provider or effective_provider in ("openrouter", "custom") or effective_provider.startswith("custom:"):
         if base_url:
             inferred = _infer_provider_from_url(base_url)
             if inferred:

@@ -422,7 +422,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     if _cloud_provider_resolved:
         return _cached_cloud_provider
 
-    _cloud_provider_resolved = True
+    resolved: Optional[CloudBrowserProvider] = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
@@ -434,23 +434,44 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             )
             if provider_key == "local":
                 _cached_cloud_provider = None
+                _cloud_provider_resolved = True
                 return None
         if provider_key and provider_key in _PROVIDER_REGISTRY:
-            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+            try:
+                resolved = _PROVIDER_REGISTRY[provider_key]()
+            except Exception:
+                logger.warning(
+                    "Failed to instantiate explicit cloud_provider %r; will retry on next call",
+                    provider_key,
+                    exc_info=True,
+                )
+                return None
     except Exception as e:
+        # Config file may be temporarily unreadable; still try auto-detect so
+        # env-based / managed-gateway credentials can resolve. Don't pin cache.
         logger.debug("Could not read cloud_provider from config: %s", e)
 
-    if _cached_cloud_provider is None:
+    if resolved is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
         # fall back to Browserbase (direct credentials only).
-        fallback_provider = BrowserUseProvider()
-        if fallback_provider.is_configured():
-            _cached_cloud_provider = fallback_provider
-        else:
-            fallback_provider = BrowserbaseProvider()
+        try:
+            fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():
-                _cached_cloud_provider = fallback_provider
+                resolved = fallback_provider
+            else:
+                fallback_provider = BrowserbaseProvider()
+                if fallback_provider.is_configured():
+                    resolved = fallback_provider
+        except Exception:  # pragma: no cover - defensive: never poison cache
+            logger.debug("Cloud provider auto-detect failed", exc_info=True)
+            return None
 
+    if resolved is None:
+        # Transient None — credentials may self-heal. Don't poison the cache.
+        return None
+
+    _cached_cloud_provider = resolved
+    _cloud_provider_resolved = True
     return _cached_cloud_provider
 
 
@@ -2650,6 +2671,53 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # --- Fast path: route through the supervisor's persistent CDP WS ---------
+    # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
+    # on the already-connected WebSocket — zero subprocess startup cost vs
+    # spawning an ``agent-browser eval`` CLI process.  Falls through to the
+    # subprocess path on any error so behaviour is unchanged when no
+    # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        if supervisor is not None:
+            sup_result = supervisor.evaluate_runtime(expression)
+            if sup_result.get("ok"):
+                raw_result = sup_result.get("result")
+                # Match the agent-browser path: if the value is a JSON string,
+                # parse it so the model gets structured data.
+                parsed = raw_result
+                if isinstance(raw_result, str):
+                    try:
+                        parsed = json.loads(raw_result)
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # keep as string
+                response = {
+                    "success": True,
+                    "result": parsed,
+                    "result_type": type(parsed).__name__,
+                    "method": "cdp_supervisor",
+                }
+                return json.dumps(response, ensure_ascii=False, default=str)
+            # JS exception is a real failure — surface it instead of falling
+            # through to the subprocess path (which would just re-run and
+            # produce the same exception, but slower).
+            err = sup_result.get("error") or "evaluate_runtime failed"
+            if "supervisor" not in err.lower():
+                # Real JS-side error — return it.
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            # Supervisor-side failure (loop down, no session) — fall through.
+            logger.debug(
+                "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
+                err,
+            )
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
+
+    # --- Fallback: agent-browser CLI subprocess (original path) -------------
     result = _run_browser_command(effective_task_id, "eval", [expression])
 
     if not result.get("success"):

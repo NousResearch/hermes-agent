@@ -27,9 +27,25 @@ cua-driver is the open-source equivalent.
 
 ## Enabling
 
+Pick whichever path is most convenient — both run the same upstream installer:
+
+**Option 1: dedicated CLI command (most direct).**
+
+```
+hermes computer-use install
+```
+
+This fetches and runs the upstream cua-driver installer:
+`curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh`.
+Use `hermes computer-use status` to verify the install.
+
+**Option 2: enable the toolset interactively.**
+
 1. Run `hermes tools`, pick `🖱️ Computer Use (macOS)` → `cua-driver (background)`.
-2. The setup runs the upstream installer:
-   `curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh`.
+2. The setup runs the upstream installer (same as Option 1).
+
+After installing, regardless of which path you took:
+
 3. Grant macOS permissions when prompted:
    - **System Settings → Privacy & Security → Accessibility** → allow the
      terminal (or Hermes app).
@@ -89,8 +105,7 @@ Hermes applies multi-layer guardrails:
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.
 
-Pair with `security.approval_level` in `~/.hermes/config.yaml` if you want
-every action confirmed.
+Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you want every action confirmed.
 
 ## Token efficiency
 
@@ -143,7 +158,8 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ## Troubleshooting
 
 **`computer_use backend unavailable: cua-driver is not installed`** — Run
-`hermes tools` and enable Computer Use.
+`hermes computer-use install` to fetch the cua-driver binary, or run
+`hermes tools` and enable the Computer Use toolset.
 
 **Clicks seem to have no effect** — Capture and verify. A modal you
 didn't see may be blocking input. Dismiss it with `escape` or the close
@@ -160,4 +176,4 @@ reconsider.
 
 - [Universal skill: `macos-computer-use`](https://github.com/NousResearch/hermes-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
-- [Browser automation](./browser-use.md) for cross-platform web tasks.
+- [Browser automation](./browser.md) for cross-platform web tasks.

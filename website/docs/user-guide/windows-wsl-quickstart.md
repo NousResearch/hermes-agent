@@ -214,7 +214,7 @@ For the full table (Ollama / LM Studio / vLLM / SGLang bind addresses, firewall 
 This is the reverse direction and is less documented elsewhere, but it's what you need for:
 
 - Using the Hermes **web dashboard** from a Windows browser.
-- Using the **API server** (`hermes api`) from a Windows-side tool.
+- Using the **OpenAI-compatible API server** (exposed by `hermes gateway` when `API_SERVER_ENABLED=true`) from a Windows-side tool. See the [API Server feature page](/docs/user-guide/features/api-server).
 - Testing a **messaging gateway** (Telegram, Discord, etc.) where the platform pings a local webhook URL — usually you'd use `cloudflared`/`ngrok` rather than raw port forwarding.
 
 #### Subcase 2a: from the Windows host itself

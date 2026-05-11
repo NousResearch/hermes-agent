@@ -64,12 +64,38 @@ _CLONE_SUBDIR_FILES = [
     "memories/USER.md",
 ]
 
-# Runtime files stripped after --clone-all (shouldn't carry over)
-_CLONE_ALL_STRIP = [
+# Runtime files stripped after --clone-all (shouldn't carry over).
+# Kept as a post-copy step rather than in the ignore filter because they
+# are created dynamically during normal use and may be absent at copy time.
+_CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
 ]
+
+# Infrastructure artifacts excluded from --clone-all when the source is the
+# default profile (``~/.hermes``).  Named profiles never contain these
+# directories at root, so the exclusion is gated to avoid silently dropping
+# user data from a named-profile source.
+#
+# Rationale per item:
+#   hermes-agent  — git repo checkout (~84 MB source + ~3 GB venv)
+#   .worktrees    — git worktrees
+#   profiles      — sibling named profiles (recursive copy never intended)
+#   bin           — installed binaries (tirith etc., ~10 MB) shared per-host
+#   node_modules  — npm packages (hundreds of MB)
+#
+# See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
+# exclusion list (export drops state.db / logs / caches too because the
+# archive is a portable snapshot; clone-all keeps those because the cloned
+# profile is meant to keep working immediately).
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+})
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
 # a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
@@ -89,23 +115,48 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
-    """Ignore ``profiles/`` at the root of *source_dir* only.
+    """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
-    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
-    new profile (recursive ``.../profiles/.../profiles/...``). Export already
-    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
-    behavior for ``--clone-all``.
+    Two categories:
+      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+         Hermes infrastructure directories that only the default profile
+         (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
+         being the default profile so a named-profile source never has its
+         own data silently dropped.
+      2. Universal exclusions at any depth — Python bytecode caches that
+         are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
+         and runtime sockets / temp files (``*.sock``, ``*.tmp``).
+
+    The export-side ignore (``_default_export_ignore``) uses the same
+    two-tier pattern with the broader ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` set
+    because the export archive is a portable snapshot rather than a live
+    clone.
     """
     source_resolved = source_dir.resolve()
+    is_default_source = source_resolved == _get_default_hermes_home().resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
-        try:
-            if Path(directory).resolve() == source_resolved:
-                return [n for n in names if n == "profiles"]
-        except (OSError, ValueError):
-            pass
-        return []
+        ignored: list[str] = []
+        for entry in names:
+            # Universal exclusions at any depth.
+            if (
+                entry == "__pycache__"
+                or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
+            ):
+                ignored.append(entry)
+                continue
+            # Root-level exclusions only apply when cloning the default profile.
+            if is_default_source:
+                try:
+                    if Path(directory).resolve() == source_resolved:
+                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                            ignored.append(entry)
+                except (OSError, ValueError):
+                    # ``resolve()`` can fail on unusual FS layouts (broken
+                    # symlinks, missing parents).  Fail open — better to
+                    # over-copy than silently drop user data.
+                    pass
+        return ignored
 
     return _ignore
 

@@ -202,8 +202,10 @@
   align-items: center;
   gap: 0.4rem;
   font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  /* Assignee/profile names are case-sensitive. Do not visually uppercase
+   * lane headers, otherwise a valid `analyst` profile appears as `ANALYST`
+   * in the WebUI and users may copy the wrong casing back into edits. */
+  letter-spacing: 0.02em;
   color: var(--color-muted-foreground);
   padding: 0 0.1rem;
 }
@@ -861,15 +863,56 @@
   padding: 0.15rem 0 0;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+/* Run metadata is a secondary detail panel. Render it as a clearly-labeled
+ * sub-block with a thin left rule, capped height, and muted treatment so
+ * a verbose JSON blob (e.g. changed_files + URLs from a writer task) does
+ * not visually swamp the parent run row or get mistaken for a crash dump.
+ * Uses a native <details>/<summary> pair so collapse is browser-handled
+ * (zero JS); large blobs default collapsed via the open=false attribute.
+ * See issue #19548. */
+.hermes-kanban-run-meta-block {
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 2px solid var(--color-border);
+  background: transparent;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label {
+  cursor: pointer;
+  list-style: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::-webkit-details-marker {
+  display: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::before {
+  content: "▶ ";
+  display: inline-block;
+  font-size: 0.6rem;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+}
+.hermes-kanban-run-meta-block[open] > summary.hermes-kanban-run-meta-label::before {
+  transform: rotate(90deg);
+}
+.hermes-kanban-run-meta-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted-foreground);
+  padding-bottom: 0.15rem;
+}
 .hermes-kanban-run-meta {
   display: block;
+  max-height: 8.5rem;
+  overflow: auto;
   font-size: 0.72rem;
   line-height: 1.5;
-  padding: 0.15rem 0 0;
+  padding: 0;
   color: var(--color-muted-foreground);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
+  background: transparent;
 }
 
 /* -------------------------------------------------------------------------

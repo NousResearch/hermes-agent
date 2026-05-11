@@ -111,6 +111,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) |
 | Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) (uses a separate discovery system) |
+| Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/docs/developer-guide/plugin-llm-access) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) (uses a separate discovery system) |
 
 ## Plugin discovery
@@ -173,7 +174,7 @@ Several categories of plugin bypass `plugins.enabled` — they're part of Hermes
 | **Bundled backends** (image-gen providers under `plugins/image_gen/`, etc.) | Auto-loaded so the default backend "just works". Selection happens via `<category>.provider` in `config.yaml` (e.g. `image_gen.provider: openai`). |
 | **Memory providers** (`plugins/memory/`) | All discovered; exactly one is active, chosen by `memory.provider` in `config.yaml`. |
 | **Context engines** (`plugins/context_engine/`) | All discovered; one is active, chosen by `context.engine` in `config.yaml`. |
-| **Model providers** (`plugins/model-providers/`) | All 33 providers discover and register at the first `get_provider_profile()` call. The user picks one at a time via `--provider` or `config.yaml`. |
+| **Model providers** (`plugins/model-providers/`) | All bundled providers under `plugins/model-providers/` discover and register at the first `get_provider_profile()` call. The user picks one at a time via `--provider` or `config.yaml`. |
 | **Pip-installed `backend` plugins** | Opt-in via `plugins.enabled` (same as general plugins). |
 | **User-installed platforms** (under `~/.hermes/plugins/platforms/`) | Opt-in via `plugins.enabled` — third-party gateway adapters need explicit consent. |
 

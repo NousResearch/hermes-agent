@@ -886,6 +886,67 @@ class DingTalkAdapter(BasePlatformAdapter):
         """DingTalk does not support typing indicators."""
         pass
 
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image via DingTalk markdown.
+
+        DingTalk's session webhook only supports text/markdown payloads, not
+        native image/file attachments. For remote image URLs, render the image
+        inline with markdown so the user still sees the image. Local files need
+        OpenAPI media upload and are handled separately.
+        """
+        image_block = f"![image]({image_url})"
+        content = f"{caption}\n\n{image_block}" if caption else image_block
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local image files directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local image uploads. "
+                "Only markdown/text replies are supported without OpenAPI media upload."
+            ),
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local file attachments directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local file attachments. "
+                "Only markdown/text replies are supported without OpenAPI message send."
+            ),
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {

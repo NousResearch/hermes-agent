@@ -89,7 +89,6 @@ _DEFAULT_PROVIDER_MODELS = {
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
         "gemini-2.5-pro",
-        "grok-code-fast-1",
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",

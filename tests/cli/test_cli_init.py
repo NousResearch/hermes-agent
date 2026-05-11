@@ -175,6 +175,43 @@ class TestBusyInputMode:
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
 
+    def test_goal_status_and_control_commands_are_inline_while_busy(self):
+        """Goal controls must not wait behind a running goal turn."""
+        cli = _make_cli()
+        cli._agent_running = True
+
+        for command in (
+            "/goal",
+            "/goal status",
+            "/goal pause",
+            "/goal resume",
+            "/goal clear",
+            "/goal stop",
+            "/goal done",
+        ):
+            assert cli._should_handle_goal_command_inline(command) is True
+
+    def test_goal_new_text_is_not_inline_while_busy(self):
+        """Setting a different goal mid-turn should still wait for the current turn."""
+        cli = _make_cli()
+        cli._agent_running = True
+
+        assert cli._should_handle_goal_command_inline("/goal follow plan") is False
+
+    def test_inline_goal_pause_interrupts_running_agent(self):
+        """Pausing a busy goal should also interrupt the current turn."""
+        cli = _make_cli()
+        cli._agent_running = True
+        calls = []
+        interrupts = []
+        cli.process_command = lambda command: calls.append(command) or True
+        cli.agent = SimpleNamespace(interrupt=lambda message=None: interrupts.append(message))
+
+        assert cli._handle_goal_command_inline("/goal pause") is True
+
+        assert calls == ["/goal pause"]
+        assert interrupts == ["goal paused by user"]
+
 
 class TestPromptToolkitTerminalCompatibility:
     def test_lf_enter_binds_to_submit_handler_posix(self):

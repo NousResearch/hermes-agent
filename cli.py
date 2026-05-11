@@ -7371,6 +7371,56 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             return False
 
+    def _should_handle_goal_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True for /goal status/control commands that must work mid-run.
+
+        The normal slash-command path goes through ``_pending_input`` and is
+        consumed by ``process_loop``.  While an agent turn is running,
+        ``process_loop`` is blocked in ``self.chat()``, so queued goal controls
+        cannot run until the current turn ends.  That is especially bad for
+        ``/goal`` because it can intentionally start long autonomous turns.
+        Status/control subcommands are safe to dispatch on the UI thread; new
+        goal text still waits behind the current turn.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            parts = text.strip().split(None, 1)
+            base = parts[0].lower().lstrip('/') if parts else ""
+            cmd = resolve_command(base)
+            if not cmd or cmd.name != "goal":
+                return False
+            arg = parts[1].strip().lower() if len(parts) > 1 else ""
+            return (not arg) or arg in ("status", "pause", "resume", "clear", "stop", "done")
+        except Exception:
+            return False
+
+    def _handle_goal_command_inline(self, text: str) -> bool:
+        """Dispatch a safe /goal command immediately while the agent is busy.
+
+        ``pause`` and ``clear``-style controls also interrupt the current turn;
+        otherwise the goal is paused in storage but the long-running agent turn
+        continues and the CLI still appears frozen.
+        """
+        if not self._should_handle_goal_command_inline(text):
+            return False
+        parts = text.strip().split(None, 1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        should_interrupt = arg in ("pause", "clear", "stop", "done")
+        ok = self.process_command(text)
+        if ok and should_interrupt and getattr(self, "_agent_running", False):
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "interrupt"):
+                reason = "goal paused by user" if arg == "pause" else "goal cleared by user"
+                try:
+                    agent.interrupt(reason)
+                except Exception as exc:
+                    logging.debug("goal inline interrupt failed: %s", exc)
+        return ok
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -12160,6 +12210,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # linger in the input area (looking unsent) and invite an
                     # accidental re-submit. See issue #34569.
                     event.app.invalidate()
+                    return
+
+                # Handle /goal status/pause/clear while the agent is running
+                # immediately too.  /goal can intentionally create long
+                # autonomous turns; if controls wait behind _pending_input,
+                # the user has no slash-command escape hatch until that turn
+                # completes.
+                if self._should_handle_goal_command_inline(text, has_images=has_images):
+                    if not self._handle_goal_command_inline(text):
+                        self._should_exit = True
+                        if event.app.is_running:
+                            event.app.exit()
+                    event.app.current_buffer.reset(append_to_history=True)
                     return
 
                 # Snapshot and clear attached images

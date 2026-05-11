@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -155,6 +155,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return _has_env("SEARXNG_URL")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -1071,6 +1073,112 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── SearXNG Search & Extract Helpers ─────────────────────────────────────────
+
+def _searxng_base_url() -> str:
+    """Return the configured SearXNG base URL, or empty string if not set."""
+    return os.getenv("SEARXNG_URL", "").strip().rstrip("/")
+
+
+def _searxng_search(query: str, limit: int = 10) -> dict:
+    """Search using a self-hosted SearXNG instance and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    base = _searxng_base_url()
+    if not base:
+        return {"error": "SEARXNG_URL environment variable is not set. "
+                         "Configure a self-hosted SearXNG instance to use this backend.", "success": False}
+
+    params = {
+        "q": query,
+        "format": "json",
+        "limit": min(limit, 20),
+    }
+    logger.info("SearXNG search: '%s' (base=%s, limit=%d)", query, base, limit)
+
+    response = httpx.get(
+        f"{base}/search",
+        params=params,
+        timeout=30,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    web_results = []
+    for i, result in enumerate(data.get("results", [])[:limit]):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", "") or result.get("description", ""),
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+async def _searxng_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using direct HTTP fetch via httpx.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    results: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for url in urls:
+            if is_interrupted():
+                results.append({"url": url, "error": "Interrupted", "title": ""})
+                continue
+
+            try:
+                logger.info("SearXNG extract: %s", url)
+                resp = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; Hermes/1.0; +http://hermes-agent.ai)",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                })
+                resp.raise_for_status()
+                html = resp.text
+
+                # Basic title extraction
+                title = ""
+                title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+                if title_match:
+                    title = title_match.group(1).strip()
+
+                # Strip HTML tags for plain-text content (simple approach)
+                content = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+                content = re.sub(r"<style[^>]*>.*?</style>", "", content, flags=re.DOTALL | re.IGNORECASE)
+                content = re.sub(r"<[^>]+>", " ", content)
+                content = re.sub(r"&\w+?;", " ", content)  # decode common HTML entities
+                content = re.sub(r"\s{2,}", " ", content).strip()
+
+                results.append({
+                    "url": url,
+                    "title": title,
+                    "content": content,
+                    "raw_content": content,
+                    "metadata": {"sourceURL": url, "title": title},
+                })
+            except Exception as exc:
+                logger.debug("SearXNG extract failed for %s: %s", url, exc)
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": str(exc),
+                })
+
+    return results
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -1140,6 +1248,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         if backend == "exa":
             response_data = _exa_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1297,6 +1414,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "searxng":
+                results = await _searxng_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2

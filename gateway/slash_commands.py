@@ -84,6 +84,9 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+_USAGE_ACCOUNT_PROVIDERS = ("openai-codex", "anthropic")
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -3977,6 +3980,17 @@ class GatewaySlashCommandsMixin:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")
             base_url = base_url or persisted.get("billing_base_url")
+
+        if not provider:
+            try:
+                from hermes_cli.auth import read_credential_pool
+
+                for candidate in _USAGE_ACCOUNT_PROVIDERS:
+                    if read_credential_pool(candidate):
+                        provider = candidate
+                        break
+            except Exception:
+                pass
 
         # Fetch account usage off the event loop so slow provider APIs don't
         # block the gateway. Failures are non-fatal -- account_lines stays [].

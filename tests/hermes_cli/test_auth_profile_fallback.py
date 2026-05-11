@@ -149,6 +149,35 @@ def test_per_provider_shadowing_is_independent(profile_env):
     assert [e["id"] for e in ant_entries] == ["glob-ant"]
 
 
+def test_profile_read_codex_tokens_falls_back_to_global_pool(profile_env):
+    """Legacy Codex token readers should honor the same profile fallback as credential pools."""
+    from hermes_cli.auth import _read_codex_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "global-codex",
+            "label": "global-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "global-access-token",
+            "refresh_token": "global-refresh-token",
+            "account_id": "acct_global",
+            "last_refresh": "2026-05-11T00:00:00Z",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "global-access-token"
+    assert data["tokens"]["refresh_token"] == "global-refresh-token"
+    assert data["tokens"]["account_id"] == "acct_global"
+    assert data["last_refresh"] == "2026-05-11T00:00:00Z"
+    assert data["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
     from hermes_cli.auth import read_credential_pool

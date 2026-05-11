@@ -72,6 +72,76 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_falls_back_to_credential_pool(tmp_path, monkeypatch):
+    """Codex OAuth added through the pool must be visible to legacy readers."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [{
+                "auth_type": "oauth",
+                "access_token": "pool-access-token",
+                "refresh_token": "pool-refresh-token",
+                "account_id": "acct_123",
+                "last_refresh": "2026-04-24T12:00:00Z",
+                "base_url": "https://custom.example/codex",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "pool-access-token"
+    assert data["tokens"]["refresh_token"] == "pool-refresh-token"
+    assert data["tokens"]["account_id"] == "acct_123"
+    assert data["last_refresh"] == "2026-04-24T12:00:00Z"
+    assert data["base_url"] == "https://custom.example/codex"
+
+
+def test_resolve_codex_runtime_credentials_uses_pool_base_url(tmp_path, monkeypatch):
+    """Runtime credential resolution should preserve Codex pool base_url."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [{
+                "auth_type": "oauth",
+                "access_token": "pool-access-token",
+                "refresh_token": "pool-refresh-token",
+                "base_url": "https://custom.example/codex",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+
+    creds = resolve_codex_runtime_credentials()
+
+    assert creds["base_url"] == "https://custom.example/codex"
+
+
+def test_read_codex_tokens_ignores_malformed_credential_pool(tmp_path, monkeypatch):
+    """Malformed pool data should raise the normal auth-missing error, not crash."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": "not-a-list"},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+
+    assert exc.value.code == "codex_auth_missing"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

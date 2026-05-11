@@ -43,6 +43,18 @@ describe('external link helpers', () => {
     expect(isTitleFetchable('mailto:hello@example.com')).toBe(false)
   })
 
+  it('blocks private, link-local, and intranet hosts', () => {
+    expect(isTitleFetchable('http://10.0.0.12/path')).toBe(false)
+    expect(isTitleFetchable('http://172.22.5.4/path')).toBe(false)
+    expect(isTitleFetchable('http://192.168.1.22/path')).toBe(false)
+    expect(isTitleFetchable('http://169.254.169.254/latest/meta-data')).toBe(false)
+    expect(isTitleFetchable('http://[fd00::1]/')).toBe(false)
+    expect(isTitleFetchable('http://[fe80::1]/')).toBe(false)
+    expect(isTitleFetchable('http://printer.local/status')).toBe(false)
+    expect(isTitleFetchable('http://intranet/status')).toBe(false)
+    expect(isTitleFetchable('https://8.8.8.8/status')).toBe(true)
+  })
+
   it('deduplicates in-flight title fetches and caches results', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('<html><head><title>El Yunque Tour Water Slide, Rope Swing & Pickup</title></head></html>', {

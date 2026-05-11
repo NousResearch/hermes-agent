@@ -1,7 +1,6 @@
 """Regression tests for Nous OAuth refresh + agent-key mint interactions."""
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -862,6 +861,46 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
+def test_refresh_token_exchange_sends_refresh_token_header():
+    """Nous refresh tokens must be sent in a header so sandbox proxies can
+    substitute placeholder credentials without parsing form bodies.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "access-2", "refresh_token": "refresh-2"}
+
+    class _FakeClient:
+        def __init__(self):
+            self.kwargs = None
+
+        def post(self, *args, **kwargs):
+            del args
+            self.kwargs = kwargs
+            return _FakeResponse()
+
+    client = _FakeClient()
+
+    payload = _refresh_access_token(
+        client=client,
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        refresh_token="refresh-1",
+    )
+
+    assert payload["access_token"] == "access-2"
+    assert payload["refresh_token"] == "refresh-2"
+    assert client.kwargs is not None
+    assert client.kwargs["headers"]["x-nous-refresh-token"] == "refresh-1"
+    assert client.kwargs["data"] == {
+        "grant_type": "refresh_token",
+        "client_id": "hermes-cli",
+    }
+
+
 def test_refresh_non_reuse_error_keeps_original_description():
     """Non-reuse invalid_grant errors must keep their original description untouched.
 
@@ -1179,3 +1218,87 @@ def test_shared_store_survives_across_profile_switch(
     shared_after = auth_mod._read_shared_nous_state()
     assert shared_after is not None
     assert shared_after["refresh_token"] == "b-refresh-tok"
+
+
+def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """A sibling profile may rotate the single-use Nous refresh token.
+
+    When this profile later wakes with an expired local token, runtime
+    resolution must adopt the shared token before refreshing. Otherwise it
+    can submit the stale local refresh token and trigger portal reuse
+    revocation for the whole shared session.
+    """
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-expired-access",
+        refresh_token="local-stale-refresh",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    shared_state = _full_state_fixture()
+    shared_state["access_token"] = "shared-fresh-access"
+    shared_state["refresh_token"] = "shared-fresh-refresh"
+    shared_state["expires_at"] = "2099-01-01T00:00:00+00:00"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _refresh_should_not_happen(**_kwargs):
+        raise AssertionError("stale profile-local refresh token was used")
+
+    minted_with: list[str] = []
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        minted_with.append(access_token)
+        return _mint_payload(api_key="agent-key-from-shared-token")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(
+        min_key_ttl_seconds=300,
+        force_mint=True,
+    )
+
+    assert creds["api_key"] == "agent-key-from-shared-token"
+    assert minted_with == ["shared-fresh-access"]
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["refresh_token"] == "shared-fresh-refresh"
+    assert profile_state["access_token"] == "shared-fresh-access"
+
+
+def test_managed_gateway_access_token_uses_newer_shared_token(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """Managed-tool token reads share the same stale-refresh-token hazard."""
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-expired-access",
+        refresh_token="local-stale-refresh",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    shared_state = _full_state_fixture()
+    shared_state["access_token"] = "shared-fresh-access"
+    shared_state["refresh_token"] = "shared-fresh-refresh"
+    shared_state["expires_at"] = "2099-01-01T00:00:00+00:00"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _refresh_should_not_happen(**_kwargs):
+        raise AssertionError("stale profile-local refresh token was used")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
+
+    assert auth_mod.resolve_nous_access_token() == "shared-fresh-access"
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["refresh_token"] == "shared-fresh-refresh"

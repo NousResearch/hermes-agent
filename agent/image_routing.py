@@ -144,7 +144,51 @@ def decide_image_input_mode(
 # it fires, which is cheaper than permanent quality loss.
 
 
-def _guess_mime(path: Path) -> str:
+def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
+    """Detect image MIME from magic bytes. Returns None if unrecognised.
+
+    Filename-based detection (``mimetypes.guess_type``) is unreliable when
+    upstream platforms lie about content-type. Discord, for example, can
+    serve a PNG with ``content_type=image/webp`` for proxied/animated
+    stickers, custom emoji previews, or images uploaded via certain bots.
+    Anthropic strictly validates that declared media_type matches the
+    actual bytes and returns HTTP 400 on mismatch, so we sniff to be safe.
+    """
+    if not raw:
+        return None
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    # JPEG: FF D8 FF
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    # GIF87a / GIF89a
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    # WEBP: "RIFF" .... "WEBP"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    # BMP: "BM"
+    if raw.startswith(b"BM"):
+        return "image/bmp"
+    # HEIC/HEIF: ftypheic / ftypheix / ftypmif1 / ftypmsf1 etc.
+    if len(raw) >= 12 and raw[4:8] == b"ftyp" and raw[8:12] in (
+        b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
+    ):
+        return "image/heic"
+    return None
+
+
+def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
+    """Return image MIME type for *path*.
+
+    If *raw* bytes are provided, magic-byte sniffing wins (authoritative).
+    Otherwise we fall back to ``mimetypes`` then suffix-based defaults.
+    """
+    if raw is not None:
+        sniffed = _sniff_mime_from_bytes(raw)
+        if sniffed:
+            return sniffed
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
         return mime
@@ -178,7 +222,7 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path)
+    mime = _guess_mime(path, raw=raw)
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
@@ -190,9 +234,18 @@ def build_native_content_parts(
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
-      [{"type": "text", "text": "..."},
+      [{"type": "text", "text": "...\\n\\n[Image attached at: /local/path]"},
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        ...]
+
+    The local path of each successfully attached image is appended to the
+    text part as ``[Image attached at: <path>]``. The model still sees the
+    pixels via the ``image_url`` part (full native vision); the path note
+    just gives it a string handle so MCP/skill tools that take an image
+    path or URL argument can be invoked on the same image without an
+    extra round-trip. This parallels the text-mode hint produced by
+    ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
+    <path>``) so behaviour is consistent across both image input modes.
 
     Images are attached at their native size. If a provider rejects the
     request because an image is too large (e.g. Anthropic's 5 MB per-image
@@ -200,14 +253,11 @@ def build_native_content_parts(
     once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
     Returns (content_parts, skipped_paths). Skipped paths are files that
-    couldn't be read from disk.
+    couldn't be read from disk and are NOT advertised in the path hints.
     """
-    parts: List[Dict[str, Any]] = []
     skipped: List[str] = []
-
-    text = (user_text or "").strip()
-    if text:
-        parts.append({"type": "text", "text": text})
+    image_parts: List[Dict[str, Any]] = []
+    attached_paths: List[str] = []
 
     for raw_path in image_paths:
         p = Path(raw_path)
@@ -218,15 +268,30 @@ def build_native_content_parts(
         if not data_url:
             skipped.append(str(raw_path))
             continue
-        parts.append({
+        image_parts.append({
             "type": "image_url",
             "image_url": {"url": data_url},
         })
+        attached_paths.append(str(raw_path))
 
-    # If the text was empty, add a neutral prompt so the turn isn't just images.
-    if not text and any(p.get("type") == "image_url" for p in parts):
-        parts.insert(0, {"type": "text", "text": "What do you see in this image?"})
+    text = (user_text or "").strip()
 
+    # If at least one image attached, build a single text part that combines
+    # the user's caption (or a neutral default) with one path hint per image.
+    if attached_paths:
+        base_text = text or "What do you see in this image?"
+        path_hints = "\n".join(
+            f"[Image attached at: {p}]" for p in attached_paths
+        )
+        combined_text = f"{base_text}\n\n{path_hints}"
+        parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
+        parts.extend(image_parts)
+        return parts, skipped
+
+    # No images successfully attached — fall back to plain text-only behaviour.
+    parts = []
+    if text:
+        parts.append({"type": "text", "text": text})
     return parts, skipped
 
 

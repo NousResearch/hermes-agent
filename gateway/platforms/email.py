@@ -65,6 +65,29 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+def _send_imap_id(imap: "imaplib.IMAP4") -> None:
+    """Send RFC 2971 IMAP ID command identifying this client.
+
+    Required by 163/NetEase mailbox after LOGIN: without it, every UID
+    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
+    IMAP servers either honor it silently or reject the unknown command;
+    we swallow failures so non-supporting servers keep working.
+    """
+    try:
+        try:
+            from hermes_cli import __version__ as _hermes_version
+        except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
+            _hermes_version = "0"
+        imap.xatom(
+            "ID",
+            f'("name" "hermes-agent" "version" "{_hermes_version}" '
+            '"vendor" "NousResearch" '
+            '"support-email" "noreply@nousresearch.com")',
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort, never fatal
+        logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
 def _is_automated_sender(address: str, headers: dict) -> bool:
     """Return True if this email is from an automated/noreply source."""
     addr = address.lower()
@@ -276,6 +299,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
+            _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -344,6 +368,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
                 imap.login(self._address, self._password)
+                _send_imap_id(imap)
                 imap.select("INBOX")
 
                 status, data = imap.uid("search", None, "UNSEEN")

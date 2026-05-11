@@ -21,6 +21,8 @@ import logging
 import os
 import platform
 import re
+import shutil
+import signal
 import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -54,16 +56,77 @@ def _kill_port_process(port: int) -> None:
                         except subprocess.SubprocessError:
                             pass
         else:
-            result = subprocess.run(
-                ["fuser", f"{port}/tcp"],
-                capture_output=True, timeout=5,
-            )
-            if result.returncode == 0:
-                subprocess.run(
-                    ["fuser", "-k", f"{port}/tcp"],
+            # Try fuser first (Linux), fall back to lsof (macOS / WSL2)
+            killed = False
+            try:
+                result = subprocess.run(
+                    ["fuser", f"{port}/tcp"],
                     capture_output=True, timeout=5,
                 )
+                if result.returncode == 0:
+                    subprocess.run(
+                        ["fuser", "-k", f"{port}/tcp"],
+                        capture_output=True, timeout=5,
+                    )
+                    killed = True
+            except FileNotFoundError:
+                pass  # fuser not installed
+
+            if not killed:
+                try:
+                    result = subprocess.run(
+                        ["lsof", "-ti", f":{port}"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    for pid_str in result.stdout.strip().splitlines():
+                        try:
+                            os.kill(int(pid_str), signal.SIGTERM)
+                        except (ValueError, ProcessLookupError, PermissionError):
+                            pass
+                except FileNotFoundError:
+                    pass  # lsof not installed either
     except Exception:
+        pass
+
+
+def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
+    """Kill a bridge process recorded in a PID file from a previous run.
+
+    The bridge writes ``bridge.pid`` into the session directory when it
+    starts.  If the gateway crashed without a clean shutdown the old bridge
+    process becomes orphaned — this helper finds and kills it.
+    """
+    pid_file = session_path / "bridge.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError, TypeError):
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+        return
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
+    # cross-platform existence check before sending a real signal.
+    from gateway.status import _pid_exists
+    if _pid_exists(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        pid_file.unlink()
+    except OSError:
+        pass
+
+
+def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
+    """Write the bridge PID to a file for later cleanup."""
+    try:
+        (session_path / "bridge.pid").write_text(str(pid))
+    except OSError:
         pass
 
 
@@ -92,10 +155,26 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             raise OSError(details or f"taskkill failed for PID {proc.pid}")
         return
 
-    import signal
-
-    sig = signal.SIGTERM if not force else signal.SIGKILL
-    os.killpg(os.getpgid(proc.pid), sig)
+    import psutil
+    try:
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        if force:
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.kill()
+        else:
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.terminate()
+    except psutil.NoSuchProcess:
+        return
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -118,10 +197,15 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js
+    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
+    # (node.exe vs node) and get a meaningful "not installed" signal
+    # instead of spawning a cmd flash on Windows.
+    _node = shutil.which("node")
+    if not _node:
+        return False
     try:
         result = subprocess.run(
-            ["node", "--version"],
+            [_node, "--version"],
             capture_output=True,
             text=True,
             timeout=5
@@ -158,6 +242,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
+    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -192,6 +277,25 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # "Fatal whatsapp adapter error" plus dispatch a fatal-error
         # notification before the normal "✓ whatsapp disconnected" fires.
         self._shutting_down: bool = False
+
+    def _effective_reply_prefix(self) -> str:
+        """Return the prefix the Node bridge will add in self-chat mode."""
+        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        if whatsapp_mode != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
+
+    def _outgoing_chunk_limit(self) -> int:
+        """Reserve room for the bridge-side prefix so final WhatsApp text fits."""
+        prefix_len = len(self._effective_reply_prefix())
+        # Keep enough space for truncate_message's pagination indicator and
+        # code-fence repair even if a user configures a very long prefix.
+        return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -385,9 +489,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_dir = bridge_path.parent
             if not (bridge_dir / "node_modules").exists():
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
+                # Resolve npm path so Windows can execute the .cmd shim.
+                # shutil.which honours PATHEXT; on POSIX it returns the
+                # plain executable path.
+                _npm_bin = shutil.which("npm") or "npm"
                 try:
                     install_result = subprocess.run(
-                        ["npm", "install", "--silent"],
+                        [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True,
@@ -428,6 +536,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass  # Bridge not running, start a new one
             
             # Kill any orphaned bridge from a previous gateway run
+            _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
             
@@ -436,7 +545,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # messages are preserved for troubleshooting.
             whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
-            bridge_log_fh = open(self._bridge_log, "a")
+            bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
 
             # Build bridge subprocess environment.
@@ -459,6 +568,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
             )
+            _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             
             # Wait for the bridge to connect to WhatsApp.
             # Phase 1: wait for the HTTP server to come up (up to 15s).
@@ -609,6 +719,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Bridge was not started by us, don't kill it
             print(f"[{self.name}] Disconnecting (external bridge left running)")
 
+        # Clean up PID file
+        try:
+            (self._session_path / "bridge.pid").unlink(missing_ok=True)
+        except OSError:
+            pass
+
         # Cancel the poll task explicitly
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
@@ -713,7 +829,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Format and chunk the message
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             last_message_id = None
             for chunk in chunks:
@@ -1073,7 +1189,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if file_size > MAX_TEXT_INJECT_BYTES:
                                 print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
                                 continue
-                            content = Path(doc_path).read_text(errors="replace")
+                            content = Path(doc_path).read_text(encoding="utf-8", errors="replace")
                             fname = Path(doc_path).name
                             # Remove the doc_<hex>_ prefix for display
                             display_name = fname

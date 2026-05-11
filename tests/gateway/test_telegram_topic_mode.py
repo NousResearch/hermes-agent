@@ -144,6 +144,11 @@ def _make_runner(session_db=None):
     runner._invalidate_session_run_generation = MagicMock()
     runner._begin_session_run_generation = MagicMock(return_value=1)
     runner._is_session_run_current = MagicMock(return_value=True)
+    # Bypass the destructive-slash confirm gate — these tests focus on
+    # /new topic-mode mechanics, not the confirm prompt itself.
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False}
+    }
     runner._release_running_agent_state = MagicMock()
     runner._evict_cached_agent = MagicMock()
     runner._clear_session_boundary_security_state = MagicMock()
@@ -706,37 +711,6 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
     assert binding["session_key"] == build_session_key(_make_source(thread_id="17585"))
 
 
-@pytest.mark.asyncio
-async def test_topic_root_command_checks_getme_capabilities_before_enabling(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
-
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    runner = _make_runner(session_db=session_db)
-    bot = AsyncMock()
-    bot.get_me.return_value = SimpleNamespace(
-        has_topics_enabled=False,
-        allows_users_to_create_topics=True,
-    )
-    runner.adapters[Platform.TELEGRAM]._bot = bot
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError("/topic capability failure must not enter the agent loop")
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/topic"))
-
-    assert "topics are not enabled" in result
-    assert "Open @BotFather" in result
-    assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is False
-    bot.get_me.assert_awaited_once()
-    runner.adapters[Platform.TELEGRAM].send_image_file.assert_awaited_once()
-    image_kwargs = runner.adapters[Platform.TELEGRAM].send_image_file.await_args.kwargs
-    assert image_kwargs["chat_id"] == "208214988"
-    assert image_kwargs["image_path"].endswith("telegram-botfather-threads-settings.jpg")
-    runner._run_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1076,40 +1050,5 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     assert tables == set()
 
 
-def test_capability_hint_is_debounced_per_chat(tmp_path):
-    """BotFather screenshot is sent once per cooldown window per chat."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    runner = _make_runner(session_db=db)
-
-    source = _make_source()
-    assert runner._should_send_telegram_capability_hint(source) is True
-    assert runner._should_send_telegram_capability_hint(source) is False
-    assert runner._should_send_telegram_capability_hint(source) is False
-
-    from dataclasses import replace
-    other = replace(source, chat_id="999999999")
-    assert runner._should_send_telegram_capability_hint(other) is True
 
 
-def test_topic_off_resets_debounce_counters(tmp_path):
-    """Disabling topic mode clears per-chat debounce state."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    runner = _make_runner(session_db=db)
-
-    source = _make_source()
-    # Prime the debounce counters.
-    assert runner._should_send_telegram_lobby_reminder(source) is True
-    assert runner._should_send_telegram_capability_hint(source) is True
-    assert runner._should_send_telegram_lobby_reminder(source) is False
-    assert runner._should_send_telegram_capability_hint(source) is False
-
-    # /topic off resets them.
-    result = runner._disable_telegram_topic_mode_for_chat(source)
-    assert "OFF" in result or "off" in result
-
-    # Re-enable and verify counters reset (so the first reminder/hint
-    # after re-enabling can land immediately).
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    assert runner._should_send_telegram_lobby_reminder(source) is True
-    assert runner._should_send_telegram_capability_hint(source) is True

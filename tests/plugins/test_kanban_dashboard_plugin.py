@@ -127,6 +127,43 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_client_side_filtering_includes_tenant_filter():
+    """The rendered board must also filter by tenant.
+
+    The API request includes ``?tenant=...``, but the dashboard also filters the
+    locally cached board for search/assignee changes. Without checking
+    ``tenantFilter`` here, switching tenants can leave stale cards visible until a
+    full reload finishes.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
+    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -553,6 +590,67 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         assert ws is not None  # handshake succeeded
 
 
+def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
+    """``asyncio.CancelledError`` while sleeping in the poll loop is the
+    normal uvicorn-shutdown path (``BaseException``, so the bare
+    ``except Exception:`` does NOT catch it). Without the explicit
+    clause the cancellation surfaces as an application traceback.
+
+    Regression test for #20790 (fix in #20938). Drives the coroutine
+    directly (rather than through FastAPI TestClient) so we can observe
+    the cancellation outcome deterministically.
+    """
+    import asyncio
+    import types
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Short-circuit the token check — this test is about the cancellation
+    # path, not auth.
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Give the handler a tick to accept + start polling.
+        await asyncio.sleep(0.05)
+        assert ws.accepted is True
+        task.cancel()
+        # stream_events should swallow CancelledError and return cleanly.
+        # If it doesn't, this await re-raises the CancelledError.
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None, (
+        f"stream_events should return cleanly after cancellation, got {result!r}"
+    )
+    # The bug symptom was a traceback; we don't assert on stderr because
+    # capturing asyncio's internal "exception was never retrieved" logging
+    # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
 # ---------------------------------------------------------------------------
 # Bulk actions
 # ---------------------------------------------------------------------------
@@ -936,6 +1034,20 @@ def test_create_task_without_skills_defaults_to_empty_list(client):
     # dataclasses.asdict which keeps it None. The drawer's
     # `t.skills && t.skills.length > 0` guard handles both null and [].
     assert task.get("skills") in (None, [])
+
+
+def test_create_task_with_toolset_name_in_skills_is_rejected(client):
+    """POST /tasks fails fast when callers confuse toolsets with skills."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "bad skills payload",
+            "assignee": "linguist",
+            "skills": ["web"],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "toolset name" in r.json()["detail"]
 
 
 
@@ -1484,3 +1596,300 @@ def test_board_exposes_diagnostics_list_and_summary(client):
     assert task_dict["warnings"] is not None
     assert task_dict["warnings"]["highest_severity"] == "error"
     assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/:id/specify — triage specifier endpoint
+# ---------------------------------------------------------------------------
+
+
+def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
+    """Helper: install a fake auxiliary client so the specifier endpoint
+    can run without hitting any real provider."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = content
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, model),
+    )
+    return fake_client
+
+
+def test_specify_happy_path(client, monkeypatch):
+    import json as jsonlib
+
+    # Create a triage task.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "Polished", "body": "**Goal**\nDo the thing."}
+        ),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t["id"]
+    assert body["new_title"] == "Polished"
+
+    # Task should have moved off the triage column.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] in {"todo", "ready"}
+    assert detail["title"] == "Polished"
+    assert "**Goal**" in (detail["body"] or "")
+
+
+def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
+    """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
+    "task not in triage" rather than a 4xx — the dashboard renders the
+    reason inline so the user can fix it without a page reload."""
+    # Create a normal (ready) task — not in triage.
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    _patch_specifier_response(monkeypatch, content="unused")
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "not in triage" in body["reason"]
+
+
+def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough", "triage": True},
+    ).json()["task"]
+
+    # Simulate "no auxiliary client configured".
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (None, ""),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "auxiliary client" in body["reason"]
+
+    # Task must stay in triage — nothing was touched.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] == "triage"
+
+
+def test_board_endpoint_accepts_explicit_board_default_param(client):
+    """GET /board?board=default must not fall through to env/current-file resolution.
+
+    The dashboard always sends ``?board=<slug>`` (including ``board=default``)
+    so that the server-side ``current`` file can never override the dashboard's
+    selected board.  This test asserts the endpoint accepts the parameter and
+    returns the default board without falling back to environment variable or
+    current-file resolution.
+    Regression: #21819.
+    """
+    # Create a task on the default board.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "on-default-board"},
+    ).json()["task"]
+    assert t["status"] == "ready"
+
+    # Request with explicit board=default — must succeed and include the task.
+    r = client.get("/api/plugins/kanban/board?board=default")
+    assert r.status_code == 200
+    data = r.json()
+    ready = next((c for c in data["columns"] if c["name"] == "ready"), None)
+    assert ready is not None, "no 'ready' column in default board response"
+    task_ids = [task["id"] for task in ready["tasks"]]
+    assert t["id"] in task_ids, (
+        f"task {t['id']} not found in ready column of default board "
+        f"(got tasks: {task_ids}). The board=default param was likely ignored."
+    )
+
+
+def test_dashboard_requests_default_board_explicitly():
+    """Dashboard REST calls must include board=default instead of relying on server current board."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
+    assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
+    assert "}, [loadBoardList, switchBoard, board]);" in dist
+
+
+def test_dashboard_assignee_inputs_preserve_casing():
+    """Assignee/specifier inputs must disable browser auto-capitalization.
+
+    Hermes profile names are case-sensitive — the dispatcher uses the
+    assignee string as a literal directory/profile lookup. Mobile browsers
+    (iOS/Android) and some IMEs auto-capitalize the first letter of any
+    text input by default, so a user typing ``analyst`` ends up submitting
+    ``Analyst`` and the dispatcher fails to spawn a matching profile,
+    leading to the crash loop reported in #21320.
+
+    The fix sets ``autoCapitalize="none"``, ``autoCorrect="off"``,
+    ``spellCheck=false``, and ``style={textTransform: "none"}`` on the
+    two assignee ``<Input>`` elements (inline triage/lane create-task
+    input + task-edit panel "(empty = unassign)" input).
+
+    This test pins those attributes in the compiled dist bundle so a
+    future rebuild that loses them fails CI immediately.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    # Both sites should have all four attributes. Count occurrences to
+    # ensure both inputs got the treatment, not just one.
+    assert dist.count('autoCapitalize: "none"') >= 2, (
+        "Expected autoCapitalize=\"none\" on both assignee inputs (inline "
+        "create + task-edit panel)"
+    )
+    assert dist.count('autoCorrect: "off"') >= 2
+    assert dist.count("spellCheck: false") >= 2
+    assert dist.count('textTransform: "none"') >= 2
+
+
+def test_dashboard_lane_head_preserves_assignee_casing():
+    """Lane headers must not visually uppercase profile names.
+
+    The previous CSS rule ``.hermes-kanban-lane-head { text-transform:
+    uppercase; letter-spacing: 0.08em }`` made a valid ``analyst`` profile
+    appear as ``ANALYST`` in column headers; users then copied the
+    uppercase form back into edits, hitting the same crash loop as the
+    auto-capitalization path. The fix removes ``text-transform: uppercase``
+    from the rule and tightens letter-spacing.
+
+    Static-asset regression test for the rule contents.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    style = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    # Locate the .hermes-kanban-lane-head block. Use a generous slice to
+    # keep this resilient to nearby unrelated CSS edits.
+    marker = ".hermes-kanban-lane-head {"
+    idx = style.find(marker)
+    assert idx != -1, "could not locate .hermes-kanban-lane-head rule"
+    end = style.find("}", idx)
+    assert end != -1
+    rule = style[idx:end]
+
+    assert "text-transform: uppercase" not in rule, (
+        "Lane head must not visually uppercase profile names — see #21320 "
+        "and the explanatory comment in the CSS rule."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Built-asset regressions for the dashboard's run-history rendering
+# (issue #19548 — completed-run metadata used to render as a large pale box
+# that read like a crash dump). The plugin ships built-only, so we lock in
+# the rendered shape with static assertions on dist/index.js + dist/style.css.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_dist_path(name: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    p = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / name
+    assert p.exists(), f"dashboard asset missing: {p}"
+    return p
+
+
+def test_run_metadata_pretty_printed_with_label():
+    """Run-history metadata is pretty-printed JSON inside a labeled sub-block."""
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Pretty-printed JSON (indent=2) so a writer task's changed_files +
+    # URLs blob doesn't render as one wall-of-text monoline.
+    assert "JSON.stringify(r.metadata, null, 2)" in js
+    # Explicit label so the panel reads as auxiliary detail, not a crash dump.
+    assert '"hermes-kanban-run-meta-label"' in js
+    assert '"Metadata"' in js
+    # Wrapped in the labelled meta block container.
+    assert '"hermes-kanban-run-meta-block"' in js
+
+
+def test_run_metadata_secondary_styling():
+    """Metadata block is capped, transparent, and visually secondary."""
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # The label class exists with muted-foreground treatment.
+    assert ".hermes-kanban-run-meta-label" in css
+    # Container styling: thin left rule, no opaque highlighted fill that
+    # could be mistaken for an error/warning panel.
+    assert ".hermes-kanban-run-meta-block" in css
+    block_start = css.index(".hermes-kanban-run-meta-block {")
+    block_decl = css[block_start : block_start + 400]
+    assert "background: transparent" in block_decl
+    assert "border-left" in block_decl
+    # Cap meta height so verbose JSON doesn't sprawl across the run row.
+    meta_start = css.index(".hermes-kanban-run-meta {")
+    meta_decl = css[meta_start : meta_start + 400]
+    assert "max-height" in meta_decl
+    assert "overflow: auto" in meta_decl
+    assert "color: var(--color-muted-foreground)" in meta_decl
+
+
+def test_run_metadata_uses_native_collapse():
+    """Metadata panel uses <details>/<summary> for zero-JS collapse.
+
+    Native <details> means the browser handles state — no event handlers,
+    no React-state coupling, accessible by default (keyboard navigable,
+    screen-reader announces the disclosure state). Default-open state is
+    decided per-render based on payload length.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Element must be <details> / <summary>, not plain <div>s.
+    assert 'h("details"' in js
+    assert 'h("summary"' in js
+    # The open prop is computed from json length (collapsed when verbose).
+    assert "open: !collapsed" in js or "open:!collapsed" in js
+    assert "json.length > 300" in js
+
+
+def test_run_metadata_skips_empty_object():
+    """Empty `{}` metadata renders nothing — no useless labeled block.
+
+    `r.metadata && {} && ...` would render a "Metadata" labeled block
+    containing just `{}`, which is visual noise. The render predicate now
+    also checks Object.keys(r.metadata).length > 0.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    assert "Object.keys(r.metadata).length > 0" in js
+
+
+def test_run_metadata_disclosure_indicator_styled():
+    """Native disclosure marker is hidden + replaced with a CSS-only chevron.
+
+    Browsers render an OS-specific arrow next to <summary> by default. For a
+    consistent look across OSes the hermes dashboard hides that marker and
+    renders a CSS ::before chevron that rotates on [open]. Pin it so a
+    future CSS rebuild can't silently lose it (which would put two markers
+    side-by-side on Firefox/WebKit).
+    """
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # Default markers suppressed.
+    assert "list-style: none" in css
+    assert "::-webkit-details-marker" in css
+    # CSS-only chevron present + animates on open state.
+    assert ".hermes-kanban-run-meta-block[open]" in css
+    assert "rotate(90deg)" in css

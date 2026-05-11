@@ -889,10 +889,9 @@ def switch_model(
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
             # base_url adjustments for OpenCode, etc.).
-            if runtime.get("provider") != "custom":
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-                api_mode = runtime.get("api_mode", "")
+            api_key = runtime.get("api_key", "")
+            base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -1343,7 +1342,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+            # Use live OAuth-backed discovery so the gateway /model picker
+            # matches what the user's authenticated Codex/Copilot backend
+            # actually serves — including ChatGPT-Pro-only Codex slugs
+            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
+            # catalog. ``provider_model_ids()`` falls back to the curated
+            # list when the live endpoint is unreachable, so this is safe
+            # for unauthenticated and offline cases too.
             model_ids = provider_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
@@ -1637,7 +1643,8 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
 
         _section4_emitted_slugs: set = set()
-        for grp in groups.values():
+        for grp_key, grp in groups.items():
+            api_url, api_key = grp_key
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
@@ -1675,6 +1682,18 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # Live model discovery from custom provider endpoints (matches
+            # Section 3 behavior for user ``providers:`` entries).
+            if api_url and api_key:
+                try:
+                    from hermes_cli.models import fetch_api_models
+
+                    live_models = fetch_api_models(api_key, api_url)
+                    if live_models:
+                        grp["models"] = live_models
+                        grp["total_models"] = len(live_models)
+                except Exception:
+                    pass
             results.append({
                 "slug": slug,
                 "name": grp["name"],

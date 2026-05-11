@@ -19,6 +19,7 @@ Spotify: play, search, queue, manage playlists and devices.
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `spotify`, `music`, `playback`, `playlists`, `media` |
 | Related skills | [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) |
 

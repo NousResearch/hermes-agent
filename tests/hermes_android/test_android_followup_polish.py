@@ -406,6 +406,8 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
         '"screenshot"',
         '"visual_snapshot"',
         '"capture_screenshot"',
+        '"opengui_history"',
+        '"clear_opengui_history"',
         '"open_app"',
         '"launch_app"',
         '"coordinate_tap"',
@@ -473,6 +475,10 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'extractPredictionMetadata' in opengui_parser
     assert '"action_summary"' in opengui_parser
     assert '"reflection"' in opengui_parser
+    assert 'OpenGuiActionHistory()' in chat_client
+    assert 'openGuiActionHistory.snapshotJson()' in chat_client
+    assert 'openGuiActionHistory.clearJson()' in chat_client
+    assert 'deterministic OpenGUI action history' in chat_client
     assert 'update_working_memory' in opengui_parser
     assert 'hermes_opengui_working_memory' in chat_client
     assert 'executeParsedOpenGuiWorkingMemoryUpdate' in chat_client

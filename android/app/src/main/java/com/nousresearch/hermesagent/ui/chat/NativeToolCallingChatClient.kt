@@ -33,8 +33,7 @@ class NativeToolCallingChatClient(
     private val appContext = context.applicationContext
     private val openGuiWorkingMemoryPrefs = appContext.getSharedPreferences("hermes_opengui_working_memory", Context.MODE_PRIVATE)
     private var activeOpenGuiMemorySessionId: String = ""
-    private val recentOpenGuiActions = ArrayDeque<ParsedOpenGuiAction>()
-    private val recentOpenGuiScreenHashes = ArrayDeque<String>()
+    private val openGuiActionHistory = OpenGuiActionHistory()
 
     data class Result(
         val content: String,
@@ -349,6 +348,14 @@ class NativeToolCallingChatClient(
             "screen_image",
             "visual_snapshot",
             "capture_screenshot" -> executeAndroidScreenshotTool(toolCall)
+            "opengui_history",
+            "open_gui_history",
+            "gui_history",
+            "semantic_history",
+            "action_history" -> openGuiActionHistory.snapshotJson().toString()
+            "clear_opengui_history",
+            "clear_open_gui_history",
+            "reset_gui_history" -> openGuiActionHistory.clearJson().toString()
             "parse_opengui_action",
             "parse_open_gui_action",
             "parse_gui_action" -> executeOpenGuiActionTool(toolCall, parseOnly = true)
@@ -495,14 +502,14 @@ class NativeToolCallingChatClient(
                 .put("parsed_action", parsed.toJson())
                 .put("execution_review_supported", true)
                 .put("screen_review_supported", true)
-                .put("recent_screen_hash_count", recentOpenGuiScreenHashes.size)
+                .put("recent_screen_hash_count", openGuiActionHistory.screenHashList().size)
                 .toString()
         }
 
         val review = OpenGuiExecutionReview.review(
-            recentActions = recentOpenGuiActions.toList(),
+            recentActions = openGuiActionHistory.actionsList(),
             nextAction = parsed,
-            recentScreenHashes = recentOpenGuiScreenHashes.toList(),
+            recentScreenHashes = openGuiActionHistory.screenHashList(),
         )
         if (review.detected) {
             return OpenGuiExecutionReview.blockedActionJson(parsed, review).toString()
@@ -569,21 +576,11 @@ class NativeToolCallingChatClient(
     }
 
     private fun rememberOpenGuiScreenHash(hash: String) {
-        val clean = hash.trim().lowercase().filter { it in '0'..'9' || it in 'a'..'f' }
-        if (clean.length < 8) {
-            return
-        }
-        recentOpenGuiScreenHashes.addLast(clean)
-        while (recentOpenGuiScreenHashes.size > OpenGuiExecutionReview.ACTION_WINDOW_SIZE) {
-            recentOpenGuiScreenHashes.removeFirst()
-        }
+        openGuiActionHistory.rememberScreenHash(hash)
     }
 
     private fun recordOpenGuiAction(parsed: ParsedOpenGuiAction) {
-        recentOpenGuiActions.addLast(parsed)
-        while (recentOpenGuiActions.size > OpenGuiExecutionReview.ACTION_WINDOW_SIZE) {
-            recentOpenGuiActions.removeFirst()
-        }
+        openGuiActionHistory.recordAction(parsed)
     }
 
     private fun executeParsedOpenGuiTap(parsed: ParsedOpenGuiAction, action: String): String {
@@ -781,7 +778,9 @@ class NativeToolCallingChatClient(
             .put("screenshot_capture_api_level", 30)
             .put("screenshot_file_output", true)
             .put("opengui_screen_review_supported", true)
-            .put("recent_snapshot_hash_count", recentOpenGuiScreenHashes.size)
+            .put("opengui_history_supported", true)
+            .put("recent_opengui_action_count", openGuiActionHistory.actionsList().size)
+            .put("recent_snapshot_hash_count", openGuiActionHistory.screenHashList().size)
             .put("active_package", HermesAccessibilityController.currentForegroundPackageName())
             .put("current_app_name", HermesAccessibilityController.currentForegroundPackageName())
             .put("normalized_coordinate_support", true)
@@ -2000,7 +1999,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots with stable ui_state_hash values, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution with repeated-action and screen-state review guards, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots with stable ui_state_hash values, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution, deterministic OpenGUI action history, repeated-action and screen-state review guards, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",
@@ -2013,7 +2012,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "status, snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
+                                                    .put("description", "status, snapshot, opengui_history, clear_opengui_history, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
                                             )
                                             .put(
                                                 "raw_action",
@@ -2375,6 +2374,8 @@ class NativeToolCallingChatClient(
             "screen_image",
             "visual_snapshot",
             "capture_screenshot",
+            "opengui_history",
+            "clear_opengui_history",
             "parse_opengui_action",
             "opengui_action",
             "open_gui_action",

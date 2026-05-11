@@ -76,4 +76,5 @@ Acceptance:
 ## Discussion / decision notes
 - 2026-05-11: Dragon clarified current system has no true sandbox. Target is sandbox-capable workers; current safe implementation should start with worktree/workspace isolation, explicit policy, checkpoints, and evidence.
 - 2026-05-11: Implemented backward-compatible worker_policy/checkpoint_policy fields, checkpoint/evidence metadata, capability descriptors with os_sandbox=false for local workers, safe rollback-plan descriptor (no execution), CLI/dashboard create support, and tests.
-- 2026-05-11 verification: `python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -q` => 136 passed, 4 dependency deprecation warnings. `git diff --check` => clean.
+- 2026-05-11 verification: `python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -q` => 139 passed, 4 dependency deprecation warnings. `git diff --check` => clean.
+- 2026-05-11 review fix: Codex review found three blockers; fixed `checkpoint_policy=off` evidence suppression, changed manifest evidence to stop traversal at caps, and restricted scratch rollback discard guidance to managed Kanban workspace roots only.

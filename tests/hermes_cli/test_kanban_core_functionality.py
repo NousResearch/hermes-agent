@@ -2825,14 +2825,14 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     assert skill_names[0] == "kanban-worker", skill_names
     assert "translation" in skill_names
     assert "github-code-review" in skill_names
-    # --skills must appear BEFORE the `chat` subcommand so argparse
-    # attaches them to the top-level parser, not the subcommand.
-    chat_idx = cmd.index("chat")
+    # --skills must appear BEFORE the `-z` flag so argparse attaches them
+    # to the top-level parser, not treated as positional args.
+    z_idx = cmd.index("-z")
     last_skills_idx = max(
         i for i, tok in enumerate(cmd) if tok == "--skills"
     )
-    assert last_skills_idx < chat_idx, (
-        f"--skills must come before 'chat' in argv: {cmd}"
+    assert last_skills_idx < z_idx, (
+        f"--skills must come before '-z' in argv: {cmd}"
     )
 
 

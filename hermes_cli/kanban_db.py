@@ -3908,7 +3908,7 @@ def _default_spawn(
     *,
     board: Optional[str] = None,
 ) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+    """Fire-and-forget ``hermes -p <profile> -z ...`` one-shot subprocess.
 
     Returns the spawned child's PID so the dispatcher can detect crashes
     before the claim TTL expires. The child's completion is still observed
@@ -4001,8 +4001,7 @@ def _default_spawn(
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
     cmd.extend([
-        "chat",
-        "-q", prompt,
+        "-z", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so

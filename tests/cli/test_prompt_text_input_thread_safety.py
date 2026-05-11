@@ -1,16 +1,4 @@
-"""Tests for ``HermesCLI._prompt_text_input`` thread-safe input dispatch.
-
-Slash commands (``/clear``, ``/new``, ``/undo``, ``/reload-mcp``) are dispatched
-from the ``process_loop`` daemon thread.  ``prompt_toolkit.run_in_terminal``
-returns a coroutine that only the main-thread event loop can drive; calling it
-from a daemon thread orphans the coroutine, ``_ask`` never runs, and user
-keystrokes leak into the composer instead of the confirmation prompt
-(see issue #23185).
-
-The fix mirrors ``_run_curses_picker``: when off the main thread, fall back to
-a direct ``input()`` call so the prompt actually renders and consumes
-keystrokes.
-"""
+"""Tests for ``HermesCLI._prompt_text_input`` thread-safe input dispatch."""
 
 import threading
 from unittest.mock import MagicMock, patch
@@ -22,6 +10,7 @@ def _make_cli():
 
     obj = object.__new__(cli_mod.HermesCLI)
     obj._app = MagicMock()
+    obj._app._is_running = True
     obj._status_bar_visible = True
     return obj
 
@@ -40,16 +29,18 @@ class TestPromptTextInputThreadSafety:
         # not the orphaned-coroutine result.
         assert mock_rit.called
 
-    def test_background_thread_falls_back_to_direct_input(self):
-        """On a daemon thread, skip run_in_terminal and call input() directly.
-
-        This is the bug from issue #23185: process_loop dispatches slash
-        commands on a daemon thread, so run_in_terminal's coroutine is
-        orphaned.  The fallback must drive input() itself so user keystrokes
-        don't leak into the agent buffer.
-        """
+    def test_background_thread_schedules_prompt_back_to_app_loop(self):
+        """On a daemon thread, schedule the prompt on the app loop."""
         cli = _make_cli()
         captured = {}
+        scheduled = {}
+
+        class _FakeLoop:
+            def call_soon_threadsafe(self, callback):
+                scheduled["called"] = True
+                callback()
+
+        cli._app.loop = _FakeLoop()
 
         def fake_input(prompt):
             captured["prompt"] = prompt
@@ -58,7 +49,7 @@ class TestPromptTextInputThreadSafety:
         result_holder = {}
 
         def run_on_daemon():
-            with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
+            with patch("prompt_toolkit.application.run_in_terminal", side_effect=lambda fn: fn()) as mock_rit, \
                  patch("builtins.input", side_effect=fake_input):
                 result_holder["value"] = cli._prompt_text_input("Choice [1/2/3]: ")
                 result_holder["rit_called"] = mock_rit.called
@@ -66,11 +57,9 @@ class TestPromptTextInputThreadSafety:
         t = threading.Thread(target=run_on_daemon, daemon=True)
         t.start()
         t.join(timeout=2.0)
-        assert not t.is_alive(), "daemon thread hung — input() was not driven"
-
-        # run_in_terminal was bypassed entirely on the background thread.
-        assert result_holder["rit_called"] is False
-        # input() was invoked with the prompt and its return value was captured.
+        assert not t.is_alive(), "daemon thread hung — prompt was not scheduled"
+        assert scheduled.get("called") is True
+        assert result_holder["rit_called"] is True
         assert captured.get("prompt") == "Choice [1/2/3]: "
         assert result_holder["value"] == "1"
 

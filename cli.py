@@ -6018,13 +6018,10 @@ class HermesCLI:
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit.
 
-        Mirrors the thread-aware guard in ``_run_curses_picker``: ``run_in_terminal``
-        returns a coroutine that must be awaited by the prompt_toolkit event loop,
-        which only exists on the main thread.  Slash commands are dispatched from
-        the ``process_loop`` daemon thread (see issue #23185), so calling
-        ``run_in_terminal`` from there orphans the coroutine — ``_ask`` never runs,
-        and user keystrokes leak into the composer instead.  Fall back to a direct
-        ``input()`` when we're off the main thread.
+        Slash commands are dispatched from the ``process_loop`` daemon thread,
+        but ``run_in_terminal`` must execute on the prompt_toolkit app loop to
+        safely own stdin. Schedule the prompt back onto that loop when we have
+        an active app; otherwise fall back to direct ``input()``.
         """
         import threading
         result = [None]
@@ -6036,26 +6033,55 @@ class HermesCLI:
                 pass
 
         in_main_thread = threading.current_thread() is threading.main_thread()
+        app = self._app
 
-        if self._app and in_main_thread:
-            from prompt_toolkit.application import run_in_terminal
-            was_visible = self._status_bar_visible
-            self._status_bar_visible = False
-            self._app.invalidate()
+        def _run_prompt_via_app() -> bool:
+            if not app:
+                return False
             try:
-                run_in_terminal(_ask)
+                loop = app.loop  # type: ignore[attr-defined]
             except Exception:
-                # WSL / Warp / certain terminal emulators silently drop the
-                # scheduled coroutine.  Fall back to a direct input() so the
-                # user's keystrokes don't leak into the agent buffer.
+                loop = None
+            if loop is None:
+                return False
+
+            response_queue = queue.Queue(maxsize=1)
+
+            def _dispatch():
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
                 try:
-                    _ask()
+                    app.invalidate()
                 except Exception:
                     pass
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
+                try:
+                    from prompt_toolkit.application import run_in_terminal
+                    run_in_terminal(_ask)
+                    response_queue.put(("ok", result[0]))
+                except Exception as exc:
+                    response_queue.put(("err", exc))
+                finally:
+                    self._status_bar_visible = was_visible
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+            try:
+                if in_main_thread:
+                    _dispatch()
+                else:
+                    loop.call_soon_threadsafe(_dispatch)
+                status, payload = response_queue.get(timeout=60)
+            except Exception:
+                return False
+
+            if status == "ok":
+                result[0] = payload
+                return True
+            return False
+
+        if not _run_prompt_via_app():
             _ask()
         return result[0]
 

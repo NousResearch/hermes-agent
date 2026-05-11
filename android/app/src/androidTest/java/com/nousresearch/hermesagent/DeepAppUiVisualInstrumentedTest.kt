@@ -17,8 +17,6 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.Intents.intended
 import androidx.test.espresso.intent.Intents.intending
-import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
-import androidx.test.espresso.intent.matcher.IntentMatchers.hasData
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -35,7 +33,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.hamcrest.Matchers.allOf
+import org.hamcrest.Description
+import org.hamcrest.Matcher
+import org.hamcrest.TypeSafeMatcher
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
@@ -146,10 +146,7 @@ class DeepAppUiVisualInstrumentedTest {
             )
         }
 
-        val qwenSetupIntent = allOf(
-            hasAction(Intent.ACTION_VIEW),
-            hasData(Uri.parse("https://home.qwencloud.com/api-keys")),
-        )
+        val qwenSetupIntent = browserChooserFor(Uri.parse("https://home.qwencloud.com/api-keys"))
         Intents.init()
         try {
             intending(qwenSetupIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
@@ -251,6 +248,23 @@ class DeepAppUiVisualInstrumentedTest {
         val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         FileOutputStream(File(outputDir, "$name.png")).use { output ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        }
+    }
+
+    private fun browserChooserFor(uri: Uri): Matcher<Intent> {
+        return object : TypeSafeMatcher<Intent>() {
+            override fun describeTo(description: Description) {
+                description.appendText("browser chooser for ").appendValue(uri)
+            }
+
+            override fun matchesSafely(intent: Intent): Boolean {
+                if (intent.action != Intent.ACTION_CHOOSER) {
+                    return false
+                }
+                @Suppress("DEPRECATION")
+                val target = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                return target?.action == Intent.ACTION_VIEW && target.data == uri
+            }
         }
     }
 

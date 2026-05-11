@@ -1,13 +1,10 @@
 package com.nousresearch.hermesagent.ui.auth
 
 import android.app.Application
-import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
-import android.provider.Browser
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
@@ -21,6 +18,7 @@ import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.PendingAuthRequest
 import com.nousresearch.hermesagent.data.ProviderPresets
+import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.HermesStrings
 import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
@@ -159,11 +157,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 languageTag = settings.languageTag,
             ).toString(),
         )
-        val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pendingRequest.startUrl)).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
-        }
+        val startUri = Uri.parse(pendingRequest.startUrl)
 
         viewModelScope.launch {
             _uiState.update { it.copy(globalStatus = currentStrings().authCheckingCorr3xt(option.label)) }
@@ -208,8 +202,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             authSessionStore.savePendingRequest(pendingRequest)
-            try {
-                getApplication<Application>().startActivity(browserIntent)
+            val launch = HermesExternalBrowserLauncher.open(
+                context = getApplication(),
+                uri = startUri,
+                title = "Open ${option.label} sign-in",
+            )
+            if (launch.success) {
                 _uiState.update { current ->
                     current.copy(
                         corr3xtBaseUrl = normalizedBaseUrl,
@@ -221,23 +219,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         apiKeyFallbackLabel = "",
                     )
                 }
-            } catch (_: ActivityNotFoundException) {
+            } else {
                 authSessionStore.clearPendingRequest()
                 copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)
-                _uiState.update {
-                    it.copy(
-                        globalStatus = "${currentStrings().authNoBrowser()} ${currentStrings().authCopiedSignInUrl()}",
-                        pendingStartUrl = pendingRequest.startUrl,
-                        apiKeyFallbackMethodId = if (option.scope == AuthScope.RuntimeProvider) option.id else "",
-                        apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
-                    )
+                val statusPrefix = if (launch.errorName == "ActivityNotFoundException") {
+                    currentStrings().authNoBrowser()
+                } else {
+                    "${currentStrings().authTryAgain()} (${launch.errorName.ifBlank { "browser_error" }})"
                 }
-            } catch (_: RuntimeException) {
-                authSessionStore.clearPendingRequest()
-                copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)
                 _uiState.update {
                     it.copy(
-                        globalStatus = "${currentStrings().authTryAgain()} ${currentStrings().authCopiedSignInUrl()}",
+                        globalStatus = "$statusPrefix ${currentStrings().authCopiedSignInUrl()}",
                         pendingStartUrl = pendingRequest.startUrl,
                         apiKeyFallbackMethodId = if (option.scope == AuthScope.RuntimeProvider) option.id else "",
                         apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
@@ -305,21 +297,19 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(globalStatus = "Provider setup URL must start with https:// or http://") }
             return
         }
-        val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
-        }
-        runCatching {
-            getApplication<Application>().startActivity(browserIntent)
-        }.onSuccess {
+        val launch = HermesExternalBrowserLauncher.open(
+            context = getApplication(),
+            uri = uri,
+            title = "Open ${option.label} setup page",
+        )
+        if (launch.success) {
             _uiState.update {
                 it.copy(globalStatus = "Opened ${option.label} setup page. If your browser stalls, copy the setup URL and paste it into another browser.")
             }
-        }.onFailure { error ->
+        } else {
             copyProviderSetupUrl(methodId, updateStatus = false)
             _uiState.update {
-                it.copy(globalStatus = "Unable to open browser (${error::class.java.simpleName}); copied the ${option.label} setup URL.")
+                it.copy(globalStatus = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the ${option.label} setup URL.")
             }
         }
     }

@@ -90,6 +90,7 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
 def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     auth_session_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthSessionStore.kt").read_text(encoding="utf-8")
     auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
     corr3xt_auth_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/Corr3xtAuthClient.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
@@ -113,12 +114,14 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider)' in auth_view_model
     assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
-    assert 'putExtra(Browser.EXTRA_APPLICATION_ID' in auth_view_model
+    assert 'HermesExternalBrowserLauncher.open' in auth_view_model
+    assert 'Intent.createChooser' in browser_launcher
+    assert 'putExtra(Browser.EXTRA_APPLICATION_ID' in browser_launcher
     assert 'copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)' in auth_view_model
     assert 'fun copyPendingSignInUrl()' in auth_view_model
     assert 'ClipData.newPlainText("Hermes Corr3xt sign-in URL", target)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
-    assert 'addCategory(Intent.CATEGORY_BROWSABLE)' in auth_view_model
+    assert 'addCategory(Intent.CATEGORY_BROWSABLE)' in browser_launcher
     assert 'pendingStartUrl = pending?.startUrl.orEmpty()' in auth_view_model
     assert 'authBaseUrlMustBeValid' in strings
     assert 'authConfigureCorr3xtFirst' in strings
@@ -177,7 +180,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
-    assert "getApplication<Application>().startActivity(browserIntent)" in auth_view_model
+    assert "HermesExternalBrowserLauncher.open" in auth_view_model
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
     assert "ProviderPresets.setupClipboardText(option.runtimeProvider)" in auth_view_model
     assert 'ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText)' in auth_view_model
@@ -192,21 +195,24 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 def test_settings_opens_official_provider_key_pages():
     settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
     provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert "providerPreset?.apiKeyUrl" in settings_screen
     assert "viewModel::openProviderKeyPage" in settings_screen
     assert "viewModel::copyProviderKeyPage" in settings_screen
-    assert "Intent.ACTION_VIEW" in settings_view_model
+    assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(target)" in settings_view_model
-    assert "putExtra(Browser.EXTRA_APPLICATION_ID" in settings_view_model
+    assert "HermesExternalBrowserLauncher.open" in settings_view_model
+    assert "Intent.createChooser" in browser_launcher
+    assert "putExtra(Browser.EXTRA_APPLICATION_ID" in browser_launcher
     assert "ClipboardManager" in settings_view_model
     assert "ClipData.newPlainText" in settings_view_model
     assert "ProviderPresets.providerIdForSetupUrl(target)" in settings_view_model
     assert "ProviderPresets.setupClipboardText(it)" in settings_view_model
     assert 'ClipData.newPlainText("Hermes provider setup URLs", setupText)' in settings_view_model
-    assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model
+    assert "addCategory(Intent.CATEGORY_BROWSABLE)" in browser_launcher
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "copyProviderSetupUrl()" in settings_screen
     assert "importSavedProviderCredential()" in settings_screen

@@ -319,6 +319,33 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_sessions_slash_command_lists_recent_sessions(self, capsys):
+        """/sessions is registered in commands.py and must be dispatched, not "Unknown command"."""
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.process_command("/sessions")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

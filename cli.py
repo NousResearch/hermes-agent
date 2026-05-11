@@ -7103,6 +7103,12 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            # /sessions: show recent sessions + usage; identical UX to bare /resume.
+            # Registered in commands.py but no dispatcher existed, so autocomplete
+            # advertised it as "Browse and resume previous sessions" while typing
+            # it produced "Unknown command: /sessions".
+            self._handle_resume_command("/resume")
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":

@@ -8808,11 +8808,8 @@ class AIAgent:
             "assistant": "assistant",
             "tool": "tool result",
         }.get(role, "user")
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, UI, data, objects, people, layout, colors, "
-            "and any other notable visual information."
-        )
+        from agent.auxiliary_client import _get_vision_user_prompt
+        analysis_prompt = _get_vision_user_prompt()
 
         vision_source = str(image_url or "")
         cleanup_path: Optional[Path] = None

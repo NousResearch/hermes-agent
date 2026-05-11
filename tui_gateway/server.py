@@ -1982,12 +1982,9 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     """Pre-analyze attached images via vision and prepend descriptions to user text."""
     import asyncio, json as _json
     from tools.vision_tools import vision_analyze_tool
+    from agent.auxiliary_client import _get_vision_user_prompt
 
-    prompt = (
-        "Describe everything visible in this image in thorough detail. "
-        "Include any text, code, data, objects, people, layout, colors, "
-        "and any other notable visual information."
-    )
+    prompt = _get_vision_user_prompt()
 
     parts: list[str] = []
     for path in image_paths:

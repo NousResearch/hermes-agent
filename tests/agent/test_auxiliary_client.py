@@ -2496,3 +2496,82 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "explicit-fallback-key", (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
+
+
+# ---------------------------------------------------------------------------
+# _get_vision_user_prompt — config-driven override of vision pre-analysis prompt
+# ---------------------------------------------------------------------------
+
+
+class TestGetVisionUserPrompt:
+    """Behaviour of agent.auxiliary_client._get_vision_user_prompt()."""
+
+    def test_returns_default_when_config_missing(self):
+        from agent.auxiliary_client import (
+            _get_vision_user_prompt,
+            DEFAULT_VISION_USER_PROMPT,
+        )
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}):
+            assert _get_vision_user_prompt() == DEFAULT_VISION_USER_PROMPT
+
+    def test_returns_default_when_user_prompt_unset(self):
+        from agent.auxiliary_client import (
+            _get_vision_user_prompt,
+            DEFAULT_VISION_USER_PROMPT,
+        )
+        cfg = {"provider": "openai", "model": "gpt-4.1-mini"}
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=cfg):
+            assert _get_vision_user_prompt() == DEFAULT_VISION_USER_PROMPT
+
+    def test_returns_default_when_user_prompt_empty_string(self):
+        from agent.auxiliary_client import (
+            _get_vision_user_prompt,
+            DEFAULT_VISION_USER_PROMPT,
+        )
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"user_prompt": ""},
+        ):
+            assert _get_vision_user_prompt() == DEFAULT_VISION_USER_PROMPT
+
+    def test_returns_default_when_user_prompt_whitespace_only(self):
+        from agent.auxiliary_client import (
+            _get_vision_user_prompt,
+            DEFAULT_VISION_USER_PROMPT,
+        )
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"user_prompt": "   \n\t  "},
+        ):
+            assert _get_vision_user_prompt() == DEFAULT_VISION_USER_PROMPT
+
+    def test_returns_custom_when_user_prompt_set(self):
+        from agent.auxiliary_client import _get_vision_user_prompt
+        custom = "Describe this image strictly in JSON with keys: type, ocr, summary."
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"user_prompt": custom},
+        ):
+            assert _get_vision_user_prompt() == custom
+
+    def test_returns_default_when_user_prompt_non_string(self):
+        from agent.auxiliary_client import (
+            _get_vision_user_prompt,
+            DEFAULT_VISION_USER_PROMPT,
+        )
+        # malformed config: list / dict / int — should not crash, fall back to default
+        for bad in [["a", "b"], {"nested": "yes"}, 42, True]:
+            with patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"user_prompt": bad},
+            ):
+                assert _get_vision_user_prompt() == DEFAULT_VISION_USER_PROMPT, (
+                    f"non-string user_prompt={bad!r} should fall back to default"
+                )
+
+    def test_default_includes_canonical_keywords(self):
+        """The default string must remain compatible with all 4 call sites' expectations."""
+        from agent.auxiliary_client import DEFAULT_VISION_USER_PROMPT
+        # canonical keywords from the run_agent.py variant (most informative)
+        for kw in ("text", "code", "UI", "data", "objects", "people", "layout", "colors"):
+            assert kw in DEFAULT_VISION_USER_PROMPT, f"default missing '{kw}'"

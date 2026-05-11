@@ -12974,12 +12974,9 @@ class GatewayRunner:
         """
         from tools.vision_tools import vision_analyze_tool
         from agent.memory_manager import sanitize_context
+        from agent.auxiliary_client import _get_vision_user_prompt
 
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
-        )
+        analysis_prompt = _get_vision_user_prompt()
 
         enriched_parts = []
         for path in image_paths:

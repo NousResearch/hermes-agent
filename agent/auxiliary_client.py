@@ -3737,6 +3737,35 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Vision pre-analysis prompt
+# ---------------------------------------------------------------------------
+
+DEFAULT_VISION_USER_PROMPT = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, UI, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
+
+def _get_vision_user_prompt() -> str:
+    """Return the user_prompt for vision pre-analysis.
+
+    Reads ``auxiliary.vision.user_prompt`` from config.yaml. When empty or unset,
+    returns ``DEFAULT_VISION_USER_PROMPT`` so behavior is unchanged for users
+    who haven't customized it.
+
+    Centralized here so all four pre-analysis call sites
+    (``gateway/run.py``, ``run_agent.py``, ``cli.py``, ``tui_gateway/server.py``)
+    share one source of truth and one default string.
+    """
+    cfg = _get_auxiliary_task_config("vision")
+    raw = cfg.get("user_prompt")
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    return DEFAULT_VISION_USER_PROMPT
+
+
+# ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
 

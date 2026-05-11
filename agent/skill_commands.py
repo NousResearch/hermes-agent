@@ -7,12 +7,14 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 
 import json
 import logging
+import os
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.session_identity import resolve_binding_key
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -23,10 +25,13 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
-# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
+# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} / ${HERMES_BINDING_KEY}
+# tokens in SKILL.md.
 # Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
 # left as-is so the user can debug them.
-_SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
+_SKILL_TEMPLATE_RE = re.compile(
+    r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID|HERMES_BINDING_KEY)\}"
+)
 
 # Matches inline shell snippets like:  !`date +%Y-%m-%d`
 # Non-greedy, single-line only — no newlines inside the backticks.
@@ -54,8 +59,9 @@ def _substitute_template_vars(
     content: str,
     skill_dir: Path | None,
     session_id: str | None,
+    binding_key: str | None = None,
 ) -> str:
-    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
+    """Replace supported ${HERMES_*} tokens in skill content.
 
     Only substitutes tokens for which a concrete value is available —
     unresolved tokens are left in place so the author can spot them.
@@ -64,6 +70,9 @@ def _substitute_template_vars(
         return content
 
     skill_dir_str = str(skill_dir) if skill_dir else None
+    resolved_binding_key = binding_key or resolve_binding_key(
+        cwd=str(skill_dir) if skill_dir else None,
+    )
 
     def _replace(match: re.Match) -> str:
         token = match.group(1)
@@ -71,6 +80,8 @@ def _substitute_template_vars(
             return skill_dir_str
         if token == "HERMES_SESSION_ID" and session_id:
             return str(session_id)
+        if token == "HERMES_BINDING_KEY" and resolved_binding_key:
+            return resolved_binding_key
         return match.group(0)
 
     return _SKILL_TEMPLATE_RE.sub(_replace, content)
@@ -239,6 +250,7 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
     session_id: str | None = None,
+    binding_key: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
@@ -250,7 +262,7 @@ def _build_skill_message(
     # supporting-file hints) see the expanded content.
     skills_cfg = _load_skills_config()
     if skills_cfg.get("template_vars", True):
-        content = _substitute_template_vars(content, skill_dir, session_id)
+        content = _substitute_template_vars(content, skill_dir, session_id, binding_key)
     if skills_cfg.get("inline_shell", False):
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
         content = _expand_inline_shell(content, skill_dir, timeout)
@@ -455,6 +467,16 @@ def build_skill_invocation_message(
         f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "") or None
+    except Exception:
+        session_key = None
+    binding_key = resolve_binding_key(
+        session_key=session_key,
+        cwd=os.getenv("TERMINAL_CWD") or os.getcwd(),
+    )
     return _build_skill_message(
         loaded_skill,
         skill_dir,
@@ -462,6 +484,7 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
         session_id=task_id,
+        binding_key=binding_key,
     )
 
 

@@ -9875,8 +9875,6 @@ class AIAgent:
                 target=function_args.get("target", "all"),
                 mode=function_args.get("mode", "propose"),
                 limit=function_args.get("limit", 10),
-                candidate_indexes=function_args.get("candidate_indexes"),
-                confirm_apply=bool(function_args.get("confirm_apply", False)),
                 db=self._session_db,
                 current_session_id=self.session_id,
             )
@@ -10512,8 +10510,6 @@ class AIAgent:
                     target=function_args.get("target", "all"),
                     mode=function_args.get("mode", "propose"),
                     limit=function_args.get("limit", 10),
-                    candidate_indexes=function_args.get("candidate_indexes"),
-                    confirm_apply=bool(function_args.get("confirm_apply", False)),
                     db=self._session_db,
                     current_session_id=self.session_id,
                 )

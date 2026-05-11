@@ -216,49 +216,12 @@ def _coerce_limit(limit: Any) -> int:
         value = 10
     return max(1, min(value, 25))
 
-
-def _coerce_indexes(candidate_indexes: Any) -> List[int]:
-    if candidate_indexes is None:
-        return []
-    if isinstance(candidate_indexes, int):
-        return [candidate_indexes]
-    if isinstance(candidate_indexes, str):
-        raw_items = [part.strip() for part in candidate_indexes.split(",")]
-    elif isinstance(candidate_indexes, (list, tuple, set)):
-        raw_items = list(candidate_indexes)
-    else:
-        return []
-
-    indexes: List[int] = []
-    for item in raw_items:
-        try:
-            index = int(item)
-        except (TypeError, ValueError):
-            continue
-        if index >= 0 and index not in indexes:
-            indexes.append(index)
-    return indexes
-
-
 def _tokens(text: str) -> set[str]:
     return {
         token
         for token in re.findall(r"[a-z0-9_.-]+", text.lower())
         if len(token) > 2 and token not in _STOPWORDS
     }
-
-
-def _memory_entry_from_candidate(candidate_text: str) -> str:
-    text = _compact_text(candidate_text, 600)
-    text = re.sub(r"^(user|assistant|system):\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(
-        r"^(user correction|environment fact|recurring workflow|workflow):\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-    return text.strip()
-
 
 def _similar_existing_entry(candidate_text: str, entries: List[str]) -> str | None:
     candidate_tokens = _tokens(candidate_text)
@@ -400,94 +363,25 @@ def _load_source(
         return source, [], notes
 
 
-def _apply_selected_candidates(
-    candidates: List[Dict[str, Any]], selected_indexes: List[int]
-) -> List[Dict[str, Any]]:
-    store = MemoryStore()
-    store.load_from_disk()
-    applied: List[Dict[str, Any]] = []
-
-    for index in selected_indexes:
-        if index >= len(candidates):
-            applied.append({
-                "index": index,
-                "success": False,
-                "message": "candidate index out of range",
-            })
-            continue
-
-        candidate = candidates[index]
-        target = candidate.get("target")
-        action = candidate.get("action")
-        record = {
-            "index": index,
-            "target": target,
-            "action": action,
-            "candidate": candidate.get("candidate"),
-        }
-
-        if target not in {"user", "memory"}:
-            record.update({
-                "success": False,
-                "message": "skill and ignore candidates are proposal-only in guarded apply; use skill_manage after reviewing skill diffs.",
-            })
-            applied.append(record)
-            continue
-
-        content = _memory_entry_from_candidate(candidate.get("candidate", ""))
-        if not content:
-            record.update({"success": False, "message": "candidate content is empty"})
-            applied.append(record)
-            continue
-
-        if action == "replace":
-            old_text = candidate.get("old_text")
-            if not old_text:
-                record.update({"success": False, "message": "replace candidate lacks old_text"})
-            else:
-                result = store.replace(target, old_text, content)
-                record.update({
-                    "success": bool(result.get("success")),
-                    "message": result.get("message") or result.get("error", "replace attempted"),
-                })
-        elif action == "add":
-            result = store.add(target, content)
-            record.update({
-                "success": bool(result.get("success")),
-                "message": result.get("message") or result.get("error", "add attempted"),
-            })
-        else:
-            record.update({
-                "success": False,
-                "message": f"action {action!r} is not applied by learning_triage",
-            })
-        applied.append(record)
-
-    return applied
-
-
 def learning_triage(
     session_id: str | None = None,
     scope: str = "recent",
     target: str = "all",
     mode: str = "propose",
     limit: int = 10,
-    candidate_indexes: Any = None,
-    confirm_apply: bool = False,
     db: Any = None,
     current_session_id: str | None = None,
 ) -> str:
     """Return a JSON proposal for memory/skill learning capture.
 
-    ``mode='apply'`` remains guarded: it mutates only selected user/memory
-    candidates when ``confirm_apply`` is true and ``candidate_indexes`` is set.
-    Skill candidates stay proposal-only so procedural changes remain reviewed.
+    ``mode='apply'`` is intentionally unsupported in the safe MVP. Passing it
+    returns the same proposal plus a clear note; memory and skills are never
+    mutated by this tool.
     """
     scope = scope if scope in _VALID_SCOPES else "recent"
     target = target if target in _VALID_TARGETS else "all"
     mode = mode if mode in _VALID_MODES else "propose"
     limit = _coerce_limit(limit)
-    selected_indexes = _coerce_indexes(candidate_indexes)
 
     source, snippets, notes = _load_source(
         scope=scope,
@@ -499,15 +393,11 @@ def learning_triage(
 
     candidates = classify_learning_candidates(snippets, target=target, limit=limit) if snippets else []
     candidates = _enrich_memory_replace_candidates(candidates)
-    applied: List[Dict[str, Any]] = []
 
     if mode == "apply":
-        if not confirm_apply or not selected_indexes:
-            notes.append(
-                "mode='apply' requires confirm_apply=true and candidate_indexes; no mutations were made."
-            )
-        else:
-            applied = _apply_selected_candidates(candidates, selected_indexes)
+        notes.append(
+            "mode='apply' is not implemented yet; returning proposal-only triage and making no memory or skill mutations."
+        )
 
     if not candidates and snippets:
         notes.append("No durable learning candidates detected by deterministic MVP heuristics.")
@@ -519,7 +409,6 @@ def learning_triage(
         "mode": mode,
         "source": source,
         "candidates": candidates,
-        "applied": applied,
         "memory_usage": _memory_usage(),
         "notes": notes,
     }
@@ -536,8 +425,8 @@ LEARNING_TRIAGE_SCHEMA = {
     "description": (
         "Inspect recent/current session content and propose what should become user memory, "
         "agent/environment memory, a skill patch/create candidate, or ignored transient progress. "
-        "Safe by default: mode='propose'; mode='apply' requires confirm_apply=true plus selected candidate_indexes, "
-        "only applies user/memory add/replace candidates, and keeps skill candidates proposal-only. "
+        "Safe by default: mode='propose'; mode='apply' is intentionally not implemented yet "
+        "and returns proposal-only output without mutating memory or skills. "
         "Use after substantial work, corrections, or repeated workflow discoveries to avoid polluting durable memory."
     ),
     "parameters": {
@@ -562,23 +451,13 @@ LEARNING_TRIAGE_SCHEMA = {
             "mode": {
                 "type": "string",
                 "enum": ["propose", "apply"],
-                "description": "Safe default is proposal-only. With confirm_apply=true and candidate_indexes, selected user/memory candidates are applied; skill candidates remain proposal-only.",
+                "description": "Safe default is proposal-only. mode='apply' is not implemented in the MVP and never mutates memory or skills.",
                 "default": "propose",
             },
             "limit": {
                 "type": "integer",
                 "description": "Maximum number of candidates to return (default 10, max 25).",
                 "default": 10,
-            },
-            "candidate_indexes": {
-                "type": "array",
-                "items": {"type": "integer"},
-                "description": "For mode='apply': zero-based candidate indexes to apply after reviewing the proposal.",
-            },
-            "confirm_apply": {
-                "type": "boolean",
-                "description": "For mode='apply': must be true before selected user/memory candidates are mutated. Skills remain proposal-only.",
-                "default": False,
             },
         },
         "required": [],
@@ -596,8 +475,6 @@ registry.register(
         target=args.get("target", "all"),
         mode=args.get("mode", "propose"),
         limit=args.get("limit", 10),
-        candidate_indexes=args.get("candidate_indexes"),
-        confirm_apply=bool(args.get("confirm_apply", False)),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),

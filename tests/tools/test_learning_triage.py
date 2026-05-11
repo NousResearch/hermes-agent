@@ -130,12 +130,12 @@ class TestLearningTriageTool:
 
         assert result["success"] is True
         assert result["mode"] == "apply"
-        assert result["applied"] == []
-        assert any("confirm_apply=true" in note for note in result["notes"])
+        assert "applied" not in result
+        assert any("not implemented" in note.lower() for note in result["notes"])
         assert user_file.read_text(encoding="utf-8") == before_user
         assert memory_file.read_text(encoding="utf-8") == before_memory
 
-    def test_apply_mode_with_confirmed_candidate_adds_user_memory(self, tmp_path, monkeypatch):
+    def test_apply_mode_with_confirmed_candidate_remains_proposal_only(self, tmp_path, monkeypatch):
         from hermes_state import SessionDB
         from tools.learning_triage import learning_triage
 
@@ -150,16 +150,15 @@ class TestLearningTriageTool:
                 session_id="s-apply-user",
                 scope="session",
                 mode="apply",
-                confirm_apply=True,
-                candidate_indexes=[0],
                 db=db,
             )
         )
 
         assert result["success"] is True
-        assert result["applied"][0]["success"] is True
-        user_text = (hermes_home / "memories" / "USER.md").read_text(encoding="utf-8")
-        assert "prefer terse terminal-readable answers" in user_text
+        assert result["mode"] == "apply"
+        assert any("not implemented" in note.lower() for note in result["notes"])
+        assert any("proposal-only" in note.lower() for note in result["notes"])
+        assert not (hermes_home / "memories" / "USER.md").exists()
         db.close()
 
     def test_apply_mode_replaces_similar_existing_memory(self, tmp_path, monkeypatch):
@@ -187,21 +186,18 @@ class TestLearningTriageTool:
         assert candidate["action"] == "replace"
         assert candidate["old_text"] == "Hermes repo tests use pytest directly"
 
+        before = memory_file.read_text(encoding="utf-8")
         result = json.loads(
             learning_triage(
                 session_id="s-apply-replace",
                 scope="session",
                 mode="apply",
-                confirm_apply=True,
-                candidate_indexes=[0],
                 db=db,
             )
         )
 
-        assert result["applied"][0]["success"] is True
-        memory_text = memory_file.read_text(encoding="utf-8")
-        assert "scripts/run_tests.sh" in memory_text
-        assert "pytest directly" not in memory_text
+        assert any("not implemented" in note.lower() for note in result["notes"])
+        assert memory_file.read_text(encoding="utf-8") == before
         db.close()
 
     def test_apply_mode_skips_skill_candidates_without_mutating_skills(self, tmp_path, monkeypatch):
@@ -225,15 +221,12 @@ class TestLearningTriageTool:
                 session_id="s-apply-skill",
                 scope="session",
                 mode="apply",
-                confirm_apply=True,
-                candidate_indexes=[0],
                 db=db,
             )
         )
 
         assert result["candidates"][0]["target"] == "skills"
-        assert result["applied"][0]["success"] is False
-        assert "proposal-only" in result["applied"][0]["message"]
+        assert any("proposal-only" in note.lower() for note in result["notes"])
         assert list(skills_dir.iterdir()) == []
         db.close()
 
@@ -271,4 +264,6 @@ class TestLearningTriageTool:
         assert params["type"] == "object"
         for forbidden in ("allOf", "anyOf", "oneOf", "not"):
             assert forbidden not in params
+        assert "candidate_indexes" not in params["properties"]
+        assert "confirm_apply" not in params["properties"]
         json.dumps(LEARNING_TRIAGE_SCHEMA)

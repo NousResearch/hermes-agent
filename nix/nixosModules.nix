@@ -28,8 +28,10 @@
 
   let
     cfg = config.services.hermes-agent;
-    effectivePackage = if cfg.extraPythonPackages == [ ] then cfg.package
-      else cfg.package.override { inherit (cfg) extraPythonPackages; };
+    effectivePackage =
+      if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
+      then cfg.package
+      else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
     hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
@@ -510,6 +512,21 @@
             })
           ]
         '';
+      };
+
+      extraDependencyGroups = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Additional pyproject.toml optional-dependency groups to include in
+          the sealed Python venv. These are resolved by uv alongside core
+          dependencies — no PYTHONPATH patching or collision risk.
+
+          Use this for optional extras already declared in hermes-agent's
+          pyproject.toml (e.g. "hindsight", "honcho", "voice").
+          Use extraPythonPackages for external packages not in pyproject.toml.
+        '';
+        example = [ "hindsight" ];
       };
 
       restart = mkOption {

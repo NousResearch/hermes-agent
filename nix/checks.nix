@@ -240,6 +240,27 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify extraDependencyGroups passes through to python.nix
+        extra-dependency-groups = let
+          hermesWithGroups = hermes-agent.override {
+            extraDependencyGroups = [ "honcho" ];
+          };
+        in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
+          set -e
+          echo "=== Checking extraDependencyGroups override evaluates ==="
+
+          # Eval-only: verify the override produces valid derivation paths
+          # without building the full venv (which is expensive and redundant
+          # since the mechanism is just list concatenation into python.nix).
+          echo "derivation: ${hermesWithGroups}"
+          echo "venv: ${hermesWithGroups.hermesVenv}"
+          echo "PASS: extraDependencyGroups override evaluates cleanly"
+
+          echo "=== All extraDependencyGroups checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # ── Config merge + round-trip test ────────────────────────────────
         # Tests the merge script (Nix activation behavior) across 7
         # scenarios, then verifies Python's load_config() reads correctly.

@@ -111,6 +111,14 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
+    def test_loopback_anthropic_proxy_uses_bearer_auth(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("gateway-key", base_url="http://127.0.0.1:4000")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "http://127.0.0.1:4000"
+            assert kwargs["auth_token"] == "gateway-key"
+            assert "api_key" not in kwargs
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
@@ -1627,6 +1635,59 @@ class TestThinkingBlockSignatureManagement:
         _, result = convert_messages_to_anthropic(messages)
         blocks = result[0]["content"]
         assert not any(b.get("type") == "redacted_thinking" for b in blocks)
+
+    def test_third_party_thinking_stripped_by_default(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Private reasoning.", "signature": "sig_valid"},
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+        )
+        blocks = result[0]["content"]
+
+        assert not any(block.get("type") in {"thinking", "redacted_thinking"} for block in blocks)
+
+    def test_loopback_proxy_preserves_latest_signed_thinking(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_old", "function": {"name": "tool1", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_old", "content": "old result"},
+            {
+                "role": "assistant",
+                "content": "Latest answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="http://127.0.0.1:4000",
+        )
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert not any(b.get("type") == "thinking" for b in assistants[0]["content"])
+        latest_thinking = [
+            b for b in assistants[-1]["content"] if b.get("type") == "thinking"
+        ]
+        assert len(latest_thinking) == 1
+        assert latest_thinking[0]["signature"] == "sig_new"
 
     def test_cache_control_stripped_from_thinking_blocks(self):
         """cache_control markers are removed from thinking/redacted_thinking blocks."""

@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -369,6 +370,21 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_claude_code_proxy_endpoint(base_url: str | None) -> bool:
+    """Return True for local Anthropic proxies that emulate Claude Code traffic."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized if "://" in normalized else f"//{normalized}")
+    host = (parsed.hostname or "").lower()
+    return (
+        host == "localhost"
+        or host == "::1"
+        or host == "0.0.0.0"
+        or host.startswith("127.")
+    )
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -566,7 +582,13 @@ def build_anthropic_client(
         drop_context_1m_beta=drop_context_1m_beta,
     )
 
-    if _is_kimi_coding_endpoint(base_url):
+    if _is_claude_code_proxy_endpoint(base_url):
+        # Local Claude-Code-compatible gateways expect bearer auth, matching
+        # Claude Code's POST /v1/messages shape.
+        kwargs["auth_token"] = api_key
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    elif _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
@@ -1730,6 +1752,9 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    _strip_all_thinking = (
+        _is_third_party and not _is_claude_code_proxy_endpoint(base_url)
+    )
     # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
     # Anthropic Messages protocol upstream but require that thinking blocks
     # synthesised from reasoning_content round-trip on subsequent turns when
@@ -1769,7 +1794,7 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
+        elif _strip_all_thinking or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.
@@ -2060,5 +2085,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

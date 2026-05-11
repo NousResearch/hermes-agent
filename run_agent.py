@@ -9212,7 +9212,7 @@ class AIAgent:
             ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
             if ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None  # consume immediately
-            return _transport.build_kwargs(
+            api_kwargs = _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
@@ -9225,6 +9225,15 @@ class AIAgent:
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
+            from agent.anthropic_adapter import _is_claude_code_proxy_endpoint
+            if (
+                getattr(self, "session_id", None)
+                and _is_claude_code_proxy_endpoint(getattr(self, "_anthropic_base_url", None))
+            ):
+                extra_headers = dict(api_kwargs.get("extra_headers") or {})
+                extra_headers["X-Hermes-Code-Session-Id"] = self.session_id
+                api_kwargs["extra_headers"] = extra_headers
+            return api_kwargs
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
         # The adapter handles message/tool conversion and boto3 calls directly.

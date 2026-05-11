@@ -1178,6 +1178,29 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_anthropic_messages_adds_hermes_session_header(self):
+        agent = object.__new__(AIAgent)
+        agent.api_mode = "anthropic_messages"
+        agent.model = "claude-opus-4-7"
+        agent.tools = []
+        agent.max_tokens = 1024
+        agent.reasoning_config = None
+        agent._is_anthropic_oauth = False
+        agent._ephemeral_max_output_tokens = None
+        agent.context_compressor = None
+        agent._prepare_anthropic_messages_for_api = MagicMock(
+            return_value=[{"role": "user", "content": "hi"}]
+        )
+        agent._anthropic_preserve_dots = MagicMock(return_value=False)
+        agent._anthropic_base_url = "http://127.0.0.1:4000"
+        agent.request_overrides = {}
+        agent._oauth_1m_beta_disabled = False
+        agent.session_id = "test-session-123"
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["extra_headers"]["X-Hermes-Code-Session-Id"] == "test-session-123"
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 

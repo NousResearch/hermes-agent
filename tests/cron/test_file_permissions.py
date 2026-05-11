@@ -61,21 +61,26 @@ class TestCronFilePermissions(unittest.TestCase):
         self.assertEqual(file_mode, 0o600)
 
     def test_save_job_output_sets_0600(self):
-        output_dir = Path(self.tmpdir) / "output"
-        with patch("cron.jobs.OUTPUT_DIR", output_dir), \
-             patch("cron.jobs.CRON_DIR", Path(self.tmpdir)), \
-             patch("cron.jobs.ensure_dirs"):
-            output_dir.mkdir(parents=True, exist_ok=True)
-            from cron.jobs import save_job_output
-            output_file = save_job_output("test-job", "test output content")
+        """save_job_output() via CronStore creates output with 0600 permissions."""
+        root = Path(self.tmpdir)
+        store = CronStore(
+            scope="profile",
+            root=root,
+            cron_dir=root / "cron",
+            jobs_file=root / "cron" / "jobs.json",
+            output_dir=root / "cron" / "output",
+            lock_file=root / "cron" / ".tick.lock",
+        )
+        from cron.jobs import save_job_output
+        output_file = save_job_output("test-job", "test output content", store=store)
 
-            file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+        file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
+        self.assertEqual(file_mode, 0o600)
 
-            # Job output dir should also be 0700
-            job_dir = output_dir / "test-job"
-            dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
-            self.assertEqual(dir_mode, 0o700)
+        # Job output dir should also be 0700
+        job_dir = store.output_dir / "test-job"
+        dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
+        self.assertEqual(dir_mode, 0o700)
 
 
 class TestConfigFilePermissions(unittest.TestCase):

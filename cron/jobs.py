@@ -1161,10 +1161,37 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
-def save_job_output(job_id: str, output: str):
+def load_latest_job_output(job_ref: str, *, current_store: Optional["CronStore"] = None) -> Optional[str]:
+    """Load the most recent output for a job, resolving scope from the ref.
+
+    For v1, context_from is same-store only:
+    - profile jobs may reference current-profile outputs
+    - global jobs may reference global outputs
+    - cross-store references return None
+    """
+    scope, job_id = _parse_job_ref(job_ref)
+    if scope == "global":
+        store = global_store()
+    elif scope in {None, "profile"}:
+        store = current_store or current_profile_store()
+    else:
+        return None
+    # Security: only accept valid hex job IDs
+    if not job_id or not all(c in "0123456789abcdef" for c in job_id):
+        return None
+    job_output_dir = store.output_dir / job_id
+    if not job_output_dir.exists():
+        return None
+    output_files = sorted(job_output_dir.glob("*.md"), reverse=True)
+    if not output_files:
+        return None
+    return output_files[0].read_text(encoding="utf-8")
+
+def save_job_output(job_id: str, output: str, store: Optional["CronStore"] = None):
     """Save job output to file."""
-    ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+    resolved = resolve_store(store=store)
+    ensure_dirs(store=resolved)
+    job_output_dir = resolved.output_dir / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     

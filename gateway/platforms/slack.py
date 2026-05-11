@@ -20,6 +20,7 @@ from typing import Dict, Optional, Any, Tuple
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+    from slack_bolt.authorization import AuthorizeResult as _AuthorizeResult
     from slack_sdk.web.async_client import AsyncWebClient
     SLACK_AVAILABLE = True
 except ImportError:
@@ -27,6 +28,7 @@ except ImportError:
     AsyncApp = Any
     AsyncSocketModeHandler = Any
     AsyncWebClient = Any
+    _AuthorizeResult = Any
 
 import sys
 from pathlib import Path as _Path
@@ -160,7 +162,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Passing `token=` can still trigger AsyncMultiTeamsAuthorization when
             # any installation-store-related state is present (env vars, saved data, etc.).
             # An explicit callable forces AsyncSingleTeamAuthorization path every time.
-            from slack_bolt.authorization import AuthorizeResult as _AuthorizeResult
+            # AuthorizeResult is imported at module level alongside AsyncApp.
 
             async def _single_team_authorize(**kwargs):
                 try:

@@ -84,6 +84,13 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_prepare_outbound_text_redacts_secrets(self):
+        """Visible streaming text is scrubbed before platform delivery."""
+        text = "token: sk-abcdefghijklmnopqrstuvwxyz123456"
+        result = GatewayStreamConsumer._prepare_outbound_text(text)
+        assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in result
+        assert "token:" in result
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
@@ -208,6 +215,42 @@ class TestSendOrEditMediaStripping:
         adapter.edit_message.assert_called_once()
         edited_text = adapter.edit_message.call_args[1]["content"]
         assert "MEDIA:" not in edited_text
+
+    @pytest.mark.asyncio
+    async def test_first_send_redacts_secret_tokens(self):
+        """Initial streamed sends redact secrets before hitting the adapter."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        await consumer._send_or_edit(f"token: {secret}")
+
+        adapter.send.assert_called_once()
+        sent_text = adapter.send.call_args[1]["content"]
+        assert secret not in sent_text
+        assert "token:" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_edit_redacts_secret_tokens(self):
+        """Streaming edits redact secrets before hitting the adapter."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        edit_result = SimpleNamespace(success=True)
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.edit_message = AsyncMock(return_value=edit_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("hello")
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        await consumer._send_or_edit(f"token: {secret}")
+
+        edited_text = adapter.edit_message.call_args[1]["content"]
+        assert secret not in edited_text
+        assert "token:" in edited_text
 
     @pytest.mark.asyncio
     async def test_media_only_skips_send(self):
@@ -1780,4 +1823,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

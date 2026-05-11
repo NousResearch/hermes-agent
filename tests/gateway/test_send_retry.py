@@ -130,6 +130,17 @@ class TestSendWithRetrySuccess:
         result = await adapter._send_with_retry("chat1", "hi")
         assert result.message_id == "abc"
 
+    @pytest.mark.asyncio
+    async def test_redacts_sensitive_text_before_send(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [SendResult(success=True, message_id="123")]
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        result = await adapter._send_with_retry("chat1", f"token: {secret}")
+        assert result.success
+        sent_content = adapter._send_calls[0][1]
+        assert secret not in sent_content
+        assert "token:" in sent_content
+
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — network error with successful retry
@@ -282,3 +293,18 @@ class TestSendWithRetryFallback:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
         assert not result.success
         assert len(adapter._send_calls) == 2  # original + fallback only
+
+    @pytest.mark.asyncio
+    async def test_plaintext_fallback_keeps_secret_redacted(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="Bad Request: can't parse entities"),
+            SendResult(success=True, message_id="fallback_ok"),
+        ]
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", f"**{secret}**", max_retries=2, base_delay=0)
+        assert result.success
+        fallback_content = adapter._send_calls[-1][1]
+        assert secret not in fallback_content
+        assert "plain text" in fallback_content.lower()

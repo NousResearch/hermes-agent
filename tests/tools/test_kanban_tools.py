@@ -399,6 +399,7 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     ok = json.loads(kt._handle_complete({
         "summary": "retry without claims",
         "created_cards": [],
+        "metadata": verifier_metadata(),
     }))
     assert ok.get("ok") is True
 
@@ -436,6 +437,7 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     ok = json.loads(kt._handle_complete({
         "summary": "retry with corrected list",
         "created_cards": [real_id],
+        "metadata": verifier_metadata(),
     }))
     assert ok.get("ok") is True
 

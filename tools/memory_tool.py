@@ -56,7 +56,7 @@ _MEMORY_THREAT_PATTERNS = [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
     # Persistence via shell rc
     (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/ \.ssh', "ssh_access"),
+    (r'\$HOME/\.ssh|\~/.ssh', "ssh_access"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
 ]
 

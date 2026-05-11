@@ -532,6 +532,17 @@ object HermesAccessibilityUiBridge {
                 ?: throw IOException("Android returned an unreadable screenshot buffer")
             val bitmap = source.copy(Bitmap.Config.ARGB_8888, false)
             val scaled = scaleBitmapForToolResult(bitmap, maxImageEdgePx)
+            val originalWidth = bitmap.width
+            val originalHeight = bitmap.height
+            val visualHash = perceptualHash64(scaled)
+            val scaleFactor = if (originalWidth > 0 && originalHeight > 0) {
+                minOf(
+                    scaled.width.toDouble() / originalWidth.toDouble(),
+                    scaled.height.toDouble() / originalHeight.toDouble(),
+                )
+            } else {
+                1.0
+            }
             val pngBytes = ByteArrayOutputStream().use { output ->
                 if (!scaled.compress(Bitmap.CompressFormat.PNG, 100, output)) {
                     throw IOException("Failed to encode Android screenshot as PNG")
@@ -552,13 +563,22 @@ object HermesAccessibilityUiBridge {
                 .put("action", "screenshot")
                 .put("accessibility_connected", true)
                 .put("current_app_name", currentAppName())
+                .put("screen_width", originalWidth)
+                .put("screen_height", originalHeight)
                 .put("image_width", scaled.width)
                 .put("image_height", scaled.height)
                 .put("image_mime_type", "image/png")
                 .put("image_bytes", pngBytes.size)
                 .put("image_sha256", imageHash)
+                .put("visual_state_hash", visualHash)
+                .put("image_phash", visualHash)
+                .put("phash", visualHash)
+                .put("ui_state_hash", visualHash)
+                .put("screen_hash", visualHash)
+                .put("screen_hash_kind", "visual_average_hash_64")
                 .put("screenshot_hash", imageHash.take(16))
                 .put("screenshot_hash_kind", "png_sha256_64")
+                .put("scale_factor", scaleFactor)
                 .put("saved_file", saveFile)
                 .put("image_path", imagePath)
                 .put("include_base64", includeBase64)
@@ -589,6 +609,28 @@ object HermesAccessibilityUiBridge {
         val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
         val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(bitmap, width, height, true)
+    }
+
+    internal fun perceptualHash64(bitmap: Bitmap): String {
+        val sample = Bitmap.createScaledBitmap(bitmap, 8, 8, true)
+        return try {
+            val pixels = IntArray(64)
+            sample.getPixels(pixels, 0, 8, 0, 0, 8, 8)
+            val luma = pixels.map { pixel ->
+                val red = pixel shr 16 and 0xff
+                val green = pixel shr 8 and 0xff
+                val blue = pixel and 0xff
+                (red * 299 + green * 587 + blue * 114) / 1000
+            }
+            val average = luma.average()
+            luma.joinToString(separator = "") { value ->
+                if (value >= average) "1" else "0"
+            }
+        } finally {
+            if (sample !== bitmap) {
+                sample.recycle()
+            }
+        }
     }
 
     private fun sha256Hex(bytes: ByteArray): String {

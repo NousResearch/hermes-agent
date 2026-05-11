@@ -773,6 +773,7 @@ class NativeToolCallingChatClient(
             .put("coordinate_arguments", JSONArray(UI_COORDINATE_ARGUMENTS))
             .put("opengui_action_arguments", JSONArray(OPEN_GUI_ACTION_ARGUMENTS))
             .put("snapshot_hash_support", true)
+            .put("visual_screenshot_hash_support", true)
             .put("screenshot_capture_supported", android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
             .put("screenshot_capture_api_level", 30)
             .put("screenshot_file_output", true)
@@ -939,7 +940,7 @@ class NativeToolCallingChatClient(
                         .put("distance_px", scalarProp("Optional scroll distance in screen pixels."))
                         .put("save_file", boolProp("For screenshot/visual_snapshot, save PNG in the Hermes app files directory. Defaults true."))
                         .put("include_base64", boolProp("For screenshot/visual_snapshot, include base64 PNG bytes inline. Defaults false to keep tool results small."))
-                        .put("max_image_edge_px", intProp("For screenshot/visual_snapshot, resize the longest image edge before returning or saving.")),
+                        .put("max_image_edge_px", intProp("For screenshot/visual_snapshot, resize the longest image edge before returning or saving. The response includes screen_width, screen_height, scale_factor, and a 64-bit visual screen_hash for OpenGUI-style progress review.")),
                     required = JSONArray().put("action"),
                 ),
             )

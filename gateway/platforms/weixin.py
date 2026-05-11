@@ -424,7 +424,7 @@ async def _get_updates(
             timeout_ms=timeout_ms,
         )
     except asyncio.TimeoutError:
-        return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
+        return {"ret": -3, "errcode": -3, "errmsg": "connection timeout"}
 
 
 async def _send_message(

@@ -280,11 +280,9 @@ object HermesAutomationBridge {
     }
 
     fun operatorCommandJson(context: Context, arguments: JSONObject): String {
-        val command = stringArgument(arguments, "command", "text", "message", "raw_text", "rawText", allowEmpty = true)
-            .orEmpty()
-            .trim()
+        val command = operatorCommandTextFromArguments(arguments).trim()
         if (command.isBlank()) {
-            return errorJson("operator_command requires command, text, or message")
+            return errorJson("operator_command requires command, text, message, or an OpenGUI slash subcommand payload")
         }
         if (command.indexOf('\u0000') >= 0) {
             return errorJson("operator_command text must not contain NUL bytes")
@@ -340,6 +338,115 @@ object HermesAutomationBridge {
             OperatorCommandType.PAUSE,
             OperatorCommandType.RESUME -> operatorCommandRecognizedButNotActiveJson(parsed)
             OperatorCommandType.FREE_TEXT -> operatorCommandFreeTextJson(parsed)
+        }
+    }
+
+    private fun operatorCommandTextFromArguments(arguments: JSONObject): String {
+        val rawCommand = stringArgument(arguments, "command", "text", "message", "raw_text", "rawText", allowEmpty = true)
+            .orEmpty()
+            .trim()
+        val slashCommand = openguiSlashCommandTextFromArguments(arguments)
+        if (slashCommand.isNotBlank() && rawCommand.isOpenGuiSlashEnvelope()) {
+            return slashCommand
+        }
+        return rawCommand.ifBlank { slashCommand }
+    }
+
+    private fun String.isOpenGuiSlashEnvelope(): Boolean {
+        val normalized = trim()
+            .removePrefix("/")
+            .lowercase(Locale.US)
+            .replace("-", "_")
+        return normalized == "opengui" || normalized == "hermes"
+    }
+
+    private fun openguiSlashCommandTextFromArguments(arguments: JSONObject): String {
+        val subcommand = stringArgument(
+            arguments,
+            "subcommand",
+            "sub_command",
+            "slash_subcommand",
+            "slashCommand",
+            "opengui_subcommand",
+            "openguiSubcommand",
+            allowEmpty = true,
+        ).orEmpty()
+            .trim()
+            .removePrefix("/")
+            .lowercase(Locale.US)
+            .replace("-", "_")
+        if (subcommand.isBlank()) {
+            return ""
+        }
+        return when (subcommand) {
+            "help" -> "/help"
+            "devices", "device" -> "/devices"
+            "tasks", "task", "list", "list_tasks" -> "/tasks"
+            "do", "do_task" -> {
+                val task = stringArgument(
+                    arguments,
+                    "task",
+                    "description",
+                    "task_description",
+                    "prompt",
+                    "task_name",
+                    "taskName",
+                    allowEmpty = true,
+                ).orEmpty().trim()
+                if (task.isBlank()) "" else "/do $task"
+            }
+            "run", "run_task" -> {
+                val taskId = stringArgument(
+                    arguments,
+                    "task_id",
+                    "taskId",
+                    "automation_id",
+                    "automationId",
+                    "id",
+                    "task",
+                    allowEmpty = true,
+                ).orEmpty().trim()
+                if (taskId.isBlank()) "" else "/run $taskId"
+            }
+            "status" -> {
+                val executionId = stringArgument(
+                    arguments,
+                    "execution_id",
+                    "executionId",
+                    "remote_execution_id",
+                    allowEmpty = true,
+                ).orEmpty().trim()
+                if (executionId.isBlank()) "/status" else "/status $executionId"
+            }
+            "cancel", "pause" -> {
+                val executionId = stringArgument(
+                    arguments,
+                    "execution_id",
+                    "executionId",
+                    "remote_execution_id",
+                    allowEmpty = true,
+                ).orEmpty().trim()
+                if (executionId.isBlank()) "" else "/$subcommand $executionId"
+            }
+            "resume" -> {
+                val executionId = stringArgument(
+                    arguments,
+                    "execution_id",
+                    "executionId",
+                    "remote_execution_id",
+                    allowEmpty = true,
+                ).orEmpty().trim()
+                val feedback = stringArgument(arguments, "feedback", "comment", "note", allowEmpty = true)
+                    .orEmpty()
+                    .trim()
+                when {
+                    executionId.isNotBlank() && feedback.isNotBlank() -> "/resume $executionId $feedback"
+                    executionId.isNotBlank() -> "/resume $executionId"
+                    feedback.isNotBlank() -> "/resume $feedback"
+                    else -> ""
+                }
+            }
+            else -> ""
         }
     }
 
@@ -4797,15 +4904,18 @@ object HermesAutomationBridge {
     private fun stripOperatorCommandPrefix(text: String, prefix: String): String {
         val trimmed = text.trim()
         val safePrefix = prefix.trim()
-        if (safePrefix.isBlank()) {
-            return trimmed
+        val prefixes = listOf(safePrefix, "/opengui", "opengui")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        val lowerText = trimmed.lowercase(Locale.US)
+        for (candidate in prefixes) {
+            val lowerPrefix = candidate.lowercase(Locale.US)
+            if (lowerText == lowerPrefix || lowerText.startsWith("$lowerPrefix ")) {
+                return trimmed.substring(candidate.length).trim().ifBlank { "help" }
+            }
         }
-        val lowerText = trimmed.lowercase()
-        val lowerPrefix = safePrefix.lowercase()
-        if (lowerText != lowerPrefix && !lowerText.startsWith("$lowerPrefix ")) {
-            return trimmed
-        }
-        return trimmed.substring(safePrefix.length).trim().ifBlank { "help" }
+        return trimmed
     }
 
     private fun operatorCommandAccess(arguments: JSONObject): OperatorCommandAccess {
@@ -4891,7 +5001,7 @@ object HermesAutomationBridge {
             .put("handled", true)
             .put("parsed_command", parsed.toJson())
             .put("reply_lines", JSONArray(OPENGUI_COMPATIBLE_COMMAND_HELP))
-            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
+            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/opengui", "/")))
             .put("slash_command_schema", openguiSlashCommandSchemaJson())
             .put(
                 "allowlist_arguments",
@@ -4917,7 +5027,7 @@ object HermesAutomationBridge {
             .put("parsed_command", parsed.toJson())
             .put("message", "Hermes rejected this OpenGUI-compatible IM command because it did not match the supplied allowlist.")
             .put("access", access.toJson())
-            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
+            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/opengui", "/")))
             .toString()
     }
 
@@ -4940,8 +5050,8 @@ object HermesAutomationBridge {
             .put("handled", false)
             .put("status", "free_text")
             .put("parsed_command", parsed.toJson())
-            .put("message", "Send /help or !opengui help to view supported remote commands.")
-            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
+            .put("message", "Send /help, /opengui help, or !opengui help to view supported remote commands.")
+            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/opengui", "/")))
             .toString()
     }
 
@@ -4996,6 +5106,7 @@ object HermesAutomationBridge {
 
     private val OPENGUI_COMPATIBLE_COMMAND_HELP = listOf(
         "Hermes OpenGUI-compatible remote commands",
+        "/opengui <subcommand> - raw slash-command compatible form",
         "/tasks - list saved Hermes automations",
         "/run <id> - run a matching saved remote-dispatch automation",
         "/do <description> - dispatch to an enabled automation with the same label",

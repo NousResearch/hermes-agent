@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -425,6 +426,123 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+
+
+def _cron_delivery_has_action_required(content: str) -> bool:
+    lowered = content.lower()
+    action_tokens = (
+        "⚠", "error", "failed", "failure", "exception", "traceback",
+        "blocked", "action required", "requires action", "needs approval",
+        "approval required", "denied", "urgent", "alert", "warning", "critical",
+    )
+    return any(token in lowered for token in action_tokens)
+
+
+def _cron_delivery_is_noop(content: str) -> bool:
+    stripped = content.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    noop_tokens = (
+        "[silent]", "nothing to report", "no action", "no actions",
+        "no approved item", "no approved items", "no new", "no changes",
+        "no-op", "noop", "0 items", "zero items", "empty output",
+        "wakeagent=false", "no eligible", "no matching",
+    )
+    return any(token in lowered for token in noop_tokens)
+
+
+def _cron_delivery_one_line_summary(content: str, limit: int = 280) -> str:
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line:
+            break
+    else:
+        return ""
+    line = re.sub(r"\s+", " ", line)
+    if len(line) <= limit:
+        return line
+    return f"{line[: limit - 1].rstrip()}…"
+
+
+def _discord_cron_hygiene_enabled(job: dict, cron_cfg: dict) -> bool:
+    job_value = job.get("discord_delivery_hygiene")
+    if job_value is not None:
+        return bool(job_value)
+    return bool(cron_cfg.get("discord_delivery_hygiene", True))
+
+
+def _discord_cron_verbosity(job: dict, cron_cfg: dict) -> str:
+    value = job.get("discord_verbosity") or job.get("delivery_verbosity")
+    if not value:
+        value = cron_cfg.get("discord_delivery_verbosity")
+    if not value:
+        profiles = cron_cfg.get("delivery_profiles", {}) if isinstance(cron_cfg, dict) else {}
+        if isinstance(profiles, dict):
+            discord_profile = profiles.get("discord", {})
+            if isinstance(discord_profile, dict):
+                value = discord_profile.get("verbosity")
+            elif isinstance(discord_profile, str):
+                value = discord_profile
+    return str(value or "summary").lower().strip()
+
+
+def _prepare_cron_delivery_content(job: dict, content: str, platform_name: str, cron_cfg: dict, wrap_response: bool) -> str:
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    platform_key = platform_name.lower()
+
+    if platform_key != "discord" or not _discord_cron_hygiene_enabled(job, cron_cfg):
+        if not wrap_response:
+            return content
+        return (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{content}\n\n"
+            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        )
+
+    verbosity = _discord_cron_verbosity(job, cron_cfg)
+    if verbosity in {"full", "verbose", "raw"}:
+        if not wrap_response:
+            return content
+        return (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{content}"
+        )
+
+    if not _cron_delivery_has_action_required(content) and _cron_delivery_is_noop(content):
+        logger.info("Job '%s': Discord cron hygiene suppressed no-op delivery", job_id)
+        return ""
+
+    if verbosity in {"silent", "none"} and not _cron_delivery_has_action_required(content):
+        logger.info("Job '%s': Discord cron hygiene suppressed routine delivery", job_id)
+        return ""
+
+    if not wrap_response:
+        return content
+
+    if _cron_delivery_has_action_required(content):
+        return (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{content}"
+        )
+
+    summary = _cron_delivery_one_line_summary(content)
+    if not summary:
+        return ""
+    return (
+        f"Cronjob Summary: {task_name}\n"
+        f"(job_id: {job_id}; full output saved locally)\n"
+        f"-------------\n\n"
+        f"{summary}"
+    )
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -502,30 +620,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.yaml for clean output. Discord cron deliveries apply an extra
+    # hygiene policy by default: no-op routine output is suppressed, routine
+    # verbose output is summarized, and the generic management footer is omitted.
     wrap_response = True
+    cron_cfg = {}
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+        wrap_response = cron_cfg.get("wrap_response", True)
     except Exception:
         pass
 
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
-
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
     try:
         config = load_gateway_config()
@@ -540,6 +648,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+
+        delivery_content = _prepare_cron_delivery_content(job, content, platform_name, cron_cfg, wrap_response)
+        if not delivery_content.strip():
+            continue
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -578,7 +691,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = {"origin": "cron", "suppress_typing": True}
+            if thread_id:
+                send_metadata["thread_id"] = thread_id
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

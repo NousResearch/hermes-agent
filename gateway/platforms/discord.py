@@ -2674,6 +2674,8 @@ class DiscordAdapter(BasePlatformAdapter):
         8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
         stop_typing() is called (after the response is sent).
         """
+        if metadata and metadata.get("suppress_typing"):
+            return
         if not self._client:
             return
         # Don't start a duplicate loop

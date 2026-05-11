@@ -517,6 +517,84 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_discord_delivery_suppresses_noop_when_hygiene_enabled(self):
+        """Routine no-op cron output should stay out of Discord by default."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {}}):
+            job = {
+                "id": "games-hq",
+                "name": "Games HQ Scout",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "123"},
+            }
+            err = _deliver_result(job, "No approved items found. Nothing to report.")
+
+        assert err is None
+        send_mock.assert_not_called()
+
+    def test_discord_delivery_summarizes_routine_verbose_output_without_footer(self):
+        """Discord gets a one-line routine summary while local output keeps details."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        content = "Summary: 4 feeds checked successfully.\n" + "{\n  \"large\": \"json audit dump\"\n}"
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {}}):
+            job = {
+                "id": "audit",
+                "name": "Audit Digest",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "123"},
+            }
+            _deliver_result(job, content)
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Summary: Audit Digest" in sent_content
+        assert "Summary: 4 feeds checked successfully." in sent_content
+        assert "json audit dump" not in sent_content
+        assert "To stop or manage this job" not in sent_content
+        assert "full output saved locally" in sent_content
+
+    def test_discord_delivery_preserves_action_required_output_without_footer(self):
+        """Failures/action-required messages are never collapsed or suppressed."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {}}):
+            job = {
+                "id": "blocked-job",
+                "name": "Blocked Job",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "123"},
+            }
+            _deliver_result(job, "⚠️ Action required: approval failed for deploy.\nFull details line 2.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: Blocked Job" in sent_content
+        assert "Action required: approval failed" in sent_content
+        assert "Full details line 2." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
     def test_delivery_extracts_media_tags_before_send(self):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform

@@ -445,3 +445,14 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_send_typing_respects_suppress_typing_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=AsyncMock()))
+
+    await adapter.send_typing("555", metadata={"origin": "cron", "suppress_typing": True})
+
+    assert adapter._typing_tasks == {}
+    adapter._client.http.request.assert_not_called()

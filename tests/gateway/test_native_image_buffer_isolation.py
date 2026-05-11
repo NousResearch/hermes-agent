@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
@@ -77,3 +78,81 @@ async def test_native_image_buffer_not_cleared_by_other_sessions_without_images(
 
     assert runner._consume_pending_native_image_paths(build_session_key(source_a)) == ["/tmp/a.png"]
     assert runner._consume_pending_native_image_paths(build_session_key(source_b)) == []
+
+
+@pytest.mark.asyncio
+async def test_kimi_coding_photo_uses_text_path_not_native_buffer():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
+    )
+    runner.adapters = {}
+    runner._model = "kimi-k2.6"
+    runner._base_url = None
+    runner._decide_image_input_mode = lambda: "text"
+    runner._enrich_message_with_vision = AsyncMock(return_value="vision summary")
+
+    source = _source("chat-kimi")
+    result = await runner._prepare_inbound_message_text(
+        event=_image_event(source, "/tmp/kimi.png"),
+        source=source,
+        history=[],
+    )
+
+    assert result == "vision summary"
+    runner._enrich_message_with_vision.assert_awaited_once_with(
+        "see image",
+        ["/tmp/kimi.png"],
+    )
+    assert runner._consume_pending_native_image_paths(build_session_key(source)) == []
+
+
+@pytest.mark.asyncio
+async def test_real_image_mode_decision_uses_text_for_custom_kimi_coding_endpoint(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
+    )
+
+    cfg = {
+        "model": {
+            "provider": "custom",
+            "base_url": "https://api.kimi.com/coding/v1",
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "custom")
+    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "kimi-k2.6")
+    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model: True)
+
+    assert runner._decide_image_input_mode() == "text"
+
+
+@pytest.mark.asyncio
+async def test_real_image_mode_decision_uses_text_for_named_custom_kimi_coding_endpoint(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
+    )
+
+    cfg = {
+        "model": {
+            "provider": "moonshot-proxy",
+        },
+        "custom_providers": [
+            {
+                "name": "Moonshot Proxy",
+                "base_url": "https://api.kimi.com/coding",
+            },
+        ],
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "moonshot-proxy")
+    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "kimi-k2.6")
+    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model: True)
+
+    assert runner._decide_image_input_mode() == "text"

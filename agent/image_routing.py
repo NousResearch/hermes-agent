@@ -39,11 +39,85 @@ import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+_PROVIDERS_WITHOUT_NATIVE_IMAGE_INPUT = frozenset({
+    "kimi-coding",
+    "kimi-coding-cn",
+})
+
+
+def _normalize_custom_provider_name(value: str) -> str:
+    return str(value or "").strip().lower().replace(" ", "-")
+
+
+def _is_kimi_coding_base_url(base_url: str) -> bool:
+    raw = str(base_url or "").strip()
+    if not raw:
+        return False
+    try:
+        host = (urlsplit(raw).hostname or "").strip().lower().rstrip(".")
+    except Exception:
+        return False
+    if host != "api.kimi.com" and not host.endswith(".api.kimi.com"):
+        return False
+    lowered = raw.lower()
+    return "/coding" in lowered
+
+
+def _lookup_named_provider_base_url(provider: str, cfg: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(cfg, dict):
+        return ""
+    requested = _normalize_custom_provider_name(provider)
+    if not requested or requested in {"auto", "custom"}:
+        return ""
+
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        for key, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            key_norm = _normalize_custom_provider_name(key)
+            name_norm = _normalize_custom_provider_name(entry.get("name") or "")
+            if requested not in {key_norm, name_norm, f"custom:{key_norm}", f"custom:{name_norm}"}:
+                continue
+            return str(entry.get("api") or entry.get("url") or entry.get("base_url") or "").strip()
+
+    custom_providers = cfg.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            name_norm = _normalize_custom_provider_name(entry.get("name") or "")
+            provider_key_norm = _normalize_custom_provider_name(entry.get("provider_key") or "")
+            matches = {name_norm, f"custom:{name_norm}"}
+            if provider_key_norm:
+                matches.update({provider_key_norm, f"custom:{provider_key_norm}"})
+            if requested not in matches:
+                continue
+            return str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip()
+
+    return ""
+
+
+def _provider_forces_text_image_path(provider: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider in _PROVIDERS_WITHOUT_NATIVE_IMAGE_INPUT:
+        return True
+
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    if isinstance(model_cfg, dict):
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+        if normalized_provider == cfg_provider and _is_kimi_coding_base_url(cfg_base_url):
+            return True
+
+    named_base_url = _lookup_named_provider_base_url(normalized_provider, cfg)
+    return _is_kimi_coding_base_url(named_base_url)
 
 
 def _coerce_mode(raw: Any) -> str:
@@ -120,6 +194,13 @@ def decide_image_input_mode(
         return "text"
 
     # auto
+    if _provider_forces_text_image_path(provider, cfg):
+        # Kimi Coding Plan's /coding endpoint does not accept native image
+        # input. This applies both to the built-in kimi-coding providers and
+        # to custom endpoints / named custom providers that point at
+        # api.kimi.com/coding.
+        return "text"
+
     if _explicit_aux_vision_override(cfg):
         return "text"
 

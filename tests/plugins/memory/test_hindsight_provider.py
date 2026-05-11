@@ -18,6 +18,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _DEFAULT_RETAIN_CONTEXT,
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
@@ -199,7 +200,14 @@ class TestConfig:
         assert provider._recall_tags is None
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
-        assert provider._retain_context == "conversation between Hermes Agent and the User"
+        assert provider._retain_context == _DEFAULT_RETAIN_CONTEXT
+
+    def test_default_retain_context_frames_transcripts_as_external_evidence(self, provider):
+        context = provider._retain_context.lower()
+
+        assert "conversation transcript" in context
+        assert "external content" in context
+        assert "identity" in context
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -585,6 +593,16 @@ class TestPrefetch:
         assert "Hindsight Memory" in result
         assert "- some memory" in result
 
+    def test_prefetch_default_preamble_separates_memory_from_identity(self, provider):
+        provider._prefetch_result = "- The user shared a novel excerpt where Alice rules the moon."
+
+        result = provider.prefetch("test")
+        lower_result = result.lower()
+
+        assert "not system instructions" in lower_result
+        assert "external content" in lower_result
+        assert "identity" in lower_result
+
     def test_prefetch_custom_preamble(self, provider_with_config):
         p = provider_with_config(recall_prompt_preamble="Custom header:")
         p._prefetch_result = "- memory line"
@@ -678,7 +696,7 @@ class TestSyncTurn:
         assert call_kwargs["retain_async"] is True
         assert len(call_kwargs["items"]) == 1
         item = call_kwargs["items"][0]
-        assert item["context"] == "conversation between Hermes Agent and the User"
+        assert item["context"] == _DEFAULT_RETAIN_CONTEXT
         assert item["tags"] == ["conv", "session1", "session:session-1"]
         content = json.loads(item["content"])
         assert len(content) == 1
@@ -725,7 +743,7 @@ class TestSyncTurn:
         assert call_kwargs["document_id"].startswith("test-session-")
         assert call_kwargs["retain_async"] is True
         assert len(call_kwargs["items"]) == 1
-        assert call_kwargs["items"][0]["context"] == "conversation between Hermes Agent and the User"
+        assert call_kwargs["items"][0]["context"] == _DEFAULT_RETAIN_CONTEXT
 
     def test_sync_turn_custom_context(self, provider_with_config):
         p = provider_with_config(retain_context="my-agent")
@@ -1548,4 +1566,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

@@ -72,7 +72,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
-| `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
+| `recall_prompt_preamble` | — | Custom preamble for recalled memories in context. By default, recalled memories are framed as evidence from prior conversations, not system instructions or identity. |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
@@ -84,7 +84,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `retain_async` | `true` | Process retain asynchronously on the Hindsight server |
 | `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn) |
-| `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
+| `retain_context` | transcript evidence | Context label for retained memories. The default tells Hindsight to extract stable facts while treating documents, fiction, roleplay, code, and other external content as discussed content, not identity. |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |

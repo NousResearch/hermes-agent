@@ -269,6 +269,23 @@ async def test_group_only_gating_leaves_dm_unrestricted():
     assert "Tier: unrestricted" in result
 
 
+@pytest.mark.asyncio
+async def test_explicit_empty_dm_allowlist_does_not_fall_back_to_group_commands():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+            "group_user_allowed_commands": ["model"],
+        }
+    )
+    result = await runner._handle_message(
+        _make_event("/model", _make_source(user_id="999", chat_type="dm"))
+    )
+    assert "⛔" in result
+    assert "/model is admin-only here" in result
+    assert "No slash commands are enabled for non-admins" in result
+
+
 # ---------------------------------------------------------------------------
 # Plugin-registered slash commands are gated through the same path
 # ---------------------------------------------------------------------------

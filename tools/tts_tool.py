@@ -6,6 +6,7 @@ Built-in TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- OpenRouter TTS: Access any TTS model via OpenRouter, needs OPENROUTER_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
@@ -149,6 +150,9 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_OPENROUTER_TTS_MODEL = "openai/gpt-4o-mini-tts-2025-12-15"
+DEFAULT_OPENROUTER_TTS_VOICE = "alloy"
+DEFAULT_OPENROUTER_TTS_BASE_URL = "https://openrouter.ai/api/v1"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -174,6 +178,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "openrouter": 4096,   # OpenAI-compatible; defaults to OpenAI TTS model cap
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -317,6 +322,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "edge",
     "elevenlabs",
     "openai",
+    "openrouter",
     "minimax",
     "xai",
     "mistral",
@@ -1063,6 +1069,67 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: OpenRouter TTS
+# ===========================================================================
+def _generate_openrouter_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using OpenRouter's /v1/audio/speech endpoint.
+
+    OpenRouter TTS is fully OpenAI-audio-API-compatible.  Point the client
+    at ``https://openrouter.ai/api/v1`` with an OPENROUTER_API_KEY and the
+    same request shape that OpenAI TTS expects.  Supports any TTS model
+    routed through OpenRouter (OpenAI, Mistral, etc.).
+
+    Args:
+        text: Text to convert.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = (get_env_value("OPENROUTER_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys")
+
+    or_config = tts_config.get("openrouter", {})
+    model = or_config.get("model", DEFAULT_OPENROUTER_TTS_MODEL)
+    voice = or_config.get("voice", DEFAULT_OPENROUTER_TTS_VOICE)
+    base_url = or_config.get(
+        "base_url", get_env_value("OPENROUTER_TTS_BASE_URL") or DEFAULT_OPENROUTER_TTS_BASE_URL
+    ).strip().rstrip("/")
+    speed = float(or_config.get("speed", tts_config.get("speed", 1.0)))
+
+    # Determine response format from extension
+    if output_path.endswith(".ogg"):
+        response_format = "opus"
+    else:
+        response_format = "mp3"
+
+    # Use openai package (same as OpenAI provider) with openrouter base URL
+    OpenAIClient = _import_openai_client()
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    try:
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": response_format,
+            "extra_headers": {"x-idempotency-key": str(uuid.uuid4())},
+        }
+        if speed != 1.0:
+            create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        response = client.audio.speech.create(**create_kwargs)
+
+        response.stream_to_file(output_path)
+        return output_path
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+# ===========================================================================
 # Provider: Google Gemini TTS
 # ===========================================================================
 def _wrap_pcm_as_wav(
@@ -1612,7 +1679,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "openrouter"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1676,6 +1743,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "openrouter":
+            logger.info("Generating speech with OpenRouter TTS...")
+            _generate_openrouter_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -1837,6 +1908,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if get_env_value("OPENROUTER_API_KEY"):
+        return True
     if get_env_value("MINIMAX_API_KEY"):
         return True
     if get_env_value("XAI_API_KEY"):

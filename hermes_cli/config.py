@@ -971,7 +971,7 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "openrouter" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -984,6 +984,13 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "openrouter": {
+            # OpenAI-compatible TTS via OpenRouter. Supports any TTS model
+            # routed through OpenRouter (openai/gpt-4o-mini-tts-2025-12-15, etc.)
+            "model": "openai/gpt-4o-mini-tts-2025-12-15",
+            "voice": "alloy",
+            # Voices vary by upstream provider — check OpenRouter model docs.
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
@@ -1018,13 +1025,18 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" | "openrouter" | "mistral" | "xai"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+        "openrouter": {
+            # OpenAI-compatible STT via OpenRouter. Supports any STT model
+            # routed through OpenRouter (openai/whisper-1, etc.)
+            "model": "openai/whisper-1",
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

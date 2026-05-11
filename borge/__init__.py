@@ -1,17 +1,21 @@
 """
-Borge Agent — Next-generation agent framework.
+Borge Agent — Cognitively-grounded AI agent framework.
 
-Built on Hermes architecture, extending it with:
-- Affective State Engine (Russell 2D circumplex)
-- Bayesian Belief State
-- Active Inference Engine (EFE-based tool selection)
-- Cognitive Memory Architecture (episodic + semantic + procedural)
-- Memory Refinement Pipeline
-- Skill Evolution Engine
-- Extended Free Energy as unified objective function
-- Value System (SOUL.md as computable prior preferences)
+Standalone usage:
+    from borge import BorgeRunner
+    runner = BorgeRunner()
+    runner.run("help me debug this")
+
+Plugin usage (wrapping Hermes / OpenClaw / any backend):
+    from borge.agent import BorgeAgent
+    cognitive = BorgeAgent(agent_backend=my_agent)
 
 Named after Jorge Luis Borges — explorer of infinite memory and knowledge.
 """
 
 __version__ = "0.1.0"
+
+from .agent import BorgeAgent
+from .runner import BorgeRunner
+
+__all__ = ["BorgeAgent", "BorgeRunner", "__version__"]

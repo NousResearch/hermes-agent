@@ -1071,3 +1071,59 @@ class TestJudgeIndexConversion:
         # Other items still pending.
         assert mgr.state.checklist[1].status == ITEM_PENDING
         assert mgr.state.checklist[2].status == ITEM_PENDING
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Compression session-rotation: goal must follow the new session_id
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalSurvivesCompressionRotation:
+    def test_load_goal_after_session_id_rotates(self, hermes_home):
+        """When auto-compression rotates the session_id, the goal must be
+        readable from the new session_id (forwarded by run_agent's
+        _compress_context block).
+
+        We don't run the full _compress_context method here — it has
+        ~60 dependencies. Instead we mirror exactly what that block does
+        with state_meta and assert the goal manager picks it up.
+        """
+        from hermes_cli.goals import GoalManager
+        from hermes_state import SessionDB
+
+        # Create a goal under a parent session_id.
+        parent_sid = "parent-rotate-001"
+        mgr = GoalManager(session_id=parent_sid)
+        mgr.set("survive compression")
+        assert mgr.is_active()
+
+        # Simulate the run_agent._compress_context forwarding block:
+        # read goal:<old>, write goal:<new> on the same SessionDB instance.
+        db = SessionDB()
+        new_sid = "child-rotate-001"
+        blob = db.get_meta(f"goal:{parent_sid}")
+        assert blob, "goal must be in state_meta"
+        db.set_meta(f"goal:{new_sid}", blob)
+
+        # New GoalManager for the rotated session_id should load the same goal.
+        mgr2 = GoalManager(session_id=new_sid)
+        assert mgr2.is_active()
+        assert mgr2.state.goal == "survive compression"
+        # Counters/checklist preserved verbatim.
+        assert mgr2.state.turns_used == mgr.state.turns_used
+        assert mgr2.state.checklist == mgr.state.checklist
+
+    def test_no_forward_when_no_goal(self, hermes_home):
+        """Forwarding is a no-op when the parent session has no goal."""
+        from hermes_state import SessionDB
+        from hermes_cli.goals import load_goal
+
+        db = SessionDB()
+        # Parent has no goal at all.
+        assert db.get_meta("goal:parent-no-goal") is None
+        blob = db.get_meta("goal:parent-no-goal")
+        if blob:  # parity with production guard
+            db.set_meta("goal:child-no-goal", blob)
+
+        # Child should still have no goal.
+        assert load_goal("child-no-goal") is None

@@ -2,13 +2,21 @@
 name: antseed-smart-delegate
 description: "Use when delegating tasks through AntSeed P2P network or when delegate_task with provider=antseed fails. Auto-selects optimal peer+model by task type, tracks spending, provides fallback chain on failure."
 version: 1.0.0
-author: Hermes Agent (ryptotalent)
+author: Hermes Agent Community
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: ANTSEED_WALLET_KEY
+    prompt: AntSeed wallet private key or funded address on Base chain
+    help: Fund your AntSeed buyer wallet with USDC on Base. See https://antseed.ai/docs
+    required_for: full functionality
+prerequisites:
+  commands: [antseed]
 metadata:
   hermes:
     tags: [antseed, p2p, delegation, smart-routing, cost-tracking, fallback, peer-selection]
     related_skills: []
+    requires_toolsets: [terminal]
 ---
 
 # AntSeed Smart Delegate
@@ -94,11 +102,11 @@ bash scripts/preflight.sh
   "ok": true,
   "proxy_up": true,
   "proxy_http": "200",
-  "peer_pinned": "f629c1f973961917...",
-  "peer_name": "Antseed ZAI Provider",
+  "peer_pinned": "peer-abc123def456",
+  "peer_name": "example-peer-name",
   "deposits_usdc": 1.0,
   "reserved_usdc": 0.0,
-  "wallet": "0x411B...ca58",
+  "wallet": "0x1234...abcd",
   "active_channels": 1,
   "issues": [],
   "can_delegate": true
@@ -108,7 +116,7 @@ bash scripts/preflight.sh
 **Human output (stderr):**
 ```
 Ready to delegate via AntSeed
-   Peer: Antseed ZAI Provider (f629c1f97396...)
+   Peer: example-peer-name (f629c1f97396...)
    Deposits: 1.0 USDC available (0.0 reserved)
    Channels: 1 active
 ```
@@ -135,7 +143,7 @@ Task types: `code`, `research`, `vision`, `chat`, `cheap`, `any`
   "task_type": "code",
   "recommended": {
     "peer_id": "f629c1f9739619...",
-    "peer_name": "Antseed ZAI Provider",
+    "peer_name": "example-peer-name",
     "model": "qwen/qwen3-next-80b-a3b-thinking",
     "price_in": "$0.00701/1M",
     "price_out": "$0.01501/1M",
@@ -192,14 +200,14 @@ bash scripts/cost-report.sh --json  # parseable JSON
 ```
 AntSeed Cost Report
 ============================
-Wallet:     0x411B38A9...4bca58
+Wallet:     0x12345678...abcd
 Deposits:   0.95 USDC (0.05 reserved)
 Available:  ~0.90 USDC for new channels
 
-Channel(s) (Antseed ZAI Provider):
+Channel(s) (example-peer-name):
   Status:    active
   Requests:  3
-  Peer:      f629c1f973961917...
+  Peer:      peer-abc123def456
 
 Spending (session):
   Est. spent: ~0.003 USDC
@@ -215,7 +223,7 @@ Agent: [loads antseed-smart-delegate skill]
 
 Step 1 — Preflight:
   $ bash preflight.sh
-  -> {ok: true, deposits: 1.0, peer: "Antseed ZAI Provider"}
+  -> {ok: true, deposits: 1.0, peer: "example-peer-name"}
 
 Step 2 — Best peer for "code":
   $ bash best-peer.sh code

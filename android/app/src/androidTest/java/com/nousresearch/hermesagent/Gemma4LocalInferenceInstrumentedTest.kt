@@ -21,12 +21,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 import java.io.File
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class Gemma4LocalInferenceInstrumentedTest {
     private val context: Context
         get() = ApplicationProvider.getApplicationContext()
@@ -43,7 +46,7 @@ class Gemma4LocalInferenceInstrumentedTest {
     }
 
     @Test
-    fun gemma4LiteRtLmLoadsAndAnswersLocally() {
+    fun aGemma4LiteRtLmLoadsAndAnswersLocally() {
         val modelFile = File(context.filesDir, MODEL_RELATIVE_PATH)
         assumeTrue("Gemma 4 LiteRT-LM model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
         assertEquals("Gemma 4 LiteRT-LM model size", MODEL_BYTES, modelFile.length())
@@ -85,7 +88,7 @@ class Gemma4LocalInferenceInstrumentedTest {
     }
 
     @Test
-    fun directLiteRtLmProxyCanServeProvisionedGemma4Model() {
+    fun bDirectLiteRtLmProxyCanServeProvisionedGemma4Model() {
         val modelFile = File(context.filesDir, MODEL_RELATIVE_PATH)
         assumeTrue("Gemma 4 LiteRT-LM model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
         assertEquals("Gemma 4 LiteRT-LM model size", MODEL_BYTES, modelFile.length())

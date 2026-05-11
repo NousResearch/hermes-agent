@@ -20,6 +20,7 @@ import com.nousresearch.hermesagent.data.PendingAuthRequest
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.data.ProviderSetupTarget
 import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
+import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.HermesStrings
 import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
@@ -365,7 +366,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(globalStatus = "Provider setup URL must start with https:// or http://") }
             return
         }
-        val launch = HermesExternalBrowserLauncher.open(
+        val launch = HermesProviderSetupWebActivity.open(
             context = getApplication(),
             uri = uri,
             title = "Open ${option.label} setup page",
@@ -378,7 +379,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             copyProviderSetupUrl(methodId, updateStatus = false)
             _uiState.update {
-                it.copy(globalStatus = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the ${option.label} setup URLs.")
+                it.copy(globalStatus = "Unable to open setup page (${launch.errorName.ifBlank { "setup_page_error" }}); copied the ${option.label} setup URLs.")
             }
         }
     }
@@ -396,9 +397,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         target: ProviderSetupTarget,
     ): String {
         val cycleHint = if (target.total > 1) {
-            " ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
+            " inside Hermes ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
         } else {
-            ". If your browser stalls, copy the setup URL and paste it into another browser."
+            " inside Hermes. If this page stalls, copy the setup URL and paste it into another browser."
         }
         val qwenLegacyHint = if (providerId == "qwen-oauth") {
             " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."

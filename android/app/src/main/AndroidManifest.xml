@@ -67,6 +67,11 @@
         </activity>
 
         <activity
+            android:name=".device.HermesProviderSetupWebActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+
+        <activity
             android:name=".device.HermesTaskerPluginEditActivity"
             android:exported="true"
             android:label="@string/hermes_tasker_plugin_label">

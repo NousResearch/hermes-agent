@@ -156,6 +156,108 @@ def test_passes_non_table_lines_through_around_a_table():
     assert all(o == offsets[0] for o in offsets)
 
 
+# ---------------------------------------------------------------------------
+# Vertical fallback for tables wider than the terminal
+# ---------------------------------------------------------------------------
+
+
+def test_overflow_falls_back_to_vertical_when_table_wider_than_terminal():
+    """A horizontal table that would exceed the available width must
+    drop to vertical key-value rendering so the terminal does not
+    soft-wrap mid-cell (which destroys column alignment visually)."""
+
+    src = dedent(
+        """\
+        | Item | Description | Notes |
+        |------|-------------|-------|
+        | a | short | ok |
+        | b | this is a much longer description that stretches the column wider than the others by a lot | fine |
+        | c | tiny | - |
+        """
+    )
+
+    out = realign_markdown_tables(src, available_width=100)
+
+    # No horizontal pipe-bordered rows: vertical mode emits "Header: value"
+    # lines and a ─ separator instead.
+    assert "|" not in out
+    assert "Item: a" in out
+    assert "Description: short" in out
+    assert "Notes: ok" in out
+    # Body rows separated by ─ rule
+    assert "──" in out
+
+    # Every emitted line fits the available width.
+    for line in out.split("\n"):
+        assert wcswidth(line) <= 100, f"line wider than budget: {line!r}"
+
+
+def test_horizontal_kept_when_table_fits():
+    """A table that fits the terminal must keep the horizontal
+    pipe-bordered rendering — vertical fallback only kicks in when
+    soft-wrap is unavoidable."""
+
+    src = dedent(
+        """\
+        | Name | Age |
+        |------|-----|
+        | Alice | 30 |
+        | Bob | 25 |
+        """
+    )
+
+    out = realign_markdown_tables(src, available_width=100)
+
+    # Pipe-bordered rendering survives.
+    body_rows = [ln for ln in out.split("\n") if ln.strip().startswith("|")]
+    assert len(body_rows) == 4
+    offsets = [_column_offsets(r) for r in body_rows]
+    assert all(o == offsets[0] for o in offsets)
+
+
+def test_vertical_fallback_wraps_long_cell_text_with_indent():
+    src = dedent(
+        """\
+        | Key | Value |
+        |-----|-------|
+        | x | this value is long enough that wrapping the value to fit a narrow terminal width is required even in vertical mode |
+        """
+    )
+
+    out = realign_markdown_tables(src, available_width=60)
+
+    lines = out.split("\n")
+    assert lines[0].startswith("Key: x")
+    # First "Value:" line + at least one continuation indented by 2 spaces.
+    value_idx = next(i for i, l in enumerate(lines) if l.startswith("Value:"))
+    assert lines[value_idx + 1].startswith("  ")
+    # Every line still fits the budget.
+    for line in lines:
+        assert wcswidth(line) <= 60
+
+
+def test_overflow_falls_back_to_vertical_for_cjk_too():
+    """CJK content can also push a table over the terminal budget;
+    the vertical fallback should kick in regardless of script."""
+
+    src = dedent(
+        """\
+        | 模型 | 描述 | 备注 |
+        |------|------|------|
+        | 千问 | 一个相当长的描述用于把列宽撑得超过可用终端宽度从而触发竖排回退 | 通过 |
+        | 文心 | 短 | × |
+        """
+    )
+
+    out = realign_markdown_tables(src, available_width=50)
+
+    assert "|" not in out
+    assert "模型: 千问" in out
+    assert "模型: 文心" in out
+    for line in out.split("\n"):
+        assert wcswidth(line) <= 50, f"line wider than budget: {line!r}"
+
+
 def test_handles_ragged_rows_by_padding_short_rows():
     src = dedent(
         """\

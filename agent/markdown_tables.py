@@ -102,8 +102,16 @@ def looks_like_table_row(row: str) -> bool:
     return stripped.count("|") >= 2
 
 
-def _render_block(rows: List[List[str]]) -> List[str]:
-    """Render ``rows`` (header + body, divider implied) at uniform widths."""
+def _render_block(rows: List[List[str]], available_width: int | None = None) -> List[str]:
+    """Render ``rows`` (header + body, divider implied) at uniform widths.
+
+    If ``available_width`` is given and the rebuilt horizontal table
+    would exceed it, fall back to a vertical key-value rendering so
+    rows do not soft-wrap mid-cell — terminal soft-wrap destroys
+    column alignment visually even when the underlying bytes are
+    perfectly padded, which is exactly the "tables look broken"
+    user report this code path is meant to address.
+    """
 
     ncols = max(len(r) for r in rows)
     rows = [r + [""] * (ncols - len(r)) for r in rows]
@@ -112,6 +120,13 @@ def _render_block(rows: List[List[str]]) -> List[str]:
         max(_MIN_COL_WIDTH, *(_disp_width(r[c]) for r in rows))
         for c in range(ncols)
     ]
+
+    # Total horizontal width for the rendered row:
+    #   `| ` + cell + ` ` for each column, plus the final closing `|`.
+    horizontal_width = sum(widths) + 3 * ncols + 1
+
+    if available_width is not None and horizontal_width > max(available_width, 20):
+        return _render_vertical(rows, ncols, available_width)
 
     def _row(cells: List[str]) -> str:
         return (
@@ -127,11 +142,135 @@ def _render_block(rows: List[List[str]]) -> List[str]:
     return out
 
 
-def realign_markdown_tables(text: str) -> str:
+def _wrap_to_width(text: str, width: int) -> List[str]:
+    """Soft-wrap ``text`` at word boundaries to fit ``width`` display cells.
+
+    Falls back to hard-breaking the longest word if a single token is
+    wider than ``width``.  Empty input yields a single empty string so
+    the caller's row count stays predictable.
+    """
+
+    if width <= 0 or not text:
+        return [text]
+
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: List[str] = []
+    current = ""
+    current_w = 0
+
+    def _hard_break(word: str, w: int) -> List[str]:
+        out: List[str] = []
+        buf = ""
+        bw = 0
+        for ch in word:
+            cw = _disp_width(ch) or 1
+            if bw + cw > w and buf:
+                out.append(buf)
+                buf = ch
+                bw = cw
+            else:
+                buf += ch
+                bw += cw
+        if buf:
+            out.append(buf)
+        return out
+
+    for word in words:
+        ww = _disp_width(word)
+        if not current:
+            if ww <= width:
+                current = word
+                current_w = ww
+            else:
+                pieces = _hard_break(word, width)
+                lines.extend(pieces[:-1])
+                current = pieces[-1] if pieces else ""
+                current_w = _disp_width(current)
+            continue
+        if current_w + 1 + ww <= width:
+            current += " " + word
+            current_w += 1 + ww
+        else:
+            lines.append(current)
+            if ww <= width:
+                current = word
+                current_w = ww
+            else:
+                pieces = _hard_break(word, width)
+                lines.extend(pieces[:-1])
+                current = pieces[-1] if pieces else ""
+                current_w = _disp_width(current)
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _render_vertical(
+    rows: List[List[str]], ncols: int, available_width: int
+) -> List[str]:
+    """Render a too-wide table as vertical ``Header: value`` rows.
+
+    Mirrors Claude Code's narrow-terminal fallback in
+    ``MarkdownTable.tsx``: each body row becomes a small block of
+    ``Header: cell-value`` lines (continuation lines indented two
+    spaces) separated by a thin ``─`` divider between rows.  Keeps
+    every line narrower than ``available_width`` so the terminal does
+    not soft-wrap mid-cell.
+    """
+
+    if not rows:
+        return []
+
+    headers = rows[0] + [""] * (ncols - len(rows[0]))
+    body = rows[1:]
+
+    labels = [h or f"Column {i + 1}" for i, h in enumerate(headers)]
+
+    sep_width = max(20, min(40, available_width - 2)) if available_width else 30
+    separator = "─" * sep_width
+    indent = "  "
+    indent_w = _disp_width(indent)
+
+    out: List[str] = []
+    for ri, row in enumerate(body):
+        if ri > 0:
+            out.append(separator)
+        for ci in range(ncols):
+            label = labels[ci]
+            value = row[ci] if ci < len(row) else ""
+            label_w = _disp_width(label)
+            first_budget = max(10, available_width - label_w - 2)
+            cont_budget = max(10, available_width - indent_w)
+            if not value:
+                out.append(f"{label}:")
+                continue
+            wrapped = _wrap_to_width(value, first_budget)
+            out.append(f"{label}: {wrapped[0]}")
+            if len(wrapped) > 1:
+                # Re-flow continuation text at the wider continuation
+                # budget — words split across the narrower first-line
+                # budget should re-pack greedily for the rest.
+                cont_text = " ".join(wrapped[1:])
+                for cl in _wrap_to_width(cont_text, cont_budget):
+                    if cl.strip():
+                        out.append(f"{indent}{cl}")
+    return out
+
+
+def realign_markdown_tables(text: str, available_width: int | None = None) -> str:
     """Rewrite every ``| ... |`` + divider block with wcwidth-aware padding.
 
     Lines that are not part of a recognised table are returned verbatim,
     so this is safe to apply to arbitrary assistant prose.
+
+    If ``available_width`` is given (terminal cells available for the
+    rendered table), tables wider than that are rendered as vertical
+    key-value pairs instead of a horizontal pipe-bordered grid.  This
+    avoids the terminal soft-wrapping mid-cell, which destroys column
+    alignment visually even when the bytes are perfectly padded.
     """
 
     if "|" not in text:
@@ -161,7 +300,7 @@ def realign_markdown_tables(text: str) -> str:
                 j += 1
 
             if any(c for c in header) or body:
-                out.extend(_render_block([header] + body))
+                out.extend(_render_block([header] + body, available_width))
                 i = j
                 continue
         out.append(line)

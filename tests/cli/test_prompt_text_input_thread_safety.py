@@ -1,15 +1,9 @@
 """Tests for ``HermesCLI._prompt_text_input`` thread-safe input dispatch.
 
-Slash commands (``/clear``, ``/new``, ``/undo``, ``/reload-mcp``) are dispatched
-from the ``process_loop`` daemon thread.  ``prompt_toolkit.run_in_terminal``
-returns a coroutine that only the main-thread event loop can drive; calling it
-from a daemon thread orphans the coroutine, ``_ask`` never runs, and user
-keystrokes leak into the composer instead of the confirmation prompt
-(see issue #23185).
-
-The fix mirrors ``_run_curses_picker``: when off the main thread, fall back to
-a direct ``input()`` call so the prompt actually renders and consumes
-keystrokes.
+Raw ``input()`` prompts can race with prompt_toolkit when called from the TUI.
+The normal slash confirmations now use a prompt_toolkit-native modal, but
+``_prompt_text_input`` remains as a fallback for non-interactive calls and edge
+cases.
 """
 
 import threading
@@ -17,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_cli():
-    """Minimal HermesCLI shell exposing ``_prompt_text_input``."""
+    """Minimal HermesCLI shell exposing prompt fallback helpers."""
     import cli as cli_mod
 
     obj = object.__new__(cli_mod.HermesCLI)
@@ -33,7 +27,7 @@ class TestPromptTextInputThreadSafety:
 
         with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
              patch("builtins.input", return_value="2"):
-            result = cli._prompt_text_input("Choice: ")
+            cli._prompt_text_input("Choice: ")
 
         # run_in_terminal was invoked; the _ask closure passed to it would
         # call input() when driven by the event loop.  We assert dispatch path,
@@ -43,10 +37,8 @@ class TestPromptTextInputThreadSafety:
     def test_background_thread_falls_back_to_direct_input(self):
         """On a daemon thread, skip run_in_terminal and call input() directly.
 
-        This is the bug from issue #23185: process_loop dispatches slash
-        commands on a daemon thread, so run_in_terminal's coroutine is
-        orphaned.  The fallback must drive input() itself so user keystrokes
-        don't leak into the agent buffer.
+        This preserves the fallback for any prompt that still runs off the main
+        UI thread: run_in_terminal's coroutine would otherwise be orphaned.
         """
         cli = _make_cli()
         captured = {}

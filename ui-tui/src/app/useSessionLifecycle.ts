@@ -19,7 +19,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
-import { patchOverlayState } from './overlayStore.js'
+import { patchOverlayState, resetOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -92,6 +92,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resetSession = useCallback(() => {
+    resetOverlayState()
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)

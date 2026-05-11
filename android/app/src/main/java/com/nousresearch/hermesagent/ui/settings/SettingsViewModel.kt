@@ -4,9 +4,7 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
-import android.provider.Browser
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chaquo.python.Python
@@ -18,6 +16,7 @@ import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.data.SecureSecretsStore
+import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -111,19 +110,19 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             _uiState.update { it.copy(status = "Provider setup URL must start with https:// or http://") }
             return
         }
-        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
-        }
-        runCatching {
-            getApplication<Application>().startActivity(intent)
-        }.onSuccess {
+        val providerId = ProviderPresets.providerIdForSetupUrl(target)
+        val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
+        val launch = HermesExternalBrowserLauncher.open(
+            context = getApplication(),
+            uri = uri,
+            title = "Open $providerLabel setup page",
+        )
+        if (launch.success) {
             _uiState.update { it.copy(status = "Opened provider setup page. If your browser stalls, copy the setup URL and paste it into another browser.") }
-        }.onFailure { error ->
+        } else {
             copyProviderKeyPage(target, updateSuccessStatus = false)
             _uiState.update {
-                it.copy(status = "Unable to open browser (${error::class.java.simpleName}); copied the provider setup URL.")
+                it.copy(status = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the provider setup URL.")
             }
         }
     }

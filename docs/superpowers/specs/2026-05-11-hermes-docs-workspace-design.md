@@ -17,6 +17,25 @@ The system has two surfaces:
 
 The Dashboard plugin does not own the editing experience. It shows connection status, recent workspaces, and a shortcut to open the full Docs app. The standalone app owns the workspace drawer, editor, side chat, command bar, annotations, Kordoc actions, and onboarding/settings.
 
+## Runtime And Distribution
+
+Hermes Docs is a local-first web app, not a cloud-hosted document service.
+
+Runtime shape:
+
+- Web UI: browser-based app shell for the editor, side chat, workspace drawer, comments, and settings.
+- Local backend: localhost service for file access, workspace metadata, Kordoc execution, Codex OAuth brokering, and Doc Agent execution.
+- Dashboard plugin: a Hermes Dashboard tab that can show status and open the local web app.
+
+Distribution shape:
+
+- macOS users should receive a DMG installer for normal installation.
+- The DMG installs the local Docs app, local backend launcher, Dashboard plugin assets, and any app-specific bundled resources.
+- First launch runs onboarding for Codex OAuth, `docs` persona bootstrap, brainstorming availability, Kordoc verification, and first workspace selection.
+- The app can still be developed as a web app, but production use is local-first and packaged for Mac users.
+
+Pure cloud-web deployment is out of scope for the first implementation because the app needs trusted local folder access, local document conversion, and local OAuth/token brokering.
+
 ## Core Experience
 
 Users can register any local folder as a workspace. Examples include:
@@ -271,6 +290,7 @@ Before implementation completion, verify the app visually in both light and dark
 
 - collaborative multi-user editing
 - remote cloud sync
+- pure cloud-hosted web app deployment
 - full Obsidian graph view
 - arbitrary plugin marketplace
 - direct browser access to raw OAuth tokens
@@ -280,6 +300,7 @@ Before implementation completion, verify the app visually in both light and dark
 ## Open Design Decisions Resolved
 
 - Use a separate Docs app plus Dashboard plugin, not a heavy built-in Dashboard page.
+- Build it as a local-first web app and distribute it to Mac users with a DMG installer.
 - Use central Hermes workspace metadata, not per-folder hidden metadata by default.
 - Use live Markdown as the default editor, not permanent split view.
 - Use side chat for thinking and command bar for actions.

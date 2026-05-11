@@ -94,6 +94,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    resolve_proxy_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
         self._allowed_users: Set[str] = self._load_allowed_users()
 
+        self._proxy_url: Optional[str] = resolve_proxy_url(platform_env_var="DINGTALK_PROXY")
+
         self._stream_client: Any = None
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -230,8 +233,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
+            _httpx_kw: dict = {}
+            if self._proxy_url:
+                _httpx_kw["proxy"] = self._proxy_url
             self._http_client = httpx.AsyncClient(
-                timeout=30.0, limits=platform_httpx_limits(),
+                timeout=30.0, limits=platform_httpx_limits(), **_httpx_kw
             )
 
             credential = dingtalk_stream.Credential(

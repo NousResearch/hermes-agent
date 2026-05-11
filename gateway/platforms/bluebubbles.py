@@ -29,6 +29,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_document_from_bytes,
+    resolve_proxy_url,
 )
 from gateway.platforms.helpers import strip_markdown
 
@@ -124,6 +125,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self._proxy_url: Optional[str] = resolve_proxy_url(platform_env_var="BLUEBUBBLES_PROXY")
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -164,7 +166,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
         from gateway.platforms._http_client_limits import platform_httpx_limits
-        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        _httpx_kw: dict = {}
+        if self._proxy_url:
+            _httpx_kw["proxy"] = self._proxy_url
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits(), **_httpx_kw)
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")

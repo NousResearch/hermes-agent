@@ -67,6 +67,8 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    proxy_kwargs_for_aiohttp,
+    resolve_proxy_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +169,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 
+        self._proxy_url: str | None = resolve_proxy_url(platform_env_var="WECOM_PROXY")
+
         self._session: Optional["aiohttp.ClientSession"] = None
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -210,8 +214,12 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
+            _httpx_kw: dict = {}
+            if self._proxy_url:
+                _httpx_kw["proxy"] = self._proxy_url
             self._http_client = httpx.AsyncClient(
                 timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+                **_httpx_kw,
             )
             await self._open_connection()
             self._mark_connected()
@@ -273,11 +281,15 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession(trust_env=True)
+        sess_kw, req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
+        self._session = aiohttp.ClientSession(
+            trust_env=(not self._proxy_url), **sess_kw
+        )
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
             timeout=CONNECT_TIMEOUT_SECONDS,
+            **req_kw,
         )
 
         req_id = self._new_req_id("subscribe")

@@ -36,8 +36,8 @@ internal object OpenGuiActionCompat {
             originalActionType = originalActionType,
             actionType = canonicalType,
             arguments = args,
-            startCoords = coordinateFromArgs(args, "start_box", "box", "point", "start_point", "start", "coords", "coordinate"),
-            endCoords = coordinateFromArgs(args, "end_box", "end_point", "end"),
+            startCoords = coordinateFromArgs(args, "start_box", "box", "point", "start_point", "start", "coords", "coordinate", "start_coords"),
+            endCoords = coordinateFromArgs(args, "end_box", "end_point", "end", "end_coords"),
             content = content,
             appName = valueFrom(args, "app_name", "app", "application", "label"),
             packageName = valueFrom(args, "package_name", "package", "packageName", "app_package"),
@@ -198,6 +198,7 @@ internal object OpenGuiActionCompat {
             "wait", "sleep" -> "wait"
             "call_user", "need_login", "asset_risk", "delete_confirm" -> "call_user"
             "request_visual" -> "request_visual"
+            "downgrade_to_a11y" -> "downgrade_to_a11y"
             "update_working_memory" -> "update_working_memory"
             "get_working_memory" -> "get_working_memory"
             else -> actionName

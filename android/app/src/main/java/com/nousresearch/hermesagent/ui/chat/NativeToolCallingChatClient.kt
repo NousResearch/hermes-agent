@@ -31,6 +31,8 @@ class NativeToolCallingChatClient(
         .build(),
 ) {
     private val appContext = context.applicationContext
+    private val openGuiWorkingMemoryPrefs = appContext.getSharedPreferences("hermes_opengui_working_memory", Context.MODE_PRIVATE)
+    private var activeOpenGuiMemorySessionId: String = ""
 
     data class Result(
         val content: String,
@@ -48,6 +50,7 @@ class NativeToolCallingChatClient(
         require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
             "Native tool chat requires a local HTTP base URL; got '${baseUrl.ifBlank { "<blank>" }}'."
         }
+        activeOpenGuiMemorySessionId = sessionId
         executeExplicitDirectToolRequest(userText)?.let { return it }
 
         var executedToolCalls = 0
@@ -489,12 +492,13 @@ class NativeToolCallingChatClient(
                 .put("requires_user_intervention", true)
                 .put("message", parsed.content.ifBlank { "OpenGUI action requested user intervention." })
                 .toString()
+            "update_working_memory" -> executeParsedOpenGuiWorkingMemoryUpdate(parsed)
+            "get_working_memory" -> executeParsedOpenGuiWorkingMemoryRead()
             "request_visual",
-            "update_working_memory",
-            "get_working_memory" -> JSONObject()
+            "downgrade_to_a11y" -> JSONObject()
                 .put("success", true)
                 .put("action", parsed.actionType)
-                .put("message", "Parsed OpenGUI text-side action; no Android UI gesture was needed.")
+                .put("message", "Parsed OpenGUI recovery/text-side action; Hermes stayed on the accessibility UI path and no gesture was needed.")
                 .toString()
             else -> JSONObject()
                 .put("success", false)
@@ -583,6 +587,47 @@ class NativeToolCallingChatClient(
             .put("opengui_action_compat", true)
             .put("parsed_action", parsed.toJson())
             .toString()
+    }
+
+    private fun executeParsedOpenGuiWorkingMemoryUpdate(parsed: ParsedOpenGuiAction): String {
+        val content = parsed.content.trim()
+        if (content.isBlank()) {
+            return JSONObject()
+                .put("success", false)
+                .put("action", "update_working_memory")
+                .put("error", "update_working_memory requires content, text, memory, or value")
+                .toString()
+        }
+        val key = openGuiWorkingMemoryKey()
+        val existing = openGuiWorkingMemoryPrefs.getString(key, "").orEmpty().trim()
+        val next = listOf(existing, content)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+            .takeLast(MAX_OPEN_GUI_WORKING_MEMORY_CHARS)
+        openGuiWorkingMemoryPrefs.edit().putString(key, next).apply()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "update_working_memory")
+            .put("stored_chars", content.length)
+            .put("memory_chars", next.length)
+            .put("max_memory_chars", MAX_OPEN_GUI_WORKING_MEMORY_CHARS)
+            .toString()
+    }
+
+    private fun executeParsedOpenGuiWorkingMemoryRead(): String {
+        val content = openGuiWorkingMemoryPrefs.getString(openGuiWorkingMemoryKey(), "").orEmpty()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "get_working_memory")
+            .put("content", content)
+            .put("memory_chars", content.length)
+            .put("max_memory_chars", MAX_OPEN_GUI_WORKING_MEMORY_CHARS)
+            .toString()
+    }
+
+    private fun openGuiWorkingMemoryKey(): String {
+        val sessionKey = activeOpenGuiMemorySessionId.ifBlank { "default" }
+        return "session_$sessionKey"
     }
 
     private fun executeAndroidCoordinateGesture(toolCall: ToolCall, action: String): String {
@@ -2201,6 +2246,7 @@ class NativeToolCallingChatClient(
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val MAX_NATIVE_ERROR_CHARS = 360
         private const val DEFAULT_UI_SNAPSHOT_LIMIT = 80
+        private const val MAX_OPEN_GUI_WORKING_MEMORY_CHARS = 16_000
         private val ANDROID_UI_ACTIONS = listOf(
             "status",
             "snapshot",

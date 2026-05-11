@@ -428,9 +428,15 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'need_login' in opengui_parser
     assert 'asset_risk' in opengui_parser
     assert 'delete_confirm' in opengui_parser
+    assert 'downgrade_to_a11y' in opengui_parser
+    assert '"start_coords"' in opengui_parser
+    assert '"end_coords"' in opengui_parser
     assert '<bbox>' in opengui_parser
     assert '<point>' in opengui_parser
     assert 'update_working_memory' in opengui_parser
+    assert 'hermes_opengui_working_memory' in chat_client
+    assert 'executeParsedOpenGuiWorkingMemoryUpdate' in chat_client
+    assert 'MAX_OPEN_GUI_WORKING_MEMORY_CHARS' in chat_client
 
     automation_bridge = (
         REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt"

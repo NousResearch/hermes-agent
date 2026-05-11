@@ -409,17 +409,79 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
+def _normalize_command_names(values: Any) -> set[str]:
+    """Normalize config values to a set of lowercase command names with whitespace stripped."""
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    return {str(v).strip().lower().lstrip("/") for v in values if str(v).strip()}
+
+
+def get_disabled_commands(platform: str | None = None) -> set[str]:
+    """Read gateway.disabled_commands and gateway.platform_disabled_commands from config.yaml,
+    merge global + platform-specific disabled lists, and expand all aliases to canonical names.
+
+    Args:
+        platform: Platform identifier (e.g. ``"telegram"``, ``"discord"``).
+            When ``None``, only global disabled commands are returned.
+
+    Returns:
+        Set of disabled canonical command names.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+    except Exception:
+        return set()
+
+    gateway_cfg = cfg.get("gateway")
+    if not isinstance(gateway_cfg, dict):
+        return set()
+
+    # Global disabled list
+    raw_names = _normalize_command_names(gateway_cfg.get("disabled_commands"))
+
+    # Platform-specific disabled list
+    if platform:
+        platform_disabled = gateway_cfg.get("platform_disabled_commands")
+        if isinstance(platform_disabled, dict):
+            raw_names |= _normalize_command_names(platform_disabled.get(platform))
+
+    if not raw_names:
+        return set()
+
+    # Expand aliases to canonical names
+    canonical_set: set[str] = set()
+    for name in raw_names:
+        cmd_def = _COMMAND_LOOKUP.get(name)
+        if cmd_def:
+            canonical_set.add(cmd_def.name)
+        else:
+            # Preserve unknown names to avoid silently ignoring typos in config
+            canonical_set.add(name)
+    return canonical_set
+
+
 def _requires_argument(args_hint: str) -> bool:
     """Return True when selecting a command without text would be incomplete."""
     return args_hint.strip().startswith("<")
 
 
-def gateway_help_lines() -> list[str]:
-    """Generate gateway help text lines from the registry."""
+def gateway_help_lines(disabled_commands: set[str] | None = None) -> list[str]:
+    """Generate gateway help text lines from the registry.
+
+    Args:
+        disabled_commands: Set of disabled canonical command names. When ``None``, reads from config automatically.
+    """
+    if disabled_commands is None:
+        disabled_commands = get_disabled_commands()
     overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in disabled_commands:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
@@ -465,7 +527,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
-def telegram_bot_commands() -> list[tuple[str, str]]:
+def telegram_bot_commands(platform: str = "telegram") -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
@@ -478,9 +540,12 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     autocomplete in Telegram without touching core code.
     """
     overrides = _resolve_config_gates()
+    disabled = get_disabled_commands(platform=platform)
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in disabled:
             continue
         if _requires_argument(cmd.args_hint):
             continue

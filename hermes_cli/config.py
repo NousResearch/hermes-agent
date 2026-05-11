@@ -1244,6 +1244,12 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
+    # Gateway-level command control (messaging platforms only; CLI is unaffected)
+    "gateway": {
+        "disabled_commands": [],               # globally disabled slash commands, e.g. ["yolo", "fast"]
+        "platform_disabled_commands": {},      # per-platform overrides, e.g. {"telegram": ["model"]}
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)

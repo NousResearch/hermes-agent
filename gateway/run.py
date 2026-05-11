@@ -5508,6 +5508,17 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
+    def _is_command_disabled(self, canonical_name: str, platform: Optional[Platform]) -> bool:
+        """Check whether a command is disabled for the given platform.
+
+        Reads gateway.disabled_commands and
+        gateway.platform_disabled_commands from config.yaml.
+        """
+        from hermes_cli.commands import get_disabled_commands
+        platform_str = platform.value if platform else None
+        disabled = get_disabled_commands(platform=platform_str)
+        return canonical_name in disabled
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -5893,6 +5904,8 @@ class GatewayRunner:
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
+                if self._is_command_disabled("status", source.platform):
+                    return "⚠️ Command `/status` is disabled on this platform."
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
@@ -5902,6 +5915,11 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+            _inner_canonical = _cmd_def_inner.name if _cmd_def_inner else _evt_cmd
+
+            # Guard: disabled commands are blocked even during active sessions.
+            if _inner_canonical and self._is_command_disabled(_inner_canonical, source.platform):
+                return f"⚠️ Command `/{_inner_canonical}` is disabled on this platform."
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -6237,6 +6255,10 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+
+        # Check if command is disabled for this platform.
+        if canonical and self._is_command_disabled(canonical, source.platform):
+            return f"⚠️ Command `/{canonical}` is disabled on this platform."
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM

@@ -511,6 +511,133 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["saved"], expected_tools)
 
 
+class TestDelegateModelArg(unittest.TestCase):
+    """Per-call ``model`` parameter must reach ``_build_child_agent``.
+
+    Regression for #23467: ``delegate_task`` accepted no ``model`` kwarg and
+    the schema did not expose it, so a model emitting
+    ``delegate_task(model="X", goal="...")`` had its override silently
+    discarded — the child inherited the parent's model. The fix adds a
+    top-level ``model`` parameter plus a per-task ``model`` override,
+    layered on top of ``delegation.model`` from config.
+    """
+
+    def test_schema_advertises_top_level_model(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", props)
+        self.assertEqual(props["model"]["type"], "string")
+
+    def test_schema_advertises_per_task_model(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertEqual(task_props["model"]["type"], "string")
+
+    def test_registry_handler_forwards_model_arg(self):
+        """The registry-level handler must extract `model` from tool args and
+        pass it to delegate_task — otherwise the schema field is decorative
+        and the override is silently dropped at the dispatch boundary."""
+        from tools.registry import registry
+
+        parent = _make_mock_parent(depth=0)
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"results": []})
+
+        with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+            registry.dispatch(
+                "delegate_task",
+                {"goal": "test", "model": "claude-sonnet-4.6"},
+                parent_agent=parent,
+            )
+
+        self.assertEqual(captured.get("model"), "claude-sonnet-4.6")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_top_level_model_reaches_child_build(self, mock_build, mock_run):
+        """A top-level ``model=`` on ``delegate_task`` must be the model
+        passed to ``_build_child_agent`` for every task in the call."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "ok", "api_calls": 1, "duration_seconds": 0.1,
+        }
+        mock_child = MagicMock()
+        mock_child._delegate_saved_tool_names = []
+        mock_build.return_value = mock_child
+
+        parent = _make_mock_parent(depth=0)
+        delegate_task(goal="x", model="claude-sonnet-4.6", parent_agent=parent)
+
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        self.assertEqual(kwargs["model"], "claude-sonnet-4.6")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_per_task_model_wins_over_top_level(self, mock_build, mock_run):
+        """Per-task ``model`` must override the top-level ``model`` for that
+        task only (parity with how per-task ``role`` overrides top-level
+        role today)."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "ok", "api_calls": 1, "duration_seconds": 0.1,
+        }
+        mock_child = MagicMock()
+        mock_child._delegate_saved_tool_names = []
+        mock_build.return_value = mock_child
+
+        parent = _make_mock_parent(depth=0)
+        delegate_task(
+            tasks=[
+                {"goal": "a", "model": "anthropic/claude-haiku-4-5"},
+                {"goal": "b"},
+            ],
+            model="anthropic/claude-sonnet-4.6",
+            parent_agent=parent,
+        )
+
+        # Two _build_child_agent calls — first uses per-task model,
+        # second falls back to top-level.
+        self.assertEqual(mock_build.call_count, 2)
+        first_kwargs = mock_build.call_args_list[0].kwargs
+        second_kwargs = mock_build.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs["model"], "anthropic/claude-haiku-4-5")
+        self.assertEqual(second_kwargs["model"], "anthropic/claude-sonnet-4.6")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_delegation_config_model_used_when_no_per_call_override(self, mock_build, mock_run):
+        """When neither top-level nor per-task ``model`` is given, the
+        ``delegation.model`` config value (resolved via creds["model"])
+        should still flow through — i.e. the new precedence layering does
+        not regress the existing config path."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "ok", "api_calls": 1, "duration_seconds": 0.1,
+        }
+        mock_child = MagicMock()
+        mock_child._delegate_saved_tool_names = []
+        mock_build.return_value = mock_child
+
+        parent = _make_mock_parent(depth=0)
+        with patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            return_value={
+                "model": "delegated/from-config",
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            },
+        ):
+            delegate_task(goal="x", parent_agent=parent)
+
+        _, kwargs = mock_build.call_args
+        self.assertEqual(kwargs["model"], "delegated/from-config")
+
+
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 

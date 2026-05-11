@@ -169,8 +169,11 @@ hermes-agent/
 │   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, reset policies
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│   └── platforms/                # Platform adapters — telegram, discord, slack,
+│                                 #   whatsapp, signal, matrix, mattermost, email,
+│                                 #   sms, dingtalk, wecom, weixin, feishu, bluebubbles,
+│                                 #   yuanbao, webhook, api_server, msgraph_webhook, …
+│                                 #   See gateway/platforms/ADDING_A_PLATFORM.md.
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

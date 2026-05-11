@@ -4643,22 +4643,23 @@ class HermesCLI:
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
     def _handle_stop_command(self):
-        """Handle /stop — kill all running background processes.
+        """Handle /stop — kill this session's running background processes.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
         """
         from tools.process_registry import process_registry
 
-        processes = process_registry.list_sessions()
+        task_id = getattr(self, "session_id", None) or None
+        processes = process_registry.list_sessions(task_id=task_id)
         running = [p for p in processes if p.get("status") == "running"]
 
         if not running:
-            print("  No running background processes.")
+            print("  No running background processes for this session.")
             return
 
-        print(f"  Stopping {len(running)} background process(es)...")
-        killed = process_registry.kill_all()
+        print(f"  Stopping {len(running)} background process(es) for this session...")
+        killed = process_registry.kill_all(task_id=task_id)
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_agents_command(self):

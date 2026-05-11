@@ -139,8 +139,11 @@ from cron.jobs import (
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
-# Backward-compatible module override used by tests and emergency monkeypatches.
+# Backward-compatible module overrides used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
+_LOCK_DIR: Path | None = None
+_LOCK_FILE: Path | None = None
+_JOB_LOCK_DIR: Path | None = None
 
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
@@ -149,12 +152,18 @@ def _get_hermes_home() -> Path:
 
 def _get_lock_paths() -> tuple[Path, Path]:
     """Resolve cron scheduler lock paths at call time so profile/env changes are honored."""
+    if _LOCK_DIR is not None or _LOCK_FILE is not None:
+        lock_dir = _LOCK_DIR or (_LOCK_FILE.parent if _LOCK_FILE is not None else _get_hermes_home() / "cron")
+        lock_file = _LOCK_FILE or lock_dir / ".tick.lock"
+        return lock_dir, lock_file
     lock_dir = _get_hermes_home() / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
 def _get_job_lock_dir() -> Path:
     """Resolve per-job lock directory at call time."""
+    if _JOB_LOCK_DIR is not None:
+        return _JOB_LOCK_DIR
     return _get_hermes_home() / "cron" / "locks"
 
 
@@ -1393,17 +1402,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
-    _fallback_cron_env: dict[str, Optional[str]] = {}
-
     def _set_job_context_env(name: str, value: str) -> None:
-        """Set a per-job context var, falling back to env for hot-upgrade safety.
+        """Set a per-job cron delivery ContextVar if the running module has it.
 
-        The parallel scheduler originally reached into session_context._VAR_MAP
-        directly. A long-lived gateway can already have imported an older
-        gateway.session_context module whose _VAR_MAP lacks the newer cron
-        auto-delivery keys. Prefer ContextVars when present; if the running
-        module is older, temporarily use os.environ and restore it in finally
-        so the job works instead of crashing.
+        Cron jobs can run concurrently inside the gateway process. Per-job
+        delivery state must therefore be task/thread-local. If a long-lived
+        gateway has an older already-imported gateway.session_context module
+        that lacks these newer ContextVars, do not fall back to os.environ:
+        process-global env state is exactly what caused cross-job clobbering
+        and cleanup KeyErrors. In that hot-upgrade state, in-run auto-delivery
+        context is unavailable, but final cron delivery still resolves from the
+        concrete job deliver target.
         """
         from gateway import session_context as _session_context
 
@@ -1411,10 +1420,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if var is not None:
             var.set(value)
             return
-
-        if name not in _fallback_cron_env:
-            _fallback_cron_env[name] = os.environ.get(name)
-        os.environ[name] = value
+        logger.warning(
+            "Job '%s': session_context lacks %s; skipping in-run cron auto-delivery context",
+            job_id,
+            name,
+        )
 
     def _clear_job_context_envs(*names: str) -> None:
         from gateway import session_context as _session_context
@@ -1423,15 +1433,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             var = getattr(_session_context, "_VAR_MAP", {}).get(name)
             if var is not None:
                 var.set("")
-                continue
-            if name in _fallback_cron_env:
-                previous = _fallback_cron_env[name]
-                if previous is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = previous
-            else:
-                os.environ.pop(name, None)
 
 
     # Per-job working directory.  When set (and validated at create/update
@@ -1828,8 +1829,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
         )
         clear_session_vars(_ctx_tokens)
-        for _var_name in _cron_delivery_vars:
-            _VAR_MAP[_var_name].set("")
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

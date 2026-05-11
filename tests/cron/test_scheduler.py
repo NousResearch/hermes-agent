@@ -1439,13 +1439,90 @@ class TestRunJobSessionPersistence:
         assert final_response == "ok"
         assert "ok" in output
         assert seen == {
-            "platform": "telegram",
-            "chat_id": "-2002",
+            "platform": None,
+            "chat_id": None,
             "thread_id": None,
         }
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
+        fake_db.close.assert_called_once()
+
+    def test_run_job_does_not_clobber_process_env_when_auto_delivery_contextvars_missing(self, tmp_path, monkeypatch):
+        """Hot-upgraded cron must not use process-global env as per-job delivery state.
+
+        In the gateway, cron jobs run in a shared process.  If the imported
+        session_context module is old and lacks the cron ContextVars, falling
+        back to os.environ both leaks per-job state across jobs and lets cleanup
+        race with other jobs.  The safe behavior is to skip in-run auto-delivery
+        context for that mixed import state, while still allowing final cron
+        delivery to use the concrete job target.
+        """
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "deliver": "telegram",
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n")
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "sibling-platform")
+        monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "sibling-chat")
+        monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "sibling-thread")
+
+        from gateway import session_context
+
+        removed = {}
+        for name in (
+            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+        ):
+            removed[name] = session_context._VAR_MAP.pop(name)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                from gateway.session_context import get_session_env
+                seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
+                seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
+                seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
+                return {"final_response": "ok"}
+
+        try:
+            with patch("cron.scheduler._hermes_home", tmp_path), \
+                 patch("hermes_state.SessionDB", return_value=fake_db), \
+                 patch(
+                     "hermes_cli.runtime_provider.resolve_runtime_provider",
+                     return_value={
+                         "api_key": "***",
+                         "base_url": "https://example.invalid/v1",
+                         "provider": "openrouter",
+                         "api_mode": "chat_completions",
+                     },
+                 ), \
+                 patch("run_agent.AIAgent", FakeAgent):
+                success, output, final_response, error = run_job(job)
+        finally:
+            session_context._VAR_MAP.update(removed)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "platform": "sibling-platform",
+            "chat_id": "sibling-chat",
+            "thread_id": "sibling-thread",
+        }
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") == "sibling-platform"
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") == "sibling-chat"
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") == "sibling-thread"
         fake_db.close.assert_called_once()
 
 

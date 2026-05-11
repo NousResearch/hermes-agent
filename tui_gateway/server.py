@@ -3148,6 +3148,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 run_message,
                 conversation_history=list(history),
                 stream_callback=_stream,
+                task_id=session["session_key"],
             )
 
             last_reasoning = None
@@ -5436,7 +5437,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "stop":
             from tools.process_registry import process_registry
 
-            process_registry.kill_all()
+            process_registry.kill_all(task_id=session.get("session_key") or None)
     except Exception as e:
         return f"live session sync failed: {e}"
     return ""

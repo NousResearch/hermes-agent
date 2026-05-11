@@ -1980,9 +1980,10 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             captured["session_key"] = get_current_session_key(default="")
+            captured["task_id"] = task_id
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -2011,6 +2012,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
 
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
+    assert captured["task_id"] == "session-key"
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):
@@ -2022,7 +2024,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         api_key = ""
 
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             captured["prompt"] = prompt
             return {
@@ -2617,7 +2619,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
 
     class _RacyAgent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             # Simulate: something external bumped history_version
             # while we were running.
@@ -2679,7 +2681,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": "reply",
@@ -3010,6 +3012,27 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert seen["compress"]
     assert seen["sync"]
     assert ("session.info", "sid", {"model": "x"}) in emitted
+
+
+def test_mirror_slash_stop_kills_only_current_session_processes(monkeypatch):
+    """Regression: TUI /stop mirror must not kill other sessions' jobs."""
+    from tools import process_registry as process_registry_module
+
+    killed_task_ids = []
+
+    class _FakeRegistry:
+        def kill_all(self, task_id=None):
+            killed_task_ids.append(task_id)
+            return 1
+
+    monkeypatch.setattr(process_registry_module, "process_registry", _FakeRegistry())
+
+    session = _session(running=False, session_key="session-a")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/stop")
+
+    assert warning == ""
+    assert killed_task_ids == ["session-a"]
 
 
 # ---------------------------------------------------------------------------
@@ -3531,7 +3554,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": "Rome was founded in 753 BC.",
@@ -3569,7 +3592,7 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": "partial answer",
@@ -3601,7 +3624,7 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": "",
@@ -3634,7 +3657,7 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": None,
@@ -3681,7 +3704,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
         ):
             return {
                 "final_response": None,

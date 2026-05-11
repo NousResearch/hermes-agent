@@ -863,7 +863,7 @@ clone_repo() {
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
                 git stash push --include-untracked -m "$stash_name"
-                autostash_ref="$(git rev-parse --verify refs/stash)"
+                autostash_ref="$(git stash list | head -1 | cut -d: -f1)"
             fi
 
             git fetch origin
@@ -1341,9 +1341,9 @@ install_node_deps() {
             ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
                 log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
                 log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
+                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
                     log_warn "Playwright browser installation failed — browser tools will not work."
-                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
                 }
                 ;;
             arch|manjaro)

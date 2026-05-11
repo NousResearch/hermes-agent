@@ -713,8 +713,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
+                #   "handoff"  — accept bot messages only when they @mention us
+                #                  AND include an explicit HANDOFF marker. Bot
+                #                  replies are ignored in this mode to prevent
+                #                  Discord reply-reference ping-pong loops.
                 #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
+                #                  (legacy; unsafe for multi-agent war rooms)
+                #   "all"      — accept all bot messages (unsafe)
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
@@ -722,6 +727,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
+                    elif allow_bots == "handoff":
+                        if not self._client.user or self._client.user not in message.mentions:
+                            return
+                        # A bot reply can carry mention/reference context from
+                        # the previous bot response, which is exactly how two
+                        # agents can echo each other forever. Require handoffs
+                        # to be fresh top-level messages with an explicit marker.
+                        if message.type == discord.MessageType.reply:
+                            return
+                        _handoff_text = (message.content or "").lower()
+                        if not re.search(r"\b(agent[-_ ]handoff|handoff)\b", _handoff_text):
+                            return
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return

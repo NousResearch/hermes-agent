@@ -77,6 +77,11 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
+    # Built-in providers must win over custom-provider aliases. Otherwise a
+    # custom provider named e.g. "openai-codex" shadows the real OAuth-capable
+    # provider and routes `hermes auth add openai-codex` to `custom:openai-codex`.
+    if normalized in PROVIDER_REGISTRY or normalized == "openrouter":
+        return normalized
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

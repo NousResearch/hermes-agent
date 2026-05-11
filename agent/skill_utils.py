@@ -478,11 +478,20 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Excludes hidden/internal directories (``.git``, ``.github``, ``.hub``,
+    ``.archive``, and other dot-prefixed dirs).  Skill bundles sometimes carry
+    host-specific mirrors under dotdirs (for example ``gstack/.hermes`` and
+    ``gstack/.openclaw``); indexing those duplicates bloats every system prompt
+    without adding discoverability because the top-level skills are already
+    present.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS and not d.startswith(".")
+        ]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

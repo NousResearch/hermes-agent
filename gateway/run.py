@@ -5394,6 +5394,10 @@ class GatewayRunner:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        # For Discord, adapter-level filtering already enforces the safe
+        # semantics for DISCORD_ALLOW_BOTS=handoff (explicit top-level
+        # HANDOFF marker + @mention, no bot replies). This shared auth layer
+        # should not reject a bot message that the adapter already admitted.
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
@@ -5419,7 +5423,10 @@ class GatewayRunner:
 
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in ("mentions", "all"):
+            allow_bots_mode = os.getenv(allow_bots_var, "none").lower().strip() if allow_bots_var else "none"
+            if source.platform == Platform.DISCORD and allow_bots_mode == "handoff":
+                return True
+            if allow_bots_mode in ("mentions", "all"):
                 return True
 
         # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
@@ -7317,6 +7324,8 @@ class GatewayRunner:
                                     model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
+                                    skip_context_files=True,
+                                    load_soul_identity=True,
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
@@ -10323,6 +10332,8 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    skip_context_files=True,
+                    load_soul_identity=True,
                 )
                 try:
                     return agent.run_conversation(
@@ -10773,6 +10784,8 @@ class GatewayRunner:
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
@@ -14945,6 +14958,8 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    skip_context_files=True,
+                    load_soul_identity=True,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

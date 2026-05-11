@@ -5,6 +5,7 @@ from pathlib import Path
 from hermes_android.auth_bridge import (
     clear_provider_auth_bundle,
     provider_env_key,
+    provider_env_keys,
     read_provider_api_key,
     read_provider_auth_bundle,
     write_provider_api_key,
@@ -93,6 +94,28 @@ def test_auth_bridge_supports_anthropic_gemini_and_zai_bundles(tmp_path, monkeyp
     assert alibaba_bundle["configured"] is True
     assert alibaba_bundle["api_key"] == "dashscope-key"
     assert provider_env_key("alibaba") == "DASHSCOPE_API_KEY"
+
+
+def test_auth_bridge_recognizes_zai_cli_env_aliases(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert provider_env_key("zai") == "GLM_API_KEY"
+    assert provider_env_keys("zai") == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
+
+    (hermes_home / ".env").write_text("ZAI_API_KEY=zai-fallback-key\n", encoding="utf-8")
+    assert read_provider_api_key("zai") == "zai-fallback-key"
+    assert read_provider_auth_bundle("zai")["api_key"] == "zai-fallback-key"
+
+    write_provider_api_key("zai", "primary-glm-key")
+    assert read_provider_api_key("zai") == "primary-glm-key"
+
+    clear_provider_auth_bundle("zai")
+    cleared = (hermes_home / ".env").read_text(encoding="utf-8")
+    assert "GLM_API_KEY=" in cleared
+    assert "ZAI_API_KEY=" in cleared
+    assert "Z_AI_API_KEY=" in cleared
 
 
 

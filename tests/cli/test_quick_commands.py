@@ -179,9 +179,14 @@ class TestGatewayQuickCommands:
             "Quick command leaked OPENROUTER_API_KEY — exec runs without env sanitization"
 
     @pytest.mark.asyncio
-    async def test_exec_command_output_is_redacted(self):
+    async def test_exec_command_output_is_redacted(self, monkeypatch):
         """Quick command output must redact sensitive patterns before returning."""
         from gateway.run import GatewayRunner
+
+        # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
+        # or test ordering (the module snapshots env at import time, so other
+        # tests in the same xdist worker can flip the flag).
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"token": {"type": "exec", "command": "echo sk-ant-api03-supersecretkey1234567890"}}}

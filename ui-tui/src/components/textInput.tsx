@@ -4,8 +4,15 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout } from '../lib/inputMetrics.js'
-import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
+import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import {
+  DEFAULT_VOICE_RECORD_KEY,
+  isActionMod,
+  isMac,
+  isMacActionFallback,
+  isVoiceToggleKey,
+  type ParsedVoiceRecordKey
+} from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -170,57 +177,7 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
-  if (!value.length) {
-    return 0
-  }
-
-  const targetRow = Math.max(0, Math.floor(row))
-  const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols)
-
-  let line = 0
-  let column = 0
-  let lastOffset = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    lastOffset = index
-
-    if (segment === '\n') {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-
-      continue
-    }
-
-    const sw = Math.max(1, stringWidth(segment))
-
-    if (column + sw > w) {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-    }
-
-    if (line === targetRow && targetCol <= column + Math.max(0, sw - 1)) {
-      return index
-    }
-
-    column += sw
-  }
-
-  if (targetRow >= line) {
-    return value.length
-  }
-
-  return lastOffset
-}
+export { offsetFromPosition }
 
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -289,6 +246,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
 }: TextInputProps) {
@@ -360,6 +318,10 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
+  // Placeholder text is just a hint, not a selection — render it dim
+  // without inverse styling. In a TTY the hardware cursor parks at column
+  // 0 and visually marks the input start. Non-TTY surfaces still need the
+  // synthetic inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
@@ -711,6 +673,14 @@ export function TextInput({
     if (range && range.start === range.end) {
       selRef.current = null
       setSel(null)
+
+      return
+    }
+
+    const normalized = selRange()
+
+    if (isMac && normalized) {
+      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
   }
 
@@ -736,6 +706,15 @@ export function TextInput({
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
+
+      // Configured voice shortcut wins over composer-level defaults like
+      // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
+      // actually get voice toggled instead of a paste (Copilot round-7
+      // follow-up on #19835). The pass-through predicate is a no-op for
+      // ordinary typing and plain paste when voice is unbound to 'v'.
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        return
+      }
 
       if (
         eventRaw === '\x1bv' ||
@@ -779,22 +758,6 @@ export function TextInput({
           return
         }
 
-        return
-      }
-
-      // Ctrl chords claimed by useInputHandlers — pass through instead of
-      // letting them fall into readline-style nav or a literal char insert.
-      // Ctrl+B = voice toggle, Ctrl+X = delete queued message while editing.
-      if (
-        (k.ctrl && inp === 'c') ||
-        (k.ctrl && inp === 'b') ||
-        (k.ctrl && inp === 'x') ||
-        k.tab ||
-        (k.shift && k.tab) ||
-        k.pageUp ||
-        k.pageDown ||
-        k.escape
-      ) {
         return
       }
 
@@ -927,8 +890,8 @@ export function TextInput({
         } else {
           v = v.slice(0, c)
         }
-      } else if (inp.length > 0) {
-        const bracketed = inp.includes('[200~')
+      } else if (event.keypress.isPasted || inp.length > 0) {
+        const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
@@ -1007,10 +970,15 @@ export function TextInput({
           return
         }
 
-        // Right-click → route through the same path as Alt+V so the composer
-        // clipboard RPC (text or image) handles it.
+        // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
+          const decision = decideRightClickAction(vRef.current, selRange())
+          if (decision.action === 'copy') {
+            void writeClipboardText(decision.text)
+
+            return
+          }
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1047,7 +1015,7 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap-char">{rendered}</Text>
+      <Text wrap="wrap">{rendered}</Text>
     </Box>
   )
 }
@@ -1079,7 +1047,50 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+  voiceRecordKey?: ParsedVoiceRecordKey
 }
+
+export type RightClickDecision =
+  | { action: 'copy'; text: string }
+  | { action: 'paste' }
+
+/**
+ * Decide what right-click should do on the composer:
+ *   - non-empty selection → copy that text to the clipboard
+ *   - no selection (or empty/collapsed range) → fall through to paste
+ *
+ * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
+ * right-click pastes only when there is nothing selected to copy.
+ *
+ * Callers pass the already-normalized range from `selRange()` (start <= end,
+ * or null when collapsed), so this helper does not need to re-normalize.
+ */
+export function decideRightClickAction(
+  value: string,
+  range: { end: number; start: number } | null
+): RightClickDecision {
+  if (range && range.end > range.start) {
+    const text = value.slice(range.start, range.end)
+    if (text) {
+      return { action: 'copy', text }
+    }
+  }
+  return { action: 'paste' }
+}
+
+export const shouldPassThroughToGlobalHandler = (
+  input: string,
+  key: Key,
+  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+): boolean =>
+  (key.ctrl && input === 'c') ||
+  (key.ctrl && input === 'x') ||
+  key.tab ||
+  (key.shift && key.tab) ||
+  key.pageUp ||
+  key.pageDown ||
+  key.escape ||
+  isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

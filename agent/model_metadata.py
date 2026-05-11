@@ -46,12 +46,13 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
     "arcee",
     "gmi",
+    "tencent-tokenhub",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -60,6 +61,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "ollama",
     "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
@@ -155,6 +157,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) and
+    # uses a smaller 128k window than other gpt-5.x slugs. Listed here as
+    # a defensive override so the longest-substring fallback doesn't match
+    # the generic "gpt-5" entry below (400k) and report the wrong limit if
+    # Spark's context ever needs to be resolved through this path. Real
+    # usage flows through _CODEX_OAUTH_CONTEXT_FALLBACK at line ~1113.
+    "gpt-5.3-codex-spark": 128000,
     "gpt-5.1-chat": 128000,           # Chat variant has 128k context
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
@@ -208,6 +217,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
+    # OpenRouter live metadata reports 262144 (256 × 1024); align the
+    # static fallback so cache and offline both agree (issue #22268).
+    "hy3-preview": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee
@@ -230,6 +243,44 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
 }
+
+# xAI Grok models that ACCEPT the `reasoning.effort` parameter on
+# api.x.ai. Verified live against /v1/responses 2026-05-10:
+#
+#   ACCEPTS effort:  grok-3-mini, grok-3-mini-fast, grok-4.20-multi-agent-0309,
+#                    grok-4.3
+#   REJECTS effort:  grok-3, grok-4, grok-4-0709, grok-4-fast-(non-)reasoning,
+#                    grok-4-1-fast-(non-)reasoning, grok-4.20-0309-(non-)reasoning,
+#                    grok-code-fast-1
+#
+# REJECTS-side models still reason natively — they just don't expose an
+# effort dial — so callers should send no `reasoning` key at all rather
+# than a default `medium` (which 400s with "Model X does not support
+# parameter reasoningEffort").
+_GROK_EFFORT_CAPABLE_PREFIXES = (
+    "grok-3-mini",
+    "grok-4.20-multi-agent",
+    "grok-4.3",
+)
+
+
+def grok_supports_reasoning_effort(model: str) -> bool:
+    """Return True when an xAI Grok model accepts ``reasoning.effort``.
+
+    Allowlist by substring (matches both bare ``grok-3-mini`` and
+    aggregator-prefixed ``x-ai/grok-3-mini``). Conservative by design:
+    if a future Grok model isn't listed, we send no effort dial rather
+    than 400.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    # Strip common aggregator prefixes (x-ai/, openrouter/x-ai/, xai/, ...)
+    for sep in ("/",):
+        if sep in name:
+            name = name.rsplit(sep, 1)[-1]
+    return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+
 
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
@@ -310,8 +361,20 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
+    "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
+
+# Auto-extend with hostnames derived from provider profiles.
+# Any provider with a base_url not already in the map gets added automatically.
+try:
+    from providers import list_providers as _list_providers
+    for _pp in _list_providers():
+        _host = _pp.get_hostname()
+        if _host and _host not in _URL_TO_PROVIDER:
+            _URL_TO_PROVIDER[_host] = _pp.name
+except Exception:
+    pass
 
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
@@ -620,8 +683,6 @@ def fetch_endpoint_model_metadata(
                         if isinstance(ctx, int) and ctx > 0:
                             context_length = ctx
                             break
-                    if context_length is None:
-                        context_length = _extract_context_length(model)
                     if context_length is not None:
                         entry["context_length"] = context_length
 
@@ -740,7 +801,7 @@ def _load_context_cache() -> Dict[str, int]:
     if not path.exists():
         return {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return data.get("context_lengths", {})
     except Exception as e:
@@ -762,7 +823,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     path = _get_context_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
@@ -786,7 +847,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     path = _get_context_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
@@ -1011,10 +1072,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
-                            # Fall back to max_context_length (theoretical model max)
-                            ctx = m.get("max_context_length") or m.get("context_length")
-                            if ctx and isinstance(ctx, (int, float)):
-                                return int(ctx)
+                            break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -1095,6 +1153,12 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
+    # Spark runs on specialised low-latency hardware and exposes a smaller
+    # 128k window than other Codex OAuth slugs. Listed explicitly so the
+    # longest-key-first fallback resolves it correctly — substring match
+    # on "gpt-5.3-codex" otherwise wins and reports 272k. Availability is
+    # gated by ChatGPT Pro entitlement on the Codex backend.
+    "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
     "gpt-5.5": 272_000,
@@ -1247,7 +1311,7 @@ def get_model_context_length(
     6. Nous suffix-match via OpenRouter cache
     7. models.dev registry lookup (provider-aware)
     8. Thin hardcoded defaults (broad family patterns)
-    9. Default fallback (128K)
+    9. Default fallback (256K)
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1276,7 +1340,10 @@ def get_model_context_length(
     model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
-    if base_url:
+    # LM Studio is excluded — its loaded context length is transient (the
+    # user can reload the model with a different context_length at any time
+    # via /api/v1/models/load), so a stale cached value would mask reloads.
+    if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1329,7 +1396,8 @@ def get_model_context_length(
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
+                    if provider != "lmstudio":
+                        save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -1419,10 +1487,11 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            save_context_length(model, base_url, local_ctx)
+            if provider != "lmstudio":
+                save_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 10. Default fallback — 128K
+    # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
 
 
@@ -1439,9 +1508,79 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (pre-flight only)."""
-    total_chars = sum(len(str(msg)) for msg in messages)
-    return (total_chars + 3) // 4
+    """Rough token estimate for a message list (pre-flight only).
+
+    Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
+    image — the Anthropic pricing model — instead of counting raw base64
+    character length. Without this, a single ~1MB screenshot would be
+    estimated at ~250K tokens and trigger premature context compression.
+    """
+    _IMAGE_TOKEN_COST = 1500
+    total_chars = 0
+    image_tokens = 0
+    for msg in messages:
+        total_chars += _estimate_message_chars(msg)
+        image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
+    return ((total_chars + 3) // 4) + image_tokens
+
+
+def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
+    """Count image-like content parts in a message; return their token cost."""
+    count = 0
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype in ("image", "image_url", "input_image"):
+                count += 1
+    stashed = msg.get("_anthropic_content_blocks") if isinstance(msg, dict) else None
+    if isinstance(stashed, list):
+        for part in stashed:
+            if isinstance(part, dict) and part.get("type") == "image":
+                count += 1
+    # Multimodal tool results that haven't been converted yet.
+    if isinstance(content, dict) and content.get("_multimodal"):
+        inner = content.get("content")
+        if isinstance(inner, list):
+            for part in inner:
+                if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
+                    count += 1
+    return count * cost_per_image
+
+
+def _estimate_message_chars(msg: Dict[str, Any]) -> int:
+    """Char count for token estimation, excluding base64 image data.
+
+    Base64 images are counted via `_count_image_tokens` instead; including
+    their raw chars here would massively overestimate token usage.
+    """
+    if not isinstance(msg, dict):
+        return len(str(msg))
+    shadow: Dict[str, Any] = {}
+    for k, v in msg.items():
+        if k == "_anthropic_content_blocks":
+            continue
+        if k == "content":
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict):
+                        if part.get("type") in ("image", "image_url", "input_image"):
+                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
+                        else:
+                            cleaned.append(part)
+                    else:
+                        cleaned.append(part)
+                shadow[k] = cleaned
+            elif isinstance(v, dict) and v.get("_multimodal"):
+                shadow[k] = v.get("text_summary", "")
+            else:
+                shadow[k] = v
+        else:
+            shadow[k] = v
+    return len(str(shadow))
 
 
 def estimate_request_tokens_rough(
@@ -1455,13 +1594,14 @@ def estimate_request_tokens_rough(
     Includes the major payload buckets Hermes sends to providers:
     system prompt, conversation messages, and tool schemas.  With 50+
     tools enabled, schemas alone can add 20-30K tokens — a significant
-    blind spot when only counting messages.
+    blind spot when only counting messages. Image content is counted
+    at a flat per-image cost (see estimate_messages_tokens_rough).
     """
-    total_chars = 0
+    total = 0
     if system_prompt:
-        total_chars += len(system_prompt)
+        total += (len(system_prompt) + 3) // 4
     if messages:
-        total_chars += sum(len(str(msg)) for msg in messages)
+        total += estimate_messages_tokens_rough(messages)
     if tools:
-        total_chars += len(str(tools))
-    return (total_chars + 3) // 4
+        total += (len(str(tools)) + 3) // 4
+    return total

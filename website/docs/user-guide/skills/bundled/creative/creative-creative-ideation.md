@@ -1,14 +1,14 @@
 ---
-title: "Ideation — Generate project ideas through creative constraints"
+title: "Ideation — Generate project ideas via creative constraints"
 sidebar_label: "Ideation"
-description: "Generate project ideas through creative constraints"
+description: "Generate project ideas via creative constraints"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Ideation
 
-Generate project ideas through creative constraints. Use when the user says 'I want to build something', 'give me a project idea', 'I'm bored', 'what should I make', 'inspire me', or any variant of 'I have tools but no direction'. Works for code, art, hardware, writing, tools, and anything that can be made.
+Generate project ideas via creative constraints.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Generate project ideas through creative constraints. Use when the user says 'I w
 | Version | `1.0.0` |
 | Author | SHL0MS |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Creative`, `Ideation`, `Projects`, `Brainstorming`, `Inspiration` |
 
 ## Reference: full SKILL.md
@@ -28,6 +29,10 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # Creative Ideation
+
+## When to use
+
+Use when the user says 'I want to build something', 'give me a project idea', 'I'm bored', 'what should I make', 'inspire me', or any variant of 'I have tools but no direction'. Works for code, art, hardware, writing, tools, and anything that can be made.
 
 Generate project ideas through creative constraints. Constraint + direction = creativity.
 

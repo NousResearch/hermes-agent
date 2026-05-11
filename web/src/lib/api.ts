@@ -1,4 +1,21 @@
-const BASE = "";
+// The dashboard can be served either at the root of its host (e.g.
+// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
+// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
+// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
+// incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
+// ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
+// rebuild. Empty string means "served at root".
+function readBasePath(): string {
+  if (typeof window === "undefined") return "";
+  const raw = window.__HERMES_BASE_PATH__ ?? "";
+  if (!raw) return "";
+  // Normalise: ensure leading slash, strip trailing slash.
+  const withLead = raw.startsWith("/") ? raw : `/${raw}`;
+  return withLead.replace(/\/+$/, "");
+}
+
+export const HERMES_BASE_PATH = readBasePath();
+const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
 
@@ -7,6 +24,7 @@ import type { DashboardTheme } from "@/themes/types";
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_BASE_PATH__?: string;
   }
 }
 let _sessionToken: string | null = null;
@@ -49,6 +67,10 @@ export const api = {
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionLatestDescendant: (id: string) =>
+    fetchJSON<SessionLatestDescendantResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+    ),
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -63,10 +85,20 @@ export const api = {
   },
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
+  getModelsAnalytics: (days: number) =>
+    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
+  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
+  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  setModelAssignment: (body: ModelAssignmentRequest) =>
+    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -121,6 +153,47 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/trigger`, { method: "POST" }),
   deleteCronJob: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
+
+  // Profiles (minimal)
+  getProfiles: () =>
+    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  createProfile: (body: { name: string; clone_from_default: boolean }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  renameProfile: (name: string, newName: string) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName }),
+      },
+    ),
+  deleteProfile: (name: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getProfileSetupCommand: (name: string) =>
+    fetchJSON<{ command: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/setup-command`,
+    ),
+  getProfileSoul: (name: string) =>
+    fetchJSON<{ content: string; exists: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+    ),
+  updateProfileSoul: (name: string, content: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
@@ -208,6 +281,56 @@ export const api = {
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
+  getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+
+  installAgentPlugin: (body: AgentPluginInstallRequest) =>
+    fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body }),
+    }),
+
+  enableAgentPlugin: (name: string) =>
+    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/enable`,
+      { method: "POST" },
+    ),
+
+  disableAgentPlugin: (name: string) =>
+    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/disable`,
+      { method: "POST" },
+    ),
+
+  updateAgentPlugin: (name: string) =>
+    fetchJSON<AgentPluginUpdateResponse>(
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/update`,
+      { method: "POST" },
+    ),
+
+  removeAgentPlugin: (name: string) =>
+    fetchJSON<{ ok: boolean; name: string }>(
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+
+  savePluginProviders: (body: PluginProvidersPutRequest) =>
+    fetchJSON<{ ok: boolean }>("/api/dashboard/plugin-providers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  setPluginVisibility: (name: string, hidden: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
+      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden }),
+      },
+    ),
+
   // Dashboard themes
   getThemes: () =>
     fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
@@ -272,6 +395,14 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  parent_session_id?: string | null;
+}
+
+export interface SessionLatestDescendantResponse {
+  requested_session_id: string;
+  session_id: string;
+  path: string[];
+  changed: boolean;
 }
 
 export interface PaginatedSessions {
@@ -370,15 +501,66 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ProfileInfo {
+  name: string;
+  path: string;
+  is_default: boolean;
+  model: string | null;
+  provider: string | null;
+  has_env: boolean;
+  skill_count: number;
+}
+
+export interface ModelsAnalyticsModelEntry {
+  model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  estimated_cost: number;
+  actual_cost: number;
+  sessions: number;
+  api_calls: number;
+  tool_calls: number;
+  last_used_at: number;
+  avg_tokens_per_session: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
+}
+
+export interface ModelsAnalyticsResponse {
+  models: ModelsAnalyticsModelEntry[];
+  totals: {
+    distinct_models: number;
+    total_input: number;
+    total_output: number;
+    total_cache_read: number;
+    total_reasoning: number;
+    total_estimated_cost: number;
+    total_actual_cost: number;
+    total_sessions: number;
+    total_api_calls: number;
+  };
+  period_days: number;
+}
+
 export interface CronJob {
   id: string;
-  name?: string;
-  prompt: string;
-  schedule: { kind: string; expr: string; display: string };
-  schedule_display: string;
+  name?: string | null;
+  prompt?: string | null;
+  script?: string | null;
+  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule_display?: string | null;
   enabled: boolean;
-  state: string;
-  deliver?: string;
+  state?: string | null;
+  deliver?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;
@@ -429,6 +611,54 @@ export interface ModelInfoResponse {
     max_output_tokens?: number;
     model_family?: string;
   };
+}
+
+// ── Model options / assignment types ──────────────────────────────────
+
+export interface ModelOptionProvider {
+  name: string;
+  slug: string;
+  models?: string[];
+  total_models?: number;
+  is_current?: boolean;
+  is_user_defined?: boolean;
+  source?: string;
+  warning?: string;
+}
+
+export interface ModelOptionsResponse {
+  model?: string;
+  provider?: string;
+  providers?: ModelOptionProvider[];
+}
+
+export interface AuxiliaryTaskAssignment {
+  task: string;
+  provider: string;
+  model: string;
+  base_url: string;
+}
+
+export interface AuxiliaryModelsResponse {
+  tasks: AuxiliaryTaskAssignment[];
+  main: { provider: string; model: string };
+}
+
+export interface ModelAssignmentRequest {
+  scope: "main" | "auxiliary";
+  provider: string;
+  model: string;
+  /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
+  task?: string;
+}
+
+export interface ModelAssignmentResponse {
+  ok: boolean;
+  scope?: string;
+  provider?: string;
+  model?: string;
+  tasks?: string[];
+  reset?: boolean;
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -519,8 +749,67 @@ export interface PluginManifestResponse {
     override?: string;
     hidden?: boolean;
   };
+  slots?: string[];
   entry: string;
   css?: string | null;
   has_api: boolean;
   source: string;
+}
+
+export interface HubAgentPluginRow {
+  name: string;
+  version: string;
+  description: string;
+  source: string;
+  runtime_status: "disabled" | "enabled" | "inactive";
+  has_dashboard_manifest: boolean;
+  dashboard_manifest: PluginManifestResponse | null;
+  path: string;
+  can_remove: boolean;
+  can_update_git: boolean;
+  auth_required: boolean;
+  auth_command: string;
+  user_hidden: boolean;
+}
+
+export interface PluginsHubProviders {
+  memory_provider: string;
+  memory_options: Array<{ name: string; description: string }>;
+  context_engine: string;
+  context_options: Array<{ name: string; description: string }>;
+}
+
+export interface PluginsHubResponse {
+  plugins: HubAgentPluginRow[];
+  orphan_dashboard_plugins: PluginManifestResponse[];
+  providers: PluginsHubProviders;
+}
+
+export interface AgentPluginInstallRequest {
+  identifier: string;
+  force?: boolean;
+  enable?: boolean;
+}
+
+export interface AgentPluginInstallResponse {
+  ok: boolean;
+  plugin_name?: string;
+  warnings?: string[];
+  missing_env?: string[];
+  after_install_path?: string | null;
+  enabled?: boolean;
+  error?: string;
+}
+
+export interface AgentPluginUpdateResponse {
+  ok: boolean;
+  name?: string;
+  output?: string;
+  unchanged?: boolean;
+  error?: string;
+}
+
+export interface PluginProvidersPutRequest {
+  memory_provider?: string;
+  context_engine?: string;
 }

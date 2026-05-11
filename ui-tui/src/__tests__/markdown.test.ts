@@ -1,8 +1,47 @@
+import { PassThrough } from 'stream'
+
+import { Box, renderSync } from '@hermes/ink'
+import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { AUDIO_DIRECTIVE_RE, INLINE_RE, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { stripAnsi } from '../lib/text.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
+const BEL = String.fromCharCode(7)
+const ESC = String.fromCharCode(27)
+const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+
+const renderPlain = (node: React.ReactNode) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(node, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return output
+    .replace(OSC_RE, '')
+    .split('\n')
+    .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
+}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -61,6 +100,66 @@ describe('stripInlineMarkup', () => {
     expect(stripInlineMarkup('Yay ~! nice work ~!')).toBe('Yay ~! nice work ~!')
     expect(stripInlineMarkup('H~2~O and CO~2~')).toBe('H_2O and CO_2')
   })
+
+  it('strips inline math delimiters but keeps the formula text', () => {
+    expect(stripInlineMarkup('$\\mathbb{Z}$ is a ring')).toBe('\\mathbb{Z} is a ring')
+    expect(stripInlineMarkup('see \\(a + b\\) ok')).toBe('see a + b ok')
+  })
+})
+
+describe('INLINE_RE inline math', () => {
+  it('matches single-dollar math and beats emphasis at the same start', () => {
+    // Without math handling, `*b*` would have matched as italics and
+    // corrupted the formula. With math added to INLINE_RE, the leftmost
+    // match at column 0 (`$P=a*b*c$`) wins.
+    expect(matches('$P=a*b*c$')).toEqual(['$P=a*b*c$'])
+    expect(matches('see $\\mathbb{Z}$ here')).toEqual(['$\\mathbb{Z}$'])
+  })
+
+  it('does not match currency-style prose', () => {
+    expect(matches('it costs $5 and $10')).toEqual([])
+    expect(matches('paid $5')).toEqual([])
+  })
+
+  it('does not let inline math swallow a $$ display fence', () => {
+    // `$$x$$` is a display block, not two abutting inline-math spans.
+    expect(matches('$$x$$')).toEqual([])
+  })
+
+  it('matches \\(...\\) inline math', () => {
+    expect(matches('foo \\(x + y\\) bar')).toEqual(['\\(x + y\\)'])
+  })
+
+  it('does not corrupt subscripts/superscripts inside math', () => {
+    // `_n` and `^r` are markdown emphasis/superscript markers in prose, but
+    // inside a `$...$` span the entire formula is captured as a single
+    // inline-math token so the inner regexes never see those characters.
+    expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
+    expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
+  })
+
+  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
+    // When `m[16]` was the bare URL group AND the inline-math `$...$`
+    // group simultaneously (because the bare URL pattern lacked its own
+    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
+    // underlined autolink instead of italic amber math. Lock down the
+    // numbering: math goes in m[17] / m[18], URLs go in m[16].
+    const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
+    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
+    const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
+
+    expect(url[16]).toBe('https://example.com')
+    expect(url[17]).toBeUndefined()
+    expect(url[18]).toBeUndefined()
+
+    expect(dollarMath[16]).toBeUndefined()
+    expect(dollarMath[17]).toBe('\\mathbb{R}')
+    expect(dollarMath[18]).toBeUndefined()
+
+    expect(parenMath[16]).toBeUndefined()
+    expect(parenMath[17]).toBeUndefined()
+    expect(parenMath[18]).toBe('\\pi')
+  })
 })
 
 describe('protocol sentinels', () => {
@@ -82,5 +181,39 @@ describe('protocol sentinels', () => {
     expect(AUDIO_DIRECTIVE_RE.test('[[audio_as_voice]]')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('  [[audio_as_voice]]  ')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('audio_as_voice')).toBe(false)
+  })
+})
+
+describe('Md wrapping', () => {
+  it('trims spaces from word-wrap continuation lines', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 5 }, React.createElement(Md, { t: DEFAULT_THEME, text: 'Let me' }))
+    )
+
+    expect(lines).toContain('Let')
+    expect(lines).toContain('me')
+    expect(lines).not.toContain(' me')
+  })
+
+  it('keeps nested list and quote indentation out of trim-sensitive text', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { flexDirection: 'column', width: 24 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: '  - nested bullet' }),
+        React.createElement(Md, { t: DEFAULT_THEME, text: '>> nested quote' })
+      )
+    )
+
+    expect(lines).toContain('  • nested bullet')
+    expect(lines).toContain('  │ nested quote')
+  })
+
+  it('preserves original inline-code edge spaces', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 24 }, React.createElement(Md, { t: DEFAULT_THEME, text: '` hi ` ok' }))
+    )
+
+    expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
   })
 })

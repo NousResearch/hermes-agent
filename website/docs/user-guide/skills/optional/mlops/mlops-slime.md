@@ -20,6 +20,7 @@ Provides guidance for LLM post-training with RL using slime, a Megatron+SGLang f
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `sglang-router>=0.2.3`, `ray`, `torch>=2.0.0`, `transformers>=4.40.0` |
+| Platforms | linux, macos |
 | Tags | `Reinforcement Learning`, `Megatron-LM`, `SGLang`, `GRPO`, `Post-Training`, `GLM` |
 
 ## Reference: full SKILL.md
@@ -54,6 +55,7 @@ slime is an LLM post-training framework from Tsinghua's THUDM team, powering GLM
 
 ## Architecture Overview
 
+<!-- ascii-guard-ignore -->
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Data Buffer                          │
@@ -69,6 +71,7 @@ slime is an LLM post-training framework from Tsinghua's THUDM team, powering GLM
 │ - Weight sync to rollout│ │ - Multi-turn support        │
 └─────────────────────────┘ └─────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ## Installation
 

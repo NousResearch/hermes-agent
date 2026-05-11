@@ -90,7 +90,7 @@ from gateway.platforms.yuanbao_proto import (
     encode_get_group_member_list,
     next_seq_no,
 )
-from gateway.session import SessionSource, build_session_key
+from gateway.session import build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -1896,10 +1896,12 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if cmd not in cls.ALLOWLIST:
             return None, None, False
 
-        # Sender identity check: bot owner <-> push.from_account == push.bot_owner_id
-        owner_id = (push or {}).get("bot_owner_id") or ""
-        # is_owner = bool(owner_id) and owner_id == from_account
-        is_owner = True
+        # Sender identity check: bot owner <-> push.from_account == push.bot_owner_id.
+        # The allowlisted commands (/approve, /deny, /stop, /reset, ...) are
+        # privileged — leaking them to non-owners lets any group member approve
+        # a dangerous tool call, kill the owner's task, or wipe session state.
+        owner_id = str((push or {}).get("bot_owner_id") or "").strip()
+        is_owner = bool(owner_id) and owner_id == from_account
         return cmd, cmd_line, is_owner
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:

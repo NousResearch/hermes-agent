@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -8,11 +12,8 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 
@@ -22,7 +23,51 @@ function formatTime(iso?: string | null): string {
   return d.toLocaleString();
 }
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "destructive"> = {
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength
+    ? value.slice(0, maxLength) + "..."
+    : value;
+}
+
+function getJobPrompt(job: CronJob): string {
+  return asText(job.prompt);
+}
+
+function getJobName(job: CronJob): string {
+  return asText(job.name).trim();
+}
+
+function getJobTitle(job: CronJob): string {
+  const name = getJobName(job);
+  if (name) return name;
+
+  const prompt = getJobPrompt(job);
+  if (prompt) return truncateText(prompt, 60);
+
+  const script = asText(job.script);
+  if (script) return truncateText(script, 60);
+
+  return job.id || "Cron job";
+}
+
+function getJobScheduleDisplay(job: CronJob): string {
+  return (
+    asText(job.schedule_display) ||
+    asText(job.schedule?.display) ||
+    asText(job.schedule?.expr) ||
+    "—"
+  );
+}
+
+function getJobState(job: CronJob): string {
+  return asText(job.state) || (job.enabled === false ? "disabled" : "scheduled");
+}
+
+const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   enabled: "success",
   scheduled: "success",
   paused: "warning",
@@ -83,17 +128,17 @@ export default function CronPage() {
 
   const handlePauseResume = async (job: CronJob) => {
     try {
-      const isPaused = job.state === "paused";
+      const isPaused = getJobState(job) === "paused";
       if (isPaused) {
         await api.resumeCronJob(job.id);
         showToast(
-          `${t.cron.resume}: "${job.name || job.prompt.slice(0, 30)}"`,
+          `${t.cron.resume}: "${truncateText(getJobTitle(job), 30)}"`,
           "success",
         );
       } else {
         await api.pauseCronJob(job.id);
         showToast(
-          `${t.cron.pause}: "${job.name || job.prompt.slice(0, 30)}"`,
+          `${t.cron.pause}: "${truncateText(getJobTitle(job), 30)}"`,
           "success",
         );
       }
@@ -107,7 +152,7 @@ export default function CronPage() {
     try {
       await api.triggerCronJob(job.id);
       showToast(
-        `${t.cron.triggerNow}: "${job.name || job.prompt.slice(0, 30)}"`,
+        `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`,
         "success",
       );
       loadJobs();
@@ -123,7 +168,7 @@ export default function CronPage() {
         try {
           await api.deleteCronJob(id);
           showToast(
-            `${t.common.delete}: "${job?.name || (job?.prompt ?? "").slice(0, 30) || id}"`,
+            `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
             "success",
           );
           loadJobs();
@@ -139,7 +184,7 @@ export default function CronPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
@@ -160,13 +205,14 @@ export default function CronPage() {
         title={t.cron.confirmDeleteTitle}
         description={
           pendingJob
-            ? `"${pendingJob.name || pendingJob.prompt.slice(0, 40)}" — ${t.cron.confirmDeleteMessage}`
+            ? `"${truncateText(getJobTitle(pendingJob), 40)}" — ${
+                t.cron.confirmDeleteMessage
+              }`
             : t.cron.confirmDeleteMessage
         }
         loading={jobDelete.isDeleting}
       />
 
-      {/* Create new job form */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -237,9 +283,9 @@ export default function CronPage() {
                 <Button
                   onClick={handleCreate}
                   disabled={creating}
+                  prefix={<Plus />}
                   className="w-full"
                 >
-                  <Plus className="h-3 w-3" />
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -248,7 +294,6 @@ export default function CronPage() {
         </CardContent>
       </Card>
 
-      {/* Jobs list */}
       <div className="flex flex-col gap-3">
         <H2
           variant="sm"
@@ -266,88 +311,92 @@ export default function CronPage() {
           </Card>
         )}
 
-        {jobs.map((job) => (
-          <Card key={job.id}>
-            <CardContent className="flex items-center gap-4 py-4">
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium text-sm truncate">
-                    {job.name ||
-                      job.prompt.slice(0, 60) +
-                        (job.prompt.length > 60 ? "..." : "")}
-                  </span>
-                  <Badge variant={STATUS_VARIANT[job.state] ?? "secondary"}>
-                    {job.state}
-                  </Badge>
-                  {job.deliver && job.deliver !== "local" && (
-                    <Badge variant="outline">{job.deliver}</Badge>
+        {jobs.map((job) => {
+          const state = getJobState(job);
+          const promptText = getJobPrompt(job);
+          const title = getJobTitle(job);
+          const hasName = Boolean(getJobName(job));
+          const deliver = asText(job.deliver);
+
+          return (
+            <Card key={job.id}>
+              <CardContent className="flex items-center gap-4 py-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-medium text-sm truncate">
+                      {title}
+                    </span>
+                    <Badge tone={STATUS_TONE[state] ?? "secondary"}>
+                      {state}
+                    </Badge>
+                    {deliver && deliver !== "local" && (
+                      <Badge tone="outline">{deliver}</Badge>
+                    )}
+                  </div>
+                  {hasName && promptText && (
+                    <p className="text-xs text-muted-foreground truncate mb-1">
+                      {truncateText(promptText, 100)}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span className="font-mono">{getJobScheduleDisplay(job)}</span>
+                    <span>
+                      {t.cron.last}: {formatTime(job.last_run_at)}
+                    </span>
+                    <span>
+                      {t.cron.next}: {formatTime(job.next_run_at)}
+                    </span>
+                  </div>
+                  {job.last_error && (
+                    <p className="text-xs text-destructive mt-1">
+                      {job.last_error}
+                    </p>
                   )}
                 </div>
-                {job.name && (
-                  <p className="text-xs text-muted-foreground truncate mb-1">
-                    {job.prompt.slice(0, 100)}
-                    {job.prompt.length > 100 ? "..." : ""}
-                  </p>
-                )}
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span className="font-mono">{job.schedule_display}</span>
-                  <span>
-                    {t.cron.last}: {formatTime(job.last_run_at)}
-                  </span>
-                  <span>
-                    {t.cron.next}: {formatTime(job.next_run_at)}
-                  </span>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    ghost
+                    size="icon"
+                    title={state === "paused" ? t.cron.resume : t.cron.pause}
+                    aria-label={
+                      state === "paused" ? t.cron.resume : t.cron.pause
+                    }
+                    onClick={() => handlePauseResume(job)}
+                    className={
+                      state === "paused" ? "text-success" : "text-warning"
+                    }
+                  >
+                    {state === "paused" ? <Play /> : <Pause />}
+                  </Button>
+
+                  <Button
+                    ghost
+                    size="icon"
+                    title={t.cron.triggerNow}
+                    aria-label={t.cron.triggerNow}
+                    onClick={() => handleTrigger(job)}
+                  >
+                    <Zap />
+                  </Button>
+
+                  <Button
+                    ghost
+                    destructive
+                    size="icon"
+                    title={t.common.delete}
+                    aria-label={t.common.delete}
+                    onClick={() => jobDelete.requestDelete(job.id)}
+                  >
+                    <Trash2 />
+                  </Button>
                 </div>
-                {job.last_error && (
-                  <p className="text-xs text-destructive mt-1">
-                    {job.last_error}
-                  </p>
-                )}
-              </div>
-
-              {/* Actions */}
-              <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title={job.state === "paused" ? t.cron.resume : t.cron.pause}
-                  aria-label={
-                    job.state === "paused" ? t.cron.resume : t.cron.pause
-                  }
-                  onClick={() => handlePauseResume(job)}
-                >
-                  {job.state === "paused" ? (
-                    <Play className="h-4 w-4 text-success" />
-                  ) : (
-                    <Pause className="h-4 w-4 text-warning" />
-                  )}
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title={t.cron.triggerNow}
-                  aria-label={t.cron.triggerNow}
-                  onClick={() => handleTrigger(job)}
-                >
-                  <Zap className="h-4 w-4" />
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title={t.common.delete}
-                  aria-label={t.common.delete}
-                  onClick={() => jobDelete.requestDelete(job.id)}
-                >
-                  <Trash2 className="h-4 w-4 text-destructive" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
+
       <PluginSlot name="cron:bottom" />
     </div>
   );

@@ -144,6 +144,22 @@ Then:
 If you already have a `docker_volumes:` section, add the new mount to the same
 list. YAML duplicate keys silently override earlier ones.
 
+### Supported `MEDIA:` file extensions
+
+The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the referenced file as a platform-native attachment. Supported extensions across all gateway platforms:
+
+| Category | Extensions |
+|---|---|
+| Images | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `tiff`, `svg` |
+| Audio | `mp3`, `wav`, `ogg`, `m4a`, `opus`, `flac`, `aac` |
+| Video | `mp4`, `mov`, `webm`, `mkv`, `avi` |
+| **Documents** | `pdf`, `txt`, `md`, `csv`, `json`, `xml`, `html`, `yaml`, `yml`, `log` |
+| **Office** | `docx`, `xlsx`, `pptx`, `odt`, `ods`, `odp` |
+| **Archives** | `zip`, `rar`, `7z`, `tar`, `gz`, `bz2` |
+| **Books / packages** | `epub`, `apk`, `ipa` |
+
+Anything on this list delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
@@ -163,15 +179,15 @@ Add the following to `~/.hermes/.env`:
 
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 # TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
-# TELEGRAM_WEBHOOK_SECRET=mysecret  # optional, recommended
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
+| `TELEGRAM_WEBHOOK_SECRET` | **Yes** (when `TELEGRAM_WEBHOOK_URL` is set) | Secret token that Telegram echoes in every webhook request for verification. The gateway refuses to start without it — see [GHSA-3vpc-7q5r-276h](https://github.com/NousResearch/hermes-agent/security/advisories/GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
 | `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
-| `TELEGRAM_WEBHOOK_SECRET` | No | Secret token for verifying that updates actually come from Telegram. **Strongly recommended** for production deployments. |
 
 When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
 
@@ -277,12 +293,34 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
 - You can keep the bot from responding to ordinary group chatter with `telegram.require_mention: true`
 - With `telegram.require_mention: true`, group messages are accepted when they are:
-  - slash commands
   - replies to one of the bot's messages
   - `@botusername` mentions
+  - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+
+### Troubleshooting: works in DMs but not groups
+
+If the bot responds in a private chat but stays silent in a group, check these
+gates in order:
+
+1. **Telegram delivery:** turn off BotFather privacy mode, promote the bot to
+   admin, or mention the bot directly. Hermes cannot respond to group messages
+   that Telegram never delivers to the bot.
+2. **Rejoin after changing privacy:** remove the bot from the group and add it
+   again after changing BotFather privacy settings. Telegram may keep the old
+   delivery behavior for existing memberships.
+3. **Hermes authorization:** make sure the sender is listed in
+   `TELEGRAM_ALLOWED_USERS` or `TELEGRAM_GROUP_ALLOWED_USERS`, or allow the
+   group chat with `TELEGRAM_GROUP_ALLOWED_CHATS`.
+4. **Mention filters:** if `telegram.require_mention: true` is set, normal
+   group chatter is ignored unless the message is a slash command, reply to the
+   bot, `@botusername` mention, or configured `mention_patterns` match.
+
+Negative chat IDs are normal for Telegram groups and supergroups. If you use
+chat-scoped authorization, put those IDs in `TELEGRAM_GROUP_ALLOWED_CHATS`, not
+the sender-user allowlist.
 
 ### Example group trigger configuration
 
@@ -380,6 +418,130 @@ For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded wh
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::
 
+## Multi-session DM mode (`/topic`)
+
+A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlike the operator-curated `extra.dm_topics` above, this mode is **user-driven**: no config, no pre-declared topic names. The end user flips it on with `/topic`, then taps the Telegram **+** button to create as many topics as they want, each one a fully independent Hermes session.
+
+### `/topic` subcommands
+
+| Form | Context | Effect |
+|------|---------|--------|
+| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create pinned System topic |
+| `/topic` | Root DM, already enabled | Show status: unlinked sessions available for restore |
+| `/topic` | Inside a topic | Show the current topic's session binding |
+| `/topic help` | Any | Inline usage |
+| `/topic off` | Root DM | Disable multi-session mode and clear all topic bindings for this chat |
+| `/topic <session-id>` | Inside a topic | Restore a previous Telegram session into the current topic |
+
+Only authorized users (allowlist via `TELEGRAM_ALLOWED_USERS` / platform auth config) can run `/topic`. An unauthorized sender gets a refusal instead of activation.
+
+### DM Topics vs Multi-session DM mode
+
+| | `extra.dm_topics` (config-driven) | `/topic` (user-driven) |
+|---|---|---|
+| Who activates it | Operator, in `config.yaml` | End user, by sending `/topic` |
+| Topic list | Fixed set declared in config | User creates/deletes topics freely |
+| Topic names | Chosen by operator | Chosen by user; auto-renamed to match Hermes session title |
+| Root DM behavior | Unchanged — normal chat | Becomes a system lobby (non-command messages are rejected) |
+| Primary use case | Permanent workspaces with optional skill binding | Ad-hoc parallel sessions |
+| Persistence | `extra.dm_topics` in config | `telegram_dm_topic_mode` + `telegram_dm_topic_bindings` SQLite tables |
+
+Both features can coexist on the same bot — you'd run `/topic` from a user's DM, and `extra.dm_topics` continues to manage operator-declared topics for other chats.
+
+### Prerequisites
+
+In **@BotFather**, open your bot → **Bot Settings → Threads Settings**:
+
+1. Turn on **Threaded Mode** (enables `has_topics_enabled`)
+2. Do **not** disable users creating topics (keeps `allows_users_to_create_topics` on)
+
+When the user first runs `/topic`, Hermes calls `getMe` to verify both flags. If either is off, Hermes sends a screenshot of the BotFather Threads Settings page and explains what to toggle — no activation happens until prerequisites are met.
+
+### Activation flow
+
+From the root DM, send:
+
+```
+/topic
+```
+
+Hermes will:
+
+1. Check `getMe().has_topics_enabled` and `allows_users_to_create_topics`
+2. If both are true, enable multi-session topic mode for this DM
+3. Create and pin a **System** topic for status/commands (best-effort)
+4. Reply with a list of previous unlinked Telegram sessions the user can restore
+
+After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
+
+### Creating a new topic (end-user flow)
+
+1. Open the bot DM in Telegram
+2. Tap **All Messages** at the top of the bot interface, then send any message
+3. Telegram creates a new topic for that message
+4. Hermes responds inside that topic — the topic is now a standalone session
+
+Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
+
+### Auto-renamed topics
+
+When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
+
+### `/new` inside a topic
+
+Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
+
+### Restoring a previous session
+
+Inside a topic, send:
+
+```
+/topic <session-id>
+```
+
+This binds the current topic to an existing Hermes session instead of starting fresh. Useful for continuing a conversation that started before topic mode was enabled. Restrictions:
+
+- The target session must belong to the same Telegram user
+- The target session must not already be bound to another topic
+
+Hermes confirms with the session title and replays the last assistant message for context.
+
+To discover session IDs, send `/topic` (no argument) in the root DM — Hermes lists the user's unlinked Telegram sessions.
+
+### `/topic` inside a topic (no argument)
+
+Shows the current topic's binding: session title, session ID, and hints for `/new` vs creating another topic.
+
+### Under the hood
+
+- Activation persists to `telegram_dm_topic_mode(chat_id, user_id, enabled, ...)` in `state.db`
+- Each topic binding persists to `telegram_dm_topic_bindings(chat_id, thread_id, session_id, ...)` with `ON DELETE CASCADE` on `session_id` — pruning a session automatically clears its topic binding
+- The topic-mode SQLite migration is **opt-in**: it runs on the first `/topic` call, never on gateway startup. Until a user runs `/topic` in this profile, `state.db` is unchanged
+- Each inbound DM message looks up its `(chat_id, thread_id)` binding. If present, the lookup routes the message to the bound session via `SessionStore.switch_session()` so the session-key-to-session-id mapping stays consistent on disk
+- `/new` inside a topic rewrites the binding row to point at the new session ID, so the next message stays on the fresh session
+- Topics declared in `extra.dm_topics` are **never auto-renamed** — the operator-chosen name is preserved even when multi-session mode is enabled
+- The General (pinned top) topic in a forum-enabled DM is treated as the root lobby, regardless of whether Telegram delivers its messages with `message_thread_id=1` or with no thread_id
+- Root-lobby reminders are rate-limited to one message per 30 seconds per chat — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies
+- BotFather setup screenshots are rate-limited to one send per 5 minutes per chat — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
+- `/background <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
+- `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
+
+### Disabling multi-session mode
+
+Send `/topic off` in the root DM. Hermes flips the row off, clears the chat's `(thread_id → session_id)` bindings, and the root DM reverts to a normal Hermes chat. Existing topics in Telegram aren't deleted — they just stop being gated as independent sessions. Re-run `/topic` later to turn it back on.
+
+If you need to clean up by hand (e.g. a bulk reset across many chats), remove the rows directly:
+
+```bash
+sqlite3 ~/.hermes/state.db \
+  "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
+   DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
+```
+
+### Downgrading Hermes
+
+If you downgrade to a Hermes version that predates `/topic`, the feature simply stops working — the `telegram_dm_topic_mode` and `telegram_dm_topic_bindings` tables remain in `state.db` but are ignored by older code. DMs revert to the native per-thread isolation (each `message_thread_id` still gets its own session via `build_session_key`), so your existing Telegram topics keep working as parallel sessions. The root DM is no longer a lobby — messages there go into the agent like they used to. Re-upgrading reactivates multi-session mode exactly where it was.
+
 ## Group Forum Topic Skill Binding
 
 Supergroups with **Topics mode** enabled (also called "forum topics") already get session isolation per topic — each `thread_id` maps to its own conversation. But you may want to **auto-load a skill** when messages arrive in a specific group topic, just like DM topic skill binding works.
@@ -447,9 +609,151 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 
 ## Recent Bot API Features
 
-- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.
+- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
-- **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
+- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes uses Telegram's native streaming-draft API to render an animated preview of the agent's reply as tokens arrive in private chats. Drops the per-edit jitter you used to see with the legacy `editMessageText` polling path on slow models.
+
+### Streaming transport (`gateway.streaming.transport`)
+
+When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one of four transports:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
+| `edit` | Legacy progressive `editMessageText` polling for every chat type. |
+| `off` | Disable streaming entirely (final reply only, no progressive updates). |
+
+In `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  streaming:
+    enabled: true
+    transport: auto    # auto | draft | edit | off
+```
+
+**What you'll see in DMs with `auto` (default)** — when the agent generates a reply, Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
+
+**What about groups, supergroups, forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for everything else — same UX as before.
+
+**What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
+
+## Rendering: Tables and Link Previews
+
+Telegram's MarkdownV2 has no native table syntax — pipe tables render as backslash-escaped noise if passed through raw. Hermes normalizes markdown tables automatically:
+
+- **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
+- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses. A one-line prompt hint is added so the agent knows to prefer prose follow-ups over more tables on Telegram.
+
+There's nothing to configure — the adapter picks the right fallback per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+
+**Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        disable_link_previews: true
+```
+
+When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
+
+## Group Allowlisting
+
+Telegram groups and forum chats have two orthogonal gates you can configure:
+
+- **Sender user IDs** (`group_allow_from` / `TELEGRAM_GROUP_ALLOWED_USERS`) — sender-scoped allowlist that applies only to group/forum messages. Use this when you want specific users to be able to invoke the bot in groups without adding them to `TELEGRAM_ALLOWED_USERS` (which would also give them DM access).
+- **Chat IDs** (`group_allowed_chats` / `TELEGRAM_GROUP_ALLOWED_CHATS`) — chat-scoped allowlist. Any member of these groups/forums can interact with the bot. Useful for team/support bots where group membership itself is the access signal.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        # Global access (DMs + groups). Users here can always invoke the bot.
+        allow_from:
+          - "123456789"
+        # Sender IDs allowed in groups/forums only. Does NOT grant DM access.
+        group_allow_from:
+          - "987654321"
+        # Entire groups/forums — any member is authorized.
+        group_allowed_chats:
+          - "-1001234567890"
+```
+
+Equivalent env vars:
+
+```bash
+TELEGRAM_ALLOWED_USERS="123456789"
+TELEGRAM_GROUP_ALLOWED_USERS="987654321"
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
+
+Behavior:
+
+- `TELEGRAM_ALLOWED_USERS` covers all chat types (DMs, groups, forums).
+- `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
+- A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
+- Use `*` in any of these to allow any sender/chat.
+- This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
+
+### Migration from before PR #17686
+
+Prior to this split, `TELEGRAM_GROUP_ALLOWED_USERS` was the only knob and users put **chat IDs** in it. For backward compatibility, chat-ID-shaped values (starting with `-`) in `TELEGRAM_GROUP_ALLOWED_USERS` are still honored as chat IDs and a deprecation warning is logged once. Migration:
+
+```bash
+# Old (still works, but deprecated)
+TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890"
+
+# New
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
+
+## Slash Command Access Control
+
+By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        # Existing allowlists (unchanged)
+        allow_from:
+          - "123456789"     # admin
+          - "555555555"     # regular user
+          - "777777777"     # regular user
+
+        # NEW — admins get all slash commands (built-in + plugin)
+        allow_admin_from:
+          - "123456789"
+
+        # NEW — non-admin allowed users can only run these slash commands.
+        # /help and /whoami are always allowed so users can see their access.
+        user_allowed_commands:
+          - status
+          - model
+          - history
+
+        # Optional: separate admin/command lists for groups
+        group_allow_admin_from:
+          - "123456789"
+        group_user_allowed_commands:
+          - status
+```
+
+**Behavior:**
+
+- A user listed in `allow_admin_from` for a scope (DM or group) can run **every** registered slash command — built-in commands AND plugin-registered ones — through the live registry.
+- A user in `allow_from` but **not** in `allow_admin_from` can only run commands listed in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat (non-slash messages) is unaffected. Non-admin users can still talk to the agent normally, they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash command gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply group admin status. Each scope has its own admin list.
+- If only `group_allow_admin_from` is set, DM scope stays in unrestricted (backward-compat) mode.
+
+Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
 ## Interactive Model Picker
 

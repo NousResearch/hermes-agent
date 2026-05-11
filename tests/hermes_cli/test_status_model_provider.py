@@ -122,3 +122,34 @@ def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(mo
 
     out = capsys.readouterr().out
     assert "Nous Tool Gateway" not in out
+
+
+def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {
+            "model": {
+                "default": "qwen/qwen3-coder-30b",
+                "provider": "lmstudio",
+                "base_url": "http://127.0.0.1:1234/v1",
+            }
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "lmstudio", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "lmstudio", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "LM Studio", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_lmstudio_models",
+        lambda api_key=None, base_url=None, timeout=5.0: [],
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "LM Studio" in out
+    assert "reachable (0 model(s)) at http://127.0.0.1:1234/v1" in out

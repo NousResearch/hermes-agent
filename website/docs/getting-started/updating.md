@@ -24,10 +24,33 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 
 When you run `hermes update`, the following steps occur:
 
-1. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-2. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
-3. **Config migration** — detects new config options added since your version and prompts you to set them
-4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately
+1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
+2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
+4. **Config migration** — detects new config options added since your version and prompts you to set them
+5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+
+### Preview-only: `hermes update --check`
+
+Want to know if you're behind `origin/main` before actually pulling? Run `hermes update --check` — it fetches, prints your local commit and the latest remote commit side-by-side, and exits `0` if in sync or `1` if behind. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Full pre-update backup: `--backup`
+
+For high-value profiles (production gateways, shared team installs) you can opt into a full pre-pull backup of `HERMES_HOME` (config, auth, sessions, skills, pairing):
+
+```bash
+hermes update --backup
+```
+
+Or make it the default for every run:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  pre_update_backup: true
+```
+
+`--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
 
 Expected output looks like:
 
@@ -40,7 +63,7 @@ Already up to date.  (or: Updating abc1234..def5678)
 ✅ Dependencies updated
 🔍 Checking for new config options...
 ✅ Config is up to date  (or: Found 2 new options — running migration...)
-🔄 Restarting gateway service...
+🔄 Restarting gateways...
 ✅ Gateway restarted
 ✅ Hermes Agent updated successfully!
 ```
@@ -84,13 +107,13 @@ Compare against the latest release at the [GitHub releases page](https://github.
 
 ### Updating from Messaging Platforms
 
-You can also update directly from Telegram, Discord, Slack, or WhatsApp by sending:
+You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams by sending:
 
 ```
 /update
 ```
 
-This pulls the latest code, updates dependencies, and restarts the gateway. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
+This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
 
 ### Manual Update
 

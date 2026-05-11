@@ -329,6 +329,32 @@ class TestSend:
         assert json.loads(payload["msgParam"])["photoURL"] == "https://example.com/image.png"
 
     @pytest.mark.asyncio
+    async def test_send_image_renders_markdown_image_without_send_target(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send_image(
+            "chat-123",
+            "https://example.com/demo.png",
+            caption="Screenshot",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["msgtype"] == "markdown"
+        assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
+
+    @pytest.mark.asyncio
     async def test_send_image_file_uploads_then_sends(self, tmp_path):
         from gateway.platforms.dingtalk import DingTalkAdapter
 
@@ -402,6 +428,16 @@ class TestSend:
         assert result.success is True
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["robotCode"] == "callback-robot-code"
+
+    @pytest.mark.asyncio
+    async def test_send_document_returns_explicit_unsupported_error(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
+
+        assert result.success is False
+        assert result.error and "not supported by this adapter path yet" in result.error
 
 
 # ---------------------------------------------------------------------------

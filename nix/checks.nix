@@ -4,9 +4,9 @@
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
 { inputs, ... }: {
-  perSystem = { pkgs, system, lib, ... }:
+  perSystem = { pkgs, lib, self', ... }:
     let
-      hermes-agent = inputs.self.packages.${system}.default;
+      hermes-agent = self'.packages.default;
       hermesVenv = hermes-agent.hermesVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
@@ -51,7 +51,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
         in pkgs.runCommand "hermes-cross-eval" { } (
           if failures != [] then
-            builtins.throw "Package fails to evaluate on:\n${failMsg}"
+            throw "Package fails to evaluate on:\n${failMsg}"
           else ''
             echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
             mkdir -p $out
@@ -120,6 +120,26 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: HERMES_BUNDLED_SKILLS set in wrapper"
 
           echo "=== All bundled skills checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify bundled plugins (platforms, memory, context_engine) are present
+        bundled-plugins = pkgs.runCommand "hermes-bundled-plugins" { } ''
+          set -e
+          echo "=== Checking bundled plugins ==="
+          test -d ${hermes-agent}/share/hermes-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
+          echo "PASS: plugins directory exists"
+
+          test -f ${hermes-agent}/share/hermes-agent/plugins/platforms/irc/plugin.yaml || \
+            (echo "FAIL: irc plugin manifest missing"; exit 1)
+          echo "PASS: irc plugin manifest present"
+
+          grep -q "HERMES_BUNDLED_PLUGINS" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_PLUGINS not in wrapper"; exit 1)
+          echo "PASS: HERMES_BUNDLED_PLUGINS set in wrapper"
+
+          echo "=== All bundled plugins checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

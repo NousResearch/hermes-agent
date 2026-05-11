@@ -432,6 +432,8 @@ class TestPreflightCompression:
 
         ok_resp = _mock_response(content="After preflight", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
@@ -460,6 +462,10 @@ class TestPreflightCompression:
         )
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
+        assert any(
+            ev == "lifecycle" and "Preflight compression" in msg
+            for ev, msg in status_messages
+        )
 
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""

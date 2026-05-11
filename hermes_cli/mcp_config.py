@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
+    cfg_get,
     load_config,
     save_config,
     get_env_value,
@@ -30,7 +31,12 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "codex": {
+        "command": "codex",
+        "args": ["mcp-server"],
+    },
+}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -220,7 +226,10 @@ def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
     url = getattr(args, "url", None)
-    command = getattr(args, "command", None)
+    # Read from `mcp_command` (set by --command via explicit dest) — see
+    # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
+    # hermes_cli/main.py for why the dest is renamed.
+    command = getattr(args, "mcp_command", None)
     cmd_args = getattr(args, "args", None) or []
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
@@ -716,7 +725,7 @@ def cmd_mcp_configure(args):
 
     # Update config
     config = load_config()
-    server_entry = config.get("mcp_servers", {}).get(name, {})
+    server_entry = cfg_get(config, "mcp_servers", name, default={})
 
     if len(chosen) == total:
         # All selected → remove include/exclude (register all)

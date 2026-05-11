@@ -8,7 +8,7 @@ streaming, or the _run_codex_stream() call path.
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse, ToolCall
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -104,7 +104,16 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
+            from agent.model_metadata import grok_supports_reasoning_effort
+
             kwargs["include"] = ["reasoning.encrypted_content"]
+            # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
+            # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
+            # those models reason natively. Only send the effort dial when
+            # the target model is on the allowlist; otherwise send no
+            # `reasoning` key at all and let the model reason on its own.
+            if grok_supports_reasoning_effort(model):
+                kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
@@ -143,7 +152,18 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:
-            kwargs["extra_headers"] = {"x-grok-conv-id": session_id}
+            existing_extra_headers = kwargs.get("extra_headers")
+            merged_extra_headers: Dict[str, str] = {}
+            if isinstance(existing_extra_headers, dict):
+                merged_extra_headers.update(
+                    {
+                        str(key): str(value)
+                        for key, value in existing_extra_headers.items()
+                        if key and value is not None
+                    }
+                )
+            merged_extra_headers["x-grok-conv-id"] = session_id
+            kwargs["extra_headers"] = merged_extra_headers
 
         return kwargs
 
@@ -151,8 +171,6 @@ class ResponsesApiTransport(ProviderTransport):
         """Normalize Codex Responses API response to NormalizedResponse."""
         from agent.codex_responses_adapter import (
             _normalize_codex_response,
-            _extract_responses_message_text,
-            _extract_responses_reasoning_text,
         )
 
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)

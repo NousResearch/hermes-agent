@@ -5,7 +5,7 @@ Integration with LangChain, LlamaIndex, and frameworks.
 ## LangChain
 
 ```python
-from langchain_chroma import Chroma
+from  _chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 
 vectorstore = Chroma.from_documents(

@@ -13,7 +13,7 @@ Usage in run_agent.py:
     self._memory_manager.add_provider(plugin_provider)
 
     # System prompt
-    prompt_parts.append(self._memory_manager.build_system_prompt())
+    prompt_parts.append(self._memory_manager.bui ld_system_prompt())
 
     # Pre-turn
     context = self._memory_manager.prefetch_all(user_message)
@@ -45,11 +45,11 @@ _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
 )
+
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
-
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
@@ -57,7 +57,6 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
-
 
 class StreamingContextScrubber:
     """Stateful scrubber for streaming text that may contain split memory-context spans.

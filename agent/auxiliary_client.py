@@ -296,14 +296,10 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # it must skip straight to the aggregator chain instead of returning a client
 # that will 404 on every vision request.
 #
-# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
-# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
-# describe as having no image_in capability. Vision lives on the separate
-# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
-})
+# (Empty set as of May 2026 — Kimi K2.5/K2.6 on both api.moonshot.ai and
+# api.moonshot.cn now support vision via the standard OpenAI-compatible
+# chat.completions endpoint with image_url content blocks.)
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset()
 
 # OpenRouter app attribution headers (base — always sent).
 # `X-Title` is the canonical attribution header OpenRouter's dashboard

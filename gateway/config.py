@@ -109,6 +109,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    WPS_XIEZUO = "wps-xiezuo"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -396,6 +397,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
+    Platform.WPS_XIEZUO: lambda cfg: bool(cfg.extra.get("app_id")),
 }
 
 
@@ -1514,6 +1516,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=feishu_home,
                 name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
                 thread_id=os.getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
+            )
+
+    # WPS Xiezuo (WPS365 协作)
+    wps_xiezuo_app_id = os.getenv("WPS_XIEZUO_APP_ID") or os.getenv("WPS_APP_ID")
+    wps_xiezuo_app_secret = os.getenv("WPS_XIEZUO_APP_SECRET") or os.getenv("WPS_APP_SECRET")
+    if wps_xiezuo_app_id and wps_xiezuo_app_secret:
+        if Platform.WPS_XIEZUO not in config.platforms:
+            config.platforms[Platform.WPS_XIEZUO] = PlatformConfig()
+        config.platforms[Platform.WPS_XIEZUO].enabled = True
+        config.platforms[Platform.WPS_XIEZUO].extra.update({
+            "app_id": wps_xiezuo_app_id,
+            "app_secret": wps_xiezuo_app_secret,
+            "connection_mode": os.getenv("WPS_XIEZUO_CONNECTION_MODE") or os.getenv("WPS_CONNECTION_MODE", "websocket"),
+            "base_url": os.getenv("WPS_XIEZUO_BASE_URL") or os.getenv("WPS_BASE_URL", "https://openapi.wps.cn"),
+        })
+        wps_xiezuo_encrypt_key = os.getenv("WPS_XIEZUO_ENCRYPT_KEY") or os.getenv("WPS_ENCRYPT_KEY", "")
+        if wps_xiezuo_encrypt_key:
+            config.platforms[Platform.WPS_XIEZUO].extra["encrypt_key"] = wps_xiezuo_encrypt_key
+        wps_xiezuo_verification_token = os.getenv("WPS_XIEZUO_VERIFICATION_TOKEN") or os.getenv("WPS_VERIFICATION_TOKEN", "")
+        if wps_xiezuo_verification_token:
+            config.platforms[Platform.WPS_XIEZUO].extra["verification_token"] = wps_xiezuo_verification_token
+        wps_xiezuo_home = os.getenv("WPS_XIEZUO_HOME_CHANNEL") or os.getenv("WPS_HOME_CHANNEL")
+        if wps_xiezuo_home:
+            config.platforms[Platform.WPS_XIEZUO].home_channel = HomeChannel(
+                platform=Platform.WPS_XIEZUO,
+                chat_id=wps_xiezuo_home,
+                name=os.getenv("WPS_XIEZUO_HOME_CHANNEL_NAME", "Home"),
+                thread_id=os.getenv("WPS_XIEZUO_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # WeCom (Enterprise WeChat)

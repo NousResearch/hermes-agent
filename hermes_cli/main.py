@@ -9796,6 +9796,8 @@ def main():
     # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    cron_list.add_argument("--global", action="store_true", dest="cron_global", help="List global jobs only")
+    cron_list.add_argument("--visible", action="store_true", dest="cron_visible", help="List profile + global jobs")
 
     # cron create/add
     cron_create = cron_subparsers.add_parser(
@@ -9844,6 +9846,8 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument("--global", action="store_true", dest="cron_global", help="Create as a global cron job")
+    cron_create.add_argument("--run-as-profile", dest="run_as_profile", help="Profile to run global job as (required with --global)")
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(

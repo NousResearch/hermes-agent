@@ -43,10 +43,10 @@ class _StubAdapter(BasePlatformAdapter):
         return {}
 
 
-def _make_adapter():
+def _make_adapter(platform=Platform.TELEGRAM):
     """Create a minimal adapter for testing the active-session guard."""
     config = PlatformConfig(enabled=True, token="test-token")
-    adapter = _StubAdapter(config, Platform.TELEGRAM)
+    adapter = _StubAdapter(config, platform)
     adapter.sent_responses = []
 
     async def _mock_handler(event):
@@ -62,16 +62,16 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text="/stop", chat_id="12345"):
+def _make_event(text="/stop", chat_id="12345", platform=Platform.TELEGRAM):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=platform, chat_id=chat_id, chat_type="dm"
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
-def _session_key(chat_id="12345"):
+def _session_key(chat_id="12345", platform=Platform.TELEGRAM):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=platform, chat_id=chat_id, chat_type="dm"
     )
     return build_session_key(source)
 
@@ -135,6 +135,35 @@ class TestCommandBypassActiveSession:
 
         assert sk not in adapter._pending_messages
         assert any("handled:approve" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_mattermost_plaintext_approve_bypasses_guard_when_approval_pending(self):
+        """Mattermost bare `approve` must bypass the active-session guard.
+
+        Mattermost may reject unknown slash commands before Hermes sees them,
+        so the approval prompt tells users to type `approve` without a slash.
+        The base adapter's active-session guard runs before GatewayRunner's
+        message handler; it must rewrite this alias early enough to avoid the
+        generic busy/queue path.
+        """
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        adapter = _make_adapter(Platform.MATTERMOST)
+        sk = _session_key(platform=Platform.MATTERMOST)
+        adapter._active_sessions[sk] = asyncio.Event()
+        _gateway_queues[sk] = [_ApprovalEntry({"command": "rm -rf /tmp/x"})]
+
+        try:
+            await adapter.handle_message(_make_event("approve", platform=Platform.MATTERMOST))
+        finally:
+            _gateway_queues.pop(sk, None)
+
+        assert sk not in adapter._pending_messages, (
+            "Mattermost plaintext approve was queued instead of dispatched"
+        )
+        assert any("handled:approve" in r for r in adapter.sent_responses), (
+            "Mattermost plaintext approve did not reach the /approve handler"
+        )
 
     @pytest.mark.asyncio
     async def test_deny_bypasses_guard(self):

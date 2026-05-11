@@ -998,17 +998,45 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
 )
 
+_PLAINTEXT_MATTERMOST_APPROVAL_WORDS = frozenset({"approve", "deny"})
+_PLAINTEXT_MATTERMOST_APPROVAL_ARGS = frozenset({
+    "all",
+    "session",
+    "ses",
+    "always",
+    "permanent",
+    "permanently",
+})
 
-def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
-    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+
+def _mattermost_plaintext_approval_alias(text: str) -> str | None:
+    """Return a slash-command equivalent for safe Mattermost approval aliases."""
+    raw = (text or "").strip().lower()
+    if not raw or raw.startswith("/"):
+        return None
+    parts = raw.split()
+    if not parts or parts[0] not in _PLAINTEXT_MATTERMOST_APPROVAL_WORDS:
+        return None
+    if any(part not in _PLAINTEXT_MATTERMOST_APPROVAL_ARGS for part in parts[1:]):
+        return None
+    if parts[0] == "deny" and any(part != "all" for part in parts[1:]):
+        return None
+    return "/" + " ".join(parts)
+
+
+def coerce_plaintext_gateway_command(event: "MessageEvent", session_key: str | None = None) -> None:
+    """Rewrite a tiny set of plaintext control phrases into slash commands.
 
     This keeps high-impact operational phrases like ``restart gateway`` out of
     the LLM/tool path, where they can trigger a self-restart from inside the
     currently running agent and leave the gateway stuck in ``draining`` while it
     waits for that same agent to finish.
 
-    Scope is intentionally narrow: DM text messages only, exact restart-style
-    phrases only. Group chats keep natural-language semantics.
+    Mattermost has one additional safety-scoped rewrite: during a live
+    dangerous-command approval, explicit bare replies like ``approve`` or
+    ``deny`` are rewritten to ``/approve``/``/deny``.  This must happen in the
+    base adapter before the active-session guard; otherwise the guard treats the
+    reply as normal user text and queues it for the next turn.
     """
     try:
         if event is None or event.message_type != MessageType.TEXT:
@@ -1017,6 +1045,20 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         if not text or text.startswith("/"):
             return
         source = getattr(event, "source", None)
+
+        if session_key and _platform_name(getattr(source, "platform", None)) == "mattermost":
+            approval_alias = _mattermost_plaintext_approval_alias(text)
+            if approval_alias:
+                try:
+                    from tools.approval import has_blocking_approval
+                    approval_live = has_blocking_approval(session_key)
+                except Exception:
+                    approval_live = False
+                if approval_live:
+                    event.text = approval_alias
+                    event.message_type = MessageType.COMMAND
+                    return
+
         if getattr(source, "chat_type", None) != "dm":
             return
         for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
@@ -2675,6 +2717,7 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+        coerce_plaintext_gateway_command(event, session_key=session_key)
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or

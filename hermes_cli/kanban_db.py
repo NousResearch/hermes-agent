@@ -3235,13 +3235,20 @@ def workspace_capabilities(task: Task, workspace: Path | str) -> dict[str, Any]:
     }
 
 
-def collect_workspace_evidence(task: Task, workspace: Path | str) -> dict[str, Any]:
+def collect_workspace_evidence(
+    task: Task,
+    workspace: Path | str,
+    *,
+    mode: Optional[str] = None,
+) -> dict[str, Any]:
     """Collect a bounded workspace manifest/diff summary.
 
     The payload is intentionally small and content-free: git status, diff
     stat, HEAD for repositories; otherwise relative path/size/mtime
-    manifest capped by count and JSON byte budget.
+    manifest capped by count and JSON byte budget. ``mode`` can force
+    ``git`` or ``manifest``; ``auto``/``None`` auto-detects git.
     """
+    requested_mode = mode or "auto"
     path = Path(workspace).expanduser()
     base: dict[str, Any] = {
         "task_id": task.id,
@@ -3249,11 +3256,15 @@ def collect_workspace_evidence(task: Task, workspace: Path | str) -> dict[str, A
         "workspace_kind": task.workspace_kind or "scratch",
         "captured_at": int(time.time()),
         "bounded": True,
+        "requested_mode": requested_mode,
     }
     if not path.exists():
         return {**base, "kind": "missing", "exists": False}
 
-    if _is_git_workspace(path):
+    is_git = _is_git_workspace(path)
+    if requested_mode == "git" and not is_git:
+        return {**base, "kind": "git", "exists": True, "available": False}
+    if requested_mode in {"auto", "git"} and is_git:
         status = _run_git(path, ["status", "--short"]) or ""
         diff_stat = _run_git(path, ["diff", "--stat", "--compact-summary"]) or ""
         head = _run_git(path, ["rev-parse", "HEAD"]) or None
@@ -3261,6 +3272,7 @@ def collect_workspace_evidence(task: Task, workspace: Path | str) -> dict[str, A
             **base,
             "kind": "git",
             "exists": True,
+            "available": True,
             "head": head,
             "status_short": status,
             "diff_stat": diff_stat,
@@ -3269,33 +3281,40 @@ def collect_workspace_evidence(task: Task, workspace: Path | str) -> dict[str, A
     files: list[dict[str, Any]] = []
     total_bytes = 0
     omitted = 0
-    for child in sorted(path.rglob("*")):
-        try:
-            if child.is_dir():
+    stop = False
+    skip_dirs = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__"}
+    for root, dirs, names in os.walk(path):
+        dirs[:] = [d for d in sorted(dirs) if d not in skip_dirs]
+        for name in sorted(names):
+            child = Path(root) / name
+            try:
+                rel = str(child.relative_to(path))
+                stat = child.stat()
+            except OSError:
+                omitted += 1
                 continue
-            rel = str(child.relative_to(path))
-            stat = child.stat()
-        except OSError:
-            omitted += 1
-            continue
-        entry = {
-            "path": rel,
-            "size": int(stat.st_size),
-            "mtime": int(stat.st_mtime),
-        }
-        encoded_len = len(json.dumps(entry, ensure_ascii=False))
-        if (
-            len(files) >= WORKSPACE_EVIDENCE_MAX_FILES
-            or total_bytes + encoded_len > WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES
-        ):
-            omitted += 1
-            continue
-        total_bytes += encoded_len
-        files.append(entry)
+            entry = {
+                "path": rel,
+                "size": int(stat.st_size),
+                "mtime": int(stat.st_mtime),
+            }
+            encoded_len = len(json.dumps(entry, ensure_ascii=False))
+            if (
+                len(files) >= WORKSPACE_EVIDENCE_MAX_FILES
+                or total_bytes + encoded_len > WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES
+            ):
+                omitted += 1
+                stop = True
+                break
+            total_bytes += encoded_len
+            files.append(entry)
+        if stop:
+            break
     return {
         **base,
         "kind": "manifest",
         "exists": True,
+        "available": True,
         "files": files,
         "file_count": len(files),
         "omitted_count": omitted,
@@ -3312,7 +3331,8 @@ def create_workspace_checkpoint(task: Task, workspace: Path | str) -> dict[str, 
             "created_at": int(time.time()),
         }
     path = Path(workspace).expanduser()
-    evidence = collect_workspace_evidence(task, path)
+    evidence_mode = None if policy == "auto" else policy
+    evidence = collect_workspace_evidence(task, path, mode=evidence_mode)
     effective = policy
     if policy == "auto":
         effective = "git" if evidence.get("kind") == "git" else "manifest"
@@ -3382,14 +3402,28 @@ def workspace_rollback_plan(task: Task, checkpoint: dict[str, Any]) -> dict[str,
             ),
         }
     if (task.workspace_kind or "scratch") == "scratch" and workspace:
+        try:
+            workspace_path = Path(workspace).expanduser().resolve()
+            managed_root = workspaces_root().expanduser().resolve()
+            is_managed = workspace_path == managed_root or managed_root in workspace_path.parents
+        except Exception:
+            is_managed = False
+        if is_managed:
+            return {
+                **base,
+                "can_rollback": True,
+                "safe_to_auto_discard": True,
+                "suggested_commands": f"rm -rf {workspace!r}",
+                "notes": (
+                    "Managed scratch workspace can normally be discarded after artifact review; "
+                    "caller must still enforce path safety before deletion."
+                ),
+            }
         return {
             **base,
-            "can_rollback": True,
-            "safe_to_auto_discard": True,
-            "suggested_commands": f"rm -rf {workspace!r}",
             "notes": (
-                "Scratch workspace can normally be discarded after artifact review; "
-                "caller must still enforce path safety before deletion."
+                "Scratch workspace is outside the configured Kanban workspaces root; "
+                "not marked safe for automatic discard."
             ),
         }
     return base
@@ -3445,10 +3479,11 @@ def _final_workspace_metadata(
 ) -> Optional[dict]:
     out = dict(metadata or {})
     task = get_task(conn, task_id)
-    if task and task.workspace_path:
+    if task and task.workspace_path and validate_checkpoint_policy(task.checkpoint_policy) != "off":
         try:
             workspace = Path(task.workspace_path).expanduser()
-            out.setdefault("workspace_final_evidence", collect_workspace_evidence(task, workspace))
+            mode = None if task.checkpoint_policy == "auto" else task.checkpoint_policy
+            out.setdefault("workspace_final_evidence", collect_workspace_evidence(task, workspace, mode=mode))
             out.setdefault("workspace_capabilities", workspace_capabilities(task, workspace))
         except Exception as exc:
             out.setdefault("workspace_final_evidence_error", str(exc)[:400])
@@ -4403,18 +4438,24 @@ def dispatch_once(
         try:
             policy_meta = worker_policy_descriptor(claimed.worker_policy)
             capabilities = workspace_capabilities(claimed, workspace)
+            checkpoint_policy = validate_checkpoint_policy(claimed.checkpoint_policy)
             checkpoint = create_workspace_checkpoint(claimed, workspace)
-            pre_evidence = collect_workspace_evidence(claimed, workspace)
             run_meta = {
                 "worker_policy": policy_meta,
-                "checkpoint_policy": validate_checkpoint_policy(claimed.checkpoint_policy),
+                "checkpoint_policy": checkpoint_policy,
                 "checkpoint": {
                     k: v for k, v in checkpoint.items()
                     if k != "evidence"
                 },
                 "workspace_capabilities": capabilities,
-                "workspace_pre_evidence": pre_evidence,
             }
+            if checkpoint_policy != "off":
+                mode = None if checkpoint_policy == "auto" else checkpoint_policy
+                run_meta["workspace_pre_evidence"] = collect_workspace_evidence(
+                    claimed,
+                    workspace,
+                    mode=mode,
+                )
             with write_txn(conn):
                 _set_run_metadata(
                     conn,

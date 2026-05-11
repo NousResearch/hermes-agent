@@ -1246,6 +1246,91 @@ def test_local_workspace_capability_does_not_overclaim_os_sandbox(tmp_path):
     assert caps["policy_enforced_by"] == "contract"
 
 
+def test_checkpoint_policy_off_suppresses_workspace_evidence(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+
+    def fake_spawn(task, workspace):
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="no evidence",
+            assignee="alice",
+            checkpoint_policy="off",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+        assert res.spawned
+        run = kb.latest_run(conn, tid)
+        assert run.metadata["checkpoint"]["enabled"] is False
+        assert "workspace_pre_evidence" not in run.metadata
+
+        kb.complete_task(conn, tid, summary="done")
+        done_run = kb.latest_run(conn, tid)
+        assert "workspace_final_evidence" not in done_run.metadata
+
+
+def test_manifest_workspace_evidence_stops_at_file_cap(tmp_path):
+    workspace = tmp_path / "big"
+    workspace.mkdir()
+    for i in range(kb.WORKSPACE_EVIDENCE_MAX_FILES + 25):
+        (workspace / f"file-{i:03d}.txt").write_text("x", encoding="utf-8")
+    task = kb.Task(
+        id="t_manifest_cap",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="manifest",
+    )
+    evidence = kb.collect_workspace_evidence(task, workspace, mode="manifest")
+    assert evidence["kind"] == "manifest"
+    assert evidence["file_count"] == kb.WORKSPACE_EVIDENCE_MAX_FILES
+    assert evidence["omitted_count"] >= 1
+
+
+def test_scratch_rollback_plan_only_auto_discards_managed_workspace(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    unsafe_workspace = tmp_path / "unsafe"
+    managed_root.mkdir()
+    unsafe_workspace.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(managed_root))
+    task = kb.Task(
+        id="t_unsafe_scratch",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(unsafe_workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, unsafe_workspace)
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["can_rollback"] is False
+    assert plan["safe_to_auto_discard"] is False
+    assert "rm -rf" not in plan["suggested_commands"]
+
+
 def test_workspace_rollback_plan_is_safe_descriptor_not_execution(tmp_path):
     workspace = tmp_path / "repo"
     workspace.mkdir()

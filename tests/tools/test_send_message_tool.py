@@ -2269,7 +2269,6 @@ class TestCheckSendMessage:
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
 
-        sentinel = object()
         with patch("gateway.session_context.get_session_env",
                    side_effect=AssertionError("session_context not consulted "
                                               "when HERMES_KANBAN_TASK is set")), \

@@ -133,7 +133,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat), 'qqbot:c2c:<openid>' (private chat), 'qqbot:group:<group_openid>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -664,6 +664,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: native media attachment support via REST API ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Feishu: native media attachment support via adapter ---
     if platform == Platform.FEISHU and media_files:
         last_result = None
@@ -685,7 +701,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, qqbot and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -693,7 +709,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, qqbot and feishu"
         )
 
     last_result = None
@@ -1769,12 +1785,13 @@ def _check_send_message():
         return False
 
 
-async def _send_qqbot(pconfig, chat_id, message):
+async def _send_qqbot(pconfig, chat_id, message, media_files=None):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
     and post a message. Supports guild channels, C2C (private) chats,
-    and group chats by trying the appropriate endpoints.
+    and group chats with explicit routing. Also supports text, images,
+    voice, video, and file attachments via the QQ Bot v2 REST API.
     """
     try:
         import httpx
@@ -1788,8 +1805,23 @@ async def _send_qqbot(pconfig, chat_id, message):
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
+    # Determine chat type from chat_id format or default to c2c
+    # Supported formats: c2c:<openid>, group:<group_openid>, guild:<channel_id>
+    # Or just plain openid (treated as c2c)
+    chat_type = "c2c"
+    target_id = chat_id
+    if chat_id.startswith("c2c:"):
+        chat_type = "c2c"
+        target_id = chat_id[4:]
+    elif chat_id.startswith("group:"):
+        chat_type = "group"
+        target_id = chat_id[6:]
+    elif chat_id.startswith("guild:"):
+        chat_type = "guild"
+        target_id = chat_id[6:]
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1802,41 +1834,97 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
-            # QQ Bot API has separate endpoints for channels, C2C, and groups.
-            # We try them in order: channel first, then fallback to C2C.
+            # Step 2: Upload media files (if any) or prepare message payload
+            # QQ Bot API has separate endpoints for guild, C2C, and groups.
+            # Chat type is determined from chat_id prefix (c2c:/group:/guild:).
             headers = {
                 "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
 
-            # Try channel endpoint first (works for guild channels)
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+            # Step 3: Upload media files if present
+            file_info_list = []
+            if media_files:
+                for media_item in media_files:
+                    # Handle tuple format (path, is_url) from extract_media
+                    if isinstance(media_item, tuple):
+                        media_file, is_url = media_item
+                    else:
+                        media_file = media_item
+                        is_url = False
+
+                    # Determine file type: 1=image, 2=video, 3=voice, 4=file
+                    file_type = 4  # default to file
+                    file_ext = media_file.lower().split(".")[-1] if "." in media_file else ""
+                    if file_ext in ("png", "jpg", "jpeg", "gif"):
+                        file_type = 1
+                    elif file_ext in ("mp4", "mov", "avi"):
+                        file_type = 2
+                    elif file_ext in ("mp3", "wav", "flac", "silk", "amr"):
+                        file_type = 3
+
+                    # Build upload URL based on chat type
+                    if chat_type == "c2c":
+                        upload_url = f"https://api.sgroup.qq.com/v2/users/{target_id}/files"
+                    elif chat_type == "group":
+                        upload_url = f"https://api.sgroup.qq.com/v2/groups/{target_id}/files"
+                    else:
+                        # Guild uses channel message API, media not supported the same way
+                        return _error("QQBot: Media upload for guild channels not yet supported")
+
+                    # Read file data and encode as base64
+                    try:
+                        with open(media_file, "rb") as f:
+                            file_bytes = f.read()
+                        import base64
+                        file_data = base64.b64encode(file_bytes).decode("utf-8")
+                    except Exception as e:
+                        return _error(f"QQBot: Failed to read media file {media_file}: {e}")
+
+                    # Upload the file via JSON API (not multipart)
+                    upload_body = {
+                        "file_type": file_type,
+                        "srv_send_msg": False,
+                        "file_data": file_data,
+                    }
+
+                    upload_resp = await client.post(
+                        upload_url,
+                        headers={**headers, "Content-Type": "application/json"},
+                        json=upload_body,
+                    )
+                    if upload_resp.status_code not in (200, 201):
+                        return _error(f"QQBot media upload failed: {upload_resp.status_code} {upload_resp.text}")
+
+                    upload_data = upload_resp.json()
+                    file_info = upload_data.get("file_info")
+                    if not file_info:
+                        return _error(f"QQBot: no file_info in upload response")
+                    file_info_list.append(file_info)
+
+            # Step 4: Send message via REST
+            headers["Content-Type"] = "application/json"
+
+            if chat_type == "c2c":
+                url = f"https://api.sgroup.qq.com/v2/users/{target_id}/messages"
+            elif chat_type == "group":
+                url = f"https://api.sgroup.qq.com/v2/groups/{target_id}/messages"
+            else:
+                # Guild channel
+                url = f"https://api.sgroup.qq.com/channels/{target_id}/messages"
+
+            payload = {"content": message[:4000] if message else "", "msg_type": 0}
+
+            # Add media if we have uploaded files
+            if file_info_list:
+                payload["media"] = {"file_info": file_info_list[0]}
+
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}
 
-            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
-            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
-            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in (200, 201):
-                data = resp_c2c.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If C2C also failed, try group endpoint
-            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
-            resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in (200, 201):
-                data = resp_group.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
+            return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 

@@ -25,6 +25,11 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.config import (
+    DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
+    DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
+    DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
+)
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -43,9 +48,9 @@ _COMMENTARY = object()
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
-    edit_interval: float = 1.0
-    buffer_threshold: int = 40
-    cursor: str = " ▉"
+    edit_interval: float = _DEFAULT_STREAMING_EDIT_INTERVAL
+    buffer_threshold: int = _DEFAULT_STREAMING_BUFFER_THRESHOLD
+    cursor: str = _DEFAULT_STREAMING_CURSOR
     buffer_only: bool = False
     # When >0, the final edit for a streamed response is delivered as a
     # fresh message if the original preview has been visible for at least

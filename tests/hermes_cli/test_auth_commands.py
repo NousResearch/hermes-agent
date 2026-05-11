@@ -565,6 +565,31 @@ def test_auth_browser_command_rejects_unsupported_provider():
         auth_commands_mod.auth_browser_command(_Args())
 
 
+def test_auth_command_dispatches_browser_subcommand(monkeypatch):
+    from types import SimpleNamespace
+
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_browser_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    args = SimpleNamespace(
+        auth_action="browser",
+        provider="chatgpt-web",
+        label="windows-browser",
+        timeout=42,
+        debug_port=9333,
+        keep_open=True,
+    )
+    auth_commands_mod.auth_command(args)
+
+    assert captured["args"] is args
+
+
 def test_interactive_add_chatgpt_web_selects_access_token(monkeypatch):
     from hermes_cli import auth_commands as auth_commands_mod
 

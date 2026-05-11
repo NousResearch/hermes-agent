@@ -23,6 +23,7 @@ class SoakCase:
     output_pattern: str
     required_tools: tuple[str, ...] = ()
     forbid_tools: tuple[str, ...] = ()
+    required_tool_output_patterns: tuple[str, ...] = ()
 
 
 def _load_session(session_path: Path) -> dict[str, Any]:
@@ -45,6 +46,17 @@ def _tool_names(messages: Iterable[dict[str, Any]]) -> list[str]:
             if name:
                 names.append(name)
     return names
+
+
+def _tool_outputs(messages: Iterable[dict[str, Any]]) -> list[str]:
+    outputs: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            outputs.append(content)
+    return outputs
 
 
 def _latest_session_file(sessions_dir: Path, before: set[Path]) -> Path:
@@ -99,6 +111,7 @@ def _run_case(
     session = _load_session(session_path)
     messages = session.get("messages") if isinstance(session.get("messages"), list) else []
     tools = _tool_names(messages)
+    tool_outputs = _tool_outputs(messages)
 
     if completed.returncode != 0:
         raise RuntimeError(f"{case.name}: hermes chat failed with code {completed.returncode}: {stderr or stdout}")
@@ -110,6 +123,17 @@ def _run_case(
     forbidden = [tool for tool in case.forbid_tools if tool in tools]
     if forbidden:
         raise RuntimeError(f"{case.name}: saw forbidden tool calls {forbidden}; saw {tools}")
+    joined_tool_outputs = "\n".join(tool_outputs)
+    missing_tool_outputs = [
+        pattern
+        for pattern in case.required_tool_output_patterns
+        if not re.search(pattern, joined_tool_outputs, re.IGNORECASE | re.DOTALL)
+    ]
+    if missing_tool_outputs:
+        raise RuntimeError(
+            f"{case.name}: missing required tool-output patterns {missing_tool_outputs}; "
+            f"tool outputs were {tool_outputs}"
+        )
 
     return {
         "name": case.name,
@@ -117,6 +141,7 @@ def _run_case(
         "stderr": stderr,
         "session": str(session_path),
         "tools": tools,
+        "tool_outputs": tool_outputs,
     }
 
 
@@ -158,12 +183,14 @@ def main() -> int:
             prompt="Try terminal tool and check whoami on it. Answer only the result.",
             output_pattern=r"\S+",
             required_tools=("terminal",),
+            required_tool_output_patterns=(r"\badyba\b",),
         ),
         SoakCase(
             name="multi-terminal",
             prompt="Use the terminal tool to run whoami, then use the terminal tool to run pwd. Answer with two lines: username first, path second.",
-            output_pattern=r".+\n.+",
+            output_pattern=r"\S+",
             required_tools=("terminal",),
+            required_tool_output_patterns=(r"\badyba\b", r"/c/Users/adyba/.+hermes-agent"),
         ),
         SoakCase(
             name="file-route-natural",

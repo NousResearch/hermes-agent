@@ -1648,6 +1648,22 @@ def _extract_message_text(message: dict[str, Any]) -> str:
     return str(parts[0] or "")
 
 
+def _merge_chatgpt_web_stream_text(current: str, incoming: str) -> str:
+    current = str(current or "")
+    incoming = str(incoming or "")
+    if not current:
+        return incoming
+    if not incoming:
+        return current
+    if incoming.startswith(current):
+        return incoming
+    if current.endswith(incoming):
+        return current
+    if len(incoming) <= 256 and len(incoming) < len(current):
+        return current + incoming
+    return incoming
+
+
 def _extract_message_metadata(message: dict[str, Any]) -> dict[str, Any]:
     metadata = message.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
@@ -1961,6 +1977,12 @@ def _apply_message_patch(message: dict[str, Any], patch_op: dict[str, Any]) -> b
         return False
 
     leaf = tokens[-1]
+    is_text_part_leaf = (
+        len(tokens) >= 3
+        and tokens[-3] == "content"
+        and tokens[-2] == "parts"
+        and leaf.isdigit()
+    )
     if isinstance(current, dict):
         existing = current.get(leaf)
         if op == "append":
@@ -1998,6 +2020,9 @@ def _apply_message_patch(message: dict[str, Any], patch_op: dict[str, Any]) -> b
                 existing.update(value)
             else:
                 current[list_index] = value
+            return True
+        if op == "replace" and is_text_part_leaf and isinstance(existing, str) and isinstance(value, str):
+            current[list_index] = value if value.startswith(existing) else existing + value
             return True
         if op in {"add", "replace"}:
             current[list_index] = value
@@ -2264,8 +2289,9 @@ def stream_chatgpt_web_completion(
                             assistant_message_id = message_id
                         text = _extract_message_text(assistant_message)
                         if text:
-                            delta = text[len(final_text):] if text.startswith(final_text) else text
-                            final_text = text
+                            merged_text = _merge_chatgpt_web_stream_text(final_text, text)
+                            delta = merged_text[len(final_text):] if merged_text.startswith(final_text) else merged_text
+                            final_text = merged_text
                             if delta and on_delta is not None:
                                 on_delta(delta)
                     continue
@@ -2293,8 +2319,9 @@ def stream_chatgpt_web_completion(
                         text = _extract_message_text(assistant_message)
                         if not text:
                             continue
-                        delta = text[len(final_text):] if text.startswith(final_text) else text
-                        final_text = text
+                        merged_text = _merge_chatgpt_web_stream_text(final_text, text)
+                        delta = merged_text[len(final_text):] if merged_text.startswith(final_text) else merged_text
+                        final_text = merged_text
                         if delta and on_delta is not None:
                             on_delta(delta)
 

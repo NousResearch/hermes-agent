@@ -872,6 +872,39 @@ def test_stream_chatgpt_web_completion_parses_patch_events_without_outer_op(monk
     assert deltas == ["Yes,", " tools are active", " and ready."]
 
 
+def test_chatgpt_web_message_patch_appends_chunk_like_text_replacements():
+    from hermes_cli.chatgpt_web import _apply_message_patch, _extract_message_text
+
+    message = {
+        "id": "msg_chunks",
+        "author": {"role": "assistant"},
+        "content": {"content_type": "text", "parts": [""]},
+    }
+
+    assert _apply_message_patch(
+        message,
+        {"p": "/message/content/parts/0", "o": "replace", "v": "adyba\n/c/Users/adyba/AppData/Local/her"},
+    )
+    assert _apply_message_patch(
+        message,
+        {"p": "/message/content/parts/0", "o": "replace", "v": "mes-agent"},
+    )
+
+    assert _extract_message_text(message) == "adyba\n/c/Users/adyba/AppData/Local/hermes-agent"
+
+
+def test_chatgpt_web_stream_text_merges_short_replacement_fragments():
+    from hermes_cli.chatgpt_web import _merge_chatgpt_web_stream_text
+
+    current = "adyba\n/c/Users/adyba/AppData/Local/hermes"
+
+    assert _merge_chatgpt_web_stream_text(current, "/hermes-agent") == (
+        "adyba\n/c/Users/adyba/AppData/Local/hermes/hermes-agent"
+    )
+    assert _merge_chatgpt_web_stream_text("Hello", "Hello world") == "Hello world"
+    assert _merge_chatgpt_web_stream_text("Hello world", "world") == "Hello world"
+
+
 def test_stream_chatgpt_web_completion_prefers_http_transport_for_text_turns(monkeypatch):
     from hermes_cli import chatgpt_web as chatgpt_web_mod
 

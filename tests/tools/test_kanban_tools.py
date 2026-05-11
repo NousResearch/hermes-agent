@@ -629,7 +629,13 @@ def test_dispatch_guidance_in_operator_prompt_with_terminal(monkeypatch, tmp_pat
     assert "Dispatch and ticketing protocol" in prompt
     assert "clawta --text" in prompt
     assert "hermes-no-frontier-spawn" in prompt
-    assert "kanban_create" in prompt
+    # The guidance must reference the terminal-shelling-out shape, since
+    # operator hermes has neither kanban_* nor gh_* tools — all paths go
+    # through terminal. The previous wording named non-existent tool
+    # functions and made the LLM either hallucinate kanban_create or
+    # fall back to gh issue create as the closest available thing.
+    assert "hermes kanban" in prompt
+    assert "terminal" in prompt
 
 
 def test_dispatch_guidance_not_in_worker_prompt(monkeypatch, tmp_path):

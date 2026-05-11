@@ -13117,6 +13117,21 @@ class AIAgent:
                         "does not support multimodal",
                         "does not support vision",
                         "model does not support image",
+                        # ChatGPT-account Codex backend
+                        # (https://chatgpt.com/backend-api/codex) rejects
+                        # data:image/...base64 URLs in input_image fields
+                        # with HTTP 400 "Invalid 'input[N].content[K].image_url'.
+                        # Expected a valid URL, but got a value with an
+                        # invalid format." The OpenAI Responses API on the
+                        # public endpoint accepts data URLs, but the
+                        # ChatGPT-account variant does not. Without this
+                        # phrase the agent cascaded into compression /
+                        # context-too-large recovery instead of just
+                        # stripping the images. Match is narrow on
+                        # purpose — keyed on the field-path apostrophe so
+                        # we don't false-trip on other URL validation
+                        # errors. (issue #23570)
+                        "image_url'. expected",
                     )
                     _err_lower = _err_body.lower()
                     _looks_like_image_rejection = any(

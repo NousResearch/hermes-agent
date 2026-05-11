@@ -194,6 +194,7 @@ class TestImageRejectionPhraseIsolation:
         "does not support multimodal",
         "does not support vision",
         "model does not support image",
+        "image_url'. expected",
     )
 
     def _matches(self, body: str) -> bool:
@@ -238,6 +239,29 @@ class TestImageRejectionPhraseIsolation:
             "This model does not support images",
             "vision is not supported on this endpoint",
             "model does not support image input",
+            # ChatGPT-account Codex backend (issue #23570) — rejects
+            # data:image/...base64 URLs in input_image fields. Without this
+            # match the agent cascaded into compression / context-too-large
+            # recovery instead of just stripping the images.
+            "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
         ]
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"
+
+    def test_codex_data_url_rejection_does_not_false_match_other_url_errors(self):
+        """The narrow 'image_url'. expected' phrase (keyed on the
+        field-path apostrophe used in the Codex Responses error format)
+        must NOT trip on URL validation errors that aren't about
+        image_url specifically. See issue #23570 for the original error.
+        """
+        bodies = [
+            # Generic URL validation errors — should NOT trip
+            "Invalid webhook_url. Must be a valid URL.",
+            "Expected a valid URL but got an empty string.",
+            "redirect_uri does not look like a valid URL.",
+            # An image_url error worded differently — also should not trip
+            # the narrow phrase (a separate phrase would be needed)
+            "image_url field cannot be empty",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"

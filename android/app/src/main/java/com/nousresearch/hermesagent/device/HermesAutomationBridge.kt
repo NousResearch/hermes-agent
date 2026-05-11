@@ -3,6 +3,10 @@ package com.nousresearch.hermesagent.device
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import com.nousresearch.hermesagent.data.AppSettingsStore
+import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
+import com.nousresearch.hermesagent.data.LocalModelDownloadStore
+import com.nousresearch.hermesagent.data.ProviderPresets
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -28,10 +32,12 @@ object HermesAutomationBridge {
             "operator_devices", "devices", "standby_devices", "remote_devices", "opengui_devices" -> operatorDevicesJson(context)
             "operator_standby_status", "standby_status", "remote_dispatch_status", "dispatch_status" -> operatorStandbyStatusJson(context)
             "operator_heartbeat", "standby_heartbeat", "remote_heartbeat", "opengui_heartbeat" -> operatorStandbyHeartbeatJson(context, arguments)
+            "operator_batch_heartbeat", "batch_heartbeat", "remote_batch_heartbeat", "opengui_batch_heartbeat", "execution_batch_heartbeat" -> operatorBatchHeartbeatJson(context, arguments)
             "operator_execution_status", "execution_status", "remote_execution_status", "opengui_execution_status" -> operatorExecutionStatusJson(context, arguments)
             "operator_cancel_execution", "cancel_execution", "remote_cancel_execution", "opengui_cancel_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.CANCEL)
             "operator_pause_execution", "pause_execution", "remote_pause_execution", "opengui_pause_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.PAUSE)
             "operator_resume_execution", "resume_execution", "remote_resume_execution", "opengui_resume_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.RESUME)
+            "operator_model_routing", "operator_model_routing_status", "model_routing", "model_routing_status", "opengui_model_routing" -> operatorModelRoutingStatusJson(context)
             "operator_command", "opengui_command", "remote_command", "im_command", "discord_command", "telegram_command", "feishu_command" -> operatorCommandJson(context, arguments)
             "create_shell_task", "create_shell", "create" -> createShellTaskJson(context, arguments)
             "create_file_write_task", "create_file_write", "write_file_task" -> createFileWriteTaskJson(context, arguments)
@@ -210,6 +216,171 @@ object HermesAutomationBridge {
             .toString()
     }
 
+    fun operatorBatchHeartbeatJson(context: Context, arguments: JSONObject): String {
+        val executionIds = stringListArgument(arguments, "execution_ids", "executionIds", "ids", "remote_execution_ids")
+            .distinct()
+            .take(100)
+        val store = HermesAutomationStore(context)
+        val events = store.listRunEvents(50)
+        val terminalIds = mutableListOf<String>()
+        val failedIds = mutableListOf<String>()
+
+        for (executionId in executionIds) {
+            val matched = events.firstOrNull { event ->
+                event.remoteExecutionId == executionId || event.id == executionId
+            }
+            if (matched == null) {
+                failedIds += executionId
+            } else {
+                terminalIds += executionId
+            }
+        }
+
+        val now = System.currentTimeMillis()
+        val heartbeat = JSONObject()
+            .put("success", executionIds.isNotEmpty() && failedIds.size < executionIds.size)
+            .put("accepted", executionIds.isNotEmpty())
+            .put("event", "execution:heartbeat:batch")
+            .put("compatible_endpoint", "POST /executions/heartbeat/batch")
+            .put("received_at_epoch_ms", now)
+            .put("heartbeat_interval_seconds", 30)
+            .put("heartbeatInterval", 30)
+            .put("execution_count", executionIds.size)
+            .put("renewed_execution_ids", JSONArray())
+            .put("renewedExecutionIds", JSONArray())
+            .put("terminal_execution_ids", JSONArray(terminalIds))
+            .put("terminalExecutionIds", JSONArray(terminalIds))
+            .put("failed_execution_ids", JSONArray(failedIds))
+            .put("failedExecutionIds", JSONArray(failedIds))
+            .put(
+                "message",
+                if (executionIds.isEmpty()) {
+                    "No executionIds were supplied."
+                } else if (terminalIds.isNotEmpty()) {
+                    "Hermes found completed local Android executions. Local automation runs are synchronous, so completed executions do not need renewed leases."
+                } else {
+                    "No matching Hermes execution records were found."
+                },
+            )
+            .put("standby_namespace", "/standby")
+            .put("standby_heartbeat_event", "standby:heartbeat")
+        store.saveStandbyHeartbeat(
+            JSONObject(heartbeat.toString())
+                .put("source", stringArgument(arguments, "source", "dispatch_source", "platform", allowEmpty = true).orEmpty().ifBlank { "batch_heartbeat" })
+                .put("device_id", stringArgument(arguments, "device_id", "deviceId", allowEmpty = true).orEmpty()),
+        )
+        return heartbeat
+            .put("standby_dispatch", standbySummaryJson(context, store.list(), store))
+            .toString()
+    }
+
+    fun operatorModelRoutingStatusJson(context: Context): String {
+        val settings = AppSettingsStore(context).load()
+        val providerPreset = ProviderPresets.find(settings.provider)
+        val providerLabel = providerPreset?.label ?: settings.provider.ifBlank { "Custom provider" }
+        val providerModel = settings.model.ifBlank { providerPreset?.modelHint.orEmpty() }
+        val providerBaseUrl = settings.baseUrl.ifBlank { providerPreset?.baseUrl.orEmpty() }
+        val downloads = LocalModelDownloadStore(context)
+        val localRecords = downloads.loadDownloads()
+        val preferredLocal = localRecords.firstOrNull { it.id == downloads.preferredDownloadId() }
+            ?: localRecords.firstOrNull { it.status.equals("completed", ignoreCase = true) }
+        val localModelId = preferredLocal?.modelIdFromDownload().orEmpty()
+        val usingLocal = localModelId.isNotBlank() || settings.onDeviceBackend.equals("litert_lm", ignoreCase = true)
+        val activeModel = if (usingLocal) {
+            localModelId.ifBlank { settings.model.ifBlank { ProviderPresets.firstClassLocalModels.first().id } }
+        } else {
+            providerModel.ifBlank { "gemma-4-E2B-it" }
+        }
+        val activeProvider = if (usingLocal) "local_litert_lm" else settings.provider.ifBlank { providerPreset?.id.orEmpty().ifBlank { "custom" } }
+        val activeProviderLabel = if (usingLocal) "Local LiteRT-LM" else providerLabel
+        val activeBaseUrl = if (usingLocal) "" else providerBaseUrl
+        val visionCapable = isVisionCapableModel(activeModel, preferredLocal)
+        val routingRoles = JSONArray(
+            listOf(
+                modelRoleJson("planner", activeProvider, activeModel, activeProviderLabel, activeBaseUrl, visionCapable = false),
+                modelRoleJson("supervisor", activeProvider, activeModel, activeProviderLabel, activeBaseUrl, visionCapable = false),
+                modelRoleJson("executor_vlm", activeProvider, activeModel, activeProviderLabel, activeBaseUrl, visionCapable = visionCapable),
+                modelRoleJson("executor_action", "hermes_android_tools", "android_automation_tool", "Hermes Android tools", "", visionCapable = false),
+                modelRoleJson("summarizer", activeProvider, activeModel, activeProviderLabel, activeBaseUrl, visionCapable = false),
+            )
+        )
+
+        return JSONObject()
+            .put("success", true)
+            .put("open_gui_compatible", true)
+            .put("role_routing_supported", true)
+            .put("single_runtime_fallback", true)
+            .put("active_provider", activeProvider)
+            .put("active_provider_label", activeProviderLabel)
+            .put("active_model", activeModel)
+            .put("provider_base_url", activeBaseUrl)
+            .put("on_device_backend", settings.onDeviceBackend)
+            .put("preferred_local_model_id", localModelId.ifBlank { JSONObject.NULL })
+            .put("preferred_local_model_path", preferredLocal?.destinationPath?.ifBlank { null } ?: JSONObject.NULL)
+            .put("vision_capable", visionCapable)
+            .put("roles", routingRoles)
+            .put(
+                "routing_strategy",
+                "OpenGUI-style role routing is exposed to remote dispatchers. Hermes defaults planner, supervisor, VLM, and summarizer roles to the active local LiteRT-LM or remote provider, while action execution stays on Android-native tools.",
+            )
+            .put(
+                "compatible_model_routing_queries",
+                JSONArray(
+                    listOf(
+                        "OpenGUI /models",
+                        "OpenGUI /model-routing",
+                        "Hermes android_automation_tool operator_model_routing",
+                    )
+                )
+            )
+            .toString()
+    }
+
+    private fun modelRoleJson(
+        role: String,
+        provider: String,
+        model: String,
+        providerLabel: String,
+        baseUrl: String,
+        visionCapable: Boolean,
+    ): JSONObject {
+        return JSONObject()
+            .put("role", role)
+            .put("provider", provider)
+            .put("provider_label", providerLabel)
+            .put("model", model)
+            .put("base_url", baseUrl)
+            .put("vision_capable", visionCapable)
+            .put("local_android_tools", provider == "hermes_android_tools")
+    }
+
+    private fun LocalModelDownloadRecord.modelIdFromDownload(): String {
+        return title.ifBlank { destinationFileName }
+            .replace(Regex("""\.(litertlm|task|gguf|bin)$""", RegexOption.IGNORE_CASE), "")
+            .trim()
+            .ifBlank {
+                destinationFileName
+                    .replace(Regex("""\.(litertlm|task|gguf|bin)$""", RegexOption.IGNORE_CASE), "")
+                    .trim()
+            }
+    }
+
+    private fun isVisionCapableModel(model: String, preferredLocal: LocalModelDownloadRecord?): Boolean {
+        val lower = listOf(
+            model,
+            preferredLocal?.title.orEmpty(),
+            preferredLocal?.destinationFileName.orEmpty(),
+            preferredLocal?.runtimeFlavor.orEmpty(),
+        ).joinToString(" ").lowercase(Locale.US)
+        return "vision" in lower ||
+            "image" in lower ||
+            "multimodal" in lower ||
+            "gemma-4" in lower ||
+            "gemma 4" in lower ||
+            "gemma-3n" in lower ||
+            "gemma 3n" in lower
+    }
+
     private fun operatorExecutionLifecycleJson(
         context: Context,
         arguments: JSONObject,
@@ -310,6 +481,7 @@ object HermesAutomationBridge {
             .put("online_device_count", 1)
             .put("devices", JSONArray().put(device))
             .put("standby_dispatch", standby)
+            .put("model_routing", JSONObject(operatorModelRoutingStatusJson(context)))
             .put(
                 "compatible_device_queries",
                 JSONArray(
@@ -388,6 +560,7 @@ object HermesAutomationBridge {
                     )
                 )
             )
+            .put("model_routing", JSONObject(operatorModelRoutingStatusJson(context)))
             .toString()
     }
 
@@ -415,6 +588,7 @@ object HermesAutomationBridge {
             OperatorCommandType.HELP -> operatorCommandHelpJson(parsed)
             OperatorCommandType.LIST_TASKS -> withParsedOperatorCommand(listJson(context), parsed)
             OperatorCommandType.DEVICES -> withParsedOperatorCommand(operatorDevicesJson(context), parsed)
+            OperatorCommandType.MODELS -> withParsedOperatorCommand(operatorModelRoutingStatusJson(context), parsed)
             OperatorCommandType.STATUS -> {
                 val statusArgs = JSONObject()
                 parsed.executionId?.let { statusArgs.put("executionId", it) }
@@ -4027,10 +4201,12 @@ object HermesAutomationBridge {
             .put("standby_heartbeat_event", "standby:heartbeat")
             .put("standby_dispatch_event", "standby:dispatch")
             .put("heartbeat_interval_seconds", 30)
+            .put("batch_heartbeat_supported", true)
             .put("last_heartbeat_epoch_ms", if (latestHeartbeatEpochMs > 0L) latestHeartbeatEpochMs else JSONObject.NULL)
             .put("last_heartbeat_source", latestHeartbeat.optString("source"))
             .put("last_heartbeat_device_id", latestHeartbeat.optString("device_id"))
             .put("standby_heartbeat_supported", true)
+            .put("model_routing_supported", true)
             .put("automation_count", records.size)
             .put("enabled_automation_count", enabledRecords.size)
             .put("external_trigger_count", externalRecords.size)
@@ -4071,10 +4247,14 @@ object HermesAutomationBridge {
                     listOf(
                         "OpenGUI standby:dispatch {executionId, taskId, taskName}",
                         "OpenGUI standby:heartbeat {deviceId}",
+                        "OpenGUI POST /executions/heartbeat/batch {executionIds}",
                         "OpenGUI /status [executionId]",
+                        "OpenGUI /models",
                         "Hermes android_automation_tool operator_heartbeat",
+                        "Hermes android_automation_tool operator_batch_heartbeat",
                         "Hermes android_automation_tool run_remote_dispatch",
                         "Hermes android_automation_tool operator_execution_status",
+                        "Hermes android_automation_tool operator_model_routing",
                         "token-protected Hermes external broadcast",
                     )
                 )
@@ -4889,6 +5069,7 @@ object HermesAutomationBridge {
         PAUSE("pause"),
         RESUME("resume"),
         DEVICES("devices"),
+        MODELS("models"),
         FREE_TEXT("free_text"),
     }
 
@@ -4996,6 +5177,9 @@ object HermesAutomationBridge {
         if (Regex("^/?devices?\\b", RegexOption.IGNORE_CASE).containsMatchIn(stripped)) {
             return ParsedOperatorCommand(OperatorCommandType.DEVICES, rawText, stripped)
         }
+        if (Regex("^/?(?:models?|model[-_\\s]?routing|routing)\\b", RegexOption.IGNORE_CASE).containsMatchIn(stripped)) {
+            return ParsedOperatorCommand(OperatorCommandType.MODELS, rawText, stripped)
+        }
         if (Regex("^/?help\\b", RegexOption.IGNORE_CASE).containsMatchIn(stripped)) {
             return ParsedOperatorCommand(OperatorCommandType.HELP, rawText, stripped)
         }
@@ -5023,6 +5207,7 @@ object HermesAutomationBridge {
             "\u53d6\u6d88" -> ParsedOperatorCommand(OperatorCommandType.CANCEL, rawText, stripped)
             "\u6682\u505c" -> ParsedOperatorCommand(OperatorCommandType.PAUSE, rawText, stripped)
             "\u6062\u590d" -> ParsedOperatorCommand(OperatorCommandType.RESUME, rawText, stripped)
+            "\u6a21\u578b", "\u6a21\u578b\u8def\u7531" -> ParsedOperatorCommand(OperatorCommandType.MODELS, rawText, stripped)
             "\u5e2e\u52a9" -> ParsedOperatorCommand(OperatorCommandType.HELP, rawText, stripped)
             else -> ParsedOperatorCommand(OperatorCommandType.FREE_TEXT, rawText, stripped)
         }
@@ -5119,6 +5304,21 @@ object HermesAutomationBridge {
                 .map { it.trim().take(MAX_EVENT_VALUE_CHARS) }
                 .filter { it.isNotBlank() }
                 .toSet()
+        }
+    }
+
+    private fun stringListArgument(arguments: JSONObject, vararg keys: String): List<String> {
+        val key = keys.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) } ?: return emptyList()
+        return when (val value = arguments.opt(key)) {
+            is JSONArray -> buildList {
+                for (index in 0 until value.length()) {
+                    value.optString(index).trim().take(MAX_EVENT_VALUE_CHARS).takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            else -> value?.toString().orEmpty()
+                .split(',', ';', '\n', '\t', ' ')
+                .map { it.trim().take(MAX_EVENT_VALUE_CHARS) }
+                .filter { it.isNotBlank() }
         }
     }
 
@@ -5241,6 +5441,7 @@ object HermesAutomationBridge {
         "/do <description> - dispatch to an enabled automation with the same label",
         "/status [executionId] - inspect recent execution status",
         "/devices - list this standby Hermes device",
+        "/models - show OpenGUI-style model role routing for planner, supervisor, VLM, executor, and summarizer roles",
         "/pause [executionId], /resume [executionId] [feedback], and /cancel [executionId] return OpenGUI-compatible lifecycle state for recent runs",
     )
 
@@ -5251,6 +5452,7 @@ object HermesAutomationBridge {
         "run" to "Run an existing remote-dispatch automation by id or label",
         "do" to "Dispatch a natural-language task to a matching enabled automation",
         "status" to "Show recent execution status",
+        "models" to "Show OpenGUI-compatible role model routing",
         "cancel" to "Return OpenGUI-compatible cancel state for a recent execution",
         "pause" to "Return OpenGUI-compatible pause state for a recent execution",
         "resume" to "Return OpenGUI-compatible resume state for a recent execution",
@@ -5261,10 +5463,12 @@ object HermesAutomationBridge {
         "operator_devices",
         "operator_standby_status",
         "operator_heartbeat",
+        "operator_batch_heartbeat",
         "operator_execution_status",
         "operator_cancel_execution",
         "operator_pause_execution",
         "operator_resume_execution",
+        "operator_model_routing",
         "operator_command",
         "run_history",
         "create_shell_task",

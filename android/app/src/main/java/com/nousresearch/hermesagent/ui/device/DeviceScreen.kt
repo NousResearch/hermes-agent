@@ -233,6 +233,12 @@ private fun OperatorStandbyCard(uiState: DeviceUiState) {
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            if (uiState.operatorModelName.isNotBlank()) {
+                Text(
+                    "Model routing: ${uiState.operatorModelProvider.ifBlank { "Hermes" }} / ${uiState.operatorModelName} (${if (uiState.operatorVisionCapable) "vision-ready" else "text-first"})",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

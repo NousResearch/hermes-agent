@@ -74,6 +74,9 @@ data class DeviceUiState(
     val lastDispatchTaskName: String = "",
     val lastDispatchSource: String = "",
     val lastDispatchChannel: String = "",
+    val operatorModelProvider: String = "",
+    val operatorModelName: String = "",
+    val operatorVisionCapable: Boolean = false,
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
     val status: String = "",
@@ -196,6 +199,7 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         val linuxState = HermesLinuxSubsystemBridge.readState(context)
         val systemStatus = HermesSystemControlBridge.readStatus(context)
         val standbyStatus = automationStandbyStatus(context)
+        val modelRoutingStatus = automationModelRoutingStatus(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -259,6 +263,10 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             lastDispatchTaskName = standbyStatus.optString("last_dispatch_task_name"),
             lastDispatchSource = standbyStatus.optString("last_dispatch_source"),
             lastDispatchChannel = standbyStatus.optString("last_dispatch_channel"),
+            operatorModelProvider = modelRoutingStatus.optString("active_provider_label")
+                .ifBlank { modelRoutingStatus.optString("active_provider") },
+            operatorModelName = modelRoutingStatus.optString("active_model"),
+            operatorVisionCapable = modelRoutingStatus.optBoolean("vision_capable", false),
             resizableWindowSupport = systemStatus.resizableWindowSupport,
             freeformWindowSupported = systemStatus.freeformWindowSupported,
             status = status,
@@ -269,6 +277,12 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         return runCatching {
             JSONObject(HermesAutomationBridge.operatorStandbyStatusJson(context))
                 .optJSONObject("standby_dispatch") ?: JSONObject()
+        }.getOrDefault(JSONObject())
+    }
+
+    private fun automationModelRoutingStatus(context: Application): JSONObject {
+        return runCatching {
+            JSONObject(HermesAutomationBridge.operatorModelRoutingStatusJson(context))
         }.getOrDefault(JSONObject())
     }
 

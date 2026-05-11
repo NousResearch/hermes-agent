@@ -1,5 +1,5 @@
 /* Hermes Docs — dashboard plugin frontend bundle
-   Version: 0.2.0
+   Version: 0.3.0
    Design: Mintlify (see DESIGN.md)
 
    Uses window.__HERMES_PLUGIN_SDK__ exclusively — no npm imports.
@@ -608,7 +608,70 @@
   }
 
   // --------------------------------------------------------------------------
-  // SettingsPanel (onboarding / status placeholder)
+  // DocsPersonaRow — live status + bootstrap action for the docs persona
+  // --------------------------------------------------------------------------
+
+  function DocsPersonaRow() {
+    // status: null (loading) | { installed, profile_dir, has_soul, has_config }
+    var statusState = useState(null); var personaStatus = statusState[0]; var setPersonaStatus = statusState[1];
+    var busyState   = useState(false); var busy = busyState[0]; var setBusy = busyState[1];
+    var msgState    = useState("");    var msg  = msgState[0];  var setMsg  = msgState[1];
+
+    useEffect(function() {
+      apiGet("/profile/status")
+        .then(function(s) { setPersonaStatus(s); })
+        .catch(function() { setPersonaStatus({ installed: false, _fetchError: true }); });
+    }, []);
+
+    function handleBootstrap() {
+      setBusy(true); setMsg("");
+      apiPost("/profile/bootstrap", {})
+        .then(function(res) {
+          setBusy(false);
+          setPersonaStatus({ installed: true, profile_dir: res.profile_dir, has_soul: true, has_config: true });
+          setMsg(res.status === "created" ? "Docs agent persona installed." : "Already installed \u2014 nothing changed.");
+        })
+        .catch(function(err) {
+          setBusy(false);
+          setMsg("Bootstrap failed: " + (err.message || "unknown error"));
+        });
+    }
+
+    // Decide right-side affordance
+    var badge;
+    if (personaStatus === null) {
+      badge = h("span", { className: "hd-badge hd-badge--setup" }, "Checking\u2026");
+    } else if (personaStatus.installed) {
+      badge = h("span", { className: "hd-badge hd-badge--ok" }, "\u2713 Installed");
+    } else {
+      badge = h("button", {
+        className: "hd-btn hd-btn--primary",
+        style: { fontSize: 12, padding: "4px 12px" },
+        disabled: busy,
+        onClick: handleBootstrap,
+      }, busy ? "Installing\u2026" : "Bootstrap Docs Agent");
+    }
+
+    return h("div", { className: "hd-settings-row" },
+      h("div", { className: "hd-settings-row__label" },
+        h("div", { className: "hd-settings-row__key" }, "Docs Agent Persona"),
+        h("div", { className: "hd-settings-row__hint" },
+          "Installs a local ", h("code", null, "docs"), " profile that specialises in Markdown editing, review, and brainstorming.",
+          personaStatus && personaStatus.installed && personaStatus.profile_dir
+            ? h("span", null, " Profile path: ", h("code", null, personaStatus.profile_dir), ".")
+            : null
+        ),
+        msg ? h("div", { style: { marginTop: 6, fontSize: 12,
+            color: msg.startsWith("Bootstrap failed") ? "var(--hd-brand-error)" : "var(--hd-brand-green-deep)" } },
+          msg
+        ) : null
+      ),
+      badge
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // SettingsPanel — docs settings with live persona onboarding
   // --------------------------------------------------------------------------
 
   function SettingsPanel(props) {
@@ -623,7 +686,7 @@
           h("h2", { className: "hd-settings-section__title", style: { margin: 0 } }, "Docs Settings")
         ),
         h("p", { className: "hd-settings-section__desc" },
-          "Configure authentication, agent persona, and document conversion settings."
+          "Configure agent persona and document conversion settings."
         ),
 
         h("div", { className: "hd-settings-row" },
@@ -636,15 +699,7 @@
           h("span", { className: "hd-badge hd-badge--setup" }, "Set up in Hermes config")
         ),
 
-        h("div", { className: "hd-settings-row" },
-          h("div", { className: "hd-settings-row__label" },
-            h("div", { className: "hd-settings-row__key" }, "Docs Agent Persona"),
-            h("div", { className: "hd-settings-row__hint" },
-              "A `docs` persona specialising in Markdown editing, review, and brainstorming."
-            )
-          ),
-          h("span", { className: "hd-badge hd-badge--setup" }, "Coming in next slice")
-        ),
+        h(DocsPersonaRow, null),
 
         h("div", { className: "hd-settings-row" },
           h("div", { className: "hd-settings-row__label" },
@@ -653,7 +708,7 @@
               "HWP/HWPX/DOCX/XLSX/PDF \u2192 Markdown conversion via local Kordoc broker."
             )
           ),
-          h("span", { className: "hd-badge hd-badge--setup" }, "Coming in next slice")
+          h("span", { className: "hd-badge hd-badge--setup" }, "Set up via Kordoc MCP")
         ),
 
         h("div", { className: "hd-settings-row" },
@@ -877,6 +932,11 @@
     // Settings
     var showSettingsState = useState(false); var showSettings = showSettingsState[0]; var setShowSettings = showSettingsState[1];
 
+    // Docs persona banner (launcher screen only, non-blocking)
+    // null = loading, false = dismissed, object = status
+    var personaBannerState = useState(null); var personaBanner = personaBannerState[0]; var setPersonaBanner = personaBannerState[1];
+    var bootstrapBusyState = useState(false); var bootstrapBusy = bootstrapBusyState[0]; var setBootstrapBusy = bootstrapBusyState[1];
+
     // Diff preview
     var diffState        = useState(null); var diff = diffState[0]; var setDiff = diffState[1];
 
@@ -896,6 +956,13 @@
       apiGet("/workspaces")
         .then(function(data) { setWorkspaces(data || []); setLoading(false); })
         .catch(function(err) { setError(err.message || "Failed to load workspaces"); setLoading(false); });
+    }, []);
+
+    // ── Fetch docs persona status on mount (non-intrusive) ──
+    useEffect(function() {
+      apiGet("/profile/status")
+        .then(function(s) { setPersonaBanner(s); })
+        .catch(function() { setPersonaBanner(false); }); // silent on error
     }, []);
 
     // ── Load root files when workspace changes ──
@@ -1066,15 +1133,50 @@
 
     // ─── Render ───
     if (!activeWs) {
+      // Persona bootstrap banner — shown only when not installed, dismissed on action
+      var showPersonaBanner = personaBanner && personaBanner !== false && !personaBanner.installed;
+
+      function handleBannerBootstrap() {
+        setBootstrapBusy(true);
+        apiPost("/profile/bootstrap", {})
+          .then(function(res) {
+            setBootstrapBusy(false);
+            setPersonaBanner({ installed: true, profile_dir: res.profile_dir });
+          })
+          .catch(function() { setBootstrapBusy(false); setPersonaBanner(false); });
+      }
+
       return h("div", { className: "hd-app", "data-theme": themeAttr },
-        h(WorkspaceLauncher, {
-          workspaces: workspaces || [],
-          loading: loading,
-          error: error,
-          onOpen: handleOpenWorkspace,
-          onAdd: handleAddWorkspace,
-          onRemove: handleRemoveWorkspace,
-        })
+        h("div", { style: { display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" } },
+          showPersonaBanner && h("div", { className: "hd-persona-banner" },
+            h(Icon, { name: "docs", size: 13, color: "var(--hd-brand-green-deep)" }),
+            h("span", null,
+              "The local Docs Agent persona is not set up yet. ",
+              h("strong", null, "Bootstrap")," to install it — this prepares a local", " ",
+              h("code", null, "docs"), " profile for Hermes Docs."
+            ),
+            h("button", {
+              className: "hd-btn hd-btn--primary",
+              style: { fontSize: 12, padding: "3px 10px", flexShrink: 0 },
+              disabled: bootstrapBusy,
+              onClick: handleBannerBootstrap,
+            }, bootstrapBusy ? "Installing\u2026" : "Bootstrap Docs Agent"),
+            h("button", {
+              className: "hd-btn hd-btn--icon",
+              title: "Dismiss",
+              style: { flexShrink: 0 },
+              onClick: function() { setPersonaBanner(false); },
+            }, h(Icon, { name: "close", size: 13 }))
+          ),
+          h(WorkspaceLauncher, {
+            workspaces: workspaces || [],
+            loading: loading,
+            error: error,
+            onOpen: handleOpenWorkspace,
+            onAdd: handleAddWorkspace,
+            onRemove: handleRemoveWorkspace,
+          })
+        )
       );
     }
 

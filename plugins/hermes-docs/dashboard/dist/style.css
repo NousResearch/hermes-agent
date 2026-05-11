@@ -1030,6 +1030,34 @@
   border: 1px solid rgba(0, 212, 164, 0.2);
 }
 
+/* ─── Docs persona bootstrap banner (launcher screen) ────────────────────── */
+
+.hd-persona-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--hd-sp-sm);
+  padding: var(--hd-sp-sm) var(--hd-sp-xl);
+  background: rgba(0, 212, 164, 0.06);
+  border-bottom: 1px solid rgba(0, 212, 164, 0.2);
+  font-size: 13px;
+  color: var(--hd-steel);
+  flex-shrink: 0;
+}
+
+.hd-persona-banner span {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.hd-persona-banner code {
+  font-family: var(--hd-font-mono);
+  font-size: 11px;
+  background: var(--hd-surface);
+  border: 1px solid var(--hd-hairline);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
 /* ─── Scrollbar styling ───────────────────────────────────────────────────── */
 
 .hd-app ::-webkit-scrollbar {

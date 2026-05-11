@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
@@ -31,6 +32,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.task_focus import extract_task_focus, format_task_focus_for_summary
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,14 @@ _SUMMARY_TOKENS_CEILING = 12_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# Microcompact constants (from OpenHarness)
+MC_TIME_GAP_MINUTES = 60
+MC_KEEP_RECENT = 5
+MC_CLEARED_MESSAGE = "[Old tool result content cleared to save context space]"
+
+MAX_PTL_RETRIES = 3
+PTL_RETRY_MARKER = "[earlier conversation truncated for compaction retry]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
@@ -684,6 +694,52 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def _microcompact_by_time(
+        self, messages: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Clear old tool results by age while preserving the most recent ones."""
+        if not messages:
+            return messages, 0
+
+        result = [message.copy() for message in messages]
+        tool_indexes = [
+            idx
+            for idx, message in enumerate(result)
+            if message.get("role") == "tool"
+        ]
+        if len(tool_indexes) <= MC_KEEP_RECENT:
+            return result, 0
+
+        keep_indexes = set(tool_indexes[-MC_KEEP_RECENT:])
+        now_ts = time.time()
+        tokens_saved = 0
+
+        for ordinal, idx in enumerate(tool_indexes):
+            if idx in keep_indexes:
+                continue
+
+            message = result[idx]
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                continue
+            if not content or content == MC_CLEARED_MESSAGE:
+                continue
+
+            msg_ts = _extract_message_timestamp(message)
+            if msg_ts is None:
+                newer_after = len(tool_indexes) - ordinal - 1
+                is_old = newer_after >= MC_KEEP_RECENT
+            else:
+                is_old = (now_ts - msg_ts) >= (MC_TIME_GAP_MINUTES * 60)
+            if not is_old:
+                continue
+
+            if len(content) > len(MC_CLEARED_MESSAGE):
+                tokens_saved += (len(content) - len(MC_CLEARED_MESSAGE)) // _CHARS_PER_TOKEN
+            result[idx] = {**message, "content": MC_CLEARED_MESSAGE}
+
+        return result, tokens_saved
+
     # ------------------------------------------------------------------
     # Summarization
     # ------------------------------------------------------------------
@@ -817,7 +873,10 @@ class ContextCompressor(ContextEngine):
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
-        content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        task_focus = extract_task_focus(turns_to_summarize)
+        task_focus_block = (
+            format_task_focus_for_summary(task_focus) if task_focus else ""
+        )
 
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Keep the wording deliberately plain: Azure/OpenAI-compatible content
@@ -896,9 +955,21 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
 
-        if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
-            prompt = f"""{_summarizer_preamble}
+        try:
+            retry_turns = list(turns_to_summarize)
+            for ptl_attempt in range(MAX_PTL_RETRIES):
+                content_to_summarize = self._serialize_for_summary(retry_turns)
+                task_focus_prompt = ""
+                if task_focus_block:
+                    task_focus_prompt = (
+                        "\n\nPRE-EXTRACTED TASK FOCUS:\n"
+                        f"{task_focus_block}\n"
+                        "Preserve this focus in the final summary, especially "
+                        "the Active Task, Relevant Files, and Active State sections."
+                    )
+
+                if self._previous_summary:
+                    prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
@@ -906,57 +977,67 @@ PREVIOUS SUMMARY:
 {self._previous_summary}
 
 NEW TURNS TO INCORPORATE:
-{content_to_summarize}
+{content_to_summarize}{task_focus_prompt}
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
 {_template_sections}"""
-        else:
-            # First compaction: summarize from scratch
-            prompt = f"""{_summarizer_preamble}
+                else:
+                    prompt = f"""{_summarizer_preamble}
 
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
 
 TURNS TO SUMMARIZE:
-{content_to_summarize}
+{content_to_summarize}{task_focus_prompt}
 
 Use this exact structure:
 
 {_template_sections}"""
 
-        # Inject focus topic guidance when the user provides one via /compress <focus>.
-        # This goes at the end of the prompt so it takes precedence.
-        if focus_topic:
-            prompt += f"""
+                if focus_topic:
+                    prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
-        try:
-            call_kwargs = {
-                "task": "compression",
-                "main_runtime": {
-                    "model": self.model,
-                    "provider": self.provider,
-                    "base_url": self.base_url,
-                    "api_key": self.api_key,
-                    "api_mode": self.api_mode,
-                },
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(summary_budget * 1.3),
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
-            }
-            if self.summary_model:
-                call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+                try:
+                    call_kwargs = {
+                        "task": "compression",
+                        "main_runtime": {
+                            "model": self.model,
+                            "provider": self.provider,
+                            "base_url": self.base_url,
+                            "api_key": self.api_key,
+                            "api_mode": self.api_mode,
+                        },
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": int(summary_budget * 1.3),
+                        # timeout resolved from auxiliary.compression.timeout config by call_llm
+                    }
+                    if self.summary_model:
+                        call_kwargs["model"] = self.summary_model
+                    response = call_llm(**call_kwargs)
+                    break
+                except Exception as e:
+                    if (
+                        _is_prompt_too_long_error(e)
+                        and ptl_attempt + 1 < MAX_PTL_RETRIES
+                    ):
+                        retry_turns = _truncate_head_for_retry(retry_turns)
+                        logger.warning(
+                            "PTL retry %d/%d: truncating head",
+                            ptl_attempt + 1,
+                            MAX_PTL_RETRIES,
+                        )
+                        continue
+                    raise
+
             content = response.choices[0].message.content
-            # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
-            # Redact the summary output as well — the summarizer LLM may
-            # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
-            # Store for iterative updates on next compaction
+            if task_focus_block and task_focus_block not in summary:
+                summary = f"{task_focus_block}\n\n{summary}".strip()
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
@@ -1391,7 +1472,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
-        # Phase 1: Prune old tool results (cheap, no LLM call)
+        # Phase 1: Time-based microcompact before the richer pruning pass.
+        messages, microcompact_saved = self._microcompact_by_time(messages)
+        if microcompact_saved and not self.quiet_mode:
+            logger.info(
+                "Pre-compression: microcompact cleared old tool results (~%d tokens saved)",
+                microcompact_saved,
+            )
+
+        # Phase 2: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n,
             protect_tail_tokens=self.tail_token_budget,
@@ -1399,7 +1488,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
-        # Phase 2: Determine boundaries
+        # Phase 3: Determine boundaries
         compress_start = self.protect_first_n
         compress_start = self._align_boundary_forward(messages, compress_start)
 
@@ -1442,10 +1531,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
+        # Phase 4: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
-        # Phase 4: Assemble compressed message list
+        # Phase 5: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()

@@ -1388,6 +1388,15 @@ class AIAgent:
         # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
         # sessions with >5-minute pauses between turns (#14971).
         self._cache_ttl = "5m"
+        # Long-lived prefix caching: when enabled and supported by the
+        # current provider, splits the system prompt into a stable prefix
+        # (cached cross-session at 1h TTL) and a volatile suffix
+        # (memory/timestamp — never cached), and attaches a 1h cache_control
+        # marker to the last tool in the schema array.  Restricted to
+        # Claude on Anthropic / OpenRouter / Nous Portal; see
+        # ``_supports_long_lived_anthropic_cache``.
+        self._use_long_lived_prefix_cache = False
+        self._long_lived_cache_ttl = "1h"
         try:
             from hermes_cli.config import load_config as _load_pc_cfg
 
@@ -1395,6 +1404,12 @@ class AIAgent:
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in {"5m", "1h"}:
                 self._cache_ttl = _ttl
+            _ll_enabled = _pc_cfg.get("long_lived_prefix", True)
+            _ll_ttl = _pc_cfg.get("long_lived_ttl", "1h")
+            if _ll_ttl in ("5m", "1h"):
+                self._long_lived_cache_ttl = _ll_ttl
+            if _ll_enabled and self._use_prompt_caching and self._supports_long_lived_anthropic_cache():
+                self._use_long_lived_prefix_cache = True
         except Exception:
             pass
 
@@ -2386,6 +2401,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2616,6 +2632,15 @@ class AIAgent:
                 model=new_model,
             )
         )
+        self._use_long_lived_prefix_cache = bool(
+            self._use_prompt_caching
+            and self._supports_long_lived_anthropic_cache(
+                provider=new_provider,
+                base_url=self.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
+        )
 
         # ── LM Studio: preload before probing context length ──
         self._ensure_lmstudio_runtime_loaded()
@@ -2664,6 +2689,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3412,6 +3438,10 @@ class AIAgent:
         provider_lower = eff_provider.lower()
         is_claude = "claude" in model_lower
         is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
+        # Nous Portal proxies to OpenRouter behind the scenes — identical
+        # OpenAI-wire envelope cache_control semantics. Treat it as an
+        # OpenRouter-equivalent endpoint for caching layout purposes.
+        is_nous_portal = "nousresearch" in eff_base_url.lower()
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
         is_native_anthropic = (
             is_anthropic_wire
@@ -3420,7 +3450,7 @@ class AIAgent:
 
         if is_native_anthropic:
             return True, True
-        if is_openrouter and is_claude:
+        if (is_openrouter or is_nous_portal) and is_claude:
             return True, False
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
@@ -3460,6 +3490,61 @@ class AIAgent:
             return True, False
 
         return False, False
+
+    def _supports_long_lived_anthropic_cache(
+        self,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> bool:
+        """Decide whether the long-lived (1h cross-session) cache layout applies.
+
+        Narrower than ``_anthropic_prompt_cache_policy`` — only enabled
+        for Claude models on the four endpoints whose cross-session
+        cache_control behavior we have explicitly validated:
+
+          * Native Anthropic API (``api_mode == 'anthropic_messages'`` +
+            host ``api.anthropic.com``)
+          * Anthropic OAuth subscription (same transport as native API)
+          * OpenRouter (``base_url`` contains ``openrouter.ai``)
+          * Nous Portal (``base_url`` contains ``nousresearch`` — proxies
+            to OpenRouter, so identical wire-format)
+
+        All four honour ``cache_control`` on both the tools array and the
+        first system content block, and bill cross-session cache reads at
+        the documented 0.1× rate.
+
+        Other endpoints covered by the standard ``system_and_3`` policy
+        (third-party Anthropic gateways, MiniMax, opencode-go Qwen, etc.)
+        keep that layout — they support cache_control but their behavior
+        with mixed-TTL multi-block system content has not been validated
+        against this codebase.
+        """
+        eff_provider = (provider if provider is not None else self.provider) or ""
+        eff_base_url = base_url if base_url is not None else (self.base_url or "")
+        eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
+        eff_model = (model if model is not None else self.model) or ""
+
+        if "claude" not in eff_model.lower():
+            return False
+
+        # Native Anthropic + Anthropic OAuth subscription
+        if eff_api_mode == "anthropic_messages":
+            if eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com":
+                return True
+
+        # OpenRouter
+        if base_url_host_matches(eff_base_url, "openrouter.ai"):
+            return True
+
+        # Nous Portal — front-ends OpenRouter behind the scenes; identical
+        # wire format and cache_control semantics.
+        if "nousresearch" in eff_base_url.lower():
+            return True
+
+        return False
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -5608,22 +5693,33 @@ class AIAgent:
 
 
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+        """Assemble the system prompt as three ordered parts.
+
+        Returns a dict with three keys:
+          * ``stable``  — content that is byte-stable across sessions for a
+            given user config: identity, tool guidance, skills prompt,
+            environment hints, platform hints, model-family operational
+            guidance.  Eligible for cross-session 1h prompt caching when
+            placed as a separate Anthropic content block (see
+            ``apply_anthropic_cache_control_long_lived``).
+          * ``context`` — context files (AGENTS.md, .cursorrules, etc.) and
+            caller-supplied system_message.  Stable within a session but may
+            change between sessions when files are edited or the cwd
+            differs.  Cached within-session via the rolling messages
+            breakpoint (5m TTL); not promoted to the long-lived tier so
+            edits don't poison the cross-session cache.
+          * ``volatile`` — content that changes on most turns/sessions:
+            memory snapshot, user profile, external memory provider block,
+            timestamp line.  Never marked for caching.
+
+        Joined ``stable\\n\\ncontext\\n\\nvolatile`` produces the same
+        logical content the old single-string builder produced, with the
+        guarantee that volatile content is at the end (cache-friendly
+        ordering for any provider that does prefix caching).
         """
-        Assemble the full system prompt from all layers.
-        
-        Called once per session (cached on self._cached_system_prompt) and only
-        rebuilt after context compression events. This ensures the system prompt
-        is stable across all turns in a session, maximizing prefix cache hits.
-        """
-        # Layers (in order):
-        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
-        #   2. User / gateway system prompt (if provided)
-        #   3. Persistent memory (frozen snapshot)
-        #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
-        #   6. Current date & time (frozen at build time)
-        #   7. Platform-specific formatting hint
+        # ── Stable tier ────────────────────────────────────────────────
+        stable_parts: List[str] = []
 
         # Try SOUL.md as primary identity unless the caller explicitly skipped it.
         # Some execution modes (cron) still want HERMES_HOME persona while keeping
@@ -5632,15 +5728,15 @@ class AIAgent:
         if self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
-                prompt_parts = [_soul_content]
+                stable_parts.append(_soul_content)
                 _soul_loaded = True
 
         if not _soul_loaded:
             # Fallback to hardcoded identity
-            prompt_parts = [DEFAULT_AGENT_IDENTITY]
+            stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -5657,17 +5753,17 @@ class AIAgent:
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
         if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+            stable_parts.append(" ".join(tool_guidance))
 
         # Computer-use (macOS) — goes in as its own block rather than being
         # merged into tool_guidance because the content is multi-paragraph.
         if "computer_use" in self.valid_tool_names:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            prompt_parts.append(COMPUTER_USE_GUIDANCE)
+            stable_parts.append(COMPUTER_USE_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
-            prompt_parts.append(nous_subscription_prompt)
+            stable_parts.append(nous_subscription_prompt)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -5690,43 +5786,16 @@ class AIAgent:
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
-                prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
                 _model_lower = (self.model or "").lower()
                 # Google model operational guidance (conciseness, absolute
                 # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
-                    prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                    stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
                 # OpenAI GPT/Codex execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
-
-        # so it can refer the user to them rather than reinventing answers.
-
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
-        if system_message is not None:
-            prompt_parts.append(system_message)
-
-        if self._memory_store:
-            if self._memory_enabled:
-                mem_block = self._memory_store.format_for_system_prompt("memory")
-                if mem_block:
-                    prompt_parts.append(mem_block)
-            # USER.md is always included when enabled.
-            if self._user_profile_enabled:
-                user_block = self._memory_store.format_for_system_prompt("user")
-                if user_block:
-                    prompt_parts.append(user_block)
-
-        # External memory provider system prompt block (additive to built-in)
-        if self._memory_manager:
-            try:
-                _ext_mem_block = self._memory_manager.build_system_prompt()
-                if _ext_mem_block:
-                    prompt_parts.append(_ext_mem_block)
-            except Exception:
-                pass
+                    stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -5744,7 +5813,49 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            prompt_parts.append(skills_prompt)
+            stable_parts.append(skills_prompt)
+
+        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
+        # of the requested model. Inject explicit model identity into the system prompt
+        # so the agent can correctly report which model it is (workaround for API bug).
+        # Stable for the lifetime of an agent instance — model and provider are fixed
+        # at construction time.
+        if self.provider == "alibaba":
+            _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
+            stable_parts.append(
+                f"You are powered by the model named {_model_short}. "
+                f"The exact model ID is {self.model}. "
+                f"When asked what model you are, always answer based on this information, "
+                f"not on any model name returned by the API."
+            )
+
+        # Environment hints (WSL, Termux, etc.) — tell the agent about the
+        # execution environment so it can translate paths and adapt behavior.
+        # Stable for the lifetime of the process.
+        _env_hints = build_environment_hints()
+        if _env_hints:
+            stable_parts.append(_env_hints)
+
+        platform_key = (self.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            stable_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    stable_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
+
+        # ── Context tier (cwd-dependent, may change between sessions) ─
+        context_parts: List[str] = []
+
+        # Note: ephemeral_system_prompt is NOT included here. It's injected at
+        # API-call time only so it stays out of the cached/stored system prompt.
+        if system_message is not None:
+            context_parts.append(system_message)
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
@@ -5755,7 +5866,30 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
+                context_parts.append(context_files_prompt)
+
+        # ── Volatile tier (changes per session/turn — never cached) ───
+        volatile_parts: List[str] = []
+
+        if self._memory_store:
+            if self._memory_enabled:
+                mem_block = self._memory_store.format_for_system_prompt("memory")
+                if mem_block:
+                    volatile_parts.append(mem_block)
+            # USER.md is always included when enabled.
+            if self._user_profile_enabled:
+                user_block = self._memory_store.format_for_system_prompt("user")
+                if user_block:
+                    volatile_parts.append(user_block)
+
+        # External memory provider system prompt block (additive to built-in)
+        if self._memory_manager:
+            try:
+                _ext_mem_block = self._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    volatile_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -5766,40 +5900,31 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        volatile_parts.append(timestamp_line)
 
-        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-        # of the requested model. Inject explicit model identity into the system prompt
-        # so the agent can correctly report which model it is (workaround for API bug).
-        if self.provider == "alibaba":
-            _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            prompt_parts.append(
-                f"You are powered by the model named {_model_short}. "
-                f"The exact model ID is {self.model}. "
-                f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API."
-            )
+        return {
+            "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
+            "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
+            "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        }
 
-        # Environment hints (WSL, Termux, etc.) — tell the agent about the
-        # execution environment so it can translate paths and adapt behavior.
-        _env_hints = build_environment_hints()
-        if _env_hints:
-            prompt_parts.append(_env_hints)
+    def _build_system_prompt(self, system_message: str = None) -> str:
+        """
+        Assemble the full system prompt from all layers.
 
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
-        elif platform_key:
-            # Check plugin registry for platform-specific LLM guidance
-            try:
-                from gateway.platform_registry import platform_registry
-                _entry = platform_registry.get(platform_key)
-                if _entry and _entry.platform_hint:
-                    prompt_parts.append(_entry.platform_hint)
-            except Exception:
-                pass
+        Called once per session (cached on self._cached_system_prompt) and only
+        rebuilt after context compression events. This ensures the system prompt
+        is stable across all turns in a session, maximizing prefix cache hits.
 
-        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        Layers are ordered cache-friendly: stable identity/guidance first,
+        then session-stable context files, then per-call volatile content
+        (memory, USER profile, timestamp). The split is exposed via
+        ``_build_system_prompt_parts`` for the long-lived prompt-caching
+        path (Claude on Anthropic / OpenRouter / Nous Portal).
+        """
+        parts = self._build_system_prompt_parts(system_message=system_message)
+        joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+        return joined
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -8557,6 +8682,15 @@ class AIAgent:
                     model=fb_model,
                 )
             )
+            self._use_long_lived_prefix_cache = bool(
+                self._use_prompt_caching
+                and self._supports_long_lived_anthropic_cache(
+                    provider=fb_provider,
+                    base_url=fb_base_url,
+                    api_mode=fb_api_mode,
+                    model=fb_model,
+                )
+            )
 
             # LM Studio: preload before probing the fallback's context length.
             self._ensure_lmstudio_runtime_loaded()
@@ -8632,6 +8766,16 @@ class AIAgent:
             self._use_native_cache_layout = rt.get(
                 "use_native_cache_layout",
                 self.api_mode == "anthropic_messages" and self.provider == "anthropic",
+            )
+            # Long-lived prefix flag was added later — restore False on
+            # snapshots predating the new field, then re-evaluate against
+            # the restored provider/model in case the user had it enabled.
+            self._use_long_lived_prefix_cache = rt.get(
+                "use_long_lived_prefix_cache",
+                bool(
+                    self._use_prompt_caching
+                    and self._supports_long_lived_anthropic_cache()
+                ),
             )
 
             # ── Rebuild client for the primary provider ──
@@ -9210,6 +9354,20 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        # Resolve the tools array exactly once. When the long-lived
+        # prefix-cache layout is active (Claude on Anthropic / OpenRouter
+        # / Nous Portal), attach a 1h cache_control marker to the last
+        # tool — this caches the entire tools array cross-session via
+        # Anthropic's tools→system→messages prefix order. The function
+        # returns a deep copy, so self.tools is never mutated.
+        if self._use_long_lived_prefix_cache and self.tools:
+            from agent.prompt_caching import mark_tools_for_long_lived_cache
+            tools_for_api = mark_tools_for_long_lived_cache(
+                self.tools, long_lived_ttl=self._long_lived_cache_ttl,
+            )
+        else:
+            tools_for_api = self.tools
+
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -9221,7 +9379,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -9241,7 +9399,7 @@ class AIAgent:
             return _bt.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
@@ -9265,7 +9423,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=_msgs_for_codex,
-                tools=self.tools,
+                tools=tools_for_api,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -9356,7 +9514,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 base_url=self.base_url,
                 timeout=self._resolved_api_call_timeout(),
                 max_tokens=self.max_tokens,
@@ -9388,7 +9546,7 @@ class AIAgent:
         return _ct.build_kwargs(
             model=self.model,
             messages=_msgs_for_chat,
-            tools=self.tools,
+            tools=tools_for_api,
             base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
@@ -12030,20 +12188,42 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            #
+            # When the long-lived prefix-cache layout is active (Claude on
+            # Anthropic / OpenRouter / Nous Portal), we build the system
+            # message as a *list of content blocks*: [stable, context,
+            # volatile, ephemeral?].  Block 0 (stable) gets the 1h
+            # cache_control marker further down via
+            # apply_anthropic_cache_control_long_lived; blocks 1-3 are
+            # cached only via the rolling messages window at 5m.
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
             # cache prefix.  The system prompt is reserved for Hermes internals.
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            if self._use_long_lived_prefix_cache:
+                _sys_parts = self._build_system_prompt_parts(system_message=system_message)
+                _sys_blocks: list = []
+                if _sys_parts.get("stable"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["stable"]})
+                if _sys_parts.get("context"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["context"]})
+                if _sys_parts.get("volatile"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["volatile"]})
+                if self.ephemeral_system_prompt:
+                    _sys_blocks.append({"type": "text", "text": self.ephemeral_system_prompt})
+                if _sys_blocks:
+                    api_messages = [{"role": "system", "content": _sys_blocks}] + api_messages
+            else:
+                effective_system = active_system_prompt or ""
+                if self.ephemeral_system_prompt:
+                    effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                if effective_system:
+                    api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
+                sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
@@ -12054,12 +12234,27 @@ class AIAgent:
             # to reduce input token costs by ~75% on multi-turn
             # conversations. Layout is chosen per endpoint by
             # ``_anthropic_prompt_cache_policy``.
+            #
+            # Long-lived prefix layout (prefix_and_2): stable system block
+            # gets 1h marker + last 2 messages get 5m markers. Tools
+            # array's last entry is marked separately at API-call kwargs
+            # build time (see ``_build_api_kwargs`` and
+            # ``mark_tools_for_long_lived_cache``).
             if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(
-                    api_messages,
-                    cache_ttl=self._cache_ttl,
-                    native_anthropic=self._use_native_cache_layout,
-                )
+                if self._use_long_lived_prefix_cache:
+                    from agent.prompt_caching import apply_anthropic_cache_control_long_lived
+                    api_messages = apply_anthropic_cache_control_long_lived(
+                        api_messages,
+                        long_lived_ttl=self._long_lived_cache_ttl,
+                        rolling_ttl=self._cache_ttl,
+                        native_anthropic=self._use_native_cache_layout,
+                    )
+                else:
+                    api_messages = apply_anthropic_cache_control(
+                        api_messages,
+                        cache_ttl=self._cache_ttl,
+                        native_anthropic=self._use_native_cache_layout,
+                    )
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not

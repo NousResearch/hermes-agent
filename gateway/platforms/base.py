@@ -3274,13 +3274,18 @@ class BasePlatformAdapter(ABC):
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                # str(e) can carry a secret-shaped substring (e.g. an
+                # auth error from a misconfigured provider) — scrub
+                # before delivery so the radio-silence notice never
+                # becomes the leak channel (#23810).
+                error_body = self._redact_outbound(
+                    f"Sorry, I encountered an error ({error_type}).\n"
+                    f"{error_detail}\n"
+                    "Try again or use /reset to start a fresh session."
+                ) or ""
                 await self.send(
                     chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
-                    ),
+                    content=error_body,
                     metadata=_thread_metadata,
                 )
             except Exception:

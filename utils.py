@@ -51,7 +51,7 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
     right after ``os.replace`` restores the original permissions.
     """
     if mode is None:
-        return
+        mode = 0o644  # sensible default for newly created files
     try:
         os.chmod(path, mode)
     except OSError:

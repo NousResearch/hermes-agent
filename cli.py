@@ -7948,6 +7948,8 @@ class HermesCLI:
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "update":
+            self._handle_update_command()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -9229,6 +9231,38 @@ class HermesCLI:
 
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
+
+    def _handle_update_command(self):
+        """Handle /update — update Hermes Agent to the latest version.
+
+        In the classic CLI this exits the session and relaunches as
+        ``hermes update`` so the user sees update output directly and gets
+        the new version on next launch.
+        """
+        from hermes_cli.config import is_managed, format_managed_message
+
+        if is_managed():
+            print(f"  ✗ {format_managed_message('update Hermes Agent')}")
+            return
+
+        # Confirm with user
+        try:
+            answer = input("  Update Hermes Agent to the latest version? This will exit the current session. [Y/n] ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if answer.strip().lower() in ("n", "no"):
+            return
+
+        print()
+        print("  ⚕ Launching update...")
+        print()
+
+        # Use relaunch() which handles Windows (.cmd shims) and POSIX (execvp).
+        # preserve_inherited=False avoids carrying --tui or other flags into
+        # the update subcommand.
+        from hermes_cli.relaunch import relaunch
+        relaunch(["update"], preserve_inherited=False)
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""

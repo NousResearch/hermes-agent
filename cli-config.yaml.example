@@ -203,6 +203,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
+#   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
+#   # Example: add a Linux capability not included by default
+#   # docker_extra_args:
+#   #   - "--cap-add"
+#   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -946,6 +952,9 @@ display:
   #   true:  Stream tokens as they arrive (default)
   #   false: Wait for the full response before rendering
   streaming: true
+
+  # Show [HH:MM] timestamps on user input and assistant response labels.
+  # timestamps: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

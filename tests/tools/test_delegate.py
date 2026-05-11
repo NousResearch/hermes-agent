@@ -69,6 +69,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("model", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -384,6 +386,7 @@ class TestDelegateTask(unittest.TestCase):
                 context=None,
                 toolsets=None,
                 model=None,
+                explicit_model_override=False,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -405,6 +408,7 @@ class TestDelegateTask(unittest.TestCase):
                 context=None,
                 toolsets=None,
                 model=None,
+                explicit_model_override=False,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -1264,6 +1268,127 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_override_reaches_child_agent(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": "configured-subagent-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use explicit child model",
+                model="explicit-call-model",
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "explicit-call-model")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_task_model_beats_top_level_model(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": "configured-subagent-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                model="default-child-model",
+                tasks=[
+                    {"goal": "Task A", "model": "task-a-model"},
+                    {"goal": "Task B"},
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_build.call_args_list[0].kwargs["model"], "task-a-model")
+            self.assertEqual(
+                mock_build.call_args_list[1].kwargs["model"],
+                "default-child-model",
+            )
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_beats_delegation_config_model(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45, "model": "configured-subagent-model"}
+        mock_creds.return_value = {
+            "model": "configured-subagent-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Override configured delegation model",
+                model="explicit-call-model",
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "explicit-call-model")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegation_config_model_still_applies_without_override(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45, "model": "configured-subagent-model"}
+        mock_creds.return_value = {
+            "model": "configured-subagent-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.model = "parent-model"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Use configured model", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "configured-subagent-model")
 
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
@@ -2497,6 +2622,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 context=None,
                 toolsets=None,
                 model=None,
+                explicit_model_override=False,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -2518,12 +2644,36 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 context=None,
                 toolsets=None,
                 model=None,
+                explicit_model_override=False,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
             )
 
         _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_explicit_model_override_does_not_inherit_parent_fallback(self):
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        parent._fallback_chain = [fallback_entry]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test explicit model override",
+                context=None,
+                toolsets=None,
+                model="explicit-model",
+                explicit_model_override=True,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "explicit-model")
         self.assertIsNone(kwargs["fallback_model"])
 
 

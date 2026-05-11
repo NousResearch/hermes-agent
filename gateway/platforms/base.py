@@ -2401,6 +2401,32 @@ class BasePlatformAdapter(ABC):
             return response.text, int(ttl or 0)
         return response, 0
 
+    def _redact_outbound(self, content: Optional[str]) -> Optional[str]:
+        """Scrub secrets from an outbound message body before delivery.
+
+        The startup banner promises that "chat responses are scrubbed before
+        delivery" when ``HERMES_REDACT_SECRETS`` is on (#23810).  Logs were
+        already covered via :class:`agent.redact.RedactingFormatter`, but
+        actual outbound message bytes were not — an LLM that echoed a token
+        in its reply would deliver it verbatim to Telegram/Discord/Slack.
+
+        Centralising the call here means every send/edit retry, fallback,
+        and delivery notice in :meth:`_send_with_retry` inherits the same
+        protection.  Honours the global toggle (``HERMES_REDACT_SECRETS`` /
+        ``security.redact_secrets``); a no-op when redaction is disabled or
+        when ``content`` is empty / non-textual.
+        """
+        if not content or not isinstance(content, str):
+            return content
+        try:
+            from agent.redact import redact_sensitive_text
+        except Exception:
+            return content
+        try:
+            return redact_sensitive_text(content)
+        except Exception:
+            return content
+
     async def _send_with_retry(
         self,
         chat_id: str,

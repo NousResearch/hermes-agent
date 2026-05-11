@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHAT_PAGE = REPO_ROOT / "web" / "src" / "pages" / "ChatPage.tsx"
+APP_LAYOUT = REPO_ROOT / "ui-tui" / "src" / "components" / "appLayout.tsx"
 
 
 def test_dashboard_chat_pty_uses_inline_tui_for_native_scrollback(monkeypatch):
@@ -30,3 +31,20 @@ def test_chat_page_keeps_xterm_native_scrollback_and_wheel():
     assert "const DASHBOARD_CHAT_SCROLLBACK" in source
     assert "scrollback: DASHBOARD_CHAT_SCROLLBACK" in source
     assert "attachCustomWheelEventHandler" not in source
+
+
+def test_inline_chat_layout_does_not_virtualize_primary_buffer_transcript():
+    """Inline mode must not render ScrollBox virtual spacers into xterm scrollback."""
+    source = APP_LAYOUT.read_text(encoding="utf-8")
+
+    assert "const InlineTranscriptPane" in source
+    assert "const TranscriptShell = INLINE_MODE ? InlineTranscriptPane : TranscriptPane" in source
+
+    inline_start = source.index("const InlineTranscriptPane")
+    inline_end = source.index("const TranscriptPane")
+    inline_source = source[inline_start:inline_end]
+
+    assert "<ScrollBox" not in inline_source
+    assert "virtualHistory.topSpacer" not in inline_source
+    assert "virtualHistory.bottomSpacer" not in inline_source
+    assert "transcript.historyItems.map" in inline_source

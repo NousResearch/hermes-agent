@@ -481,6 +481,30 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
+    def test_slack_thread_id_is_passed_to_sender(self, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C123",
+                    "thread reply",
+                    thread_id="1778502321.731699",
+                )
+            )
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "C123",
+            "thread reply",
+            thread_id="1778502321.731699",
+        )
+
     def test_telegram_media_attaches_to_last_chunk(self):
 
         sent_calls = []
@@ -930,6 +954,15 @@ class TestParseTargetRefSlack:
 
     def test_dm_id_is_explicit(self):
         assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_channel_thread_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "slack",
+            "GK0J1C6LT:1778502321.731699",
+        )
+        assert chat_id == "GK0J1C6LT"
+        assert thread_id == "1778502321.731699"
+        assert is_explicit is True
 
     def test_user_id_is_not_explicit(self):
         """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send

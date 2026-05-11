@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Doctors"
+  short_description: "Finds best-fit mainland China doctors and hospitals for a disease"
+  default_prompt: "Use $find-doctors with a disease name, diagnosis stage, city, and travel preference to build an evidence-based shortlist of mainland China doctors, hospitals, departments, and appointment paths."

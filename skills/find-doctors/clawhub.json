@@ -1,0 +1,19 @@
+{
+  "name": "find-doctors",
+  "version": "0.1.0",
+  "description": "Evidence-based mainland China doctor and hospital finder for a specific disease, using specialty rankings, official hospital pages, clinical-key-specialty signals, doctor-level evidence, and appointment practicality.",
+  "keywords": [
+    "find-doctors",
+    "find-dcotors",
+    "doctor-finder",
+    "hospital-ranking",
+    "medical-navigation",
+    "China",
+    "mainland-China",
+    "医生推荐",
+    "医院推荐",
+    "挂号",
+    "名医",
+    "专家"
+  ]
+}

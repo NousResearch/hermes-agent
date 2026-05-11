@@ -278,8 +278,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
-    p_create.add_argument("--created-by", default=None,
-                          help="Author name recorded on the task (default: active profile or user)")
+    p_create.add_argument("--created-by", default="user",
+                          help="Author name recorded on the task (default: user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). Appended to the built-in "

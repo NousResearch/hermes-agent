@@ -6428,6 +6428,29 @@ class HermesCLI:
         except Exception:
             return False
 
+    # Commands that call _prompt_text_input — must run on the UI thread so
+    # run_in_terminal works instead of falling back to a daemon-thread
+    # input() that races with prompt_toolkit for stdin.
+    _INTERACTIVE_SLASH_COMMANDS: frozenset[str] = frozenset({
+        "model", "new", "clear", "undo", "reset", "reload-mcp",
+    })
+
+    def _should_handle_interactive_slash_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True for slash commands that need the UI thread (model picker,
+        destructive confirm prompts, etc.) so they can use prompt_toolkit's
+        ``run_in_terminal`` instead of a daemon-thread ``input()`` fallback."""
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name in self._INTERACTIVE_SLASH_COMMANDS)
+        except Exception:
+            return False
+
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /steer should be dispatched immediately while the agent is running.
 
@@ -11071,9 +11094,11 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
+                # Handle interactive slash commands (/model, /new, /clear,
+                # /undo, /reset) directly on the UI thread so they can safely
+                # use prompt_toolkit terminal handoff helpers (run_in_terminal)
+                # instead of a daemon-thread input() that races with stdin.
+                if self._should_handle_interactive_slash_inline(text, has_images=has_images):
                     if not self.process_command(text):
                         self._should_exit = True
                         if event.app.is_running:

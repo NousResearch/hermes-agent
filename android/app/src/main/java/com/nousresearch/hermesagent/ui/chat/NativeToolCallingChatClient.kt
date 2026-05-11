@@ -34,6 +34,7 @@ class NativeToolCallingChatClient(
     private val openGuiWorkingMemoryPrefs = appContext.getSharedPreferences("hermes_opengui_working_memory", Context.MODE_PRIVATE)
     private var activeOpenGuiMemorySessionId: String = ""
     private val recentOpenGuiActions = ArrayDeque<ParsedOpenGuiAction>()
+    private val recentOpenGuiScreenHashes = ArrayDeque<String>()
 
     data class Result(
         val content: String,
@@ -343,9 +344,7 @@ class NativeToolCallingChatClient(
         val action = rawAction.lowercase()
         return when (action.ifBlank { "status" }) {
             "status", "read_status" -> androidUiStatusJson()
-            "snapshot", "screen_snapshot", "read_screen" -> HermesAccessibilityUiBridge.snapshotJson(
-                limit = toolCall.arguments.optInt("limit", DEFAULT_UI_SNAPSHOT_LIMIT),
-            )
+            "snapshot", "screen_snapshot", "read_screen" -> executeAndroidSnapshotTool(toolCall)
             "parse_opengui_action",
             "parse_open_gui_action",
             "parse_gui_action" -> executeOpenGuiActionTool(toolCall, parseOnly = true)
@@ -421,6 +420,14 @@ class NativeToolCallingChatClient(
         }
     }
 
+    private fun executeAndroidSnapshotTool(toolCall: ToolCall): String {
+        val result = HermesAccessibilityUiBridge.snapshotJson(
+            limit = toolCall.arguments.optInt("limit", DEFAULT_UI_SNAPSHOT_LIMIT),
+        )
+        rememberOpenGuiScreenHashFromResult(result)
+        return result
+    }
+
     private fun executeOpenGuiActionTool(
         toolCall: ToolCall,
         parseOnly: Boolean,
@@ -434,6 +441,11 @@ class NativeToolCallingChatClient(
             "vlm_prediction",
             "open_gui_action",
             "opengui_action",
+            "screen_hash",
+            "snapshot_hash",
+            "ui_state_hash",
+            "screenshot_hash",
+            "phash",
         )
             ?: fallbackRawAction.takeIf { it.isNotBlank() }
             ?: return JSONObject()
@@ -450,6 +462,16 @@ class NativeToolCallingChatClient(
                 .put("raw_action", rawAction)
                 .toString()
         }
+        rememberOpenGuiScreenHash(
+            stringArgument(
+                toolCall.arguments,
+                "screen_hash",
+                "snapshot_hash",
+                "ui_state_hash",
+                "screenshot_hash",
+                "phash",
+            ).orEmpty(),
+        )
         if (parseOnly) {
             return JSONObject()
                 .put("success", true)
@@ -457,10 +479,16 @@ class NativeToolCallingChatClient(
                 .put("parse_only", true)
                 .put("parsed_action", parsed.toJson())
                 .put("execution_review_supported", true)
+                .put("screen_review_supported", true)
+                .put("recent_screen_hash_count", recentOpenGuiScreenHashes.size)
                 .toString()
         }
 
-        val review = OpenGuiExecutionReview.review(recentOpenGuiActions.toList(), parsed)
+        val review = OpenGuiExecutionReview.review(
+            recentActions = recentOpenGuiActions.toList(),
+            nextAction = parsed,
+            recentScreenHashes = recentOpenGuiScreenHashes.toList(),
+        )
         if (review.detected) {
             return OpenGuiExecutionReview.blockedActionJson(parsed, review).toString()
         }
@@ -514,6 +542,26 @@ class NativeToolCallingChatClient(
         }
         recordOpenGuiAction(parsed)
         return attachOpenGuiParsedAction(result, parsed, review)
+    }
+
+    private fun rememberOpenGuiScreenHashFromResult(result: String) {
+        runCatching {
+            val json = JSONObject(result)
+            rememberOpenGuiScreenHash(
+                stringArgument(json, "ui_state_hash", "screen_hash", "snapshot_hash", "screenshot_hash", "phash").orEmpty(),
+            )
+        }
+    }
+
+    private fun rememberOpenGuiScreenHash(hash: String) {
+        val clean = hash.trim().lowercase().filter { it in '0'..'9' || it in 'a'..'f' }
+        if (clean.length < 8) {
+            return
+        }
+        recentOpenGuiScreenHashes.addLast(clean)
+        while (recentOpenGuiScreenHashes.size > OpenGuiExecutionReview.ACTION_WINDOW_SIZE) {
+            recentOpenGuiScreenHashes.removeFirst()
+        }
     }
 
     private fun recordOpenGuiAction(parsed: ParsedOpenGuiAction) {
@@ -713,6 +761,9 @@ class NativeToolCallingChatClient(
             .put("selection_arguments", JSONArray(UI_SELECTOR_ARGUMENTS))
             .put("coordinate_arguments", JSONArray(UI_COORDINATE_ARGUMENTS))
             .put("opengui_action_arguments", JSONArray(OPEN_GUI_ACTION_ARGUMENTS))
+            .put("snapshot_hash_support", true)
+            .put("opengui_screen_review_supported", true)
+            .put("recent_snapshot_hash_count", recentOpenGuiScreenHashes.size)
             .put("active_package", HermesAccessibilityController.currentForegroundPackageName())
             .put("current_app_name", HermesAccessibilityController.currentForegroundPackageName())
             .put("normalized_coordinate_support", true)
@@ -823,10 +874,11 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_ui_tool",
-                    description = "Inspect or control the visible Android UI through Hermes accessibility. OpenGUI-compatible execution includes a local repeated-action review guard that can return requires_replan before a likely loop continues.",
+                    description = "Inspect or control the visible Android UI through Hermes accessibility. OpenGUI-compatible execution includes local repeated-action and screen-state review guards that can return requires_replan before a likely loop continues.",
                     properties = JSONObject()
                         .put("action", stringProp("status, snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
                         .put("raw_action", stringProp("OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."))
+                        .put("screen_hash", stringProp("Optional OpenGUI pHash or Hermes snapshot ui_state_hash for screen-state loop review."))
                         .put("text_contains", stringProp("Visible text selector."))
                         .put("content_description_contains", stringProp("Accessibility description selector."))
                         .put("view_id", stringProp("Android view id selector."))
@@ -1906,7 +1958,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution with repeated-action review guard, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots with stable ui_state_hash values, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution with repeated-action and screen-state review guards, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",
@@ -1926,6 +1978,12 @@ class NativeToolCallingChatClient(
                                                 JSONObject()
                                                     .put("type", "string")
                                                     .put("description", "OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."),
+                                            )
+                                            .put(
+                                                "screen_hash",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Optional OpenGUI pHash or Hermes snapshot ui_state_hash for screen-state loop review."),
                                             )
                                             .put(
                                                 "text_contains",

@@ -426,7 +426,7 @@ object HermesAutomationBridge {
                     "remote_execution_id",
                     allowEmpty = true,
                 ).orEmpty().trim()
-                if (executionId.isBlank()) "" else "/$subcommand $executionId"
+                if (executionId.isBlank()) "/$subcommand" else "/$subcommand $executionId"
             }
             "resume" -> {
                 val executionId = stringArgument(
@@ -443,7 +443,7 @@ object HermesAutomationBridge {
                     executionId.isNotBlank() && feedback.isNotBlank() -> "/resume $executionId $feedback"
                     executionId.isNotBlank() -> "/resume $executionId"
                     feedback.isNotBlank() -> "/resume $feedback"
-                    else -> ""
+                    else -> "/resume"
                 }
             }
             else -> ""

@@ -65,6 +65,46 @@ class OpenGuiExecutionReviewTest {
         assertEquals("action_repetition", json.getJSONObject("execution_review").getString("kind"))
     }
 
+    @Test
+    fun detectsUnchangedScreenSnapshotsForActiveActions() {
+        val review = OpenGuiExecutionReview.review(
+            recentActions = listOf(clickAt(0.2, 0.2), clickAt(0.3, 0.3)),
+            nextAction = clickAt(0.4, 0.4),
+            recentScreenHashes = listOf("abcd1234abcd1234", "abcd1234abcd1234", "abcd1234abcd1234"),
+        )
+
+        assertTrue(review.detected)
+        assertEquals("screen_no_progress", review.kind)
+        assertEquals(3, review.recentScreenHashCount)
+    }
+
+    @Test
+    fun ignoresUnchangedScreenSnapshotsForPassiveActions() {
+        val action = OpenGuiActionCompat.parse("wait(seconds=1)")
+
+        val review = OpenGuiExecutionReview.review(
+            recentActions = emptyList(),
+            nextAction = action,
+            recentScreenHashes = listOf("abcd1234abcd1234", "abcd1234abcd1234", "abcd1234abcd1234"),
+        )
+
+        assertFalse(review.detected)
+        assertEquals("ok", review.kind)
+    }
+
+    @Test
+    fun detectsAlternatingScreenStateCycle() {
+        val review = OpenGuiExecutionReview.review(
+            recentActions = listOf(clickAt(0.2, 0.2), swipeFrom(0.6, 0.7)),
+            nextAction = clickAt(0.3, 0.3),
+            recentScreenHashes = listOf("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+        )
+
+        assertTrue(review.detected)
+        assertEquals("screen_cycle", review.kind)
+        assertEquals(6, review.recentScreenHashCount)
+    }
+
     private fun clickAt(x: Double, y: Double): ParsedOpenGuiAction {
         return OpenGuiActionCompat.parse("click(start_box='<point>${x * 1000} ${y * 1000}</point>')")
     }

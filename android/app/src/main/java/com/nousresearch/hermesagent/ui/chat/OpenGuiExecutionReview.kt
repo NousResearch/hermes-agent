@@ -10,21 +10,29 @@ internal object OpenGuiExecutionReview {
     private const val CYCLE_MIN_REPETITIONS = 3
     private const val MAX_CYCLE_LENGTH = 3
     private const val CONSECUTIVE_SCROLL_EXIT_THRESHOLD = 8
+    private const val SCREEN_HASH_CONSECUTIVE_WINDOW = 3
+    private const val SCREEN_HASH_CYCLE_WINDOW = 6
+    private const val PHASH_SIMILARITY_THRESHOLD = 5
     private val passiveActionTypes = setOf("wait", "scroll", "finished", "press_back", "press_home")
 
     fun review(
         recentActions: List<ParsedOpenGuiAction>,
         nextAction: ParsedOpenGuiAction,
+        recentScreenHashes: List<String> = emptyList(),
     ): OpenGuiExecutionReviewResult {
         val window = (recentActions + nextAction).takeLast(ACTION_WINDOW_SIZE)
         detectActionRepetition(window)?.let { return it }
         detectActionCycle(window)?.let { return it }
         detectConsecutiveScroll(window)?.let { return it }
+        val passiveAction = nextAction.actionType in passiveActionTypes
+        detectScreenNoProgress(recentScreenHashes, passiveAction, window.size)?.let { return it }
+        detectScreenCycle(recentScreenHashes, passiveAction, window.size)?.let { return it }
         return OpenGuiExecutionReviewResult(
             detected = false,
             kind = "ok",
             reason = "",
             recentActionCount = window.size,
+            recentScreenHashCount = cleanScreenHashes(recentScreenHashes).size,
         )
     }
 
@@ -36,7 +44,7 @@ internal object OpenGuiExecutionReview {
             .put("success", false)
             .put("opengui_action_compat", true)
             .put("requires_replan", true)
-            .put("error", "OpenGUI execution review blocked a likely repeated action loop. Request a fresh snapshot and choose a different next step.")
+            .put("error", "OpenGUI execution review blocked a likely mobile UI loop. Request a fresh snapshot and choose a different next step.")
             .put("parsed_action", parsed.toJson())
             .put("execution_review", review.toJson())
     }
@@ -105,6 +113,64 @@ internal object OpenGuiExecutionReview {
         )
     }
 
+    private fun detectScreenNoProgress(
+        recentScreenHashes: List<String>,
+        passiveAction: Boolean,
+        recentActionCount: Int,
+    ): OpenGuiExecutionReviewResult? {
+        if (passiveAction || recentActionCount < 2) {
+            return null
+        }
+        val hashes = cleanScreenHashes(recentScreenHashes)
+        if (hashes.size < SCREEN_HASH_CONSECUTIVE_WINDOW) {
+            return null
+        }
+        val recent = hashes.takeLast(SCREEN_HASH_CONSECUTIVE_WINDOW)
+        val first = recent.first()
+        if (!recent.all { hashesSimilar(first, it) }) {
+            return null
+        }
+        return OpenGuiExecutionReviewResult(
+            detected = true,
+            kind = "screen_no_progress",
+            reason = "$SCREEN_HASH_CONSECUTIVE_WINDOW consecutive screen snapshots are unchanged after UI actions; request a fresh strategy before continuing.",
+            recentActionCount = recentActionCount,
+            recentScreenHashCount = hashes.size,
+            threshold = SCREEN_HASH_CONSECUTIVE_WINDOW,
+        )
+    }
+
+    private fun detectScreenCycle(
+        recentScreenHashes: List<String>,
+        passiveAction: Boolean,
+        recentActionCount: Int,
+    ): OpenGuiExecutionReviewResult? {
+        if (passiveAction || recentActionCount < 2) {
+            return null
+        }
+        val hashes = cleanScreenHashes(recentScreenHashes)
+        if (hashes.size < SCREEN_HASH_CYCLE_WINDOW) {
+            return null
+        }
+        val recent = hashes.takeLast(SCREEN_HASH_CYCLE_WINDOW)
+        val even = recent.filterIndexed { index, _ -> index % 2 == 0 }
+        val odd = recent.filterIndexed { index, _ -> index % 2 == 1 }
+        val evenRepeats = even.all { hashesSimilar(even.first(), it) }
+        val oddRepeats = odd.all { hashesSimilar(odd.first(), it) }
+        val statesDiffer = !hashesSimilar(even.first(), odd.first())
+        if (!evenRepeats || !oddRepeats || !statesDiffer) {
+            return null
+        }
+        return OpenGuiExecutionReviewResult(
+            detected = true,
+            kind = "screen_cycle",
+            reason = "Recent screen snapshots show an A-B-A-B repeat pattern; replan instead of continuing the same UI loop.",
+            recentActionCount = recentActionCount,
+            recentScreenHashCount = hashes.size,
+            threshold = SCREEN_HASH_CYCLE_WINDOW,
+        )
+    }
+
     private fun isSimilarAction(a: ParsedOpenGuiAction, b: ParsedOpenGuiAction): Boolean {
         if (a.actionType != b.actionType) {
             return false
@@ -128,6 +194,28 @@ internal object OpenGuiExecutionReview {
         }
         return abs(first.x - second.x) + abs(first.y - second.y) <= COORD_SIMILARITY_THRESHOLD
     }
+
+    private fun cleanScreenHashes(hashes: List<String>): List<String> {
+        return hashes.map { hash ->
+            hash.trim().lowercase()
+        }.filter { hash ->
+            hash.length >= 8 && hash.all { it in '0'..'9' || it in 'a'..'f' }
+        }
+    }
+
+    private fun hashesSimilar(left: String, right: String): Boolean {
+        if (left == right) {
+            return true
+        }
+        if (!isBinaryPHash(left) || !isBinaryPHash(right) || left.length != right.length) {
+            return false
+        }
+        return left.indices.count { index -> left[index] != right[index] } <= PHASH_SIMILARITY_THRESHOLD
+    }
+
+    private fun isBinaryPHash(hash: String): Boolean {
+        return hash.length == 64 && hash.all { it == '0' || it == '1' }
+    }
 }
 
 internal data class OpenGuiExecutionReviewResult(
@@ -135,6 +223,7 @@ internal data class OpenGuiExecutionReviewResult(
     val kind: String,
     val reason: String,
     val recentActionCount: Int,
+    val recentScreenHashCount: Int = 0,
     val threshold: Int = 0,
 ) {
     fun toJson(): JSONObject {
@@ -143,6 +232,7 @@ internal data class OpenGuiExecutionReviewResult(
             .put("kind", kind)
             .put("reason", reason)
             .put("recent_action_count", recentActionCount)
+            .put("recent_screen_hash_count", recentScreenHashCount)
             .put("window_size", OpenGuiExecutionReview.ACTION_WINDOW_SIZE)
             .also { json ->
                 if (threshold > 0) {

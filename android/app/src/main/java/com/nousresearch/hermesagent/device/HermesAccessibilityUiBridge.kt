@@ -6,6 +6,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.security.MessageDigest
 
 object HermesAccessibilityUiBridge {
     private const val DEFAULT_LIMIT = 80
@@ -29,10 +30,14 @@ object HermesAccessibilityUiBridge {
                 ?: return errorJson("No active accessibility window is available")
             val cappedLimit = limit.coerceIn(1, MAX_LIMIT)
             val nodes = flattenNodes(root, cappedLimit)
+            val stateHash = uiStateHash(root, nodes)
             JSONObject().apply {
                 put("accessibility_connected", true)
                 put("active_package", root.packageName?.toString().orEmpty())
                 put("current_app_name", root.packageName?.toString().orEmpty())
+                put("ui_state_hash", stateHash)
+                put("screen_hash", stateHash)
+                put("screen_hash_kind", "accessibility_semantic_sha256_64")
                 put("coordinate_space", "absolute_px")
                 put("scale_factor", 1.0)
                 put("normalized_coordinate_support", true)
@@ -500,6 +505,29 @@ object HermesAccessibilityUiBridge {
             viewId.isNotBlank() ||
             packageName.isNotBlank() ||
             className.isNotBlank()
+    }
+
+    private fun uiStateHash(root: AccessibilityNodeInfo, nodes: List<AccessibilityNodeInfo>): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun update(value: String) {
+            digest.update(value.toByteArray(Charsets.UTF_8))
+            digest.update(0.toByte())
+        }
+        update(root.packageName?.toString().orEmpty())
+        nodes.forEachIndexed { index, node ->
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            update(index.toString())
+            update(node.packageName?.toString().orEmpty())
+            update(node.className?.toString().orEmpty())
+            update(node.text?.toString().orEmpty())
+            update(node.contentDescription?.toString().orEmpty())
+            update("${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}")
+            update("${node.isClickable},${node.isEditable},${node.isFocused},${node.isScrollable}")
+        }
+        return digest.digest()
+            .take(8)
+            .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
     private fun performResolvedAction(action: String, node: AccessibilityNodeInfo, value: String): Boolean {

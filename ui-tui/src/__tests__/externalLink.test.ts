@@ -101,6 +101,19 @@ describe('external link helpers', () => {
     await expect(fetchLinkTitle(url)).resolves.toBe('')
   })
 
+  it('decodes HTML entities in fetched titles', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html><head><title>AT&amp;T &#39;Deals&#39;</title></head></html>', {
+        headers: { 'content-type': 'text/html' },
+        status: 200
+      })
+    )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchLinkTitle('https://example.com/offers')).resolves.toBe("AT&T 'Deals'")
+  })
+
   it('skips network fetch for non-fetchable targets', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

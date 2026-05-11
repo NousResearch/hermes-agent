@@ -236,6 +236,21 @@ describe('Md link labels', () => {
     expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
     expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
   })
+
+  it('keeps explicit markdown labels as the immediate fallback', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
+        })
+      )
+    )
+
+    expect(lines.join('\n')).toContain('Trip details')
+  })
 })
 
 describe('renderTable CJK width alignment', () => {

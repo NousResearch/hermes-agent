@@ -5,6 +5,7 @@ const titleInflight = new Map<string, Promise<string>>()
 const titleSubs = new Map<string, Set<(value: string) => void>>()
 
 const TITLE_CACHE_LIMIT = 500
+const TITLE_MAX_LENGTH = 240
 const TITLE_BYTE_BUDGET = 96 * 1024
 const TITLE_TIMEOUT_MS = 5000
 
@@ -238,7 +239,7 @@ async function fetchHtmlTitle(normalizedUrl: string): Promise<string> {
 
     const html = await readResponseSnippet(response)
 
-    return parseHtmlTitle(html).slice(0, 240)
+    return parseHtmlTitle(html).slice(0, TITLE_MAX_LENGTH)
   } catch {
     return ''
   } finally {
@@ -265,13 +266,16 @@ export function fetchLinkTitle(url: string): Promise<string> {
   }
 
   const promise = fetchHtmlTitle(normalizedUrl)
-    .then(value => usableTitle(value))
+    .then(usableTitle)
+    .catch(() => '')
     .then(clean => {
       cacheTitle(key, clean)
-      titleInflight.delete(key)
       titleSubs.get(key)?.forEach(sub => sub(clean))
 
       return clean
+    })
+    .finally(() => {
+      titleInflight.delete(key)
     })
 
   titleInflight.set(key, promise)

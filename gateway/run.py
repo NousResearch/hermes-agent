@@ -3174,6 +3174,19 @@ class GatewayRunner:
                 )
                 continue
 
+            # Validate that the session owner is still authorized before
+            # auto-resuming. Auth config may have changed between restarts
+            # (e.g. TELEGRAM_ALLOWED_USERS updated) — skip sessions whose
+            # owner is no longer in the allowlist (issue #23778).
+            _user_id = str(getattr(source, "user_id", "") or "")
+            if _user_id and hasattr(adapter, "_is_callback_user_authorized"):
+                if not adapter._is_callback_user_authorized(_user_id):
+                    logger.warning(
+                        "Skipping auto-resume for %s: user %s not authorized",
+                        entry.session_key, _user_id,
+                    )
+                    continue
+
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
             # system note before the turn runs.

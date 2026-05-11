@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui
+from hermes_cli.main import _web_ui_build_needed, _build_web_ui, _run_npm_install_deterministic
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -119,3 +119,31 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         assert mock_run.call_count == 2  # npm install + npm run build
+
+    def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+
+    def test_web_build_uses_utf8_replace_output_decoding(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", side_effect=[mock_cp, mock_cp]) as mock_run:
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        _, build_kwargs = mock_run.call_args_list[1]
+        assert build_kwargs["text"] is True
+        assert build_kwargs["encoding"] == "utf-8"
+        assert build_kwargs["errors"] == "replace"

@@ -43,6 +43,9 @@ def test_apply_linux_subsystem_env_sets_terminal_backend_markers(tmp_path):
     assert state["lib_path"] in env_updates["LD_LIBRARY_PATH"]
     assert env_updates["HERMES_ANDROID_LINUX_HOME"] == state["home_path"]
     assert env_updates["HERMES_ANDROID_LINUX_TMP"] == state["tmp_path"]
+    assert env_updates["HOME"] == state["home_path"]
+    assert env_updates["TMPDIR"] == state["tmp_path"]
+    assert env_updates["TERMINAL_CWD"] == state["home_path"]
 
 
 def test_apply_linux_subsystem_env_derives_native_lib_dir_from_shell_path(tmp_path):

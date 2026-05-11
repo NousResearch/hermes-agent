@@ -50,5 +50,7 @@ def apply_linux_subsystem_env(files_dir: str | Path) -> dict[str, str]:
         "LD_LIBRARY_PATH": ld_library_path,
         "HERMES_ANDROID_LINUX_HOME": str(state.get("home_path", "")),
         "HERMES_ANDROID_LINUX_TMP": str(state.get("tmp_path", "")),
+        "HOME": str(state.get("home_path", "")),
+        "TMPDIR": str(state.get("tmp_path", "")),
         "TERMINAL_CWD": str(state.get("home_path", "")),
     }

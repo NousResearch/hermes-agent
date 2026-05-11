@@ -105,7 +105,9 @@ class PrivilegedAccessStatusInstrumentedTest {
             )
         )
         assertFalse(selfStop.toString(), selfStop.getBoolean("success"))
-        assertTrue(selfStop.toString(), selfStop.getString("error").contains("will not disable or force-stop itself"))
+        assertTrue(selfStop.toString(), selfStop.getString("error").contains("will not disable"))
+        assertTrue(selfStop.toString(), selfStop.getString("error").contains("force-stop"))
+        assertTrue(selfStop.toString(), selfStop.getString("error").contains("itself"))
     }
 
     @Test

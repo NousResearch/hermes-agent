@@ -147,6 +147,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    DISPATCH_AND_TICKETING_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -5949,6 +5950,12 @@ class AIAgent:
         # this block.
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
+        # Operator dispatch + ticketing guidance — injected when hermes
+        # has shell/terminal access (so clawta is callable) AND is NOT
+        # running as a kanban worker (workers get KANBAN_GUIDANCE
+        # instead, which covers their internal dispatch surface).
+        if "terminal" in self.valid_tool_names and "kanban_show" not in self.valid_tool_names:
+            tool_guidance.append(DISPATCH_AND_TICKETING_GUIDANCE)
         if tool_guidance:
             stable_parts.append(" ".join(tool_guidance))
 

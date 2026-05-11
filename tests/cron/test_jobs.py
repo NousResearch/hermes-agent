@@ -335,6 +335,17 @@ class TestMarkJobRun:
         # Job should be removed after hitting repeat limit
         assert get_job(job["id"]) is None
 
+    def test_repeat_limit_removes_output_dir(self, tmp_cron_dir):
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job_output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        job_output_dir.mkdir(parents=True)
+        (job_output_dir / "run.md").write_text("done", encoding="utf-8")
+
+        mark_job_run(job["id"], success=True)
+
+        assert get_job(job["id"]) is None
+        assert not job_output_dir.exists()
+
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
         # LLMs often pass repeat=-1 to mean "infinite/forever".
         # The job must NOT be deleted after runs when repeat <= 0.

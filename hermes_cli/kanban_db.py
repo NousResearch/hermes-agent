@@ -2831,14 +2831,18 @@ class DiskPressureHold:
                 f"Gridlux dispatch paused: unable to read free space for {self.path}; "
                 f"holding worker starts until disk check succeeds."
             )
+        critical_gib = f"{self.critical_kib / (1024 * 1024):g}"
+        recovery_gib = f"{self.recovery_kib / (1024 * 1024):g}"
         if self.free_kib < self.critical_kib:
-            threshold_detail = "below 10 GiB critical threshold"
+            threshold_detail = f"below {critical_gib} GiB critical threshold"
         else:
-            threshold_detail = "below 15 GiB recovery threshold after a critical low-disk hold"
+            threshold_detail = (
+                f"below {recovery_gib} GiB recovery threshold after a critical low-disk hold"
+            )
         return (
             f"Gridlux dispatch paused: {self.path} free space is "
             f"{self.free_gib:.2f} GiB; {threshold_detail}. "
-            f"Worker starts resume automatically at >=15 GiB."
+            f"Worker starts resume automatically at >={recovery_gib} GiB."
         )
 
     def to_dict(self) -> dict[str, Any]:

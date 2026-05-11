@@ -152,6 +152,8 @@ def test_gridlux_dispatch_pauses_non_emergency_workers_under_disk_pressure(
 
         assert spawned == []
         assert res.disk_pressure_hold is not None
+        assert "below 3 GiB critical threshold" in res.disk_pressure_hold.message()
+        assert "Worker starts resume automatically at >=6 GiB" in res.disk_pressure_hold.message()
         assert tid in res.skipped_disk_pressure
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
@@ -181,6 +183,8 @@ def test_gridlux_dispatch_resumes_only_after_recovery_threshold(
         free["kib"] = kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB + (2 * 1024 * 1024)
         mid = kb.dispatch_once(conn, spawn_fn=lambda *_: 222, board="gridlux", max_spawn=1)
         assert mid.disk_pressure_hold is not None
+        assert "below 6 GiB recovery threshold" in mid.disk_pressure_hold.message()
+        assert "Worker starts resume automatically at >=6 GiB" in mid.disk_pressure_hold.message()
         assert kb.get_task(conn, tid).status == "ready"
 
         spawned = []

@@ -101,7 +101,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         # Some valid Codex CLI models (for example gpt-5.3-codex-spark) are
         # marked false here but are still accepted by the Codex route.
         visibility = item.get("visibility", "")
-        if isinstance(visibility, str) and visibility.strip().lower() in ("hide", "hidden"):
+        if isinstance(visibility, str) and visibility.strip().lower() in {"hide", "hidden"}:
             continue
         priority = item.get("priority")
         rank = int(priority) if isinstance(priority, (int, float)) else 10_000
@@ -152,7 +152,7 @@ def _read_cache_models(codex_home: Path) -> List[str]:
             # public OpenAI API, while Hermes openai-codex talks to the same
             # OAuth-backed Codex backend as Codex CLI.
             visibility = item.get("visibility")
-            if isinstance(visibility, str) and visibility.strip().lower() in ("hide", "hidden"):
+            if isinstance(visibility, str) and visibility.strip().lower() in {"hide", "hidden"}:
                 continue
             priority = item.get("priority")
             rank = int(priority) if isinstance(priority, (int, float)) else 10_000

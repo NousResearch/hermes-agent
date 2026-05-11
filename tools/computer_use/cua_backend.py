@@ -673,5 +673,5 @@ def _parse_element(d: Dict[str, Any]) -> UIElement:
         pid=int(d.get("pid", 0) or 0),
         window_id=int(d.get("windowId", 0) or 0),
         attributes={k: v for k, v in d.items()
-                    if k not in ("index", "role", "label", "bounds", "app", "pid", "windowId")},
+                    if k not in {"index", "role", "label", "bounds", "app", "pid", "windowId"}},
     )

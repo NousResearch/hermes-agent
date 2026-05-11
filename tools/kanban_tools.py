@@ -160,7 +160,7 @@ def _normalize_profile(value: Any) -> Optional[str]:
     if value is None:
         return None
     text = str(value).strip()
-    if not text or text.lower() in ("none", "-", "null"):
+    if not text or text.lower() in {"none", "-", "null"}:
         return None
     return text
 
@@ -172,9 +172,9 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if isinstance(value, bool):
         return value, None
     text = str(value).strip().lower()
-    if text in ("true", "1", "yes"):
+    if text in {"true", "1", "yes"}:
         return True, None
-    if text in ("false", "0", "no"):
+    if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
 

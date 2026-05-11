@@ -3202,7 +3202,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     terminal_cfg = config.get("terminal", {})
     config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
     # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
+    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
 
     lines: list[str] = []
     if messaging_cwd:
@@ -3262,10 +3262,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if "tool_progress" not in display:
             old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
             old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
-            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+            if old_enabled and old_enabled.lower() in {"false", "0", "no"}:
                 display["tool_progress"] = "off"
                 results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
-            elif old_mode and old_mode.lower() in ("new", "all"):
+            elif old_mode and old_mode.lower() in {"new", "all"}:
                 display["tool_progress"] = old_mode.lower()
                 results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
             else:
@@ -3344,7 +3344,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 new_entry = {"api": old_url}
                 if old_name:
                     new_entry["name"] = old_name
-                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                if old_key and old_key not in {"no-key", "no-key-required", ""}:
                     new_entry["api_key"] = old_key
 
                 # Carry over model and api_mode if present
@@ -3402,7 +3402,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             stt.pop("model", None)
             # Place it in the appropriate provider section only if the
             # user didn't already set a model there
-            if provider in ("local", "local_command"):
+            if provider in {"local", "local_command"}:
                 # Don't migrate an OpenAI model name into the local section
                 _local_models = {
                     "tiny.en", "tiny", "base.en", "base", "small.en", "small",
@@ -3486,7 +3486,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not aux_comp.get("model"):
                     aux_comp["model"] = str(s_model).strip()
                     migrated_keys.append(f"model={s_model}")
-            if s_provider and str(s_provider).strip() not in ("", "auto"):
+            if s_provider and str(s_provider).strip() not in {"", "auto"}:
                 aux = config.setdefault("auxiliary", {})
                 aux_comp = aux.setdefault("compression", {})
                 if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
@@ -3717,7 +3717,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
 
-            if answer in ("y", "yes"):
+            if answer in {"y", "yes"}:
                 print()
                 for name, info in new_and_unset:
                     if info.get("url"):
@@ -3778,7 +3778,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         except (EOFError, KeyboardInterrupt):
             answer = "n"
 
-        if answer in ("y", "yes"):
+        if answer in {"y", "yes"}:
             print()
             config = load_config()
             try:
@@ -4860,9 +4860,9 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
-    if value.lower() in ('true', 'yes', 'on'):
+    if value.lower() in {'true', 'yes', 'on'}:
         value = True
-    elif value.lower() in ('false', 'no', 'off'):
+    elif value.lower() in {'false', 'no', 'off'}:
         value = False
     elif value.isdigit():
         value = int(value)
@@ -5067,7 +5067,7 @@ def _inject_profile_env_vars() -> None:
     try:
         from providers import list_providers
         for _pp in list_providers():
-            if _pp.auth_type not in ("api_key",):
+            if _pp.auth_type not in {"api_key",}:
                 continue
             for _var in _pp.env_vars:
                 if _var in OPTIONAL_ENV_VARS:

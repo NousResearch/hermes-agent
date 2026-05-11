@@ -795,7 +795,7 @@ class BatchRunner:
                 conversations = entry.get("conversations", [])
                 for msg in conversations:
                     role = msg.get("role") or msg.get("from")
-                    if role in ("user", "human"):
+                    if role in {"user", "human"}:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
             

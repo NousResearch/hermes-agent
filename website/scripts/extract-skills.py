@@ -309,7 +309,7 @@ MIN_CATEGORY_SIZE = 4
 
 def _consolidate_small_categories(skills: list) -> list:
     for s in skills:
-        if s["category"] in ("uncategorized", ""):
+        if s["category"] in {"uncategorized", ""}:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
 

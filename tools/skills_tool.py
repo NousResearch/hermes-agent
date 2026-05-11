@@ -1133,7 +1133,7 @@ def skill_view(
                             available_files["assets"].append(rel)
                         elif rel.startswith("scripts/"):
                             available_files["scripts"].append(rel)
-                        elif f.suffix in [
+                        elif f.suffix in {
                             ".md",
                             ".py",
                             ".yaml",
@@ -1141,7 +1141,7 @@ def skill_view(
                             ".json",
                             ".tex",
                             ".sh",
-                        ]:
+                        }:
                             available_files["other"].append(rel)
 
                 # Remove empty categories

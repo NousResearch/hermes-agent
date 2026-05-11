@@ -571,7 +571,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in (None, ""):
+                if alias in normalized and normalized[alias] not in {None, ""}:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
@@ -1423,7 +1423,7 @@ def get_model_context_length(
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
     # If provider is generic (openrouter/custom/empty), try to infer from URL.
     effective_provider = provider
-    if not effective_provider or effective_provider in ("openrouter", "custom"):
+    if not effective_provider or effective_provider in {"openrouter", "custom"}:
         if base_url:
             inferred = _infer_provider_from_url(base_url)
             if inferred:
@@ -1433,7 +1433,7 @@ def get_model_context_length(
     # This catches account-specific models (e.g. claude-opus-4.6-1m) that
     # don't exist in models.dev. For models that ARE in models.dev, this
     # returns the provider-enforced limit which is what users can actually use.
-    if effective_provider in ("copilot", "copilot-acp", "github-copilot"):
+    if effective_provider in {"copilot", "copilot-acp", "github-copilot"}:
         try:
             from hermes_cli.models import get_copilot_model_context
             ctx = get_copilot_model_context(model, api_key=api_key)
@@ -1533,7 +1533,7 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
             if not isinstance(part, dict):
                 continue
             ptype = part.get("type")
-            if ptype in ("image", "image_url", "input_image"):
+            if ptype in {"image", "image_url", "input_image"}:
                 count += 1
     stashed = msg.get("_anthropic_content_blocks") if isinstance(msg, dict) else None
     if isinstance(stashed, list):
@@ -1545,7 +1545,7 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
         inner = content.get("content")
         if isinstance(inner, list):
             for part in inner:
-                if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
+                if isinstance(part, dict) and part.get("type") in {"image", "image_url"}:
                     count += 1
     return count * cost_per_image
 
@@ -1567,7 +1567,7 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
                 cleaned = []
                 for part in v:
                     if isinstance(part, dict):
-                        if part.get("type") in ("image", "image_url", "input_image"):
+                        if part.get("type") in {"image", "image_url", "input_image"}:
                             cleaned.append({"type": part.get("type"), "image": "[stripped]"})
                         else:
                             cleaned.append(part)

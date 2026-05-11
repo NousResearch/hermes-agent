@@ -254,7 +254,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         self.init_session()
 
     def _build_create_params(self, *, cpu: float, memory: int, disk: int) -> _SandboxCreateParams:
-        if disk not in (0, _DEFAULT_CONTAINER_DISK_MB):
+        if disk not in {0, _DEFAULT_CONTAINER_DISK_MB}:
             raise ValueError(
                 "Vercel Sandbox does not support configurable container_disk. "
                 "Use the default shared setting."
@@ -336,7 +336,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
         if requested_cwd == "~":
             self.cwd = self._remote_home
-        elif requested_cwd in ("", DEFAULT_VERCEL_CWD):
+        elif requested_cwd in {"", DEFAULT_VERCEL_CWD}:
             self.cwd = self._workspace_root
         else:
             self.cwd = requested_cwd

@@ -616,7 +616,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _looks_like_network_error(error: Exception) -> bool:
         """Return True for transient network errors that warrant a reconnect attempt."""
         name = error.__class__.__name__.lower()
-        if name in ("networkerror", "timedout", "connectionerror"):
+        if name in {"networkerror", "timedout", "connectionerror"}:
             return True
         try:
             from telegram.error import NetworkError, TimedOut
@@ -632,9 +632,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         if isinstance(value, str):
             lowered = value.strip().lower()
-            if lowered in ("true", "1", "yes", "on"):
+            if lowered in {"true", "1", "yes", "on"}:
                 return True
-            if lowered in ("false", "0", "no", "off"):
+            if lowered in {"false", "0", "no", "off"}:
                 return False
             return default
         return bool(value)
@@ -1171,7 +1171,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
+            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
                 fallback_ips = await discover_fallback_ips()
@@ -1917,7 +1917,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot or not hasattr(self._bot, "send_message_draft"):
             return False
-        return (chat_type or "").lower() in ("dm", "private")
+        return (chat_type or "").lower() in {"dm", "private"}
 
     async def send_draft(
         self,
@@ -2723,7 +2723,7 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
-                if ext in (".ogg", ".opus"):
+                if ext in {".ogg", ".opus"}:
                     _voice_thread = self._metadata_thread_id(metadata)
                     reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
                     voice_thread_kwargs = self._thread_kwargs_for_send(
@@ -2747,7 +2747,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "voice",
                         reset_media=lambda: audio_file.seek(0),
                     )
-                elif ext in (".mp3", ".m4a"):
+                elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
                     reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
@@ -3498,18 +3498,18 @@ class TelegramAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         configured = self.config.extra.get("guest_mode")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
@@ -3598,7 +3598,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat:
             return False
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
-        return chat_type in ("group", "supergroup")
+        return chat_type in {"group", "supergroup"}
 
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
@@ -4157,7 +4157,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if ext in {".md", ".txt"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"
@@ -4396,7 +4396,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Determine chat type
         chat_type = "dm"
-        if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
             chat_type = "group"
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
@@ -4512,7 +4512,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""

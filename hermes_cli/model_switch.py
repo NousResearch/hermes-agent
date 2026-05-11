@@ -825,7 +825,7 @@ def switch_model(
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in ("custom", "local") or (
+        is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -1525,7 +1525,7 @@ def list_authenticated_providers(
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
+                discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models

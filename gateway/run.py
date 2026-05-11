@@ -10730,7 +10730,7 @@ class GatewayRunner:
 
                 if compressed != msgs or new_session_id != original_session_id:
                     self.session_store.rewrite_transcript(new_session_id, compressed)
-                    # Reset stored token count — transcript changed, old value is stale
+                    # Reset stored token count; transcript changed, old value is stale
                     self.session_store.update_session(
                         session_entry.session_key, last_prompt_tokens=0
                     )

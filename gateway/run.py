@@ -6516,6 +6516,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "stt-correct":
+            return await self._handle_stt_correct_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -6798,6 +6801,8 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    source=source,
+                    event=event,
                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -9643,6 +9648,49 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    async def _handle_stt_correct_command(self, event: MessageEvent) -> str:
+        """Handle /stt-correct personal phrase corrections for STT output."""
+        from tools.stt_corrections import (
+            add_correction,
+            apply_stt_corrections,
+            clear_corrections,
+            format_corrections,
+            parse_correction_args,
+            remove_correction,
+            usage_text,
+        )
+
+        raw_args = event.get_command_args().strip()
+        args_lower = raw_args.lower()
+        if not raw_args or args_lower in {"help", "usage"}:
+            return usage_text()
+        if args_lower in {"list", "ls", "status"}:
+            return format_corrections()
+        if args_lower == "clear":
+            count = clear_corrections()
+            return f"🧹 {count} correction(s) STT supprimée(s)."
+        if args_lower.startswith("remove ") or args_lower.startswith("rm "):
+            _, _, index_text = raw_args.partition(" ")
+            try:
+                removed = remove_correction(int(index_text.strip()))
+            except (ValueError, IndexError) as exc:
+                return f"⚠️ Impossible de supprimer la correction STT : {exc}"
+            return f"🗑️ Correction STT supprimée : « {removed['wrong']} » → « {removed['right']} »"
+
+        try:
+            wrong, right = parse_correction_args(raw_args)
+            result = add_correction(wrong, right)
+        except ValueError as exc:
+            return f"⚠️ {exc}\n\n{usage_text()}"
+
+        action = "mise à jour" if result.get("action") == "updated" else "ajoutée"
+        preview = apply_stt_corrections(wrong)
+        return (
+            f"✅ Correction STT {action} #{result['index']} :\n"
+            f"« {wrong} » → « {right} »\n"
+            f"Test : « {preview} »"
+        )
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
@@ -13022,10 +13070,64 @@ class GatewayRunner:
             return prefix
         return user_text
 
+    async def _echo_voice_transcript_if_enabled(
+        self,
+        *,
+        transcript: str,
+        source: Optional[SessionSource],
+        event: Optional[MessageEvent],
+        index: int = 1,
+        total: int = 1,
+    ) -> None:
+        """Send a visible STT transcript echo before the agent reply when enabled."""
+        if not getattr(self.config, "stt_echo_transcript", False):
+            return
+        clean_transcript = (transcript or "").strip()
+        if not clean_transcript or source is None:
+            return
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return
+
+        prefix = str(
+            getattr(self.config, "stt_echo_transcript_prefix", "🎤 Transcription")
+            or "🎤 Transcription"
+        ).strip() or "🎤 Transcription"
+        if total > 1:
+            prefix = f"{prefix} {index}/{total}"
+
+        max_chars = 3500
+        display_transcript = clean_transcript
+        if len(display_transcript) > max_chars:
+            display_transcript = (
+                display_transcript[:max_chars].rstrip()
+                + "… [transcription tronquée]"
+            )
+
+        metadata = None
+        try:
+            reply_anchor = self._reply_anchor_for_event(event) if event is not None else None
+            metadata = self._thread_metadata_for_source(source, reply_anchor)
+        except Exception:
+            logger.debug("Failed to build transcript echo metadata", exc_info=True)
+
+        try:
+            await adapter.send(
+                source.chat_id,
+                f"{prefix} :\n« {display_transcript} »",
+                metadata=metadata,
+            )
+        except Exception:
+            logger.warning("Failed to send STT transcript echo", exc_info=True)
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
         audio_paths: List[str],
+        *,
+        source: Optional[SessionSource] = None,
+        event: Optional[MessageEvent] = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -13053,12 +13155,29 @@ class GatewayRunner:
         from tools.transcription_tools import transcribe_audio
 
         enriched_parts = []
-        for path in audio_paths:
+        total_audio_paths = len(audio_paths)
+        for audio_index, path in enumerate(audio_paths, start=1):
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
+                    try:
+                        from tools.stt_corrections import apply_stt_corrections
+
+                        corrected_transcript = apply_stt_corrections(transcript)
+                        if corrected_transcript != transcript:
+                            logger.info("Applied personal STT corrections to voice transcript")
+                        transcript = corrected_transcript
+                    except Exception:
+                        logger.debug("Failed to apply personal STT corrections", exc_info=True)
+                    await self._echo_voice_transcript_if_enabled(
+                        transcript=transcript,
+                        source=source,
+                        event=event,
+                        index=audio_index,
+                        total=total_audio_paths,
+                    )
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
@@ -16513,7 +16632,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        if sys.platform == "darwin" and not os.environ.get("INVOCATION_ID"):
+            runner.request_restart(detached=True, via_service=False)
+        else:
+            runner.request_restart(detached=False, via_service=True)
     
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():

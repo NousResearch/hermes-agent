@@ -434,6 +434,7 @@ def session_search(
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid
+                result["matched_session_id"] = raw_sid
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
@@ -442,7 +443,11 @@ def session_search(
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                # Load from the FTS-matched session with ancestors so we get
+                # the full conversation chain (root -> matched child), not just
+                # the root's own messages.
+                matched_sid = match_info.get("matched_session_id", session_id)
+                messages = db.get_messages_as_conversation(matched_sid, include_ancestors=True)
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}

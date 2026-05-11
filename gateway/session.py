@@ -1276,9 +1276,14 @@ class SessionStore:
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
-        with self._lock:
-            with open(transcript_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        try:
+            with self._lock:
+                with open(transcript_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        except OSError as e:
+            # Disk full / read-only fs / permission errors must not crash the
+            # message handler — the SQLite write above is the primary store.
+            logger.debug("Failed to write JSONL transcript for %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.

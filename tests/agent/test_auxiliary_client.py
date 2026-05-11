@@ -2124,6 +2124,191 @@ class TestCodexAuxiliaryAdapterTimeout:
 
 
 # ---------------------------------------------------------------------------
+# Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
+# ---------------------------------------------------------------------------
+
+class TestAuxiliaryClientPoisonedCacheEviction:
+    """Connection/timeout errors must evict the cached aux client.
+
+    Otherwise the next auxiliary call (compression retry, memory flush,
+    background review) reuses the closed httpx transport and fails with
+    ``Connection error`` even though the main provider route is healthy.
+    See https://github.com/NousResearch/hermes-agent/issues/23432.
+    """
+
+    def test_evict_cached_client_instance_drops_direct_match(self):
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _evict_cached_client_instance,
+        )
+
+        target = MagicMock(name="target_client")
+        other = MagicMock(name="other_client")
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[("openrouter", False, None, None, None)] = (target, "x", None)
+            _client_cache[("anthropic", False, None, None, None)] = (other, "y", None)
+        try:
+            assert _evict_cached_client_instance(target) is True
+            assert ("openrouter", False, None, None, None) not in _client_cache
+            assert ("anthropic", False, None, None, None) in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_evict_cached_client_instance_walks_codex_wrapper(self):
+        """Closing the underlying OpenAI client must evict the Codex shim."""
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _evict_cached_client_instance,
+            CodexAuxiliaryClient,
+        )
+
+        real = SimpleNamespace(api_key="k", base_url="https://chatgpt.com/backend-api/codex",
+                               responses=SimpleNamespace(stream=lambda **k: None),
+                               close=lambda: None)
+        wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[("openai-codex", False, None, None, None)] = (wrapper, "gpt-5.5", None)
+        try:
+            # Eviction by the inner OpenAI client must remove the wrapper entry.
+            assert _evict_cached_client_instance(real) is True
+            assert ("openai-codex", False, None, None, None) not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_evict_cached_client_instance_handles_none_and_misses(self):
+        from agent.auxiliary_client import _evict_cached_client_instance
+
+        assert _evict_cached_client_instance(None) is False
+        assert _evict_cached_client_instance(MagicMock()) is False
+
+    def test_codex_timeout_evicts_cached_wrapper(self):
+        """The timeout closer evicts the cache entry that wraps the closed client."""
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock,
+            _CodexCompletionsAdapter, CodexAuxiliaryClient,
+        )
+
+        class SlowAliveStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                for _ in range(20):
+                    time.sleep(0.01)
+                    yield SimpleNamespace(type="response.in_progress")
+
+            def get_final_response(self):  # pragma: no cover — timeout fires first
+                return SimpleNamespace(output=[], usage=None)
+
+        closed = {"flag": False}
+
+        class FakeClient:
+            def __init__(self):
+                self.responses = SimpleNamespace(stream=lambda **k: SlowAliveStream())
+                self.api_key = "k"
+                self.base_url = "https://chatgpt.com/backend-api/codex"
+
+            def close(self):
+                closed["flag"] = True
+
+        fake_real = FakeClient()
+        wrapper = CodexAuxiliaryClient(fake_real, "gpt-5.5")
+        cache_key = ("openai-codex", False, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (wrapper, "gpt-5.5", None)
+        try:
+            adapter = _CodexCompletionsAdapter(fake_real, "gpt-5.5")
+            with pytest.raises(TimeoutError):
+                adapter.create(
+                    messages=[{"role": "user", "content": "x"}],
+                    timeout=0.05,
+                )
+            assert closed["flag"] is True, "timeout closer must close inner client"
+            assert cache_key not in _client_cache, (
+                "timeout closer must evict cache entry that wraps the closed client"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_call_llm_evicts_on_connection_error_with_explicit_provider(self):
+        """Connection error on an explicit provider must drop the cached client.
+
+        This is the exact reporter scenario: ``auxiliary.compression.provider:
+        main`` (resolves to ``openai-codex``) → no fallback chain runs (not
+        auto), but the cached client was poisoned by a prior timeout and must
+        be evicted so the next call rebuilds.
+        """
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        poisoned = MagicMock(name="poisoned_client")
+        poisoned.base_url = "https://chatgpt.com/backend-api/codex"
+        poisoned.chat.completions.create.side_effect = ConnectionError("transport closed")
+
+        cache_key = ("openai-codex", False, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (poisoned, "gpt-5.5", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ), patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(poisoned, "gpt-5.5"),
+            ):
+                with pytest.raises(ConnectionError):
+                    call_llm(
+                        task="compression",
+                        messages=[{"role": "user", "content": "x"}],
+                    )
+            assert cache_key not in _client_cache, (
+                "connection error must evict cached client so the next call rebuilds"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_evicts_on_connection_error_with_explicit_provider(self):
+        from agent.auxiliary_client import _client_cache, _client_cache_lock
+
+        poisoned = MagicMock(name="poisoned_async_client")
+        poisoned.base_url = "https://chatgpt.com/backend-api/codex"
+        poisoned.chat.completions.create = AsyncMock(side_effect=ConnectionError("transport closed"))
+
+        cache_key = ("openai-codex", True, None, None, None)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[cache_key] = (poisoned, "gpt-5.5", None)
+
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ), patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(poisoned, "gpt-5.5"),
+            ):
+                with pytest.raises(ConnectionError):
+                    await async_call_llm(
+                        task="compression",
+                        messages=[{"role": "user", "content": "x"}],
+                    )
+            assert cache_key not in _client_cache
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+
+# ---------------------------------------------------------------------------
 # _build_call_kwargs — tool dedup at API boundary
 # ---------------------------------------------------------------------------
 

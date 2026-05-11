@@ -425,23 +425,32 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 class SlackAutoJoinConfig:
     """Auto-join Slack channels whose names match a regex.
 
-    Config schema (top-level key in config.yaml):
+    Config schema (top-level key in config.yaml)::
 
         slack_auto_join:
           enabled: false
           channel_regex: "^inc-.*$"
+          slack_prompt_on_join: ""   # optional: injected after joining; ${channel_name} is substituted
 
     Requires the Slack app to have the ``channels:join`` OAuth scope and
     the ``channel_created`` event subscribed in the app manifest.
+
+    For the bot to also trigger when manually invited to an existing channel
+    (not just on channel_created), also subscribe the ``member_joined_channel``
+    event in the app manifest.
     """
     enabled: bool = False
     # Compiled at load time; None means regex was empty/invalid (skip all).
     channel_regex: str = ""
+    # Optional prompt injected as a synthetic message after joining a channel.
+    # Supports ${channel_name} substitution.  Empty string = no prompt.
+    slack_prompt_on_join: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
             "channel_regex": self.channel_regex,
+            "slack_prompt_on_join": self.slack_prompt_on_join,
         }
 
     @classmethod
@@ -451,6 +460,7 @@ class SlackAutoJoinConfig:
         return cls(
             enabled=bool(data.get("enabled", False)),
             channel_regex=str(data.get("channel_regex", "")),
+            slack_prompt_on_join=str(data.get("slack_prompt_on_join", "")),
         )
 
 

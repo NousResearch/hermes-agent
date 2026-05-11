@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Sample Atom Feed</title>
+  <subtitle>A sample Atom 1.0 feed used for testing the rss-feed skill.</subtitle>
+  <link rel="alternate" type="text/html" href="https://example.org/"/>
+  <link rel="self" type="application/atom+xml" href="https://example.org/atom.xml"/>
+  <id>urn:uuid:8f3a1a5e-2c4b-4f6d-9a7e-1234567890ab</id>
+  <updated>2026-05-05T12:00:00Z</updated>
+  <author>
+    <name>Sample Author</name>
+    <email>author@example.org</email>
+  </author>
+  <entry>
+    <id>urn:uuid:11111111-aaaa-bbbb-cccc-111111111111</id>
+    <title>Atom Entry Alpha</title>
+    <link rel="alternate" type="text/html" href="https://example.org/atom/alpha"/>
+    <published>2026-05-05T09:30:00Z</published>
+    <updated>2026-05-05T09:45:00Z</updated>
+    <summary type="html">&lt;p&gt;Alpha entry summary with &lt;em&gt;emphasis&lt;/em&gt;.&lt;/p&gt;</summary>
+    <content type="html">&lt;p&gt;Full alpha content with a &lt;a href="https://example.org/ref"&gt;link&lt;/a&gt; inside.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>urn:uuid:22222222-aaaa-bbbb-cccc-222222222222</id>
+    <title>Atom Entry Beta</title>
+    <link rel="alternate" type="text/html" href="https://example.org/atom/beta"/>
+    <published>2026-05-04T14:15:00Z</published>
+    <updated>2026-05-04T14:20:00Z</updated>
+    <summary type="html">&lt;p&gt;Beta entry summary, &lt;strong&gt;short&lt;/strong&gt; and sweet.&lt;/p&gt;</summary>
+    <content type="html">&lt;p&gt;Beta full content body for entry two.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>urn:uuid:33333333-aaaa-bbbb-cccc-333333333333</id>
+    <title>Atom Entry Gamma</title>
+    <link rel="alternate" type="text/html" href="https://example.org/atom/gamma"/>
+    <published>2026-05-03T22:00:00Z</published>
+    <updated>2026-05-03T22:05:00Z</updated>
+    <summary type="html">&lt;p&gt;Gamma summary with ampersands &amp;amp; quotes &amp;quot;ok&amp;quot;.&lt;/p&gt;</summary>
+    <content type="html">&lt;p&gt;Gamma full content with special chars handled.&lt;/p&gt;</content>
+  </entry>
+</feed>

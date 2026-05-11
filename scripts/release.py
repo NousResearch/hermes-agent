@@ -56,6 +56,7 @@ AUTHOR_MAP = {
     "datapod.k@gmail.com": "dandacompany",
     "treydong.zh@gmail.com": "TreyDong",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "hugosequier@gmail.com": "Hugo-SEQUIER",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
     "223003280+Abd0r@users.noreply.github.com": "Abd0r",

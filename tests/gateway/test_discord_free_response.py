@@ -446,7 +446,137 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
     assert event.source.chat_type == "group"
 
 
+# ---------------------------------------------------------------------------
+# on_message pre-filter: DISCORD_REQUIRE_MENTION in free-response channels
+# ---------------------------------------------------------------------------
+# The on_message handler has an early-return path that runs *before*
+# _handle_message.  When a server-channel message @mentions specific users
+# but not the bot, DISCORD_REQUIRE_MENTION=true (the default) silences the
+# bot even in free-response channels.  _handle_message tests above can't
+# catch regressions here because they bypass the on_message gate entirely.
+#
+# The helper below replicates the exact filter block added in commit 3a798659.
 
+
+def _run_on_message_mention_filter(
+    message,
+    *,
+    adapter,
+    require_mention: str = "false",
+    ignore_no_mention: str = "true",
+    free_response_channels: str = "",
+) -> bool:
+    """Return True if the message would reach _handle_message, False if dropped."""
+    import discord as _discord
+
+    bot_user = adapter._client.user
+
+    if isinstance(message.channel, _discord.DMChannel):
+        return True
+    if not message.mentions:
+        return True
+
+    self_mentioned = bot_user is not None and bot_user in message.mentions
+    other_bots_mentioned = any(
+        getattr(m, "bot", False) and m != bot_user for m in message.mentions
+    )
+
+    if other_bots_mentioned and not self_mentioned:
+        return False
+
+    _ignore = ignore_no_mention.lower() in {"true", "1", "yes"}
+    if _ignore and not self_mentioned and not other_bots_mentioned:
+        free = {c.strip() for c in free_response_channels.split(",") if c.strip()}
+        channel_ids = {str(message.channel.id)}
+        if "*" not in free and not (channel_ids & free):
+            return False  # not a free-response channel
+
+        # DISCORD_REQUIRE_MENTION check (commit 3a798659)
+        _require = require_mention.lower() in ("true", "1", "yes")
+        if _require and not self_mentioned:
+            return False
+
+    return True
+
+
+class FakeHumanUser:
+    def __init__(self, user_id: int):
+        self.id = user_id
+        self.bot = False
+        self.name = f"user-{user_id}"
+
+
+def _make_channel_message(channel, *, mentions=None):
+    author = SimpleNamespace(id=42, bot=False, display_name="Alice", name="alice")
+    return SimpleNamespace(
+        id=1,
+        content="hey team",
+        mentions=list(mentions or []),
+        attachments=[],
+        reference=None,
+        channel=channel,
+        author=author,
+    )
+
+
+def test_require_mention_blocks_human_mention_in_free_response_channel(adapter):
+    """DISCORD_REQUIRE_MENTION=true silences the bot in a free-response
+    channel when the message @mentions a human but not the bot."""
+    alice = FakeHumanUser(111)
+    msg = _make_channel_message(FakeTextChannel(channel_id=789), mentions=[alice])
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, require_mention="true", free_response_channels="789"
+    ) is False
+
+
+def test_require_mention_false_allows_human_mention_in_free_response_channel(adapter):
+    """DISCORD_REQUIRE_MENTION=false lets the bot respond in a free-response channel
+    even when the message mentions only other users."""
+    alice = FakeHumanUser(111)
+    msg = _make_channel_message(FakeTextChannel(channel_id=789), mentions=[alice])
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, require_mention="false", free_response_channels="789"
+    ) is True
+
+
+def test_self_mention_always_passes_on_message_filter(adapter):
+    """A message that @mentions the bot is never blocked by this filter."""
+    bot_user = adapter._client.user
+    msg = _make_channel_message(FakeTextChannel(channel_id=789), mentions=[bot_user])
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, require_mention="true", free_response_channels="789"
+    ) is True
+
+
+def test_no_mentions_skips_on_message_filter(adapter):
+    """Messages with no @mentions bypass the filter entirely."""
+    msg = _make_channel_message(FakeTextChannel(channel_id=789), mentions=[])
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, require_mention="true", free_response_channels="789"
+    ) is True
+
+
+def test_require_mention_defaults_to_false_for_multi_agent_gate(adapter):
+    """DISCORD_REQUIRE_MENTION defaults to false: the multi-agent silence gate
+    is opt-in, so the bot responds in free-response channels by default even
+    when the message mentions other users."""
+    alice = FakeHumanUser(111)
+    msg = _make_channel_message(FakeTextChannel(channel_id=789), mentions=[alice])
+    # default require_mention="false" → passes through
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, free_response_channels="789"
+    ) is True
+
+
+def test_on_message_filter_does_not_affect_non_free_channels(adapter):
+    """In a non-free channel, the DISCORD_IGNORE_NO_MENTION check already
+    blocks human-mention messages regardless of DISCORD_REQUIRE_MENTION."""
+    alice = FakeHumanUser(111)
+    msg = _make_channel_message(FakeTextChannel(channel_id=456), mentions=[alice])
+    # Channel 456 is not free — blocked before DISCORD_REQUIRE_MENTION is consulted
+    assert _run_on_message_mention_filter(
+        msg, adapter=adapter, require_mention="false", free_response_channels="789"
+    ) is False
 
 @pytest.mark.asyncio
 async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter, monkeypatch):

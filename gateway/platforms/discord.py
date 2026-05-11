@@ -788,7 +788,7 @@ class DiscordAdapter(BasePlatformAdapter):
 		    # Setting DISCORD_REQUIRE_MENTION to `true` means agents will only handle
 		    # messages that specifically mention them.
                     _require_mention = os.getenv(
-                        "DISCORD_REQUIRE_MENTION", "true"
+                        "DISCORD_REQUIRE_MENTION", "false"
                     ).lower() in ("true", "1", "yes")
                     if _require_mention and not _self_mentioned:
                         return

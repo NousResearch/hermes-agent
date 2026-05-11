@@ -19,7 +19,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
-| **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
+| **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. In free-response channels, set `DISCORD_REQUIRE_MENTION=true` to add a second layer: Hermes will also stay silent if the message mentions other users but not the bot — useful when multiple agents share a channel to prevent response loops. Only applies in server channels, not DMs. |
 
 :::tip
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
@@ -276,7 +276,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
-| `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
+| `DISCORD_REQUIRE_MENTION` | No | `false` | When `true`, the bot only responds in server channels when `@mentioned`, and also stays silent in free-response channels when a message mentions other users but not this bot. Set to `true` when running multiple agents in the same channel to prevent response loops. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
@@ -323,6 +323,8 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+When set to `true`, it also applies in free-response channels: if a message `@mentions` other users but not this bot, the bot stays silent rather than jumping into a conversation directed at someone else. This is especially useful when multiple agents share a channel — set `DISCORD_REQUIRE_MENTION=true` to prevent agents from triggering each other into a response loop on messages that weren't addressed to them.
 
 #### `discord.free_response_channels`
 

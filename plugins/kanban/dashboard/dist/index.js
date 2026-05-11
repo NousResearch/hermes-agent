@@ -1898,7 +1898,7 @@
           type: "checkbox",
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
-          "aria-label": `Select all tasks in ${COLUMN_LABEL[props.column.name] || props.column.name}`,
+          "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
           checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
           onChange: function (e) {
             e.stopPropagation();

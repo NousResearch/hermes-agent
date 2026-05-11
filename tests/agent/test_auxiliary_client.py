@@ -2496,3 +2496,165 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "explicit-fallback-key", (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
+
+
+# ── Auxiliary unhealthy-provider TTL cache (issue #23570) ────────────────
+
+
+class TestAuxUnhealthyCache:
+    """Recently-402'd providers are skipped on subsequent aux calls.
+
+    Without this, every compression / title-gen / session-search call on a
+    long session retries a depleted OpenRouter (~1 RTT to 402) before
+    falling back to the next provider. The TTL cache hides the unhealthy
+    provider for ``_AUX_UNHEALTHY_TTL_SECONDS`` so the chain skips it.
+    """
+
+    def setup_method(self):
+        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        _reset_aux_unhealthy_cache()
+
+    def teardown_method(self):
+        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        _reset_aux_unhealthy_cache()
+
+    def test_mark_then_skip(self):
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _is_provider_unhealthy,
+        )
+        assert _is_provider_unhealthy("openrouter") is False
+        _mark_provider_unhealthy("openrouter")
+        assert _is_provider_unhealthy("openrouter") is True
+
+    def test_ttl_expiry_evicts(self):
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _is_provider_unhealthy,
+            _aux_unhealthy_until,
+        )
+        _mark_provider_unhealthy("openrouter", ttl=0.01)
+        assert _is_provider_unhealthy("openrouter") is True
+        import time
+        time.sleep(0.02)
+        # Lazy eviction: first lookup after expiry returns False AND removes the entry.
+        assert _is_provider_unhealthy("openrouter") is False
+        assert "openrouter" not in _aux_unhealthy_until
+
+    def test_alias_normalization(self):
+        """'codex' should normalize to 'openai-codex' so the cache lookup
+        matches the chain label."""
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _is_provider_unhealthy,
+        )
+        _mark_provider_unhealthy("codex")
+        assert _is_provider_unhealthy("openai-codex") is True
+
+    def test_resolve_auto_skips_unhealthy_step2(self):
+        """_resolve_auto Step-2 chain skips unhealthy providers."""
+        from agent.auxiliary_client import (
+            _resolve_auto,
+            _mark_provider_unhealthy,
+        )
+        nous_client = MagicMock()
+        # Mark OpenRouter unhealthy → chain should skip it and pick nous.
+        _mark_provider_unhealthy("openrouter")
+        with patch("agent.auxiliary_client._read_main_provider", return_value=""), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._try_openrouter") as or_try, \
+             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "nous-model")), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+            client, model = _resolve_auto()
+        assert client is nous_client
+        assert model == "nous-model"
+        # The skipped provider's _try_* should NOT have been called at all.
+        or_try.assert_not_called()
+
+    def test_resolve_auto_skips_unhealthy_main_in_step1(self):
+        """Step-1 also consults the unhealthy cache so a depleted main
+        provider doesn't burn a 402 RTT every aux call. Falls through to
+        Step-2 chain (which also respects the cache)."""
+        from agent.auxiliary_client import (
+            _resolve_auto,
+            _mark_provider_unhealthy,
+        )
+        nous_client = MagicMock()
+        _mark_provider_unhealthy("openrouter")
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4.6"), \
+             patch("agent.auxiliary_client.resolve_provider_client") as step1, \
+             patch("agent.auxiliary_client._try_openrouter") as or_try, \
+             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+            client, model = _resolve_auto()
+        # Step-1 was bypassed — resolve_provider_client never invoked
+        step1.assert_not_called()
+        # Step-2 also skipped openrouter and landed on nous
+        or_try.assert_not_called()
+        assert client is nous_client
+
+    def test_payment_fallback_skips_unhealthy(self):
+        """_try_payment_fallback also consults the unhealthy cache so a 402
+        on OpenRouter doesn't cause a second OR call within the same chain
+        iteration if it gets re-entered."""
+        from agent.auxiliary_client import (
+            _try_payment_fallback,
+            _mark_provider_unhealthy,
+        )
+        nous_client = MagicMock()
+        # Mark BOTH the failed provider (openrouter) and a sibling (custom)
+        # unhealthy. The chain should still find nous.
+        _mark_provider_unhealthy("local/custom")
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._try_openrouter") as or_try, \
+             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
+             patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+            client, model, label = _try_payment_fallback("openrouter", task="compression")
+        assert client is nous_client
+        assert label == "nous"
+        # OR is skipped via skip_chain_labels (failed provider), custom via unhealthy cache.
+        or_try.assert_not_called()
+        custom_try.assert_not_called()
+
+    def test_call_llm_marks_provider_unhealthy_on_402(self, monkeypatch):
+        """A 402 from call_llm causes the provider to be marked unhealthy
+        so the next call skips it instead of re-trying the same depleted
+        endpoint."""
+        from agent.auxiliary_client import (
+            call_llm,
+            _is_provider_unhealthy,
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        # base_url tells _recoverable_pool_provider() that this is OpenRouter
+        # (resolved_provider="auto" doesn't carry that information by itself).
+        primary_client.base_url = "https://openrouter.ai/api/v1/"
+        err = Exception("Payment Required: insufficient credits")
+        err.status_code = 402
+        primary_client.chat.completions.create.side_effect = err
+
+        nous_client = MagicMock()
+        nous_resp = MagicMock()
+        nous_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
+        nous_client.chat.completions.create.return_value = nous_resp
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(nous_client, "n-model", "nous")), \
+             patch("agent.auxiliary_client._build_call_kwargs",
+                    return_value={"model": "n-model", "messages": [{"role": "user", "content": "hi"}]}):
+            assert _is_provider_unhealthy("openrouter") is False
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            # After the 402, OpenRouter is in the unhealthy cache.
+            assert _is_provider_unhealthy("openrouter") is True

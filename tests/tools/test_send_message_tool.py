@@ -24,6 +24,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
+    _send_bluebubbles,
     _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
@@ -214,6 +215,42 @@ class TestSendMessageTool:
             thread_id=None,
             user_id="user-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_bluebubbles_one_shot_send_does_not_bind_webhook(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        class DummyClient:
+            async def aclose(self):
+                pass
+
+        async def forbidden_connect(self):
+            raise AssertionError("one-shot send must not start the webhook listener")
+
+        async def fake_api_get(self, path):
+            return {"data": {"private_api": True, "helper_connected": True}}
+
+        async def fake_send(self, chat_id, message):
+            return SendResult(success=True, message_id="msg-1")
+
+        monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: DummyClient())
+        monkeypatch.setattr(BlueBubblesAdapter, "connect", forbidden_connect)
+        monkeypatch.setattr(BlueBubblesAdapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(BlueBubblesAdapter, "send", fake_send)
+
+        result = await _send_bluebubbles(
+            {"server_url": "http://localhost:1234", "password": "secret", "webhook_port": 8645},
+            "+15551234567",
+            "hello",
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "+15551234567",
+            "message_id": "msg-1",
+        }
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

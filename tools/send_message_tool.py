@@ -1673,8 +1673,16 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 
 async def _send_bluebubbles(extra, chat_id, message):
-    """Send via BlueBubbles iMessage server using the adapter's REST API."""
+    """Send via BlueBubbles without starting a second inbound webhook listener.
+
+    The gateway's BlueBubbles adapter owns the webhook port for inbound events.
+    send_message is an outbound one-shot helper, so it must use only the REST
+    client path; calling adapter.connect() here would try to bind the same
+    webhook port as the live gateway and fail with EADDRINUSE.
+    """
     try:
+        import httpx
+        from gateway.platforms._http_client_limits import platform_httpx_limits
         from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
         if not check_bluebubbles_requirements():
             return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
@@ -1685,16 +1693,22 @@ async def _send_bluebubbles(extra, chat_id, message):
         from gateway.config import PlatformConfig
         pconfig = PlatformConfig(extra=extra)
         adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("BlueBubbles: failed to connect to server")
+        adapter.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
+            await adapter._api_get("/api/v1/ping")
+            info = await adapter._api_get("/api/v1/server/info")
+            server_data = (info or {}).get("data", {})
+            adapter._private_api_enabled = bool(server_data.get("private_api"))
+            adapter._helper_connected = bool(server_data.get("helper_connected"))
+
             result = await adapter.send(chat_id, message)
             if not result.success:
                 return _error(f"BlueBubbles send failed: {result.error}")
             return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
         finally:
-            await adapter.disconnect()
+            if adapter.client:
+                await adapter.client.aclose()
+                adapter.client = None
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
 

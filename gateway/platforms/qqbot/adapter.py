@@ -581,7 +581,8 @@ class QQAdapter(BasePlatformAdapter):
                 "[%s] Recreating HTTP client and retrying...", self._log_tag
             )
             try:
-                await self._http_client.aclose()
+                # Don't wait indefinitely for a stale connection pool to drain.
+                await asyncio.wait_for(self._http_client.aclose(), timeout=5.0)
             except Exception:
                 pass
             self._http_client = httpx.AsyncClient(

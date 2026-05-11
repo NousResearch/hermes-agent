@@ -143,8 +143,9 @@ DECOMPOSE_SYSTEM_PROMPT = (
     "publicly accessible, domain/URL is functional, etc. Better to "
     "over-specify and let a few items get marked impossible than to "
     "under-specify and let the agent declare victory early.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{"checklist": [{"text": "<item>"}, {"text": "<item>"}, ...]}'
+    "Submit your checklist by calling the ``submit_checklist`` tool. Do "
+    "not reply with prose or JSON in your message body — call the tool. "
+    "The system will not see anything you write outside the tool call."
 )
 
 DECOMPOSE_USER_PROMPT_TEMPLATE = (
@@ -196,23 +197,20 @@ EVALUATE_SYSTEM_PROMPT_CHECKLIST = (
     "demonstrates the item cannot be achieved in this environment (NOT "
     "merely that the agent didn't try). Vague intentions ('I will do X "
     "next') do NOT count as completion.\n\n"
-    "You may APPEND new checklist items if the agent's work reveals "
-    "criteria the original decomposition missed. Stay strict — only add "
-    "items that genuinely belong as completion criteria.\n\n"
     "STICKINESS: items already marked completed or impossible are frozen. "
     "Do not include them in your updates. Only the user can revert them.\n\n"
-    "TOOLS: you have read_file(path, offset, limit) available. The full "
-    "conversation history for this session is dumped to a JSON file whose "
-    "path is given in the user message. Call read_file on it when the "
-    "snippet is ambiguous, when you need to verify a tool call actually "
-    "happened, or when you want to see what skills the agent loaded. "
-    "Otherwise, judge from the snippet directly — extra reads cost tokens.\n\n"
-    "When you are ready to rule, reply ONLY with a single JSON object:\n"
-    '{"updates": [{"index": <i>, "status": "completed|impossible", "evidence": "<why>"}, ...], '
-    '"new_items": [{"text": "<new item>"}, ...], '
-    '"reason": "<one-sentence overall rationale>"}\n'
-    "When citing evidence, reference the agent's actual output specifically. "
-    "Empty updates is fine. Empty new_items is fine. The reason field is required."
+    "TOOLS:\n"
+    "- ``read_file(path, offset, limit)``: inspect the dumped conversation "
+    "history file whose path is given in the user message. Use this when "
+    "the snippet alone isn't enough to rule. Each call costs tokens, so "
+    "only read when needed.\n"
+    "- ``update_checklist(updates, new_items, reason)``: issue your "
+    "verdict. Call this exactly once per turn when you are ready to rule. "
+    "Calling it ENDS the evaluation.\n\n"
+    "You MUST call one of these tools every turn. Do not reply with "
+    "prose or JSON in your message body — the system will not see "
+    "anything written outside tool calls. When you cite evidence, "
+    "reference the agent's actual output specifically."
 )
 
 EVALUATE_USER_PROMPT_CHECKLIST_TEMPLATE = (
@@ -645,6 +643,17 @@ def _parse_evaluate_response(raw: str) -> Tuple[Dict[str, Any], bool]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Judge tool schemas: read_file (history inspection) +
+# submit_checklist (Phase A) + update_checklist (Phase B)
+#
+# Forcing the judge to emit through tool calls is dramatically more
+# reliable than asking it to reply with JSON text. Most providers
+# enforce the schema server-side, so weak/small judge models can no
+# longer drift into prose, markdown fences, or empty bodies.
+# ──────────────────────────────────────────────────────────────────────
+
+
 _JUDGE_READ_FILE_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -680,6 +689,122 @@ _JUDGE_READ_FILE_TOOL_SCHEMA: Dict[str, Any] = {
                 },
             },
             "required": ["path"],
+        },
+    },
+}
+
+
+_JUDGE_SUBMIT_CHECKLIST_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "submit_checklist",
+        "description": (
+            "Submit the harsh, detailed completion-criteria checklist you "
+            "decomposed the goal into. Each item is one verifiable "
+            "completion criterion. Bias toward more items, not fewer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": (
+                        "List of checklist items. Each item is a single "
+                        "verifiable statement of fact about the finished "
+                        "work. Aim for at least 5 items; more is better "
+                        "when warranted."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "The completion-criterion text.",
+                            },
+                        },
+                        "required": ["text"],
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    },
+}
+
+
+_JUDGE_UPDATE_CHECKLIST_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_checklist",
+        "description": (
+            "Issue your verdict on the current checklist. For each "
+            "currently-pending item, decide whether the agent's most "
+            "recent response (and conversation history if you read it) "
+            "shows the item is satisfied. You may also append new items "
+            "the original decomposition missed. Call this exactly once "
+            "when you are ready to rule — calling it ends the evaluation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "updates": {
+                    "type": "array",
+                    "description": (
+                        "Per-item rulings. Use the 1-based ``index`` shown "
+                        "in the checklist. ``status`` must be 'completed' "
+                        "(clear evidence the item is done) or 'impossible' "
+                        "(item cannot be achieved in this environment). "
+                        "Items already in a terminal status are frozen — "
+                        "do not include them."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {
+                                "type": "integer",
+                                "description": "1-based checklist index.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["completed", "impossible"],
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": (
+                                    "One-sentence specific citation of why "
+                                    "this item is done or impossible. "
+                                    "Reference the agent's actual output."
+                                ),
+                            },
+                        },
+                        "required": ["index", "status", "evidence"],
+                    },
+                },
+                "new_items": {
+                    "type": "array",
+                    "description": (
+                        "Optional: completion criteria the original "
+                        "decomposition missed. Stay strict — only add "
+                        "items that genuinely belong as completion "
+                        "criteria for this goal."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "The new criterion text.",
+                            },
+                        },
+                        "required": ["text"],
+                    },
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence overall rationale for this round of updates.",
+                },
+            },
+            "required": ["updates", "new_items", "reason"],
         },
     },
 }
@@ -770,15 +895,125 @@ def _get_judge_client() -> Tuple[Optional[Any], str]:
     return client, model
 
 
+def _extract_tool_call(msg: Any, tool_name: str) -> Optional[Dict[str, Any]]:
+    """Find a tool call by name on a chat-completions message. Returns
+    ``{"id", "name", "arguments": <dict>}`` or None.
+
+    Robust to provider shims that return tool_calls as objects or dicts
+    and arguments as JSON strings or already-parsed dicts.
+    """
+    tool_calls = getattr(msg, "tool_calls", None) or []
+    for tc in tool_calls:
+        try:
+            tc_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else None) or "tc-?"
+            fn = getattr(tc, "function", None) or (tc.get("function") if isinstance(tc, dict) else None)
+            if fn is None:
+                continue
+            fn_name = getattr(fn, "name", None) or (fn.get("name") if isinstance(fn, dict) else "")
+            if fn_name != tool_name:
+                continue
+            fn_args_raw = getattr(fn, "arguments", None) or (fn.get("arguments") if isinstance(fn, dict) else "")
+            if isinstance(fn_args_raw, str):
+                try:
+                    args = json.loads(fn_args_raw) if fn_args_raw else {}
+                except Exception:
+                    args = {}
+            elif isinstance(fn_args_raw, dict):
+                args = fn_args_raw
+            else:
+                args = {}
+            return {"id": tc_id, "name": fn_name, "arguments": args}
+        except Exception:
+            continue
+    return None
+
+
+def _serialize_assistant_tool_calls(msg: Any) -> List[Dict[str, Any]]:
+    """Convert a provider-shim tool_calls list into plain-dict form for
+    inclusion in subsequent ``messages=[...]`` payloads."""
+    out: List[Dict[str, Any]] = []
+    for tc in getattr(msg, "tool_calls", None) or []:
+        try:
+            tc_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else None) or "tc-?"
+            fn = getattr(tc, "function", None) or (tc.get("function") if isinstance(tc, dict) else None)
+            fn_name = getattr(fn, "name", None) or (fn.get("name") if isinstance(fn, dict) else "")
+            fn_args = getattr(fn, "arguments", None) or (fn.get("arguments") if isinstance(fn, dict) else "")
+            if not isinstance(fn_args, str):
+                try:
+                    fn_args = json.dumps(fn_args)
+                except Exception:
+                    fn_args = "{}"
+            out.append({
+                "id": tc_id,
+                "type": "function",
+                "function": {"name": fn_name or "", "arguments": fn_args},
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _call_judge_with_tool_choice(
+    client: Any,
+    *,
+    model: str,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    forced_tool_name: Optional[str],
+    timeout: float,
+    max_tokens: int = 1500,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Call the judge with a forced tool choice, falling back to ``auto``
+    if the provider rejects ``required`` / a specific function choice.
+
+    Returns ``(response, error)``. On success, ``error`` is None.
+    """
+    # First attempt: force the specific tool. Most modern providers
+    # support {"type": "function", "function": {"name": "..."}}.
+    primary_choice: Any
+    if forced_tool_name:
+        primary_choice = {"type": "function", "function": {"name": forced_tool_name}}
+    else:
+        primary_choice = "required"
+
+    attempts: List[Any] = [primary_choice, "required", "auto"]
+    last_err: Optional[str] = None
+    for choice in attempts:
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice=choice,
+                temperature=0,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            ), None
+        except Exception as exc:
+            last_err = f"{type(exc).__name__}: {exc}"
+            # Only retry on errors that look like the provider rejecting the
+            # tool_choice shape. Network errors etc. should bail immediately.
+            msg = str(exc).lower()
+            if not any(token in msg for token in (
+                "tool_choice", "tool choice", "required", "function call",
+                "unsupported", "not supported", "invalid", "400",
+            )):
+                return None, last_err
+            logger.debug("goal judge: tool_choice=%r rejected (%s); falling back", choice, exc)
+            continue
+    return None, last_err or "all tool_choice fallbacks failed"
+
+
 def decompose_goal(
     goal: str,
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Phase-A: ask the judge to break the goal into a checklist.
+    """Phase-A: ask the judge to break the goal into a checklist via a
+    forced ``submit_checklist`` tool call.
 
-    Returns ``(items, error)``. On any failure, returns ``([], reason)`` so
-    the caller can decide whether to fall back to freeform mode.
+    Returns ``(items, error)``. On any failure, returns ``([], reason)``
+    so the caller can fall back to freeform mode.
     """
     if not goal.strip():
         return [], "empty goal"
@@ -787,39 +1022,68 @@ def decompose_goal(
     if client is None:
         return [], "auxiliary client unavailable"
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": DECOMPOSE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": DECOMPOSE_USER_PROMPT_TEMPLATE.format(
-                        goal=_truncate(goal, 4000)
-                    ),
-                },
-            ],
-            temperature=0,
-            max_tokens=2000,
-            timeout=timeout,
-        )
-    except Exception as exc:
-        logger.info("goal decompose: API call failed (%s)", exc)
-        return [], f"decompose error: {type(exc).__name__}"
+    messages = [
+        {"role": "system", "content": DECOMPOSE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": DECOMPOSE_USER_PROMPT_TEMPLATE.format(
+                goal=_truncate(goal, 4000)
+            ),
+        },
+    ]
+
+    resp, err = _call_judge_with_tool_choice(
+        client,
+        model=model,
+        messages=messages,
+        tools=[_JUDGE_SUBMIT_CHECKLIST_TOOL_SCHEMA],
+        forced_tool_name="submit_checklist",
+        timeout=timeout,
+        max_tokens=2000,
+    )
+    if resp is None:
+        logger.info("goal decompose: API call failed (%s)", err)
+        return [], f"decompose error: {err}"
 
     try:
-        raw = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
     except Exception:
-        raw = ""
+        return [], "decompose response malformed"
 
-    items, parse_failed = _parse_decompose_response(raw)
-    if parse_failed or not items:
-        logger.info(
-            "goal decompose: parse failed or empty checklist (raw=%r)",
-            _truncate(raw, 200),
-        )
-        return [], "decompose parse failed or empty"
-    logger.info("goal decompose: produced %d checklist items", len(items))
+    tc = _extract_tool_call(msg, "submit_checklist")
+    if tc is None:
+        # Provider responded but didn't call the tool. Try parsing content
+        # as a last-ditch backstop so a fully-broken provider doesn't
+        # silently leave the user with no checklist at all.
+        content = getattr(msg, "content", "") or ""
+        items, parse_failed = _parse_decompose_response(content)
+        if parse_failed or not items:
+            logger.info(
+                "goal decompose: no submit_checklist tool call AND no parseable JSON (raw=%r)",
+                _truncate(content, 200),
+            )
+            return [], "decompose: judge did not call submit_checklist"
+        logger.info("goal decompose: fell back to JSON-content parser (%d items)", len(items))
+        return items, None
+
+    raw_items = tc["arguments"].get("items") or []
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for entry in raw_items:
+            if isinstance(entry, dict):
+                text = str(entry.get("text", "")).strip()
+                if text:
+                    items.append({"text": text})
+            elif isinstance(entry, str):
+                text = entry.strip()
+                if text:
+                    items.append({"text": text})
+
+    if not items:
+        logger.info("goal decompose: submit_checklist returned empty items list")
+        return [], "decompose: empty checklist"
+
+    logger.info("goal decompose: produced %d checklist items via tool call", len(items))
     return items, None
 
 
@@ -882,10 +1146,15 @@ def evaluate_checklist(
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
     max_tool_calls: int = DEFAULT_MAX_JUDGE_TOOL_CALLS,
 ) -> Tuple[Dict[str, Any], bool]:
-    """Phase-B: judge evaluates each pending checklist item.
+    """Phase-B: judge evaluates each pending checklist item via forced
+    tool calls.
 
-    Runs a bounded tool loop so the judge can call ``read_file`` on the
-    dumped conversation history when the snippet isn't enough.
+    The judge has two tools available:
+      - ``read_file``: inspect the dumped conversation history
+      - ``update_checklist``: issue the verdict (terminates the loop)
+
+    ``tool_choice="required"`` forces one of them every iteration. We loop
+    until ``update_checklist`` is called or ``max_tool_calls`` is exhausted.
 
     Returns ``(parsed, parse_failed)`` where parsed is
     ``{"updates": [...], "new_items": [...], "reason": str}``.
@@ -895,7 +1164,8 @@ def evaluate_checklist(
     if client is None:
         return ({"updates": [], "new_items": [], "reason": "auxiliary client unavailable"}, False)
 
-    # Render checklist with 1-based indices the judge can address.
+    # Render checklist with 1-based indices the judge addresses via the
+    # update_checklist tool's ``index`` field.
     checklist_block = state.render_checklist(numbered=True)
 
     user_prompt = EVALUATE_USER_PROMPT_CHECKLIST_TEMPLATE.format(
@@ -910,136 +1180,170 @@ def evaluate_checklist(
         {"role": "user", "content": user_prompt},
     ]
 
-    # Some auxiliary providers may not support tool calls. We pass tools
-    # optimistically; if the provider returns a verdict directly without
-    # using them, we just parse it.
-    tools = [_JUDGE_READ_FILE_TOOL_SCHEMA] if history_path is not None else None
+    # Build the toolbox: read_file is only useful when we actually have a
+    # history file to read, so we omit it otherwise to keep the schema lean.
+    tools: List[Dict[str, Any]] = [_JUDGE_UPDATE_CHECKLIST_TOOL_SCHEMA]
+    if history_path is not None:
+        tools.insert(0, _JUDGE_READ_FILE_TOOL_SCHEMA)
 
-    tool_calls_left = max(0, int(max_tool_calls))
-    final_raw = ""
+    reads_left = max(0, int(max_tool_calls)) if history_path is not None else 0
 
-    for _ in range(tool_calls_left + 1):
-        try:
-            kwargs: Dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0,
-                "max_tokens": 1500,
-                "timeout": timeout,
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            resp = client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            logger.info("goal judge (checklist): API call failed (%s)", exc)
+    # Bound the overall loop generously — the judge will normally finish in
+    # one or two passes (read_file once, then update_checklist; or just
+    # update_checklist directly).
+    for iteration in range(reads_left + 2):
+        # When out of read budget, drop read_file from the toolbox so the
+        # judge MUST emit update_checklist.
+        loop_tools = tools if reads_left > 0 else [_JUDGE_UPDATE_CHECKLIST_TOOL_SCHEMA]
+        # Forcing update_checklist directly when reads are exhausted gives
+        # us the strongest guarantee of termination.
+        forced = "update_checklist" if reads_left <= 0 else None
+
+        resp, err = _call_judge_with_tool_choice(
+            client,
+            model=model,
+            messages=messages,
+            tools=loop_tools,
+            forced_tool_name=forced,
+            timeout=timeout,
+            max_tokens=1500,
+        )
+        if resp is None:
+            logger.info("goal judge (checklist): API call failed (%s)", err)
             return (
                 {
                     "updates": [],
                     "new_items": [],
-                    "reason": f"judge error: {type(exc).__name__}",
+                    "reason": f"judge error: {err}",
                 },
                 False,
             )
 
         try:
-            choice = resp.choices[0]
-            msg = choice.message
+            msg = resp.choices[0].message
         except Exception:
             return (
                 {"updates": [], "new_items": [], "reason": "judge response malformed"},
                 True,
             )
 
-        # Unpack tool_calls in a way that works for openai-py and other shims.
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        content = getattr(msg, "content", "") or ""
+        # Did the judge call update_checklist? If yes, we're done.
+        update_tc = _extract_tool_call(msg, "update_checklist")
+        if update_tc is not None:
+            parsed = _normalize_update_args(update_tc["arguments"])
+            logger.info(
+                "goal judge (checklist): updates=%d new_items=%d reason=%s",
+                len(parsed.get("updates") or []),
+                len(parsed.get("new_items") or []),
+                _truncate(parsed.get("reason", ""), 120),
+            )
+            return parsed, False
 
-        if not tool_calls:
-            final_raw = content
-            break
-
-        if tool_calls_left <= 0:
-            # Out of budget. Force a final ruling on the next pass by
-            # appending a system note and disabling tools.
+        # Did the judge call read_file? If yes, run it and feed the result back.
+        read_tc = _extract_tool_call(msg, "read_file")
+        if read_tc is not None and reads_left > 0:
+            args = read_tc["arguments"]
+            tool_result = _judge_read_file(
+                str(args.get("path", "")),
+                offset=args.get("offset", 1),
+                limit=args.get("limit", _JUDGE_READ_FILE_MAX_LINES),
+                allowed_path=history_path,
+            )
             messages.append({
-                "role": "user",
-                "content": (
-                    "You have exhausted your read_file budget. Issue your "
-                    "final JSON verdict now without calling more tools."
-                ),
+                "role": "assistant",
+                "content": getattr(msg, "content", "") or "",
+                "tool_calls": _serialize_assistant_tool_calls(msg),
             })
-            tools = None
-            continue
-
-        # Append the assistant turn, then handle each tool call.
-        assistant_record: Dict[str, Any] = {
-            "role": "assistant",
-            "content": content,
-            "tool_calls": [],
-        }
-        for tc in tool_calls:
-            try:
-                tc_id = getattr(tc, "id", None) or "tc-?"
-                fn = getattr(tc, "function", None)
-                fn_name = getattr(fn, "name", "") if fn is not None else ""
-                fn_args = getattr(fn, "arguments", "") if fn is not None else ""
-                assistant_record["tool_calls"].append({
-                    "id": tc_id,
-                    "type": "function",
-                    "function": {"name": fn_name, "arguments": fn_args},
-                })
-            except Exception:
-                continue
-        messages.append(assistant_record)
-
-        for tc in tool_calls:
-            try:
-                tc_id = getattr(tc, "id", None) or "tc-?"
-                fn = getattr(tc, "function", None)
-                fn_name = getattr(fn, "name", "") if fn is not None else ""
-                fn_args_raw = getattr(fn, "arguments", "") if fn is not None else ""
-            except Exception:
-                continue
-            try:
-                args = json.loads(fn_args_raw) if isinstance(fn_args_raw, str) else (fn_args_raw or {})
-            except Exception:
-                args = {}
-            if fn_name == "read_file":
-                tool_result = _judge_read_file(
-                    str(args.get("path", "")),
-                    offset=args.get("offset", 1),
-                    limit=args.get("limit", _JUDGE_READ_FILE_MAX_LINES),
-                    allowed_path=history_path,
-                )
-            else:
-                tool_result = json.dumps({"error": f"unknown tool: {fn_name}"})
             messages.append({
                 "role": "tool",
-                "tool_call_id": tc_id,
-                "name": fn_name,
+                "tool_call_id": read_tc["id"],
+                "name": "read_file",
                 "content": tool_result,
             })
-            tool_calls_left -= 1
+            reads_left -= 1
+            continue
 
-        if tool_calls_left <= 0:
-            messages.append({
-                "role": "user",
-                "content": (
-                    "You have exhausted your read_file budget. Issue your "
-                    "final JSON verdict now without calling more tools."
-                ),
-            })
-            tools = None
+        # Neither tool was called. Try parsing the content body as a last-
+        # ditch backstop, then bail.
+        content = getattr(msg, "content", "") or ""
+        if content.strip():
+            parsed, parse_failed = _parse_evaluate_response(content)
+            if not parse_failed:
+                logger.info(
+                    "goal judge (checklist): fell back to JSON-content parser "
+                    "updates=%d new_items=%d",
+                    len(parsed.get("updates") or []),
+                    len(parsed.get("new_items") or []),
+                )
+                return parsed, False
+        logger.info(
+            "goal judge (checklist): judge emitted neither read_file nor "
+            "update_checklist (iteration=%d, content=%r) — bailing",
+            iteration, _truncate(content, 120),
+        )
+        return (
+            {
+                "updates": [],
+                "new_items": [],
+                "reason": "judge did not call update_checklist",
+            },
+            True,
+        )
 
-    parsed, parse_failed = _parse_evaluate_response(final_raw)
-    logger.info(
-        "goal judge (checklist): updates=%d new_items=%d reason=%s",
-        len(parsed.get("updates") or []),
-        len(parsed.get("new_items") or []),
-        _truncate(parsed.get("reason", ""), 120),
+    # Loop exhausted without an update_checklist call.
+    return (
+        {
+            "updates": [],
+            "new_items": [],
+            "reason": "judge tool-loop exhausted without verdict",
+        },
+        True,
     )
-    return parsed, parse_failed
+
+
+def _normalize_update_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize the ``update_checklist`` tool arguments.
+
+    Performs the same 1-based → 0-based conversion and terminal-status
+    filter as ``_parse_evaluate_response``. Returns the canonical
+    ``{updates, new_items, reason}`` shape callers expect.
+    """
+    raw_updates = args.get("updates") or []
+    raw_new = args.get("new_items") or []
+    reason = str(args.get("reason") or "").strip() or "no reason provided"
+
+    norm_updates: List[Dict[str, Any]] = []
+    if isinstance(raw_updates, list):
+        for upd in raw_updates:
+            if not isinstance(upd, dict):
+                continue
+            try:
+                idx_1based = int(upd.get("index"))
+            except (TypeError, ValueError):
+                continue
+            status = str(upd.get("status", "")).strip().lower()
+            if status not in TERMINAL_ITEM_STATUSES:
+                continue
+            evidence = str(upd.get("evidence") or "").strip() or None
+            norm_updates.append({
+                "index": idx_1based - 1,  # 1-based → 0-based for apply layer
+                "status": status,
+                "evidence": evidence,
+            })
+
+    norm_new: List[Dict[str, Any]] = []
+    if isinstance(raw_new, list):
+        for it in raw_new:
+            if isinstance(it, dict):
+                text = str(it.get("text", "")).strip()
+                if text:
+                    norm_new.append({"text": text})
+            elif isinstance(it, str):
+                text = it.strip()
+                if text:
+                    norm_new.append({"text": text})
+
+    return {"updates": norm_updates, "new_items": norm_new, "reason": reason}
 
 
 # ──────────────────────────────────────────────────────────────────────

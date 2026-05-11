@@ -231,6 +231,15 @@ class TestAdapterInit:
         adapter = HomeAssistantAdapter(config)
         assert adapter._watch_all is True
 
+    def test_watch_all_quoted_false_stays_false(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"watch_all": "false"},
+        )
+        adapter = HomeAssistantAdapter(config)
+        assert adapter._watch_all is False
+
     def test_defaults_when_no_extra(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "tok")
         config = PlatformConfig(enabled=True, token="***")
@@ -320,6 +329,12 @@ class TestEventFilteringPipeline:
         adapter = _make_adapter(watch_all=True, cooldown_seconds=0)
         await adapter._handle_ha_event(_make_event("cover.blinds", "closed", "open"))
         adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_quoted_false_watch_all_does_not_pass_everything(self):
+        adapter = _make_adapter(watch_all="false", cooldown_seconds=0)
+        await adapter._handle_ha_event(_make_event("cover.blinds", "closed", "open"))
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_same_state_not_forwarded(self):

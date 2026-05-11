@@ -35,6 +35,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
         self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
         self._ignore_entities: Set[str] = set(extra.get("ignore_entities", []))
-        self._watch_all: bool = bool(extra.get("watch_all", False))
+        self._watch_all: bool = is_truthy_value(extra.get("watch_all"), default=False)
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
         # Cooldown tracking: entity_id -> last_event_timestamp

@@ -240,6 +240,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1452,7 +1453,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
-        self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -3959,6 +3960,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not message_id:
             return None
         if message_id in self._message_text_cache:
+            self._message_text_cache.move_to_end(message_id)
             return self._message_text_cache[message_id]
         try:
             request = self._build_get_message_request(message_id)
@@ -3980,6 +3982,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 mentions=parent_mentions,
             )
             self._message_text_cache[message_id] = text
+            self._message_text_cache.move_to_end(message_id)
+            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+                self._message_text_cache.popitem(last=False)
             return text
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)

@@ -1035,6 +1035,13 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # When the adapter had to split an oversized payload across multiple
+    # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
+    # ``message_id`` is the LAST visible message id (so subsequent edits target
+    # the most recent chunk) and these are the additional message ids that
+    # made up the full payload, in send order.  Empty tuple for the common
+    # single-message case.
+    continuation_message_ids: tuple = ()
 
 
 class EphemeralReply(str):

@@ -471,21 +471,25 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
-    @classmethod
     def _reply_to_message_id_for_send(
-        cls,
+        self,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         if reply_to:
             return int(reply_to)
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-            return cls._metadata_reply_to_message_id(metadata)
+            # reply_to_mode="off" means the user does not want quote bubbles.
+            # Suppress the implicit DM-topic reply anchor — _thread_kwargs_for_send
+            # still emits message_thread_id, which is enough to keep the message
+            # routed to the private topic lane on python-telegram-bot clients.
+            if self._reply_to_mode == "off":
+                return None
+            return self._metadata_reply_to_message_id(metadata)
         return None
 
-    @classmethod
     def _thread_kwargs_for_send(
-        cls,
+        self,
         chat_id: str,
         thread_id: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
@@ -496,23 +500,30 @@ class TelegramAdapter(BasePlatformAdapter):
         Supergroup/forum topics use ``message_thread_id``. True Bot API Direct
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
-        ``telegram_dm_topic_reply_fallback`` and must send the private topic
+        ``telegram_dm_topic_reply_fallback`` and normally send the private topic
         thread id together with a reply anchor. Live testing showed that either
-        parameter alone can render outside the visible lane.
+        parameter alone can render outside the visible lane on some clients,
+        but when the user has opted out of quote bubbles via
+        ``reply_to_mode="off"`` we honour that preference and rely on
+        ``message_thread_id`` alone for routing.
         """
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if self._reply_to_mode == "off":
+                # User opted out of quote bubbles. Drop the reply anchor and
+                # rely on message_thread_id for DM-topic routing.
+                return {"message_thread_id": self._message_thread_id_for_send(thread_id)}
             if reply_to_message_id is None:
-                reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
+                reply_to_message_id = self._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
                 return {}
-            return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
-        direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+            return {"message_thread_id": self._message_thread_id_for_send(thread_id)}
+        direct_topic_id = self._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:
             return {
                 "message_thread_id": None,
                 "direct_messages_topic_id": int(direct_topic_id),
             }
-        return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+        return {"message_thread_id": self._message_thread_id_for_send(thread_id)}
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -1489,7 +1500,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     str(metadata_reply_to)
                     if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
                 )
-                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+                if self._reply_to_mode == "off":
+                    # User opted out of quote bubbles entirely. Skip both the
+                    # explicit reply_to anchor and the DM-topic reply fallback;
+                    # _thread_kwargs_for_send still emits message_thread_id so
+                    # DM-topic routing is preserved.
+                    should_thread = False
+                elif metadata and metadata.get("telegram_dm_topic_reply_fallback"):
                     should_thread = reply_to_source is not None
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)

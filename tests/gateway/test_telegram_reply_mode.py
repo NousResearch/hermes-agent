@@ -184,6 +184,119 @@ class TestSendWithReplyToMode:
         assert calls[0].kwargs.get("reply_to_message_id") == 999
 
 
+class TestDmTopicReplyFallback:
+    """Tests for reply_to_mode interaction with DM-topic reply fallback metadata.
+
+    Telegram private chats don't have native forum topics, so Hermes fakes per-topic
+    routing by attaching reply_to_message_id to an anchor message in each topic.
+    That metadata path was added in b3239572f and originally unconditionally injected
+    a quote anchor, ignoring reply_to_mode=off. These tests guard the regression fix
+    that honours reply_to_mode=off in DM-topic mode by relying on message_thread_id
+    alone for routing.
+    """
+
+    def _dm_topic_metadata(self, thread_id="13682", anchor="555"):
+        return {
+            "thread_id": thread_id,
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": anchor,
+        }
+
+    def test_reply_to_message_id_for_send_off_drops_anchor(self, adapter_factory):
+        """mode=off must suppress the implicit DM-topic reply anchor."""
+        adapter = adapter_factory(reply_to_mode="off")
+        result = adapter._reply_to_message_id_for_send(None, self._dm_topic_metadata())
+        assert result is None
+
+    def test_reply_to_message_id_for_send_first_keeps_anchor(self, adapter_factory):
+        """mode=first must keep the implicit DM-topic reply anchor (existing behavior)."""
+        adapter = adapter_factory(reply_to_mode="first")
+        result = adapter._reply_to_message_id_for_send(None, self._dm_topic_metadata(anchor="555"))
+        assert result == 555
+
+    def test_reply_to_message_id_for_send_all_keeps_anchor(self, adapter_factory):
+        """mode=all must keep the implicit DM-topic reply anchor (existing behavior)."""
+        adapter = adapter_factory(reply_to_mode="all")
+        result = adapter._reply_to_message_id_for_send(None, self._dm_topic_metadata(anchor="777"))
+        assert result == 777
+
+    def test_reply_to_message_id_for_send_off_honours_explicit_reply_to(self, adapter_factory):
+        """mode=off does NOT override an explicitly provided reply_to (e.g. media reply)."""
+        adapter = adapter_factory(reply_to_mode="off")
+        result = adapter._reply_to_message_id_for_send("999", self._dm_topic_metadata())
+        assert result == 999
+
+    def test_thread_kwargs_off_emits_thread_id_only(self, adapter_factory):
+        """mode=off + DM fallback: emit message_thread_id without requiring a reply anchor."""
+        adapter = adapter_factory(reply_to_mode="off")
+        kwargs = adapter._thread_kwargs_for_send(
+            "12345", "13682", metadata=self._dm_topic_metadata(thread_id="13682"),
+        )
+        assert kwargs == {"message_thread_id": 13682}
+
+    def test_thread_kwargs_first_emits_thread_id_with_anchor(self, adapter_factory):
+        """mode=first + DM fallback: existing behavior — thread id present when anchor exists."""
+        adapter = adapter_factory(reply_to_mode="first")
+        kwargs = adapter._thread_kwargs_for_send(
+            "12345", "13682",
+            metadata=self._dm_topic_metadata(thread_id="13682", anchor="555"),
+            reply_to_message_id=555,
+        )
+        assert kwargs == {"message_thread_id": 13682}
+
+    @pytest.mark.asyncio
+    async def test_send_off_mode_strips_dm_fallback_quote(self, adapter_factory):
+        """End-to-end: mode=off + DM fallback metadata → no quote bubble, thread preserved."""
+        adapter = adapter_factory(reply_to_mode="off")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send(
+            "12345", "test content", reply_to=None,
+            metadata={
+                "thread_id": "13682",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "555",
+            },
+        )
+
+        calls = adapter._bot.send_message.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            # quote bubble removed
+            assert call.kwargs.get("reply_to_message_id") is None
+            # routing still works via message_thread_id
+            assert call.kwargs.get("message_thread_id") == 13682
+
+    @pytest.mark.asyncio
+    async def test_send_first_mode_preserves_dm_fallback_quote(self, adapter_factory):
+        """Regression guard: mode=first keeps b3239572f's DM-topic anchor behavior."""
+        adapter = adapter_factory(reply_to_mode="first")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send(
+            "12345", "test content", reply_to=None,
+            metadata={
+                "thread_id": "13682",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "555",
+            },
+        )
+
+        calls = adapter._bot.send_message.call_args_list
+        assert len(calls) == 2
+        # In DM fallback mode the first chunk anchors via reply_to_message_id;
+        # subsequent chunks rely on message_thread_id only (b3239572f behavior:
+        # should_thread = reply_to_source is not None applies to every chunk in
+        # the DM fallback path, so anchor is preserved on every chunk).
+        for call in calls:
+            assert call.kwargs.get("reply_to_message_id") == 555
+            assert call.kwargs.get("message_thread_id") == 13682
+
+
 class TestConfigSerialization:
     """Tests for reply_to_mode serialization."""
 

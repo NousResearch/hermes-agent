@@ -190,5 +190,5 @@ See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
 ## See also
 
 - [Context Compression and Caching](/docs/developer-guide/context-compression-and-caching) — how the built-in compressor works
-- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — analogous single-select plugin system for memory
+- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin.md) — analogous single-select plugin system for memory
 - [Plugins](/docs/user-guide/features/plugins) — general plugin system overview

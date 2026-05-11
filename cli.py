@@ -60,6 +60,7 @@ from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, 
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
@@ -9945,7 +9946,7 @@ class HermesCLI:
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([get_cwidth(title_text)] + [get_cwidth(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
@@ -12286,7 +12287,7 @@ class HermesCLI:
         def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             """Choose a stable panel width wide enough for the title and content."""
             term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+            longest = max([get_cwidth(title)] + [get_cwidth(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2  # account for the single leading/trailing spaces inside borders
 

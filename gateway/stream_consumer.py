@@ -55,6 +55,18 @@ class StreamConsumerConfig:
     # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
     # behavior).  The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
+    # Streaming transport selection:
+    #   "auto"  — prefer native draft streaming (e.g. Telegram sendMessageDraft)
+    #             when the adapter + chat supports it; fall back to edit.
+    #   "draft" — explicitly request native draft streaming; fall back to
+    #             edit when unsupported.
+    #   "edit"  — progressive editMessageText (legacy behavior).
+    #   "off"   — handled by the gateway before the consumer is even built.
+    transport: str = "auto"
+    # Hint for the consumer about the originating chat type (e.g. "dm",
+    # "group", "supergroup", "forum").  Used to gate native draft streaming,
+    # which is platform-specific (Telegram drafts are DM-only).
+    chat_type: str = ""
 
 
 class GatewayStreamConsumer:
@@ -87,6 +99,11 @@ class GatewayStreamConsumer:
         "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
     )
+
+    # Class-wide monotonic counter for native-streaming draft ids.  Telegram
+    # animates a draft when the same draft_id is reused across consecutive
+    # calls in the same chat, so we need a fresh non-zero id per response.
+    _draft_id_counter: int = 0
 
     def __init__(
         self,
@@ -141,6 +158,20 @@ class GatewayStreamConsumer:
         self._in_think_block = False
         self._think_buffer = ""
 
+        # Native draft-streaming state.  Resolved at the start of run() based
+        # on cfg.transport, cfg.chat_type, and the adapter's
+        # supports_draft_streaming() probe.  When True, the consumer emits
+        # animated draft frames via adapter.send_draft instead of progressive
+        # edits via adapter.edit_message.  The final answer still goes
+        # through the normal first-send path so the user gets a real message
+        # in their chat history (drafts have no message_id).
+        self._use_draft_streaming = False
+        self._draft_id: Optional[int] = None
+        # Cumulative draft-frame failure count for this consumer.  After the
+        # first failure we permanently disable drafts for the remainder of
+        # this response and route through edit-based for graceful degradation.
+        self._draft_failures = 0
+
     @property
     def already_sent(self) -> bool:
         """True if at least one message was sent or edited during the run."""
@@ -179,6 +210,16 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # Native draft streaming: bump the draft_id so the next text segment
+        # animates as a fresh preview below the tool-progress bubbles, not
+        # over the prior segment's already-finalized draft.  This is how
+        # we avoid the "inter-tool-call text leak" failure mode openclaw
+        # documented in their issue #32535 — each text block becomes its
+        # own visible message via the finalize, then a new draft animates
+        # for the next one.
+        if self._use_draft_streaming:
+            type(self)._draft_id_counter += 1
+            self._draft_id = type(self)._draft_id_counter
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -316,6 +357,20 @@ class GatewayStreamConsumer:
         )
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
+
+        # Resolve native draft streaming once per run.  When enabled the
+        # consumer routes mid-stream frames through adapter.send_draft and
+        # leaves _message_id=None so the existing got_done path delivers the
+        # final answer as a regular sendMessage (drafts have no message_id
+        # to edit).
+        self._use_draft_streaming = self._resolve_draft_streaming()
+        if self._use_draft_streaming:
+            type(self)._draft_id_counter += 1
+            self._draft_id = type(self)._draft_id_counter
+            logger.debug(
+                "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
+                self.chat_id, self._draft_id,
+            )
 
         try:
             while True:
@@ -754,6 +809,89 @@ class GatewayStreamConsumer:
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
 
+    def _resolve_draft_streaming(self) -> bool:
+        """Decide whether this run should use native draft streaming.
+
+        Honors ``cfg.transport``:
+          * ``"edit"``  → never use drafts (legacy progressive-edit path).
+          * ``"draft"`` → require draft support; gracefully fall back to edit
+            when the adapter declines.  Logs the downgrade at debug.
+          * ``"auto"``  → use drafts when the adapter supports them for this
+            chat type; otherwise edit.
+
+        Adapter eligibility is checked via
+        :meth:`BasePlatformAdapter.supports_draft_streaming`, which considers
+        the chat type (e.g. Telegram drafts are DM-only) and platform-version
+        gates (e.g. python-telegram-bot 22.6+).
+        """
+        transport = (self.cfg.transport or "auto").lower()
+        if transport == "edit":
+            return False
+        # "off" is filtered upstream by the gateway; treat as edit defensively.
+        if transport == "off":
+            return False
+        # Test adapters are MagicMocks that don't subclass BasePlatformAdapter;
+        # default them to edit so existing test behaviour is preserved.
+        if not isinstance(self.adapter, _BasePlatformAdapter):
+            return False
+        try:
+            supported = self.adapter.supports_draft_streaming(
+                chat_type=self.cfg.chat_type or None,
+                metadata=self.metadata,
+            )
+        except Exception:
+            logger.debug("supports_draft_streaming probe raised", exc_info=True)
+            supported = False
+        if not supported:
+            if transport == "draft":
+                logger.debug(
+                    "Draft streaming requested but unsupported (chat=%s, type=%r) — "
+                    "falling back to edit",
+                    self.chat_id, self.cfg.chat_type,
+                )
+            return False
+        return True
+
+    async def _send_draft_frame(self, text: str) -> bool:
+        """Emit a single animated draft frame for the current accumulated text.
+
+        Returns True when the frame landed.  On any failure, permanently
+        disables drafts for the remainder of this run so subsequent frames
+        flow through the edit-based path (which can adapt with flood-control
+        backoff, etc.).  Drafts have no message_id and clear naturally on
+        the client when the response finalizes via a regular sendMessage.
+        """
+        if self._draft_id is None:
+            # Defensive: should never happen — _use_draft_streaming gate is
+            # set in tandem with _draft_id in run().  Disable to be safe.
+            self._use_draft_streaming = False
+            return False
+        try:
+            result = await self.adapter.send_draft(
+                chat_id=self.chat_id,
+                draft_id=self._draft_id,
+                content=text,
+                metadata=self.metadata,
+            )
+        except Exception as e:
+            logger.debug(
+                "send_draft raised, disabling draft transport for this run: %s", e,
+            )
+            self._draft_failures += 1
+            self._use_draft_streaming = False
+            return False
+        if not getattr(result, "success", False):
+            logger.debug(
+                "send_draft returned success=False, disabling draft transport: %s",
+                getattr(result, "error", "unknown"),
+            )
+            self._draft_failures += 1
+            self._use_draft_streaming = False
+            return False
+        # Frame delivered.  Track text for parity with edit-based no-op skip.
+        self._last_sent_text = text
+        return True
+
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Deliver un-sent tail content before a segment-break reset.
 
@@ -948,6 +1086,35 @@ class GatewayStreamConsumer:
                 and self.cfg.cursor in text
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
+
+        # Native draft streaming: route mid-stream frames through send_draft.
+        # The final answer is delivered via the regular sendMessage path
+        # below — drafts have no message_id so we can't finalize them
+        # in-place; the regular sendMessage clears the draft naturally on
+        # the client and gives the user a real message in their history.
+        # Skip when:
+        #   * finalize=True (this is the final answer; needs to be a real message)
+        #   * an edit path is already established (message_id is set, e.g. after
+        #     a tool-boundary segment break where the prior text was finalized
+        #     as a real sendMessage and the next text segment continues editing
+        #     that one — staying on edit-based for that segment is correct).
+        if (
+            self._use_draft_streaming
+            and not finalize
+            and self._message_id is None
+        ):
+            # No-op skip: identical to the last frame we sent.
+            if text == self._last_sent_text:
+                return True
+            ok = await self._send_draft_frame(text)
+            if ok:
+                # Drafts mark "we put something on screen" but DO NOT set
+                # _already_sent — that flag gates the gateway's fallback
+                # final-send path and we still need that to fire so the
+                # user gets a real message (drafts have no message_id).
+                return True
+            # Failure already disabled drafts for this run; fall through to
+            # the regular edit/send path below.
         try:
             if self._message_id is not None:
                 if self._edit_supported:

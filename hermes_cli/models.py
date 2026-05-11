@@ -82,6 +82,7 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.7",            ""),
     ("anthropic/claude-opus-4.6",            ""),
     ("anthropic/claude-haiku-4.5",           ""),
+    ("openai/gpt-5.5",                       ""),
     ("openai/gpt-5.4",                       ""),
     ("openai/gpt-5.4-mini",                  ""),
     ("openai/gpt-5.3-codex",                 ""),
@@ -180,6 +181,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
     "openai": [
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
@@ -194,6 +196,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
@@ -326,9 +329,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
         "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.5",
         "openai/gpt-5.4",
     ],
     "opencode-zen": [
+        "gpt-5.5",
         "kimi-k2.5",
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -382,6 +387,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.5",
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",

@@ -48,8 +48,8 @@ model:
   provider: azure-foundry
   base_url: https://my-resource.openai.azure.com/openai/v1
   api_mode: chat_completions         # or "anthropic_messages"
-  default: gpt-5.4-mini              # your deployment / model name
-  context_length: 400000             # auto-detected
+  default: gpt-5.5                   # your deployment / model name
+  context_length: 1050000            # auto-detected
 ```
 
 And in `~/.hermes/.env`:
@@ -67,7 +67,7 @@ model:
   provider: azure-foundry
   base_url: https://my-resource.openai.azure.com/openai/v1
   api_mode: chat_completions
-  default: gpt-5.4
+  default: gpt-5.5
 ```
 
 Important behaviour:

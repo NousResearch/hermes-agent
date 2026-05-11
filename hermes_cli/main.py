@@ -3467,7 +3467,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     else:
         try:
             model_name = input(
-                f"Model / deployment name [{current_model or 'e.g. gpt-5.4, claude-sonnet-4-6'}]: "
+                f"Model / deployment name [{current_model or 'e.g. gpt-5.5, claude-sonnet-4-6'}]: "
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled.")

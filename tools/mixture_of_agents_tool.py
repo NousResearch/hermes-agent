@@ -25,7 +25,7 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Models Used (via OpenRouter):
-- Reference Models: claude-opus-4.6, gemini-3-pro-preview, gpt-5.4-pro, deepseek-v3.2
+- Reference Models: claude-opus-4.6, gemini-3-pro-preview, gpt-5.5, deepseek-v3.2
 - Aggregator Model: claude-opus-4.6 (highest capability for synthesis)
 
 Configuration:
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 REFERENCE_MODELS = [
     "anthropic/claude-opus-4.6",
     "google/gemini-2.5-pro",
-    "openai/gpt-5.4-pro",
+    "openai/gpt-5.5",
     "deepseek/deepseek-v3.2",
 ]
 

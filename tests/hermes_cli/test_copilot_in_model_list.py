@@ -16,6 +16,8 @@ def test_copilot_picker_keeps_curated_copilot_models_when_live_catalog_unavailab
     copilot = next((p for p in providers if p["slug"] == "copilot"), None)
 
     assert copilot is not None
+    assert copilot["models"][0] == "gpt-5.5"
+    assert "gpt-5.5" in copilot["models"]
     assert "gpt-5.4" in copilot["models"]
     assert "claude-sonnet-4.6" in copilot["models"]
     assert "claude-sonnet-4" in copilot["models"]

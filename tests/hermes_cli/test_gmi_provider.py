@@ -87,6 +87,8 @@ class TestGmiModelCatalog:
         assert "deepseek-ai/DeepSeek-V3.2" in models
         assert "moonshotai/Kimi-K2.5" in models
         assert "anthropic/claude-sonnet-4.6" in models
+        assert "openai/gpt-5.5" in models
+        assert models.index("openai/gpt-5.5") < models.index("openai/gpt-5.4")
 
     def test_canonical_provider_entry(self):
         slugs = [p.slug for p in CANONICAL_PROVIDERS]

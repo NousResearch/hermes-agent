@@ -251,6 +251,7 @@ def test_openai_native_curated_catalog_is_non_empty():
     from hermes_cli.models import _PROVIDER_MODELS
 
     assert _PROVIDER_MODELS.get("openai")
+    assert _PROVIDER_MODELS["openai"][0] == "gpt-5.5"
     assert len(_PROVIDER_MODELS["openai"]) >= 4
 
 

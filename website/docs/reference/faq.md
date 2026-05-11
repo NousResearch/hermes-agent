@@ -18,7 +18,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
 - **Nous Portal** — Nous Research's own inference endpoint
-- **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
+- **OpenAI** — GPT-5.5, GPT-5-codex, GPT-4.1, GPT-4o, etc.
 - **Anthropic** — Claude models (direct API, OAuth via `hermes login anthropic`, OpenRouter, or any compatible proxy)
 - **Google** — Gemini models (direct API via `gemini` provider, the `google-gemini-cli` OAuth provider, OpenRouter, or compatible proxy)
 - **z.ai / ZhipuAI** — GLM models
@@ -643,7 +643,7 @@ There is no hard limit. Each profile is just a directory under `~/.hermes/profil
 
 ### Using different models for different tasks (multi-model workflows)
 
-**Scenario:** You use GPT-5.4 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
+**Scenario:** You use GPT-5.5 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
 
 **Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.hermes/config.yaml`:
 
@@ -653,7 +653,7 @@ delegation:
   provider: "openrouter"                    # provider for subagents
 ```
 
-Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.5.
 
 You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
 
@@ -662,7 +662,7 @@ For one-off model switches without delegation, use `/model` in the CLI:
 ```bash
 /model google/gemini-3-flash-preview    # switch for this session
 # ... write your content ...
-/model openai/gpt-5.4                   # switch back
+/model openai/gpt-5.5                   # switch back
 ```
 
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.

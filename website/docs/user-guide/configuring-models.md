@@ -155,8 +155,8 @@ On OpenRouter (or any aggregator), bare model names resolve *within* the aggrega
 Inside any `hermes chat` session:
 
 ```
-/model gpt-5.4 --provider openrouter             # session-only
-/model gpt-5.4 --provider openrouter --global    # also persists to config.yaml
+/model gpt-5.5 --provider openrouter             # session-only
+/model gpt-5.5 --provider openrouter --global    # also persists to config.yaml
 ```
 
 `--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place.

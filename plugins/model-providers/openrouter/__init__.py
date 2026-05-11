@@ -105,6 +105,7 @@ openrouter = OpenRouterProfile(
     models_url="https://openrouter.ai/api/v1/models",
     fallback_models=(
         "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.5",
         "openai/gpt-5.4",
         "deepseek/deepseek-chat",
         "google/gemini-3-flash-preview",

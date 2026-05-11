@@ -227,6 +227,8 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot")
 
+        assert ids[0] == "gpt-5.5"
+        assert "gpt-5.5" in ids
         assert "gpt-5.4" in ids
         assert "claude-sonnet-4.6" in ids
         assert "claude-sonnet-4" in ids
@@ -240,6 +242,8 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
+        assert ids[0] == "gpt-5.5"
+        assert "gpt-5.5" in ids
         assert "gpt-5.4" in ids
         assert "claude-sonnet-4.6" in ids
         assert "claude-sonnet-4" in ids

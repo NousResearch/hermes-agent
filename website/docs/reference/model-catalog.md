@@ -30,7 +30,7 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
       "metadata": {},
       "models": [
         {"id": "moonshotai/kimi-k2.6", "description": "recommended", "metadata": {}},
-        {"id": "openai/gpt-5.4",       "description": ""}
+        {"id": "openai/gpt-5.5",       "description": ""}
       ]
     },
     "nous": {

@@ -92,7 +92,7 @@ model:
 #         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
 #   openai-codex:
 #     models:
-#       gpt-5.4:
+#       gpt-5.5:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================

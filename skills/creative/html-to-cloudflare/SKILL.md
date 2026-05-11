@@ -65,9 +65,36 @@ GIT_TERMINAL_PROMPT=0 git push origin main
 | Repo | URL |
 |------|-----|
 | Pages site | `https://github.com/rousegordon-ops/hermes-pages` |
-| Pages deployment | `https://hermes-pages.rouse-gordon.workers.dev` |
+| Current public Pages deployment | `https://hermes-pages-d55.pages.dev/` |
+| Cloudflare Pages project name | `hermes-pages` |
+| Preview deploy host pattern | `https://<hash>.hermes-pages-d55.pages.dev` |
 | Hermes-agent repo | `https://github.com/rousegordon-ops/hermes-agent` |
-| Gordon's GitHub org | `https://github.com/rousegordon-ops` |
+| Gordon's GitHub org/user | `https://github.com/rousegordon-ops` |
+
+## Current direct deploy workflow for `/opt/data/hermes-pages`
+
+When editing Gordon's live homepage, wiki, Pivotal Systems site, or public career/vocation pages, the canonical working tree is usually `/opt/data/hermes-pages` and deploys are direct Cloudflare Pages uploads — not markdown regeneration and not the old workers.dev publish flow.
+
+1. Edit static HTML directly under `/opt/data/hermes-pages`.
+2. Deploy with Wrangler to the **project name `hermes-pages`**:
+   ```bash
+   npx -y -p node@22 -p wrangler wrangler pages deploy /opt/data/hermes-pages --project-name hermes-pages --commit-dirty=true
+   ```
+   Use this `node@22` wrapper because the base system node may be v20 while current Wrangler requires Node 22+.
+3. Verify the canonical URL, not just the preview URL:
+   ```bash
+   python3 - <<'PY'
+   import urllib.request
+   url='https://hermes-pages-d55.pages.dev/'
+   html=urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=30).read().decode('utf-8','replace')
+   print('ok', len(html), html[:80])
+   PY
+   ```
+
+Pitfalls:
+- `--project-name hermes-pages-d55` fails with "Project not found"; use `hermes-pages`.
+- Avoid `curl | python` verification patterns; security tooling may block or require approval. Fetch inside Python instead.
+- A successful deploy prints a preview URL, but Gordon's preferred public URL remains `https://hermes-pages-d55.pages.dev/`.
 
 ## Index page maintenance
 
@@ -80,9 +107,11 @@ Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
 ## Design preferences (from Gordon's feedback)
 
-- **Email display:** Show as plain text `gordon.rouse@gmail.com` NOT as a `mailto:` link. `mailto:` links trigger browser/app picker dialogs which users find annoying on a static page. Use `<span>✉️ gordon.rouse@gmail.com</span>` instead.
-- **GitHub link:** Use `⚙️ GitHub` button in the hero actions area. Don't put it in the footer alongside the email.
-- **Hero layout:** Avatar + name + role + company + tenure + email (plain text) + status badge + action buttons.
+- **High contrast:** Gordon dislikes low-contrast formatting. Use readable high-contrast text; do not put substantive content in dim gray.
+- **Concise public-site CTAs:** Avoid noisy CTA clusters and marketing jargon. For Pivotal Systems, keep the primary CTA simple (e.g. "Book a free consult") and avoid piling on parallel offers like "request an audit," trust pills, "human-in-the-loop," "SMB and semicap," etc. unless explicitly requested.
+- **Public email exposure:** Do not expose Gordon's personal email in public site UI or client-side fallback text. For contact forms, route privately through Cloudflare Pages Functions/secrets such as `CONTACT_TO` and `RESEND_API_KEY`.
+- **GitHub link:** Use `⚙️ GitHub` button in the hero actions area when appropriate. Don't put it in the footer alongside contact info.
+- **Hero layout:** Avatar + name + role + company + tenure + status badge + action buttons.
 
 ## Common page types Gordon publishes
 
@@ -118,8 +147,20 @@ Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and 
 - `wiki/login.html` → **login page** (email + password, NO auth required, URL: `/wiki/login`)
 - `wiki/entities/<name>.html` → entity pages (auth check, nav links WITHOUT .html)
 - `wiki/concepts/<name>.html` → concept pages (auth check, nav links WITHOUT .html)
-- `wiki/schema.html`, `wiki/log.html` → meta pages (auth check, nav links WITHOUT .html)
+- `wiki/schema.html`, `wiki/log.html` → meta pages (auth check)
 - `wiki/raw/articles/<name>.html` → raw sources (auth check)
+
+### Public career/vocation section pattern
+
+Gordon wants the career/vocation material publicly accessible while the rest of the personal wiki remains password protected. Current public label is **Vocation Ideas**.
+
+Pattern:
+- Homepage card label: `Vocation Ideas`, alongside `Resume`.
+- Public hub: `/career` backed by `/opt/data/hermes-pages/career.html`.
+- Public pages: `/career-opportunities`, `/business-opportunities`, and `/business-opportunities/...` drilldowns.
+- Old protected wiki career URLs should redirect to the public equivalents, e.g. `/wiki/career-opportunities` → `/career-opportunities` and `/wiki/business-opportunities/...` → `/business-opportunities/...`.
+- Do **not** remove auth from unrelated wiki pages. Verify a non-career wiki page still contains `wiki_auth` or redirects to `/wiki/login`.
+- Update scheduled jobs that maintain this content to write to the public `/opt/data/hermes-pages/...` paths, not `/wiki/...` copies.
 
 **3. Push to hermes-pages:**
 ```bash

@@ -25,6 +25,8 @@ from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
     _send_bluebubbles,
+    _send_bluebubbles_effect,
+    _send_bluebubbles_reaction,
     _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
@@ -251,6 +253,199 @@ class TestSendMessageTool:
             "chat_id": "+15551234567",
             "message_id": "msg-1",
         }
+
+    @pytest.mark.asyncio
+    async def test_bluebubbles_one_shot_effect_does_not_bind_webhook(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        class DummyClient:
+            async def aclose(self):
+                pass
+
+        async def forbidden_connect(self):
+            raise AssertionError("one-shot effect must not start the webhook listener")
+
+        async def fake_api_get(self, path):
+            return {"data": {"private_api": True, "helper_connected": True}}
+
+        async def fake_send_effect(self, chat_id, message, effect):
+            return SendResult(success=True, message_id="effect-1")
+
+        monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: DummyClient())
+        monkeypatch.setattr(BlueBubblesAdapter, "connect", forbidden_connect)
+        monkeypatch.setattr(BlueBubblesAdapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(BlueBubblesAdapter, "send_effect", fake_send_effect)
+
+        result = await _send_bluebubbles_effect(
+            {"server_url": "http://localhost:1234", "password": "secret", "webhook_port": 8645},
+            "+155****4567",
+            "boom",
+            "lasers",
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "+155****4567",
+            "message_id": "effect-1",
+        }
+
+    def test_top_level_bluebubbles_effect_routes_to_effect_sender(self):
+        from gateway.config import Platform
+
+        bb_cfg = SimpleNamespace(enabled=True, extra={"server_url": "http://localhost:1234"})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: bb_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_effect_to_platform", new=AsyncMock(return_value={"success": True, "message_id": "effect-1"})) as effect_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "effect",
+                        "target": "bluebubbles:+15551234567",
+                        "message": "boom",
+                        "effect": "lasers",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        effect_mock.assert_awaited_once_with(
+            Platform.BLUEBUBBLES,
+            bb_cfg,
+            "+15551234567",
+            "boom",
+            "lasers",
+            thread_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_bluebubbles_one_shot_reaction_does_not_bind_webhook(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        class DummyClient:
+            async def aclose(self):
+                pass
+
+        async def forbidden_connect(self):
+            raise AssertionError("one-shot reaction must not start the webhook listener")
+
+        async def fake_api_get(self, path):
+            return {"data": {"private_api": True, "helper_connected": True}}
+
+        async def fake_send_reaction(self, chat_id, message_id, reaction):
+            return SendResult(success=True, message_id="reaction-1")
+
+        monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: DummyClient())
+        monkeypatch.setattr(BlueBubblesAdapter, "connect", forbidden_connect)
+        monkeypatch.setattr(BlueBubblesAdapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(BlueBubblesAdapter, "send_reaction", fake_send_reaction)
+
+        result = await _send_bluebubbles_reaction(
+            {"server_url": "http://localhost:1234", "password": "secret", "webhook_port": 8645},
+            "+155****4567",
+            "target-message-guid",
+            "like",
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "+155****4567",
+            "message_id": "reaction-1",
+        }
+
+    def test_top_level_bluebubbles_react_routes_to_reaction_sender(self):
+        from gateway.config import Platform
+
+        bb_cfg = SimpleNamespace(enabled=True, extra={"server_url": "http://localhost:1234"})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: bb_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._react_on_platform", new=AsyncMock(return_value={"success": True, "message_id": "reaction-1"})) as react_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "react",
+                        "target": "bluebubbles:+15551234567",
+                        "message_id": "target-guid",
+                        "reaction": "like",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        react_mock.assert_awaited_once_with(
+            Platform.BLUEBUBBLES,
+            bb_cfg,
+            "+15551234567",
+            "target-guid",
+            "like",
+            thread_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_bluebubbles_one_shot_send_supports_media(self, monkeypatch, tmp_path):
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        image_path = tmp_path / "reaction.gif"
+        image_path.write_bytes(b"GIF89a")
+        calls = []
+
+        class DummyClient:
+            async def aclose(self):
+                pass
+
+        async def forbidden_connect(self):
+            raise AssertionError("one-shot send must not start the webhook listener")
+
+        async def fake_api_get(self, path):
+            return {"data": {"private_api": True, "helper_connected": True}}
+
+        async def fake_send(self, chat_id, message):
+            calls.append(("text", chat_id, message))
+            return SendResult(success=True, message_id="msg-text")
+
+        async def fake_send_image_file(self, chat_id, image_path_arg, **kwargs):
+            calls.append(("image", chat_id, image_path_arg))
+            return SendResult(success=True, message_id="msg-gif")
+
+        monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: DummyClient())
+        monkeypatch.setattr(BlueBubblesAdapter, "connect", forbidden_connect)
+        monkeypatch.setattr(BlueBubblesAdapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(BlueBubblesAdapter, "send", fake_send)
+        monkeypatch.setattr(BlueBubblesAdapter, "send_image_file", fake_send_image_file)
+
+        result = await _send_bluebubbles(
+            {"server_url": "http://localhost:1234", "password": "secret", "webhook_port": 8645},
+            "+155****4567",
+            "caption",
+            media_files=[(str(image_path), False)],
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "+155****4567",
+            "message_id": "msg-gif",
+        }
+        assert calls == [
+            ("text", "+155****4567", "caption"),
+            ("image", "+155****4567", str(image_path)),
+        ]
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

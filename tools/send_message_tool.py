@@ -37,7 +37,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp", "bluebubbles"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
@@ -128,8 +128,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "react", "effect"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts. 'react' sends a native reaction/tapback where supported. 'effect' sends a message with a native effect where supported."
             },
             "target": {
                 "type": "string",
@@ -138,6 +138,18 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='react': platform message ID/GUID to react to."
+            },
+            "reaction": {
+                "type": "string",
+                "description": "For action='react': reaction name. BlueBubbles supports love, like, dislike, laugh, emphasize, question, and removal forms prefixed with '-' (e.g. -like)."
+            },
+            "effect": {
+                "type": "string",
+                "description": "For action='effect': native message effect. BlueBubbles supports slam/impact, loud, gentle, invisible-ink, confetti, lasers, fireworks, balloons, heart, echo, happybirthday, shootingstar, sparkles, spotlight."
             }
         },
         "required": []
@@ -151,8 +163,64 @@ def send_message_tool(args, **kw):
 
     if action == "list":
         return _handle_list()
+    if action == "react":
+        return _handle_react(args)
+    if action == "effect":
+        return _handle_effect(args)
 
     return _handle_send(args)
+
+
+def _resolve_target(platform_name: str, target_ref: str | None, config):
+    """Resolve tool target into chat_id/thread_id/used_home_channel."""
+    chat_id = None
+    thread_id = None
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return None, None, False, {
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                }
+        except Exception:
+            return None, None, False, {
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            }
+
+    used_home_channel = False
+    if not chat_id:
+        platform = None
+        try:
+            from gateway.config import Platform
+            platform = Platform(platform_name)
+        except Exception:
+            pass
+        home = config.get_home_channel(platform) if platform is not None else None
+        if not home and platform_name == "weixin":
+            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+            if wx_home:
+                from gateway.config import HomeChannel
+                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+        if home:
+            chat_id = home.chat_id
+            used_home_channel = True
+        else:
+            return None, None, False, {
+                "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+            }
+    return chat_id, thread_id, used_home_channel, None
 
 
 def _handle_list():
@@ -162,6 +230,100 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_react(args):
+    """Send a native reaction/tapback to a platform message."""
+    target = args.get("target", "")
+    message_id = (args.get("message_id") or "").strip()
+    reaction = (args.get("reaction") or "").strip()
+    if not target or not message_id or not reaction:
+        return tool_error("'target', 'message_id', and 'reaction' are required when action='react'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    chat_id, thread_id, used_home_channel, resolve_error = _resolve_target(platform_name, target_ref, config)
+    if resolve_error:
+        return json.dumps(resolve_error)
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(_react_on_platform(platform, pconfig, chat_id, message_id, reaction, thread_id=thread_id))
+        if used_home_channel and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Reacted in {platform_name} home channel (chat_id: {chat_id})"
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Reaction failed: {e}"))
+
+
+def _handle_effect(args):
+    """Send a native message effect where the platform supports it."""
+    target = args.get("target", "")
+    message = (args.get("message") or "").strip()
+    effect = (args.get("effect") or "").strip()
+    if not target or not message or not effect:
+        return tool_error("'target', 'message', and 'effect' are required when action='effect'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    chat_id, thread_id, used_home_channel, resolve_error = _resolve_target(platform_name, target_ref, config)
+    if resolve_error:
+        return json.dumps(resolve_error)
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(_send_effect_to_platform(platform, pconfig, chat_id, message, effect, thread_id=thread_id))
+        if used_home_channel and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Sent effect in {platform_name} home channel (chat_id: {chat_id})"
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Effect send failed: {e}"))
 
 
 def _handle_send(args):
@@ -423,6 +585,63 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+async def _send_effect_to_platform(platform, pconfig, chat_id, message, effect, thread_id=None):
+    """Route native message effects to supported platforms."""
+    from gateway.config import Platform
+
+    if platform == Platform.BLUEBUBBLES:
+        return await _send_bluebubbles_effect(pconfig.extra, chat_id, message, effect)
+
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is not None:
+        adapter = None
+        try:
+            adapter = runner.adapters.get(platform)
+        except Exception:
+            adapter = None
+        if adapter is not None and hasattr(adapter, "send_effect"):
+            result = await adapter.send_effect(chat_id, message, effect)
+            if result.success:
+                return {"success": True, "platform": platform.value, "chat_id": chat_id, "message_id": result.message_id}
+            return _error(f"Effect send failed: {result.error}")
+
+    return {"error": f"Native message effects are not supported for platform '{platform.value}'"}
+
+
+async def _react_on_platform(platform, pconfig, chat_id, message_id, reaction, thread_id=None):
+    """Route native reactions/tapbacks to supported platforms."""
+    from gateway.config import Platform
+
+    if platform == Platform.BLUEBUBBLES:
+        return await _send_bluebubbles_reaction(pconfig.extra, chat_id, message_id, reaction)
+
+    # Live adapter fallback for platforms that expose send_reaction later.
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is not None:
+        adapter = None
+        try:
+            adapter = runner.adapters.get(platform)
+        except Exception:
+            adapter = None
+        if adapter is not None and hasattr(adapter, "send_reaction"):
+            result = await adapter.send_reaction(chat_id, message_id, reaction)
+            if result.success:
+                return {"success": True, "platform": platform.value, "chat_id": chat_id, "message_id": result.message_id}
+            return _error(f"Reaction failed: {result.error}")
+
+    return {"error": f"Native reactions are not supported for platform '{platform.value}'"}
+
+
 async def _send_via_adapter(
     platform,
     pconfig,
@@ -681,11 +900,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- BlueBubbles: native media attachment support via adapter ---
+    if platform == Platform.BLUEBUBBLES and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_bluebubbles(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and bluebubbles; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -693,7 +928,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and bluebubbles"
         )
 
     last_result = None
@@ -1672,7 +1907,75 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         return _error(f"Weixin send failed: {e}")
 
 
-async def _send_bluebubbles(extra, chat_id, message):
+async def _send_bluebubbles_effect(extra, chat_id, message, effect):
+    """Send a BlueBubbles message effect without starting a second webhook listener."""
+    try:
+        import httpx
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+        if not check_bluebubbles_requirements():
+            return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
+    except ImportError:
+        return {"error": "BlueBubbles adapter not available."}
+
+    try:
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(extra=extra)
+        adapter = BlueBubblesAdapter(pconfig)
+        adapter.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        try:
+            await adapter._api_get("/api/v1/ping")
+            info = await adapter._api_get("/api/v1/server/info")
+            server_data = (info or {}).get("data", {})
+            adapter._private_api_enabled = bool(server_data.get("private_api"))
+            adapter._helper_connected = bool(server_data.get("helper_connected"))
+            result = await adapter.send_effect(chat_id, message, effect)
+            if not result.success:
+                return _error(f"BlueBubbles effect send failed: {result.error}")
+            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            if adapter.client:
+                await adapter.client.aclose()
+                adapter.client = None
+    except Exception as e:
+        return _error(f"BlueBubbles effect send failed: {e}")
+
+
+async def _send_bluebubbles_reaction(extra, chat_id, message_id, reaction):
+    """Send a BlueBubbles tapback without starting a second webhook listener."""
+    try:
+        import httpx
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+        if not check_bluebubbles_requirements():
+            return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
+    except ImportError:
+        return {"error": "BlueBubbles adapter not available."}
+
+    try:
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(extra=extra)
+        adapter = BlueBubblesAdapter(pconfig)
+        adapter.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        try:
+            await adapter._api_get("/api/v1/ping")
+            info = await adapter._api_get("/api/v1/server/info")
+            server_data = (info or {}).get("data", {})
+            adapter._private_api_enabled = bool(server_data.get("private_api"))
+            adapter._helper_connected = bool(server_data.get("helper_connected"))
+            result = await adapter.send_reaction(chat_id, message_id, reaction)
+            if not result.success:
+                return _error(f"BlueBubbles reaction failed: {result.error}")
+            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            if adapter.client:
+                await adapter.client.aclose()
+                adapter.client = None
+    except Exception as e:
+        return _error(f"BlueBubbles reaction failed: {e}")
+
+
+async def _send_bluebubbles(extra, chat_id, message, media_files=None):
     """Send via BlueBubbles without starting a second inbound webhook listener.
 
     The gateway's BlueBubbles adapter owns the webhook port for inbound events.
@@ -1701,10 +2004,33 @@ async def _send_bluebubbles(extra, chat_id, message):
             adapter._private_api_enabled = bool(server_data.get("private_api"))
             adapter._helper_connected = bool(server_data.get("helper_connected"))
 
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"BlueBubbles send failed: {result.error}")
-            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+            last_result = None
+            if message.strip():
+                last_result = await adapter.send(chat_id, message)
+                if not last_result.success:
+                    return _error(f"BlueBubbles send failed: {last_result.error}")
+
+            for media_path, is_voice in (media_files or []):
+                if not os.path.exists(media_path):
+                    return _error(f"Media file not found: {media_path}")
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    last_result = await adapter.send_image_file(chat_id, media_path)
+                elif ext in _VIDEO_EXTS:
+                    last_result = await adapter.send_video(chat_id, media_path)
+                elif ext in _VOICE_EXTS and is_voice:
+                    last_result = await adapter.send_voice(chat_id, media_path)
+                elif ext in _AUDIO_EXTS:
+                    last_result = await adapter.send_voice(chat_id, media_path)
+                else:
+                    last_result = await adapter.send_document(chat_id, media_path)
+                if not last_result.success:
+                    return _error(f"BlueBubbles media send failed: {last_result.error}")
+
+            if last_result is None:
+                return _error("No deliverable text or media remained after processing MEDIA tags")
+
+            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": last_result.message_id}
         finally:
             if adapter.client:
                 await adapter.client.aclose()

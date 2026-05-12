@@ -54,6 +54,39 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
+_TRUTHY = {"1", "true", "yes", "on", "enabled"}
+_REACTIONS = {"love", "like", "dislike", "laugh", "emphasize", "question"}
+_TAPBACK_DIRECTIVE_RE = re.compile(
+    r"^\s*(?:BB_)?TAPBACK\s*:\s*(love|like|dislike|laugh|emphasize|question)\s*$",
+    re.IGNORECASE,
+)
+_EFFECT_DIRECTIVE_RE = re.compile(
+    r"^\s*(?:BB_)?EFFECT\s*:\s*([A-Za-z0-9_.-]+)\s*\|\s*(.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_EFFECT_ALIASES = {
+    "slam": "com.apple.MobileSMS.expressivesend.impact",
+    "impact": "com.apple.MobileSMS.expressivesend.impact",
+    "loud": "com.apple.MobileSMS.expressivesend.loud",
+    "gentle": "com.apple.MobileSMS.expressivesend.gentle",
+    "invisible-ink": "com.apple.MobileSMS.expressivesend.invisibleink",
+    "invisibleink": "com.apple.MobileSMS.expressivesend.invisibleink",
+    "confetti": "com.apple.MobileSMS.expressivesend.confetti",
+    "lasers": "com.apple.MobileSMS.expressivesend.lasers",
+    "fireworks": "com.apple.MobileSMS.expressivesend.fireworks",
+    "balloons": "com.apple.MobileSMS.expressivesend.balloon",
+    "balloon": "com.apple.MobileSMS.expressivesend.balloon",
+    "heart": "com.apple.MobileSMS.expressivesend.heart",
+    "echo": "com.apple.messages.effect.CKEchoEffect",
+    "happybirthday": "com.apple.messages.effect.CKHappyBirthdayEffect",
+    "happy-birthday": "com.apple.messages.effect.CKHappyBirthdayEffect",
+    "shootingstar": "com.apple.messages.effect.CKShootingStarEffect",
+    "shooting-star": "com.apple.messages.effect.CKShootingStarEffect",
+    "sparkles": "com.apple.messages.effect.CKSparklesEffect",
+    "spotlight": "com.apple.messages.effect.CKSpotlightEffect",
+}
+_KNOWN_EFFECT_IDS = frozenset(_EFFECT_ALIASES.values())
+
 # Webhook event types that carry user messages. BlueBubbles deployments have
 # not been consistent here, so the adapter registers for all events and only
 # uses this set to fast-ack clearly non-message events after inspecting the
@@ -119,7 +152,14 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
-
+def _normalize_effect_id(raw: str) -> str:
+    value = (raw or "").strip()
+    lowered = value.lower()
+    effect_id = _EFFECT_ALIASES.get(lowered, value)
+    if effect_id not in _KNOWN_EFFECT_IDS:
+        allowed = ", ".join(sorted(_EFFECT_ALIASES.keys()))
+        raise ValueError(f"Unsupported BlueBubbles message effect: {raw}. Use one of: {allowed}")
+    return effect_id
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +193,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.typing_indicators_enabled = (
+            str(
+                extra.get(
+                    "typing_indicators",
+                    os.getenv("BLUEBUBBLES_TYPING_INDICATORS", "false"),
+                )
+            ).strip().lower() in _TRUTHY
+        )
+        self._typing_indicators_disabled_runtime = False
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -447,6 +496,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        directive = _TAPBACK_DIRECTIVE_RE.fullmatch(content or "")
+        if directive:
+            if not reply_to:
+                return SendResult(
+                    success=False,
+                    error="BlueBubbles tapback directive requires reply_to message id",
+                )
+            return await self.send_reaction(
+                chat_id=chat_id,
+                selected_message_guid=reply_to,
+                reaction=directive.group(1).lower(),
+            )
+
+        effect_directive = _EFFECT_DIRECTIVE_RE.fullmatch(content or "")
+        if effect_directive:
+            return await self.send_effect(
+                chat_id=chat_id,
+                content=effect_directive.group(2),
+                effect=effect_directive.group(1),
+                reply_to=reply_to,
+            )
+
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
@@ -544,6 +615,84 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 success=True, message_id=str(msg_id), raw_response=res
             )
         return last
+
+    async def send_effect(
+        self,
+        chat_id: str,
+        content: str,
+        effect: str,
+        reply_to: Optional[str] = None,
+        part_index: int = 0,
+    ) -> SendResult:
+        """Send an iMessage with a native expressive-send effect."""
+        text = self.format_message(content)
+        if not text:
+            return SendResult(success=False, error="BlueBubbles effect send requires text")
+        if not self._private_api_enabled or not self._helper_connected:
+            return SendResult(success=False, error="BlueBubbles Private API/helper required for message effects")
+        try:
+            effect_id = _normalize_effect_id(effect)
+        except ValueError as exc:
+            return SendResult(success=False, error=str(exc))
+
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
+
+        payload: Dict[str, Any] = {
+            "chatGuid": guid,
+            "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+            "message": text,
+            "text": text,
+            "method": "private-api",
+            "effectId": effect_id,
+        }
+        if reply_to:
+            payload["selectedMessageGuid"] = reply_to
+            payload["partIndex"] = int(part_index or 0)
+        try:
+            res = await self._api_post("/api/v1/message/text", payload)
+            data = res.get("data") or {}
+            msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+            return SendResult(success=True, message_id=str(msg_id), raw_response=res)
+        except Exception as exc:
+            return SendResult(success=False, error=_describe_http_error(exc))
+
+    async def send_reaction(
+        self,
+        chat_id: str,
+        selected_message_guid: str,
+        reaction: str,
+        part_index: int = 0,
+    ) -> SendResult:
+        """Send an iMessage tapback via BlueBubbles Private API."""
+        reaction = (reaction or "").strip().lower()
+        if reaction not in _REACTIONS and not (
+            reaction.startswith("-") and reaction[1:] in _REACTIONS
+        ):
+            return SendResult(success=False, error=f"Unsupported BlueBubbles reaction: {reaction}")
+        if not selected_message_guid:
+            return SendResult(success=False, error="BlueBubbles reaction requires selected_message_guid")
+        if not self._private_api_enabled or not self._helper_connected:
+            return SendResult(success=False, error="BlueBubbles Private API/helper required for reactions")
+
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
+
+        payload = {
+            "chatGuid": guid,
+            "selectedMessageGuid": selected_message_guid,
+            "reaction": reaction,
+            "partIndex": int(part_index or 0),
+        }
+        try:
+            res = await self._api_post("/api/v1/message/react", payload)
+            data = res.get("data") or {}
+            msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+            return SendResult(success=True, message_id=str(msg_id), raw_response=res)
+        except Exception as exc:
+            return SendResult(success=False, error=_describe_http_error(exc))
 
     # ------------------------------------------------------------------
     # Media sending (outbound)
@@ -681,19 +830,47 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """BlueBubbles typing APIs are disabled for Hermes.
-
-        The local BB private API helper has repeatedly crashed Messages.app on
-        `/typing` with `-[IMTypingChatItem index]: unrecognized selector`. A
-        typing indicator is cosmetic; keeping the transport alive is not.
-        """
-        del chat_id, metadata
+        """Send a guarded BlueBubbles typing indicator when explicitly enabled."""
+        del metadata
+        if not self._can_send_typing():
+            return None
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            return None
+        try:
+            await self._api_post(f"/api/v1/chat/{quote(guid, safe='')}/typing", {})
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] typing indicator failed; will retry later: %s",
+                _describe_http_error(exc),
+            )
         return None
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
-        """Typing indicators are disabled; there is nothing to clear."""
-        del chat_id, metadata
+        """Stop a guarded BlueBubbles typing indicator when explicitly enabled."""
+        del metadata
+        if not self._can_send_typing():
+            return None
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid or not self.client:
+            return None
+        try:
+            res = await self.client.delete(self._api_url(f"/api/v1/chat/{quote(guid, safe='')}/typing"))
+            res.raise_for_status()
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] stop typing failed; will retry later: %s",
+                _describe_http_error(exc),
+            )
         return None
+
+    def _can_send_typing(self) -> bool:
+        return bool(
+            self.typing_indicators_enabled
+            and not self._typing_indicators_disabled_runtime
+            and self._private_api_enabled
+            and self._helper_connected
+        )
 
     # ------------------------------------------------------------------
     # Read receipts
@@ -919,13 +1096,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if is_from_me:
             return web.Response(text="ok")
 
-        # Skip tapback reactions delivered as messages
+        # Convert inbound tapback reactions into synthetic user events. Tom uses
+        # these as low-friction control signals (approval / go / laugh) without
+        # typing a full message, so do not silently ACK them as noise.
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in {
             **_TAPBACK_ADDED,
             **_TAPBACK_REMOVED,
         }:
-            return web.Response(text="ok")
+            reaction = _TAPBACK_ADDED.get(assoc_type) or _TAPBACK_REMOVED.get(assoc_type)
+            action = "removed" if assoc_type in _TAPBACK_REMOVED else "added"
+            assoc_guid = self._value(record.get("associatedMessageGuid"), record.get("threadOriginatorGuid"))
+            text = f"[tapback {action}: {reaction}]"
+            if assoc_guid:
+                text += f" on message {assoc_guid}"
+            record = {**record, "text": text, "message": text}
 
         text = (
             self._value(

@@ -72,6 +72,7 @@ class TestBlueBubblesHelpers:
 
     @pytest.mark.asyncio
     async def test_typing_indicators_are_noop_to_avoid_private_api_crashes(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_TYPING_INDICATORS", "false")
         adapter = _make_adapter(monkeypatch)
         adapter._private_api_enabled = True
         adapter._helper_connected = True
@@ -95,6 +96,67 @@ class TestBlueBubblesHelpers:
         await adapter.stop_typing("user@example.com")
 
         assert fake_client.calls == []
+
+    @pytest.mark.asyncio
+    async def test_typing_indicators_opt_in_start_and_stop(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, typing_indicators=True)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        calls = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            calls.append(("post", path, payload))
+            return {"status": 200}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            async def delete(self, url):
+                calls.append(("delete", url, None))
+                return FakeResponse()
+
+        adapter.client = FakeClient()
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        await adapter.send_typing("user@example.com")
+        await adapter.stop_typing("user@example.com")
+
+        assert calls[0] == (
+            "post",
+            "/api/v1/chat/iMessage%3B-%3Buser%40example.com/typing",
+            {},
+        )
+        assert calls[1][0] == "delete"
+        assert "/api/v1/chat/iMessage%3B-%3Buser%40example.com/typing" in calls[1][1]
+
+    @pytest.mark.asyncio
+    async def test_typing_indicator_failure_logs_and_keeps_retrying(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, typing_indicators=True)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        calls = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            calls.append((path, payload))
+            raise RuntimeError("Messages helper fell over")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        await adapter.send_typing("user@example.com")
+        await adapter.send_typing("user@example.com")
+
+        assert len(calls) == 2
+        assert adapter._typing_indicators_disabled_runtime is False
 
     def test_truncate_message_omits_pagination_suffixes(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -152,6 +214,125 @@ class TestBlueBubblesHelpers:
         assert seen["payload"]["method"] == "private-api"
         assert seen["payload"]["selectedMessageGuid"] == "REPLY-GUID"
         assert seen["payload"]["partIndex"] == 0
+
+    @pytest.mark.asyncio
+    async def test_send_effect_posts_bluebubbles_effect_payload(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        seen = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            seen["path"] = path
+            seen["payload"] = payload
+            return {"data": {"guid": "EFFECT-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send_effect("user@example.com", "boom", "lasers")
+
+        assert result.success is True
+        assert result.message_id == "EFFECT-GUID"
+        assert seen["path"] == "/api/v1/message/text"
+        assert seen["payload"]["chatGuid"] == "iMessage;-;user@example.com"
+        assert seen["payload"]["message"] == "boom"
+        assert seen["payload"]["text"] == "boom"
+        assert seen["payload"]["method"] == "private-api"
+        assert seen["payload"]["effectId"] == "com.apple.MobileSMS.expressivesend.lasers"
+
+    @pytest.mark.asyncio
+    async def test_send_effect_directive_routes_to_effect_send(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        seen = {}
+
+        async def fake_send_effect(chat_id, content, effect, reply_to=None, part_index=0):
+            seen.update({
+                "chat_id": chat_id,
+                "content": content,
+                "effect": effect,
+                "reply_to": reply_to,
+                "part_index": part_index,
+            })
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="EFFECT-GUID")
+
+        monkeypatch.setattr(adapter, "send_effect", fake_send_effect)
+
+        result = await adapter.send("user@example.com", "EFFECT:balloons|Bangarang", reply_to="TARGET-GUID")
+
+        assert result.success is True
+        assert result.message_id == "EFFECT-GUID"
+        assert seen == {
+            "chat_id": "user@example.com",
+            "content": "Bangarang",
+            "effect": "balloons",
+            "reply_to": "TARGET-GUID",
+            "part_index": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_reaction_posts_bluebubbles_react_payload(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        seen = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            seen["path"] = path
+            seen["payload"] = payload
+            return {"data": {"guid": "REACTION-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send_reaction("user@example.com", "TARGET-GUID", "like")
+
+        assert result.success is True
+        assert result.message_id == "REACTION-GUID"
+        assert seen["path"] == "/api/v1/message/react"
+        assert seen["payload"] == {
+            "chatGuid": "iMessage;-;user@example.com",
+            "selectedMessageGuid": "TARGET-GUID",
+            "reaction": "like",
+            "partIndex": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_tapback_directive_reacts_to_reply_target(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        seen = {}
+
+        async def fake_send_reaction(chat_id, selected_message_guid, reaction, part_index=0):
+            seen.update({
+                "chat_id": chat_id,
+                "selected_message_guid": selected_message_guid,
+                "reaction": reaction,
+                "part_index": part_index,
+            })
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="REACTION-GUID")
+
+        monkeypatch.setattr(adapter, "send_reaction", fake_send_reaction)
+
+        result = await adapter.send("user@example.com", "TAPBACK:like", reply_to="TARGET-GUID")
+
+        assert result.success is True
+        assert result.message_id == "REACTION-GUID"
+        assert seen == {
+            "chat_id": "user@example.com",
+            "selected_message_guid": "TARGET-GUID",
+            "reaction": "like",
+            "part_index": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_send_retries_without_reply_metadata_when_reply_send_times_out(self, monkeypatch):
@@ -495,6 +676,46 @@ class TestBlueBubblesWebhookParsing:
         assert resp2.status == 200
         assert len(calls) == 1
         assert calls[0].text == "Bangarang rufio"
+
+    @pytest.mark.asyncio
+    async def test_webhook_turns_inbound_tapback_into_message_event(self, monkeypatch):
+        import asyncio
+        import json
+
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_handle_message(event):
+            calls.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class FakeRequest:
+            query = {"password": "secret"}
+            headers = {}
+
+            async def read(self):
+                return json.dumps(
+                    {
+                        "type": "new-message",
+                        "data": {
+                            "guid": "TAPBACK-EVENT-GUID",
+                            "associatedMessageGuid": "TARGET-MESSAGE-GUID",
+                            "associatedMessageType": 2001,
+                            "handle": {"address": "+155****4567"},
+                            "isFromMe": False,
+                            "chats": [{"guid": "any;-;+155****4567"}],
+                        },
+                    }
+                ).encode()
+
+        response = await adapter._handle_webhook(FakeRequest())
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(calls) == 1
+        assert calls[0].text == "[tapback added: like] on message TARGET-MESSAGE-GUID"
+        assert calls[0].reply_to_message_id == "TARGET-MESSAGE-GUID"
 
 
 class TestBlueBubblesGuidResolution:

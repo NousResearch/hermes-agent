@@ -14447,20 +14447,15 @@ class GatewayRunner:
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
+            # Platforms without edit support can still opt into permanent
+            # progress bubbles. This is intentionally noisy, but useful on
+            # BlueBubbles/iMessage when Tom wants to see every tool touch while
+            # calibrating trust in the lane.
+            adapter_supports_edit = type(adapter).edit_message is not BasePlatformAdapter.edit_message
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = adapter_supports_edit  # False means send each progress line as a new bubble
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -14583,6 +14578,13 @@ class GatewayRunner:
                             )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            if not can_edit:
+                                # No-edit platforms (BlueBubbles/iMessage) send
+                                # each progress line as its own permanent bubble.
+                                # Clear the accumulator after a successful send
+                                # so shutdown drain only sends genuinely pending
+                                # lines.
+                                progress_lines = []
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
 
@@ -14637,6 +14639,20 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+                    elif not can_edit and progress_lines:
+                        # No-edit platforms may be cancelled while progress
+                        # lines are queued during the throttle window. Flush
+                        # those as permanent bubbles instead of dropping them.
+                        for _pending in progress_lines:
+                            try:
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=_pending,
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
+                            except Exception:
+                                pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)

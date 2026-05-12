@@ -92,6 +92,14 @@ class NoDeleteAdapter(CleanupCaptureAdapter):
 NoDeleteAdapter.delete_message = BasePlatformAdapter.delete_message
 
 
+class NoEditProgressAdapter(CleanupCaptureAdapter):
+    """Adapter without edit support; progress should send as permanent bubbles."""
+
+
+# Re-bind so the class's edit_message identity equals the base's.
+NoEditProgressAdapter.edit_message = BasePlatformAdapter.edit_message
+
+
 class ProgressAgent:
     """Emits two tool-progress events and returns a normal final response."""
 
@@ -320,6 +328,33 @@ async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_p
     # (The NoDeleteAdapter.delete_message would raise AssertionError if
     # the cleanup closure had somehow captured a reference to it.)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_no_edit_platform_still_sends_tool_progress_when_enabled(monkeypatch, tmp_path):
+    """BlueBubbles/iMessage can opt into noisy permanent progress bubbles."""
+    adapter = NoEditProgressAdapter(platform=Platform.BLUEBUBBLES)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.BLUEBUBBLES, chat_id="+12015550100")
+    session_key = "agent:main:bluebubbles:dm:+12015550100"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    sent_contents = [entry["content"] for entry in adapter.sent]
+    assert any("terminal" in content and "pwd" in content for content in sent_contents)
+    assert any("terminal" in content and "ls" in content for content in sent_contents)
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

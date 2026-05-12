@@ -1752,9 +1752,23 @@ def convert_messages_to_anthropic(
     # thinking is enabled.  Signed Anthropic blocks still have to be stripped
     # (neither endpoint can validate Anthropic's signatures); unsigned blocks
     # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    #
+    # Auto-detect: any other third-party endpoint that has already returned
+    # reasoning_content (e.g. mimo-v2.5-pro, and other /anthropic-path
+    # proxies) enforces the same echo-back contract.  If any assistant
+    # message carries reasoning_content, the endpoint has been using thinking
+    # mode — preserve the unsigned blocks it needs, same as Kimi/DeepSeek.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or (
+            _is_third_party
+            and any(
+                m.get("role") == "assistant"
+                and isinstance(m.get("reasoning_content"), str)
+                for m in messages
+            )
+        )
     )
 
     last_assistant_idx = None

@@ -37,6 +37,18 @@ class ImmediateThread:
         self._target()
 
 
+class DeferredThread:
+    pending = []
+
+    def __init__(self, *, target, daemon=None, name=None):
+        self._target = target
+        self.daemon = daemon
+        self.name = name
+
+    def start(self):
+        self.pending.append(self._target)
+
+
 def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     events = []
 
@@ -71,6 +83,63 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         "shutdown_memory_provider",
         "close",
     ]
+
+
+def test_background_review_preserves_parent_hermes_home_after_env_restore(monkeypatch, tmp_path):
+    """Background review must keep the parent profile home after env restore.
+
+    WebUI sets process-level HERMES_HOME while the parent turn runs, then
+    restores it after run_conversation returns. The background review thread is
+    started before the restore but may not construct its AIAgent until after it.
+    """
+    import hermes_constants
+    from tools import memory_tool
+
+    profile_home = tmp_path / "profiles" / "work"
+    default_home = tmp_path / "default"
+    profile_home.mkdir(parents=True)
+    default_home.mkdir()
+
+    observed = {}
+    DeferredThread.pending = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            observed["hermes_home"] = hermes_constants.get_hermes_home()
+            observed["memory_dir"] = memory_tool.get_memory_dir()
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", DeferredThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert len(DeferredThread.pending) == 1
+
+    # Simulate the parent streaming request restoring process env before the
+    # daemon thread reaches AIAgent.__init__.
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    DeferredThread.pending[0]()
+
+    assert observed["hermes_home"] == profile_home
+    assert observed["memory_dir"] == profile_home / "memories"
+    assert hermes_constants.get_hermes_home() == default_home
 
 
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):

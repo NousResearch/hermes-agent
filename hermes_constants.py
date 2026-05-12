@@ -5,10 +5,23 @@ without risk of circular imports.
 """
 
 import os
+import threading
 from pathlib import Path
 
 
 _profile_fallback_warned: bool = False
+_thread_local = threading.local()
+
+
+def set_thread_hermes_home(path: os.PathLike[str] | str) -> None:
+    """Set a thread-local Hermes home override for background workers."""
+    _thread_local.hermes_home = str(path)
+
+
+def clear_thread_hermes_home() -> None:
+    """Clear this thread's Hermes home override, if one is set."""
+    if hasattr(_thread_local, "hermes_home"):
+        delattr(_thread_local, "hermes_home")
 
 
 def get_hermes_home() -> Path:
@@ -27,6 +40,10 @@ def get_hermes_home() -> Path:
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
     ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
+    override = getattr(_thread_local, "hermes_home", "")
+    if override:
+        return Path(override)
+
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
         return Path(val)

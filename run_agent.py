@@ -4254,8 +4254,13 @@ class AIAgent:
         else:
             prompt = self._SKILL_REVIEW_PROMPT
 
+        _background_hermes_home = get_hermes_home()
+
         def _run_review():
             import contextlib
+            from hermes_constants import clear_thread_hermes_home, set_thread_hermes_home
+
+            set_thread_hermes_home(_background_hermes_home)
             # Install a non-interactive approval callback on this worker
             # thread so any dangerous-command guard the review agent trips
             # resolves to "deny" instead of falling back to input() -- which
@@ -4371,6 +4376,7 @@ class AIAgent:
                     _set_approval_callback(None)
                 except Exception:
                     pass
+                clear_thread_hermes_home()
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()

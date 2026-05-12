@@ -9973,17 +9973,17 @@ class AIAgent:
         if raw_reasoning_content is not None:
             msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
         elif assistant_tool_calls and self._needs_thinking_reasoning_pad():
-            # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
-            # both require reasoning_content on every assistant tool-call
-            # message. Without it, replaying the persisted message causes
-            # HTTP 400 ("The reasoning_content in the thinking mode must
-            # be passed back to the API"). Include streamed reasoning
+            # DeepSeek v4 thinking, Kimi / Moonshot thinking, and Xiaomi MiMo
+            # thinking all require reasoning_content on every assistant
+            # tool-call message. Without it, replaying the persisted message
+            # causes HTTP 400 ("The reasoning_content in the thinking mode
+            # must be passed back to the API"). Include streamed reasoning
             # text when captured; otherwise pad with a single space —
             # DeepSeek V4 Pro tightened validation and rejects empty
             # string ("The reasoning content in the thinking mode must
             # be passed back to the API"). A space satisfies non-empty
             # checks everywhere without leaking fabricated reasoning.
-            # Refs #15250, #17400, #17341.
+            # Refs #15250, #17400, #17341, #24443.
             msg["reasoning_content"] = reasoning_text or " "
 
         # Additive fallback (refs #16844, #16884). Streaming-only providers
@@ -10095,13 +10095,14 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        DeepSeek v4 thinking, Kimi / Moonshot thinking, and Xiaomi MiMo
+        thinking all reject replays of assistant tool-call messages that omit
+        ``reasoning_content`` (refs #15250, #17400, #24443).
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_mimo_tool_reasoning()
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -10131,6 +10132,39 @@ class AIAgent:
             provider == "deepseek"
             or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+    def _needs_mimo_tool_reasoning(self) -> bool:
+        """Return True when the active provider is Xiaomi MiMo thinking mode.
+
+        MiMo's OpenAI-compatible API requires ``reasoning_content`` on every
+        prior assistant message in thinking mode; omitting it causes HTTP 400
+        ("The reasoning_content in the thinking mode must be passed back to
+        the API.") on the next replay. Detection covers four signals so it
+        works regardless of how the session was configured:
+
+        1. Hermes provider id ``xiaomi`` (set by ``hermes_cli/auth.py`` for
+           native MiMo sessions).
+        2. The MiMo API host ``xiaomimimo.com`` (custom-provider setups
+           pointing at MiMo directly).
+        3. Catalog model names starting with ``xiaomi/`` (e.g. OpenRouter
+           and Nous Portal slots).
+        4. Bare model names starting with ``mimo-`` or any catalog slot
+           containing ``/mimo-`` (third-party hosted MiMo).
+
+        Known gap: sessions routed through a proxy or institutional gateway
+        with a custom hostname AND no Hermes provider id set will not be
+        detected. Users in that configuration should set ``provider: xiaomi``
+        explicitly. Refs #24443.
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "xiaomi"
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
+            or model.startswith("xiaomi/")
+            or model.startswith("mimo-")
+            or "/mimo-" in model
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
@@ -10165,9 +10199,9 @@ class AIAgent:
         # shape (reasoning set, reasoning_content absent, tool_calls present)
         # is unreachable from same-provider DeepSeek history after this fix.
         # Inject a single space to satisfy the API without leaking another
-        # provider's chain of thought to DeepSeek/Kimi. Space (not "")
+        # provider's chain of thought to DeepSeek/Kimi/MiMo. Space (not "")
         # because DeepSeek V4 Pro rejects empty-string reasoning_content
-        # in thinking mode (refs #17341).
+        # in thinking mode (refs #17341, #24443).
         normalized_reasoning = source_msg.get("reasoning")
         if (
             needs_thinking_pad
@@ -10187,14 +10221,14 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # 4. DeepSeek / Kimi thinking mode: all assistant messages need
-        # reasoning_content. Inject a single space to satisfy the provider's
-        # requirement when no explicit reasoning content is present. Covers
-        # both tool-call turns (already-poisoned history with no reasoning
-        # at all) and plain text turns. Space (not "") because DeepSeek V4
-        # Pro tightened validation and rejects empty string with HTTP 400
-        # ("The reasoning content in the thinking mode must be passed back
-        # to the API"). Refs #17341.
+        # 4. DeepSeek / Kimi / MiMo thinking mode: all assistant messages
+        # need reasoning_content. Inject a single space to satisfy the
+        # provider's requirement when no explicit reasoning content is
+        # present. Covers both tool-call turns (already-poisoned history
+        # with no reasoning at all) and plain text turns. Space (not "")
+        # because DeepSeek V4 Pro tightened validation and rejects empty
+        # string with HTTP 400 ("The reasoning content in the thinking
+        # mode must be passed back to the API"). Refs #17341, #24443.
         if needs_thinking_pad:
             api_msg["reasoning_content"] = " "
             return

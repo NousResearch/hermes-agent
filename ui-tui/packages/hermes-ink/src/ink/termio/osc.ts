@@ -150,10 +150,13 @@ export function shouldUseNativeClipboard(
     return false
   }
 
-  // Inside tmux/screen we go through tmux load-buffer, not raw OSC 52,
-  // so the wl-copy/OSC-52 race we're avoiding doesn't apply. Native
-  // remains a useful safety net since tmux's outer-terminal forwarding
-  // depends on user config.
+  // Inside tmux/screen, OSC 52 is normally suppressed and we rely on
+  // tmux load-buffer instead — so the wl-copy/OSC-52 race usually doesn't
+  // apply. Even when HERMES_TUI_FORCE_OSC52=1 forces a tmux-passthrough
+  // OSC 52 emission, we keep native enabled as a safety net: tmux's
+  // outer-terminal forwarding depends on `allow-passthrough` in the
+  // user's tmux config, so a forced OSC 52 may silently never reach the
+  // host terminal. Native (pbcopy/wl-copy/xclip) covers that gap.
   if (env.TMUX || env.STY) {
     return true
   }
@@ -271,10 +274,15 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // own prior daemon's SIGTERM. On Ghostty + Wayland this produced a ~30%
   // clipboard-empty rate (symptom: user had to press ctrl+shift+c three
   // times before the selection landed). Native still fires inside
-  // tmux/screen (we go through tmux load-buffer, not raw OSC 52, so the
-  // race doesn't apply) and when the user has disabled OSC 52 emission
-  // via HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes
-  // a complete no-op). Fire-and-forget, but `nativeAttempted` tells us
+  // tmux/screen — we primarily rely on tmux load-buffer there rather
+  // than raw OSC 52, so the wl-copy race usually doesn't apply, and
+  // native is kept as a safety net because tmux passthrough forwarding
+  // depends on the user's `allow-passthrough` config (note: when
+  // HERMES_TUI_FORCE_OSC52=1 we DO additionally emit a tmux-passthrough
+  // OSC 52, but it can be silently dropped without that setting).
+  // Native also fires when the user has disabled OSC 52 emission via
+  // HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes a
+  // complete no-op). Fire-and-forget, but `nativeAttempted` tells us
   // whether ANY native path will be tried.
   const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && copyNative(text)
 

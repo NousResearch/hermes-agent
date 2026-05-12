@@ -44,9 +44,9 @@ export const en: Translations = {
     general: "General",
     messaging: "Messaging",
     pluginLoadFailed:
-      "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
+      "Could not load this plugin's script. Check the Network tab (dashboard-plugins/…) and the server's plugin path.",
     pluginNotRegistered:
-      "The plugin’s script did not call register(), or the script errored. Open the browser console for details.",
+      "The plugin's script did not call register(), or the script errored. Open the browser console for details.",
   },
 
   app: {
@@ -530,7 +530,7 @@ export const en: Translations = {
         "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere.",
       clipboard_unsupported:
         "Clipboard image copy not supported in this browser — use Download instead.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
 
@@ -542,6 +542,7 @@ export const en: Translations = {
     board: "Board",
     newBoard: "+ New board",
     newBoardTitle: "New board",
+    newBoardHint: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
     newBoardDescription:
       "Boards let you separate unrelated streams of work — one per project, repo, or domain. Workers on one board never see another board's tasks.",
     slug: "Slug",
@@ -563,14 +564,17 @@ export const en: Translations = {
     assignee: "Assignee",
     allProfiles: "All profiles",
     showArchived: "Show archived",
+    showArchivedHint: "Include archived tasks in the board view. Archived tasks are hidden by default.",
     lanesByProfile: "Lanes by profile",
     nudgeDispatcher: "Nudge dispatcher",
+    nudgeDispatcherHint: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
     refresh: "Refresh",
     selected: "selected",
     complete: "Complete",
     archive: "Archive",
     apply: "Apply",
     clear: "Clear",
+    clearFiltersHint: "Clear all active filters (search, tenant, assignee, archived).",
     createTask: "Create task in this column",
     noTasks: "— no tasks —",
     unassigned: "unassigned",
@@ -636,6 +640,9 @@ export const en: Translations = {
       "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
     archiveBoardTitle: "Archive this board",
     boardSwitcherHint: "Boards let you separate unrelated streams of work",
+    boardSwitcherTitle: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
+    switchBoardAria: "Switch kanban board",
+    searchHint: "Fuzzy-match tasks by id, title, or description. Matches across all columns.",
     taskCreatedWarning: "Task created, but: ",
     moveFailed: "Move failed: ",
     bulkFailed: "Bulk: ",

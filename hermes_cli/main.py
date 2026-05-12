@@ -9534,6 +9534,17 @@ def main():
     gateway_parser.set_defaults(func=cmd_gateway)
 
     # =========================================================================
+    # lsp command
+    # =========================================================================
+    try:
+        from agent.lsp.cli import register_subparser as _lsp_register
+        _lsp_register(subparsers)
+    except Exception as _lsp_err:  # noqa: BLE001
+        # LSP is optional infrastructure — never let a registration
+        # failure break the CLI overall.
+        logger.debug("LSP CLI registration failed: %s", _lsp_err)
+
+    # =========================================================================
     # setup command
     # =========================================================================
     setup_parser = subparsers.add_parser(

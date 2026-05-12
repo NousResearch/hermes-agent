@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import concurrent.futures
 import contextvars
+import importlib.util
 import json
 import logging
 import os
@@ -1663,18 +1664,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             
             # Token usage tracking — log cron job sessions for optimization
             try:
-                import sys
-                sys.path.insert(0, str(Path.home() / ".hermes" / "scripts" / "tracking"))
-                from token_reporter import log_cron_job
-                log_entry = log_cron_job(_cron_session_id, job_id)
-                if log_entry:
-                    logger.info(
-                        "Job '%s': tokens = input %d + output %d = total %d",
-                        job_name,
-                        log_entry["input_tokens"],
-                        log_entry["output_tokens"],
-                        log_entry["total_tokens"],
+                _tracking_module_path = get_hermes_home() / "scripts" / "tracking" / "token_reporter.py"
+                if _tracking_module_path.exists():
+                    _tracking_spec = importlib.util.spec_from_file_location(
+                        "token_reporter", _tracking_module_path
                     )
+                    _tracking_mod = importlib.util.module_from_spec(_tracking_spec)
+                    _tracking_spec.loader.exec_module(_tracking_mod)
+                    log_entry = _tracking_mod.log_cron_job(_cron_session_id, job_id)
+                    if log_entry:
+                        logger.info(
+                            "Job '%s': tokens = input %d + output %d = total %d",
+                            job_name,
+                            log_entry["input_tokens"],
+                            log_entry["output_tokens"],
+                            log_entry["total_tokens"],
+                        )
             except Exception as e:
                 logger.debug("Job '%s': failed to log token usage: %s", job_id, e)
             

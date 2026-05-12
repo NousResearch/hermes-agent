@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import threading
 import time
@@ -342,6 +343,23 @@ def test_config_roundtrip(server, tmp_path):
     server._hermes_home = tmp_path
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
+
+
+def test_config_reload_when_size_changes_without_mtime_change(server, tmp_path):
+    server._hermes_home = tmp_path
+    cfg_path = tmp_path / "config.yaml"
+
+    cfg_path.write_text("model: old\n", encoding="utf-8")
+    assert server._load_cfg()["model"] == "old"
+
+    before = cfg_path.stat()
+    cfg_path.write_text("model: new-model\ndisplay:\n  skin: mono\n", encoding="utf-8")
+    os.utime(cfg_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = cfg_path.stat()
+
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_size != before.st_size
+    assert server._load_cfg()["model"] == "new-model"
 
 
 # ── _cli_exec_blocked ────────────────────────────────────────────────

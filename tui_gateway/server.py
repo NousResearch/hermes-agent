@@ -124,7 +124,7 @@ _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
-_cfg_mtime: float | None = None
+_cfg_stat_key: tuple[int, int] | None = None
 _cfg_path = None
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
@@ -650,14 +650,18 @@ _INDICATOR_DEFAULT = "kaomoji"
 
 
 def _load_cfg() -> dict:
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_stat_key, _cfg_path
     try:
         import yaml
 
         p = _hermes_home / "config.yaml"
-        mtime = p.stat().st_mtime if p.exists() else None
+        try:
+            st = p.stat()
+            stat_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stat_key = None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
+            if _cfg_cache is not None and _cfg_stat_key == stat_key and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
             with open(p, encoding="utf-8") as f:
@@ -666,7 +670,7 @@ def _load_cfg() -> dict:
             data = {}
         with _cfg_lock:
             _cfg_cache = copy.deepcopy(data)
-            _cfg_mtime = mtime
+            _cfg_stat_key = stat_key
             _cfg_path = p
         return data
     except Exception:
@@ -675,7 +679,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_stat_key, _cfg_path
     import yaml
 
     path = _hermes_home / "config.yaml"
@@ -685,9 +689,10 @@ def _save_cfg(cfg: dict):
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
         try:
-            _cfg_mtime = path.stat().st_mtime
-        except Exception:
-            _cfg_mtime = None
+            st = path.stat()
+            _cfg_stat_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            _cfg_stat_key = None
 
 
 def _set_session_context(session_key: str) -> list:

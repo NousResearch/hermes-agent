@@ -950,7 +950,7 @@ def test_dispatch_guidance_in_operator_prompt_with_terminal(monkeypatch, tmp_pat
     a.valid_tool_names = {"terminal"}
     prompt = a._build_system_prompt()
     assert "Dispatch and ticketing protocol" in prompt
-    assert "clawta --text" in prompt
+    assert "clawta" in prompt
     assert "hermes-no-frontier-spawn" in prompt
     # The guidance must reference the terminal-shelling-out shape, since
     # operator hermes has neither kanban_* nor gh_* tools — all paths go
@@ -959,6 +959,13 @@ def test_dispatch_guidance_in_operator_prompt_with_terminal(monkeypatch, tmp_pat
     # fall back to gh issue create as the closest available thing.
     assert "hermes kanban" in prompt
     assert "terminal" in prompt
+    # Discord peer-comm announce step (Slice 2 of Hermes/Clawta epic).
+    # The dispatch path now announces in #clawta with @-mention to the
+    # Clawta bot so the peer-comm is visible to the operator and not
+    # buried inside a shell subprocess.
+    assert "channel:1503439202719760405" in prompt  # #clawta channel
+    assert "1503438472801685565" in prompt  # Clawta bot user id
+    assert "openclaw message send" in prompt
 
 
 def test_dispatch_guidance_not_in_worker_prompt(monkeypatch, tmp_path):

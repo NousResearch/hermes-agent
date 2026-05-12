@@ -182,7 +182,7 @@ class TestClientCacheBoundedGrowth:
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False)
+        key = ("test_replace", True, "", "", "", (), False, "")
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()

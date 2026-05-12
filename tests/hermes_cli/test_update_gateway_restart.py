@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -1068,13 +1069,18 @@ class TestFindGatewayPidsExclude:
 
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1082,19 +1088,24 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids(exclude_pids={100})
+        pids = gateway_cli.find_gateway_pids(exclude_pids={100}, all_profiles=True)
         assert 100 not in pids
         assert 200 in pids
 
     def test_no_exclude_returns_all(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1102,7 +1113,7 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids()
+        pids = gateway_cli.find_gateway_pids(all_profiles=True)
         assert 100 in pids
         assert 200 in pids
 
@@ -1111,6 +1122,10 @@ class TestFindGatewayPidsExclude:
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(

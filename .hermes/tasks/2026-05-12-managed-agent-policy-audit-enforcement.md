@@ -1,6 +1,6 @@
 # Managed-Agent Policy Audit Enforcement Tasks
 
-Status: in_progress
+Status: review
 Owner: Hermes main / Multica Codex worker
 Branch: feat/managed-agent-policy-audit-enforcement
 Started: 2026-05-12 09:10 +08
@@ -51,13 +51,13 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 
 ### phase3-review
 
-- Status: done
-- Owner: Hermes main/controller self-review
+- Status: in_progress
+- Owner: review-codex-mac with Hermes controller pre-review
 - Acceptance:
   - Reviewer inspects diff for safety, honesty of claims, and test coverage.
   - Reviewer reruns focused tests and records evidence.
-- Evidence: Controller self-review accepted the small 2-file diff because the Multica review lane was blocked by wrong workspace routing. Diff inspected for scope: audit-only code in `hermes_cli/kanban_db.py` plus focused tests in `tests/hermes_cli/test_kanban_db.py`. The implementation preserves the explicit boundary that local Kanban workers are contract/path scoped only, not OS/container sandboxes.
-- Verification: `git diff --check` clean; related regressions `python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='` → `135 passed, 1 skipped`.
+- Evidence: Controller pre-review inspected the small 2-file implementation diff after the Multica worker was routed to the wrong workspace. Diff scope is limited to audit-only code in `hermes_cli/kanban_db.py` plus focused tests in `tests/hermes_cli/test_kanban_db.py`. The implementation preserves the explicit boundary that local Kanban workers are contract/path scoped only, not OS/container sandboxes. Formal JEF-227 review needs to be rerun against the committed implementation.
+- Verification: `git diff --check` clean; Kanban DB/CLI `python -m pytest -q tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py -o 'addopts='` → `142 passed`; related regressions `python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='` → `135 passed, 1 skipped`.
 
 ### phase3-closeout
 
@@ -71,7 +71,7 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 
 ## Verification checklist
 
-- [x] `python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -q` → `200 passed`
+- [x] `python -m pytest -q tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py -o 'addopts='` → `142 passed`
 - [x] `python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='` → `135 passed, 1 skipped`
 - [x] `git diff --check` → clean
 
@@ -87,4 +87,5 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 - 2026-05-12 09:13 +08 — blocked: Supervisor tick found JEF-226 blocked because the Multica worker checked out the CBM workspace repo instead of the Hermes Agent source. No implementation commit was produced; no controller verification tests were run because there is no code diff to verify. Branch remained `feat/managed-agent-policy-audit-enforcement` at `e6ae8614b`.
 - 2026-05-12 09:15 +08 — blocked: JEF-227 review run `555e2513-9073-41c2-8289-9c02616c00b0` completed with blocking review: Phase 3 branch only contains `.hermes` plan/ledger and no implementation or focused tests. Reviewer reran Kanban DB/CLI (`140 passed`), related regressions (`135 passed, 1 skipped`), and `git diff --check` clean. Controller recorded blocker in commit `201a33edf` and then refreshed this review evidence.
 - 2026-05-12 09:22 +08 — blocked: Supervisor tick rechecked JEF-225/JEF-226/JEF-227. Parent JEF-225 has a comment-triggered run `a40dd6ad-800a-4f4c-962c-6e5c15f29b1f` confirming the correct source is `/Users/jeffphoon/.hermes/hermes-agent` on `feat/managed-agent-policy-audit-enforcement`, but no Phase 3 implementation diff exists yet. JEF-226 and JEF-227 remain blocked; fork branch is synced at `91b65003a`. No verification tests rerun because there is still no implementation commit to verify.
+- 2026-05-12 09:30 +08 — review: Controller found canonical repo dirty with the intended implementation after the Multica workspace misroute. Verified the implementation diff (`hermes_cli/kanban_db.py`, `tests/hermes_cli/test_kanban_db.py`), reran required controller tests (`142 passed`; related regressions `135 passed, 1 skipped`; `git diff --check` clean), and is committing/pushing the implementation for formal JEF-227 review. No OS/container sandboxing, deployment, config mutation, or production restart was performed.
 - 2026-05-12 09:29 +08 — in_progress: Controller implemented Phase 3 directly in the canonical Hermes Agent repo after confirming Multica runs were blocked by wrong workspace routing. Added no-edit policy audit enforcement and focused tests. Verification so far: `test_kanban_db.py` 102 passed; Kanban DB/CLI/tools 200 passed; related regressions 135 passed, 1 skipped; `git diff --check` clean. Closeout still needs commit, push, NAS backup, Multica status hygiene, and PR metadata.

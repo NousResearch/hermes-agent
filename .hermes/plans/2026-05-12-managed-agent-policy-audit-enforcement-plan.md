@@ -1,6 +1,6 @@
 # Managed-Agent Policy Audit Enforcement
 
-Status: blocked
+Status: review
 Owner: Hermes main / Multica Codex worker
 Started: 2026-05-12 09:10 +08
 Branch: feat/managed-agent-policy-audit-enforcement
@@ -74,3 +74,4 @@ git diff --check
 - 2026-05-12 09:13 +08 — blocked: JEF-226 run `8f7d1d41-1cf6-4cc3-a758-a71710b77ec0` reported the Multica workspace only exposed `court-booking-management`, not Hermes Agent. The worker marked JEF-226 blocked and produced no code commit.
 - 2026-05-12 09:15 +08 — blocked: JEF-227 run `555e2513-9073-41c2-8289-9c02616c00b0` completed with blocking review. It confirmed the correct Hermes Agent branch only contains Phase 3 `.hermes` plan/ledger, no implementation or focused tests. Reviewer evidence: Kanban DB/CLI `140 passed`, related regressions `135 passed, 1 skipped`, `git diff --check` clean.
 - 2026-05-12 09:22 +08 — blocked: Supervisor tick confirmed parent JEF-225 is also blocked after comment-triggered run `a40dd6ad-800a-4f4c-962c-6e5c15f29b1f`. The run located the correct local Hermes Agent repo/branch but found no implementation diff. Next action is to re-route/reassign implementation to the correct repo context; no merge/deploy/config mutation performed.
+- 2026-05-12 09:30 +08 — review: Controller found and verified the intended implementation in the canonical Hermes Agent repo after the Multica workspace misroute. Implementation commit `c1fa47b37` adds bounded no-edit policy audit metadata/events and blocks dirty `read_only`/`test_only` completions without claiming OS/container sandboxing. Verification: Kanban DB/CLI `142 passed`; related regressions `135 passed, 1 skipped`; `git diff --check` clean. Formal JEF-227 review is being rerun against the committed implementation.

@@ -925,3 +925,136 @@ class TestCaptureAfterAppContext:
         # No app context — should pass None so cua-driver picks the frontmost window
         assert len(captured_app_args) == 1
         assert captured_app_args[0] is None
+
+# ---------------------------------------------------------------------------
+# Regression tests for bug 1 from issue #24170:
+#   capture(app=...) and focus_app(app=...) must surface when the filter
+#   matches nothing instead of silently picking the frontmost window.
+# ---------------------------------------------------------------------------
+
+def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
+    """Construct a CuaDriverBackend with a mocked MCP session that returns
+    the supplied list_windows payload."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._session = MagicMock()
+    backend._session.call_tool.return_value = {
+        "data": "",
+        "images": [],
+        "structuredContent": {"windows": windows},
+        "isError": False,
+    }
+    return backend
+
+
+class TestCaptureAppFilterNoMatch:
+    """capture(app=X) must not silently fall back to the frontmost window
+    when X matches nothing — on a non-English macOS, list_windows returns
+    localized app names (e.g. "計算機"), so an English `app="Calculator"`
+    legitimately matches nothing and the caller needs to retry with the
+    localized name. The old code silently captured the frontmost window
+    (e.g. a menu-bar utility), giving the agent wrong UI elements.
+    """
+
+    def test_app_filter_no_match_returns_empty_capture_with_diagnostic(self):
+        # Simulates a localized macOS where Calculator's app_name is "計算機".
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="som", app="Calculator")
+
+        # No window matched; capture must NOT pick the frontmost (Fuwari).
+        assert cap.app == "", (
+            f"app= filter no-match should not silently target a window; got {cap.app!r}"
+        )
+        assert cap.elements == []
+        assert "Calculator" in cap.window_title
+        assert "list_apps" in cap.window_title
+        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+    def test_app_filter_match_still_works(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        # get_window_state for the matched window
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ 計算機 — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app="計算機")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_no_app_filter_still_picks_frontmost(self):
+        """When no app= is given, capture continues to pick the frontmost
+        window — the no-match early-return must not fire on the empty case."""
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Fuwari — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app=None)
+
+        assert backend._active_pid == 100
+
+
+class TestFocusAppFilterNoMatch:
+    """focus_app(app=X) must return ok=False when X matches nothing —
+    not silently target the frontmost window and report ok=True with a
+    misleading 'Targeted Fuwari' message.
+    """
+
+    def test_focus_app_no_match_returns_not_ok(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("Calculator")
+
+        assert res.ok is False
+        assert res.action == "focus_app"
+        assert "Calculator" in res.message
+        # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
+        assert backend._active_pid is None
+
+    def test_focus_app_match_still_works(self):
+        windows = [
+            {"app_name": "Fuwari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "menu bar", "z_index": 0},
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("計算機")
+
+        assert res.ok is True
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2

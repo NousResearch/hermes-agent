@@ -163,8 +163,8 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 # GFM table: a row of |cells| followed by a separator row (---|:---|...)
 _TABLE_MARKDOWN_RE = re.compile(r"^\|.+\|.*\n\|[-: |]+\|", re.MULTILINE)
 # Multi-line fenced code block (opening fence + 2+ content lines + closing fence)
-# Empty or 1-line blocks render fine in post/md; route 3+ content lines to CardKit 2.0.
-_CODE_BLOCK_RE = re.compile(r"^```[^\n]*\n(.*\n){2,}```", re.MULTILINE | re.DOTALL)
+# Empty or 1-line blocks render fine in post/md; route 2+ content lines to CardKit 2.0.
+_CODE_BLOCK_RE = re.compile(r"^```[^\n]*\n(.*\n){2,}```", re.MULTILINE)
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------

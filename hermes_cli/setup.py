@@ -1609,9 +1609,9 @@ def setup_terminal_backend(config: dict):
                 save_env_value("NOVITA_API_KEY", api_key)
                 print_success("    Configured")
 
-        # Novita template (optional — uses default base template if empty)
-        current_template = config.get("terminal", {}).get("novita_image", "")
-        print_info("  Sandbox template (optional — leave blank to use the default base template)")
+        # Novita template
+        current_template = config.get("terminal", {}).get("novita_image", "code-interpreter-v1")
+        print_info("  Sandbox template")
         template = prompt("  Template name or ID", current_template)
         config["terminal"]["novita_image"] = template
         save_env_value("TERMINAL_NOVITA_IMAGE", template)

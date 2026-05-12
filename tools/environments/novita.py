@@ -26,21 +26,6 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
-_SYNC_BACK_EXCLUDES = (
-    "hermes-agent",
-    "skills_backup_*",
-    "migration",
-)
-
-
-def _sync_back_tar_exclude_flags(container_base: str) -> str:
-    base = container_base.strip("/")
-    return " ".join(
-        shlex.quote(arg)
-        for pattern in _SYNC_BACK_EXCLUDES
-        for arg in ("--exclude", f"{base}/{pattern}")
-    )
-
 
 class NovitaEnvironment(BaseEnvironment):
     """Novita AI cloud sandbox execution backend.
@@ -201,9 +186,8 @@ class NovitaEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a compressed tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar.gz"
-        excludes = _sync_back_tar_exclude_flags(f"/{rel_base}")
         self._sandbox.commands.run(
-            f"tar {excludes} -czf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}",
+            f"tar -czf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}",
             timeout=120,
         )
         data = self._sandbox.files.read(

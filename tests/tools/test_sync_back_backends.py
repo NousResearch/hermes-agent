@@ -438,9 +438,7 @@ class TestNovitaBulkDownload:
         tar_cmd = env._sandbox.commands.run.call_args_list[0][0][0]
         assert "tar" in tar_cmd
         assert "-czf" in tar_cmd
-        assert "--exclude home/user/.hermes/hermes-agent" in tar_cmd
-        assert "home/user/.hermes/skills_backup_*" in tar_cmd
-        assert "--exclude home/user/.hermes/migration" in tar_cmd
+        assert "--exclude" not in tar_cmd
         assert "/tmp/.hermes_sync." in tar_cmd
         assert ".tar.gz" in tar_cmd
         assert "home/user/.hermes" in tar_cmd

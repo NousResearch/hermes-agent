@@ -186,9 +186,22 @@ _CMDPOS = (
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    (
+        r'\brm\s+(-[^\s]*\s+)*(?:"/"\*?|\'/\'\*?|/|/\*|/ \*)(\s|$)',
+        "recursive delete of root filesystem",
+    ),
+    (
+        r'\brm\s+(-[^\s]*\s+)*(?:"/(home|root|etc|usr|var|bin|sbin|boot|lib)/?"(?:\*|/\*)?|'
+        r'\'/(home|root|etc|usr|var|bin|sbin|boot|lib)/?\'(?:\*|/\*)?|'
+        r'/(home|root|etc|usr|var|bin|sbin|boot|lib)(?:/?|/\*)?)(\s|$)',
+        "recursive delete of system directory",
+    ),
+    (
+        r'\brm\s+(-[^\s]*\s+)*(?:~(?:/?|/\*)?|'
+        r'(?:\$home|\$\{home\})(?:/?|/\*)?|'
+        r'"(?:\$home|\$\{home\})/?"(?:\*|/\*)?)(\s|$)',
+        "recursive delete of home directory",
+    ),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)

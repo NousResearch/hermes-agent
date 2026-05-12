@@ -347,6 +347,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
+                        creationflags=0x08000000,  # CREATE_NO_WINDOW
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
@@ -372,6 +373,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,
+                        creationflags=0x08000000,  # CREATE_NO_WINDOW
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []

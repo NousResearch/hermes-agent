@@ -37,7 +37,16 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
-from agent.file_safety import is_write_denied
+
+try:
+    from agent.file_safety import is_write_denied
+except ModuleNotFoundError:
+    # Preserve standalone execution from this scripts directory by making the
+    # repository root importable when the `agent` package is not installed.
+    _REPO_ROOT = str(Path(__file__).resolve().parents[3])
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    from agent.file_safety import is_write_denied
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"

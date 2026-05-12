@@ -1226,6 +1226,11 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Remove any pre-existing file or symlink at the launcher path. A prior
+    # setup-hermes.sh run creates this as `ln -sf … venv/bin/hermes`, and
+    # writing via `cat >` follows symlinks — which would truncate the venv
+    # entry point and turn the shim into a self-exec'ing infinite loop.
+    rm -f "$command_link_dir/hermes"
     cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH

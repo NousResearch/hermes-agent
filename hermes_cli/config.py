@@ -1380,6 +1380,12 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Push a notification on each task block transition. See
+        # website/docs/user-guide/features/kanban.md.
+        "notify_on_block": False,
+        # Empty = broadcast to every connected platform's home channel.
+        # Set to a platform name (e.g. "telegram") to pin delivery there.
+        "notify_on_block_channel": "",
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

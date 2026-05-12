@@ -698,6 +698,25 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+### Global block notifications (opt-in)
+
+Per-task subscriptions are great when you know which tasks you care about, but they don't help with the unattended-board case: a task you didn't subscribe to crashes its way to `blocked`, downstream tasks stall, and nothing tells you. Set `kanban.notify_on_block: true` in `config.yaml` and the gateway pushes one message per block transition to a configured channel — covering operator-issued `hermes kanban block` *and* the failure-limit circuit breaker that auto-blocks after repeated crashes.
+
+```yaml
+kanban:
+  notify_on_block: true            # default false
+  notify_on_block_channel: ""      # empty = broadcast to every connected platform's home channel
+                                   # or pin to a specific platform: "telegram", "discord", ...
+```
+
+Notes:
+
+- Requires the gateway to be running (the watcher is a gateway-side loop, same as the per-task notifier and dispatcher).
+- Dedup is in-memory; the first tick after gateway start snapshots the current blocked set silently, so a restart never replays history. Events that fire while the gateway is offline are not back-filled — you'll see the blocked state on the board itself when you check.
+- Default fan-out is **broadcast**: each block transition fires once per connected platform with a home channel, so you can't miss it whichever device you're on. Set `notify_on_block_channel` explicitly to pin to a single platform.
+- Fans out across **all** boards on this profile to the same target(s); per-board overrides aren't currently supported.
+- An explicit `notify_on_block_channel` (e.g. `"discord"`) is strict: if that adapter is offline or has no home channel set, the tick logs a warning and skips delivery rather than silently falling back to a different platform.
+
 ## Runs — one row per attempt
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.

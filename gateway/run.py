@@ -41,7 +41,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, NamedTuple, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -1137,6 +1137,13 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     if agent_result.get("completed") is False:
         return False
     return True
+
+
+class _BlockNotifyTarget(NamedTuple):
+    adapter: Any
+    chat_id: str
+    thread_id: Optional[str]
+    platform: str
 
 
 class GatewayRunner:
@@ -3690,6 +3697,8 @@ class GatewayRunner:
         # so human-in-the-loop workflows hear back without polling.
         asyncio.create_task(self._kanban_notifier_watcher())
 
+        asyncio.create_task(self._kanban_block_notifier_watcher())
+
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
@@ -4474,6 +4483,219 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    async def _kanban_block_notifier_watcher(self, interval: float = 5.0) -> None:
+        """Push one notification per task transition to ``blocked``.
+
+        Gated by ``kanban.notify_on_block`` (default false). Dedup is
+        in-memory keyed by event id, so block transitions occurring while
+        the gateway is offline are not back-filled. See
+        ``website/docs/user-guide/features/kanban.md``.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban block-notifier: config loader unavailable; disabled")
+            return
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("kanban block-notifier: cannot load config (%s); disabled", exc)
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not bool(kanban_cfg.get("notify_on_block", False)):
+            return
+        configured_channel = str(kanban_cfg.get("notify_on_block_channel", "") or "").strip().lower()
+
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception:
+            logger.warning("kanban block-notifier: kanban_db not importable; disabled")
+            return
+
+        await asyncio.sleep(5)
+
+        last_block_event: dict[str, dict[str, int]] = {}
+        MAX_SEND_FAILURES = 3
+        send_fail_counts: dict[tuple[str, str, int], int] = {}
+        sleep_steps = int(max(1, interval))
+
+        logger.info(
+            "kanban block-notifier: enabled (channel=%s)",
+            configured_channel or "<broadcast>",
+        )
+
+        while self._running:
+            try:
+                def _collect_transitions():
+                    new_transitions: list[dict] = []
+                    # The board-iteration + dedup-by-resolved-path block
+                    # below is a fourth copy of the pattern used in
+                    # `_kanban_notifier_watcher._collect`,
+                    # `_kanban_dispatcher_watcher`, and the dispatcher's
+                    # board sweep. Worth folding into a shared
+                    # `kanban_db` helper in a follow-up; kept inline
+                    # here to keep this PR's diff surgical.
+                    try:
+                        boards = _kb.list_boards(include_archived=False)
+                    except Exception:
+                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                    seen_db_paths: set[str] = set()
+                    for board_meta in boards:
+                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                        db_path = board_meta.get("db_path")
+                        try:
+                            resolved_db_path = (
+                                str(Path(db_path).expanduser().resolve())
+                                if db_path else str(_kb.kanban_db_path(slug).resolve())
+                            )
+                        except Exception:
+                            resolved_db_path = f"slug:{slug}"
+                        if resolved_db_path in seen_db_paths:
+                            continue
+                        seen_db_paths.add(resolved_db_path)
+                        try:
+                            conn = _kb.connect(board=slug)
+                        except Exception as exc:
+                            logger.debug(
+                                "kanban block-notifier: cannot open board %s: %s", slug, exc,
+                            )
+                            continue
+                        try:
+                            rows = _kb.list_currently_blocked_with_event(conn)
+                        except Exception as exc:
+                            logger.debug(
+                                "kanban block-notifier: query failed on board %s: %s", slug, exc,
+                            )
+                            conn.close()
+                            continue
+                        conn.close()
+                        current = {r["task_id"]: r["event_id"] for r in rows}
+                        if slug not in last_block_event:
+                            last_block_event[slug] = current
+                            continue
+                        prev = last_block_event[slug]
+                        for r in rows:
+                            if prev.get(r["task_id"]) != r["event_id"]:
+                                new_transitions.append({"board": slug, **r})
+                        last_block_event[slug] = current
+                    return new_transitions
+
+                transitions = await asyncio.to_thread(_collect_transitions)
+                if transitions:
+                    targets = self._resolve_block_notify_targets(configured_channel)
+                    if not targets:
+                        logger.warning(
+                            "kanban block-notifier: %d transition(s) detected but no "
+                            "deliverable target (channel=%r); transitions dropped",
+                            len(transitions), configured_channel or "<broadcast>",
+                        )
+                    else:
+                        for ev in transitions:
+                            board_slug = ev["board"]
+                            tid = ev["task_id"]
+                            eid = ev["event_id"]
+                            msg = self._format_block_notification(ev)
+                            fail_key = (board_slug, tid, eid)
+                            any_failed = False
+                            for target in targets:
+                                send_metadata = (
+                                    {"thread_id": target.thread_id} if target.thread_id else None
+                                )
+                                try:
+                                    await target.adapter.send(
+                                        target.chat_id, msg, metadata=send_metadata,
+                                    )
+                                    logger.debug(
+                                        "kanban block-notifier: delivered %s for %s "
+                                        "on board %s to %s",
+                                        ev["event_kind"], tid, board_slug, target.platform,
+                                    )
+                                except Exception as exc:
+                                    any_failed = True
+                                    logger.warning(
+                                        "kanban block-notifier: send failed for %s on %s: %s",
+                                        tid, target.platform, exc,
+                                    )
+                            if any_failed:
+                                fails = send_fail_counts.get(fail_key, 0) + 1
+                                send_fail_counts[fail_key] = fails
+                                # Bound retries so a permanently-dead chat
+                                # can't pin the cursor against the working
+                                # platforms forever.
+                                if fails < MAX_SEND_FAILURES:
+                                    last_block_event[board_slug].pop(tid, None)
+                                else:
+                                    logger.warning(
+                                        "kanban block-notifier: giving up on %s after "
+                                        "%d failed broadcast attempts",
+                                        tid, fails,
+                                    )
+                                    send_fail_counts.pop(fail_key, None)
+                            else:
+                                send_fail_counts.pop(fail_key, None)
+            except Exception as exc:
+                logger.warning("kanban block-notifier tick failed: %s", exc)
+            for _ in range(sleep_steps):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
+
+    def _resolve_block_notify_targets(
+        self, configured_channel: str,
+    ) -> list["_BlockNotifyTarget"]:
+        """Resolve delivery targets for a block notification.
+
+        Empty ``configured_channel`` → broadcast to every connected
+        adapter that has a configured home channel. Non-empty → that
+        platform exclusively (returns ``[]`` if the adapter is offline
+        or unconfigured; no silent fallback to a different platform).
+        """
+        if configured_channel:
+            try:
+                plat = Platform(configured_channel)
+            except ValueError:
+                logger.debug(
+                    "kanban block-notifier: notify_on_block_channel=%r is not a known platform",
+                    configured_channel,
+                )
+                return []
+            adapter = self.adapters.get(plat)
+            if adapter is None:
+                return []
+            home = self.config.get_home_channel(plat)
+            if not home or not home.chat_id:
+                return []
+            return [_BlockNotifyTarget(adapter, str(home.chat_id), home.thread_id, plat.value)]
+        targets: list[_BlockNotifyTarget] = []
+        for plat, adapter in self.adapters.items():
+            home = self.config.get_home_channel(plat)
+            if home and home.chat_id:
+                targets.append(_BlockNotifyTarget(
+                    adapter, str(home.chat_id), home.thread_id, plat.value,
+                ))
+        return targets
+
+    @staticmethod
+    def _format_block_notification(ev: dict) -> str:
+        tid = ev["task_id"]
+        title = (ev.get("title") or tid)[:120]
+        assignee = ev.get("assignee")
+        tag = f"@{assignee} " if assignee else ""
+        kind = ev.get("event_kind")
+        payload = ev.get("event_payload") or {}
+        if kind == "gave_up":
+            err = ""
+            if payload.get("error"):
+                err = f"\n{str(payload['error'])[:200]}"
+            return (
+                f"✖ {tag}Kanban {tid} ({title}) gave up after repeated "
+                f"failures{err}"
+            )
+        reason = ""
+        if payload.get("reason"):
+            reason = f": {str(payload['reason'])[:160]}"
+        return f"⏸ {tag}Kanban {tid} ({title}) blocked{reason}"
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

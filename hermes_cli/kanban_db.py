@@ -4564,6 +4564,49 @@ def rewind_notify_cursor(
     return cur.rowcount > 0
 
 
+def list_currently_blocked_with_event(
+    conn: sqlite3.Connection,
+) -> list[dict]:
+    """Return one row per blocked task with its most recent blocked/gave_up event."""
+    rows = conn.execute(
+        """
+        SELECT t.id          AS task_id,
+               t.title       AS title,
+               t.assignee    AS assignee,
+               e.id          AS event_id,
+               e.kind        AS event_kind,
+               e.payload     AS event_payload,
+               e.created_at  AS event_created_at
+        FROM tasks t
+        JOIN task_events e ON e.task_id = t.id
+        WHERE t.status = 'blocked'
+          AND e.id = (
+              SELECT MAX(e2.id)
+              FROM task_events e2
+              WHERE e2.task_id = t.id
+                AND e2.kind IN ('blocked', 'gave_up')
+          )
+        ORDER BY e.id ASC
+        """
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            payload = json.loads(r["event_payload"]) if r["event_payload"] else None
+        except Exception:
+            payload = None
+        out.append({
+            "task_id": r["task_id"],
+            "title": r["title"],
+            "assignee": r["assignee"],
+            "event_id": int(r["event_id"]),
+            "event_kind": r["event_kind"],
+            "event_payload": payload,
+            "event_created_at": int(r["event_created_at"]),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Retention + garbage collection
 # ---------------------------------------------------------------------------

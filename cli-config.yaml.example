@@ -1024,6 +1024,32 @@ display:
 #     base_url: "https://ollama.com/v1"
 
 # =============================================================================
+# Kanban — multi-agent task queue
+# =============================================================================
+# Most kanban knobs (dispatch_in_gateway, dispatch_interval_seconds,
+# failure_limit) keep their defaults from hermes_cli/config.py and don't need
+# to appear here. The notification settings below are the ones users most
+# often want to flip.
+#
+# kanban:
+#   # Push a notification to a configured channel each time a task transitions
+#   # to `blocked` — either via `hermes kanban block` or because the failure-
+#   # limit circuit breaker auto-blocked the task after repeated crashes.
+#   # Default off so existing workflows don't suddenly start delivering.
+#   notify_on_block: false
+#
+#   # Override the delivery channel for `notify_on_block`. Leave empty to
+#   # broadcast each block transition to every connected platform that has a
+#   # home channel configured — the safety-net default for unattended boards
+#   # where you don't know which device you'll be on when something stalls.
+#   # Set to a platform name (e.g. "telegram", "discord", "slack") to pin
+#   # delivery to that platform's home channel only — if that platform's
+#   # adapter is offline or has no home channel set, the tick logs a warning
+#   # and skips delivery rather than silently falling back to a different
+#   # platform.
+#   notify_on_block_channel: ""
+
+# =============================================================================
 # Privacy
 # =============================================================================
 # privacy:

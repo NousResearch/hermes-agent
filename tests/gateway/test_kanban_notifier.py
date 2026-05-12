@@ -6,14 +6,11 @@ import pytest
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
-
-
-class RecordingAdapter:
-    def __init__(self):
-        self.sent = []
-
-    async def send(self, chat_id, text, metadata=None):
-        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+from tests.gateway._kanban_helpers import (
+    FailingAdapter,
+    RecordingAdapter,
+    make_runner as _make_runner,
+)
 
 
 class DisconnectedAdapters(dict):
@@ -34,14 +31,6 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     await runner._kanban_notifier_watcher(interval=1)
-
-
-def _make_runner(adapter):
-    runner = GatewayRunner.__new__(GatewayRunner)
-    runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._kanban_sub_fail_counts = {}
-    return runner
 
 
 def _create_completed_subscription(summary="done once"):
@@ -80,7 +69,7 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     tid = _create_completed_subscription()
 
     adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
+    runner = _make_runner({Platform.TELEGRAM: adapter})
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
@@ -99,8 +88,8 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     adapter1 = RecordingAdapter()
     adapter2 = RecordingAdapter()
 
-    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter1)))
-    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter2)))
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner({Platform.TELEGRAM: adapter1})))
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner({Platform.TELEGRAM: adapter2})))
 
     assert len(adapter1.sent) == 1
     assert adapter2.sent == []
@@ -138,17 +127,6 @@ def test_kanban_db_path_is_test_isolated_from_real_home():
     assert kb.kanban_db_path().resolve() != production_db.resolve()
 
 
-class FailingAdapter:
-    """Adapter whose send() always raises, simulating a transient send error."""
-
-    def __init__(self):
-        self.attempts = 0
-
-    async def send(self, chat_id, text, metadata=None):
-        self.attempts += 1
-        raise RuntimeError("simulated send failure")
-
-
 def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     """A raising adapter rewinds the claim so the next tick can retry.
 
@@ -163,7 +141,7 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     tid = _create_completed_subscription()
 
     adapter = FailingAdapter()
-    runner = _make_runner(adapter)
+    runner = _make_runner({Platform.TELEGRAM: adapter})
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
@@ -200,7 +178,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         conn.close()
 
     adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
+    runner = _make_runner({Platform.TELEGRAM: adapter})
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     # First crash delivered.
@@ -226,7 +204,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
     # New tick: the second event has a fresh id past the cursor advance,
     # so it gets claimed and delivered.
-    runner = _make_runner(adapter)
+    runner = _make_runner({Platform.TELEGRAM: adapter})
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 2, (

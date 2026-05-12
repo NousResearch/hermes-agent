@@ -242,11 +242,11 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
-    def test_excludes_commands_with_required_args(self):
+    def test_includes_commands_with_required_args_for_autocomplete(self):
         names = {name for name, _ in telegram_bot_commands()}
-        assert "background" not in names
-        assert "queue" not in names
-        assert "steer" not in names
+        assert "background" in names
+        assert "queue" in names
+        assert "steer" in names
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
 

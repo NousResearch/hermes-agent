@@ -18,7 +18,9 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar, cast
+
+_CommandEntry = TypeVar("_CommandEntry", bound=tuple[str, ...])
 
 from utils import is_truthy_value
 
@@ -379,8 +381,11 @@ def _resolve_config_gates() -> set[str]:
         return set()
     result: set[str] = set()
     for cmd in gated:
+        gate = cmd.gateway_config_gate
+        if not gate:
+            continue
         val: Any = cfg
-        for key in cmd.gateway_config_gate.split("."):
+        for key in gate.split("."):
             if isinstance(val, dict):
                 val = val.get(key)
             else:
@@ -405,11 +410,6 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
         overrides = config_overrides if config_overrides is not None else _resolve_config_gates()
         return cmd.name in overrides
     return False
-
-
-def _requires_argument(args_hint: str) -> bool:
-    """Return True when selecting a command without text would be incomplete."""
-    return args_hint.strip().startswith("<")
 
 
 def gateway_help_lines() -> list[str]:
@@ -468,25 +468,26 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command. Commands that require arguments are skipped because
-    selecting a Telegram BotCommand sends only ``/command`` and would execute
-    an incomplete command.
+    canonical command. Commands that require arguments are still included:
+    Telegram's command list doubles as autocomplete while typing, and the
+    gateway handlers already return usage text when a user sends only
+    ``/command`` without the required payload.
 
     Plugin-registered slash commands are included so plugins get native
-    autocomplete in Telegram without touching core code.
+    autocomplete in Telegram without touching core code. Plugin commands that
+    declare required arguments remain excluded because Hermes cannot guarantee
+    every plugin has a no-argument usage fallback.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if _requires_argument(cmd.args_hint):
-            continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
     for name, description, args_hint in _iter_plugin_command_entries():
-        if _requires_argument(args_hint):
+        if args_hint.strip().startswith("<"):
             continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
@@ -521,9 +522,9 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, ...]],
+    entries: list[_CommandEntry],
     reserved: set[str],
-) -> list[tuple[str, ...]]:
+) -> list[_CommandEntry]:
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
@@ -537,7 +538,7 @@ def _clamp_command_names(
     metadata that survives the rename.
     """
     used: set[str] = set(reserved)
-    result: list[tuple] = []
+    result: list[_CommandEntry] = []
     for entry in entries:
         name, desc, *extra = entry
         if len(name) > _CMD_NAME_LIMIT:
@@ -555,7 +556,7 @@ def _clamp_command_names(
         if name in used:
             continue
         used.add(name)
-        result.append((name, desc, *extra))
+        result.append(cast(_CommandEntry, (name, desc, *extra)))
     return result
 
 

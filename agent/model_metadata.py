@@ -1387,7 +1387,7 @@ def get_model_context_length(
        d. GMI /models endpoint
        e. Ollama native /api/show probe (any base_url, provider-agnostic)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
-    6. OpenRouter live API metadata (Kimi-family 32k guard)
+    6. OpenRouter live API metadata (last-resort fallback for all providers)
     7. Hardcoded defaults (broad family patterns, longest-key-first)
     8. Local server query (last resort)
     9. Default fallback (256K)"""
@@ -1566,31 +1566,40 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata — provider-unaware fallback.
-    # Only consulted when the provider is unknown (no effective_provider),
-    # because OpenRouter data is community-maintained and can be incorrect
-    # for models that belong to known providers with curated defaults.
-    if not effective_provider:
-        metadata = fetch_model_metadata()
-        if model in metadata:
-            or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
-            # Guard against stale OpenRouter metadata for Kimi-family models.
-            # OpenRouter reports 32768 for moonshotai/kimi-k2.6, but the model
-            # actually supports 262144 (models.dev + official Kimi docs agree).
-            # Providers that host their own Kimi endpoints (Ollama Cloud, Kimi
-            # Coding, Moonshot) would otherwise trip the 64k minimum-context
-            # guard and reject a perfectly capable model.
-            # The filter is narrow: only reject exactly 32768 for Kimi-named
-            # models.  If OpenRouter ever updates its data, the stale path
-            # becomes dead code with no impact.
-            if or_ctx == 32768 and _model_name_suggests_kimi(model):
-                logger.info(
-                    "Rejecting OpenRouter metadata context=%s for %r "
-                    "(Kimi-family underreport); falling through to hardcoded defaults",
-                    or_ctx, model,
-                )
-            else:
-                return or_ctx
+    # 6. OpenRouter live API metadata — provider-aware fallback.
+    # Consulted when the provider is unknown (no effective_provider), OR
+    # when the provider is known but ALL provider-aware lookups above
+    # returned None.  The latter covers providers like "nous" that have
+    # no models.dev entry but whose model IDs match OpenRouter slugs
+    # (e.g. "moonshotai/kimi-k2.6").  See #24119.
+    # OpenRouter data is community-maintained and can be incorrect for
+    # models that belong to known providers with curated defaults, so
+    # this path is only reached as a last resort before hardcoded defaults.
+    # OpenRouter live API metadata — last-resort fallback before hardcoded defaults.
+    # Always consulted regardless of effective_provider, because by this point
+    # ALL provider-specific lookups (models.dev, provider API, etc.) have
+    # returned None.  This covers providers like "nous" that have no models.dev
+    # entry but whose model IDs match OpenRouter slugs.  See #24119.
+    metadata = fetch_model_metadata()
+    if model in metadata:
+        or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
+        # Guard against stale OpenRouter metadata for Kimi-family models.
+        # OpenRouter reports 32768 for moonshotai/kimi-k2.6, but the model
+        # actually supports 262144 (models.dev + official Kimi docs agree).
+        # Providers that host their own Kimi endpoints (Ollama Cloud, Kimi
+        # Coding, Moonshot) would otherwise trip the 64k minimum-context
+        # guard and reject a perfectly capable model.
+        # The filter is narrow: only reject exactly 32768 for Kimi-named
+        # models.  If OpenRouter ever updates its data, the stale path
+        # becomes dead code with no impact.
+        if or_ctx == 32768 and _model_name_suggests_kimi(model):
+            logger.info(
+                "Rejecting OpenRouter metadata context=%s for %r "
+                "(Kimi-family underreport); falling through to hardcoded defaults",
+                or_ctx, model,
+            )
+        else:
+            return or_ctx
 
     # 7. (reserved)
 

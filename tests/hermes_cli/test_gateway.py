@@ -386,14 +386,47 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/home/alice/.local/bin/hermes" if name == "hermes" else None)
     monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
 
     scope, did_install = gateway.install_linux_gateway_from_setup(force=False)
 
     out = capsys.readouterr().out
     assert (scope, did_install) == ("system", False)
-    assert "sudo hermes gateway install --system --run-as-user alice" in out
-    assert "sudo hermes gateway start --system" in out
+    # Absolute path — bare `sudo hermes` fails under secure_path when the
+    # shim lives in ~/.local/bin (pipx/uv) or another dir not on root's PATH.
+    assert "sudo /home/alice/.local/bin/hermes gateway install --system --run-as-user alice" in out
+    assert "sudo /home/alice/.local/bin/hermes gateway start --system" in out
+
+
+def test_install_linux_gateway_from_setup_falls_back_to_python_module_when_shim_missing(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gateway.sys, "executable", "/opt/venv/bin/python")
+    monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=False)
+
+    out = capsys.readouterr().out
+    assert (scope, did_install) == ("system", False)
+    assert "sudo /opt/venv/bin/python -m hermes_cli.main gateway install --system --run-as-user alice" in out
+    assert "sudo /opt/venv/bin/python -m hermes_cli.main gateway start --system" in out
+
+
+def test_install_linux_gateway_from_setup_quotes_paths_with_spaces(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "bob")
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/home/bob/My Tools/hermes" if name == "hermes" else None)
+    monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=False)
+
+    out = capsys.readouterr().out
+    assert (scope, did_install) == ("system", False)
+    assert "sudo '/home/bob/My Tools/hermes' gateway install --system --run-as-user bob" in out
 
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):

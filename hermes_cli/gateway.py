@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1824,6 +1825,22 @@ def _default_system_service_user() -> str | None:
     return None
 
 
+def _hermes_invocation_for_help() -> str:
+    """Return a copy-pasteable hermes command for messages we print to the user.
+
+    Resolves to the absolute path of the ``hermes`` console-script shim so
+    ``sudo`` works under restrictive ``secure_path`` (the default on Arch,
+    Debian, Fedora, etc., where ``/home/<user>/.local/bin`` and other pipx /
+    uv / cargo install dirs are not on root's PATH). Falls back to
+    ``<sys.executable> -m hermes_cli.main`` when the shim isn't on PATH
+    (e.g. when launched via ``python -m`` from inside a venv).
+    """
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return shlex.quote(hermes_bin)
+    return f"{shlex.quote(sys.executable)} -m hermes_cli.main"
+
+
 def prompt_linux_gateway_install_scope() -> str | None:
     choice = prompt_choice(
         "  Choose how the gateway should run in the background:",
@@ -1846,11 +1863,10 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
             print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
-            if run_as_user:
-                print_info(f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}")
-            else:
-                print_info("  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>")
-            print_info("  Then start it with: sudo hermes gateway start --system")
+            hermes_cmd = _hermes_invocation_for_help()
+            target_user = run_as_user or "<your-user>"
+            print_info(f"  After setup, run: sudo {hermes_cmd} gateway install --system --run-as-user {target_user}")
+            print_info(f"  Then start it with: sudo {hermes_cmd} gateway start --system")
             return scope, False
 
         if not run_as_user:

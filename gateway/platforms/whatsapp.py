@@ -552,6 +552,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
             bridge_env = os.environ.copy()
+            # WhatsApp/Baileys websocket is significantly less stable behind some
+            # local HTTP(S) proxy stacks (frequent keepalive 408 / initial-sync 428).
+            # Keep proxy settings for the Python gateway, but run the Node bridge
+            # with direct egress to reduce reconnect storms during delivery windows.
+            for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+                bridge_env.pop(k, None)
+            bridge_env.setdefault("NO_PROXY", "localhost,127.0.0.1,::1")
+            bridge_env.setdefault("no_proxy", "localhost,127.0.0.1,::1")
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 

@@ -6107,6 +6107,8 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+                if _cmd_def_inner.name == "trades":
+                    return await self._handle_trades_command(event)
 
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
@@ -6347,6 +6349,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "trades":
+            return await self._handle_trades_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -8181,6 +8186,96 @@ class GatewayRunner:
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
+
+    async def _handle_trades_command(self, event: MessageEvent) -> str:
+        """Handle /trades — show positions, orders, and account balance."""
+        import json
+        import os
+        import urllib.request
+
+        def load_env(key: str, default: str = "") -> str:
+            path = os.path.expanduser("~/.alpaca/credentials")
+            if os.path.exists(path):
+                for line in open(path):
+                    if line.startswith(f"{key}="):
+                        return line.split("=", 1)[1].strip()
+            return os.environ.get(key, default)
+
+        ALPACA_API_KEY = load_env("ALPACA_API_KEY", "")
+        ALPACA_SECRET_KEY = load_env("ALPACA_SECRET_KEY", "")
+        ALPACA_BASE = "https://paper-api.alpaca.markets"
+
+        sub = (event.get_command_args() or "").strip().lower()
+        sub = sub.split()[0] if sub else ""
+
+        parts: list[str] = []
+
+        def alpaca_get(path: str) -> list | dict | None:
+            try:
+                req = urllib.request.Request(f"{ALPACA_BASE}{path}")
+                req.add_header("APCA-API-KEY-ID", ALPACA_API_KEY)
+                req.add_header("APCA-API-SECRET-KEY", ALPACA_SECRET_KEY)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read())
+            except Exception:
+                return None
+
+        # Account
+        acct = alpaca_get("/v2/account")
+        if acct and isinstance(acct, dict):
+            equity = float(acct.get("equity", 0))
+            cash = float(acct.get("cash", 0))
+            bp = float(acct.get("buying_power", 0))
+            parts.append(
+                f"💰 **Account**\n"
+                f"  Equity: ${equity:,.2f}\n"
+                f"  Cash: ${cash:,.2f}\n"
+                f"  Buying Power: ${bp:,.2f}"
+            )
+        else:
+            parts.append("⚠ Could not fetch account info")
+
+        # Positions
+        if sub in ("", "positions", "all"):
+            positions = alpaca_get("/v2/positions")
+            if positions and isinstance(positions, list) and len(positions) > 0:
+                lines = ["📊 **Positions**"]
+                for p in positions:
+                    sym = p.get("symbol", "?")
+                    qty = p.get("qty", 0)
+                    ap = float(p.get("avg_entry_price", 0))
+                    mv = float(p.get("market_value", 0))
+                    upl = float(p.get("unrealized_pl", 0))
+                    upl_pct = (upl / (ap * float(qty))) * 100 if ap and qty else 0
+                    lines.append(
+                        f"  {sym}: {qty} shares @ ${ap:.2f} | "
+                        f"MV ${mv:,.2f} | UPL ${upl:,.2f} ({upl_pct:+.1f}%)"
+                    )
+                parts.append("\n".join(lines))
+            else:
+                parts.append("📊 **Positions** — flat")
+
+        # Orders
+        if sub in ("", "orders", "all"):
+            orders = alpaca_get("/v2/orders?status=open&limit=10")
+            if orders and isinstance(orders, list) and len(orders) > 0:
+                lines = ["📋 **Open Orders**"]
+                for o in orders:
+                    sym = o.get("symbol", "?")
+                    side = o.get("side", "?")
+                    qty = o.get("qty", 0)
+                    lim = o.get("limit_price") or o.get("stop_price") or "MKT"
+                    if lim != "MKT":
+                        lim = f"${lim}"
+                    status = o.get("status", "?")
+                    lines.append(
+                        f"  {sym}: {side.upper()} {qty} @ {lim} [{status}]"
+                    )
+                parts.append("\n".join(lines))
+            else:
+                parts.append("📋 **Open Orders** — none")
+
+        return "\n\n".join(parts) if parts else "No trading data available."
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""

@@ -5292,6 +5292,91 @@ class HermesCLI:
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     
+    def _handle_trades_command(self, cmd_original: str):
+        """Display positions, orders, and account balance."""
+        import json
+        import os
+        import urllib.request
+
+        def load_env(key: str, default: str = "") -> str:
+            path = os.path.expanduser("~/.alpaca/credentials")
+            if os.path.exists(path):
+                for line in open(path):
+                    if line.startswith(f"{key}="):
+                        return line.split("=", 1)[1].strip()
+            return os.environ.get(key, default)
+
+        ALPACA_API_KEY = load_env("ALPACA_API_KEY", "")
+        ALPACA_SECRET_KEY = load_env("ALPACA_SECRET_KEY", "")
+        ALPACA_BASE = "https://paper-api.alpaca.markets"
+
+        # Parse subcommand
+        parts = cmd_original.strip().split()
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        def alpaca_get(path: str) -> list | dict | None:
+            try:
+                req = urllib.request.Request(f"{ALPACA_BASE}{path}")
+                req.add_header("APCA-API-KEY-ID", ALPACA_API_KEY)
+                req.add_header("APCA-API-SECRET-KEY", ALPACA_SECRET_KEY)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read())
+            except Exception as e:
+                return None
+
+        results: list[tuple[str, str]] = []
+
+        # Account
+        acct = alpaca_get("/v2/account")
+        if acct and isinstance(acct, dict):
+            equity = float(acct.get("equity", 0))
+            cash = float(acct.get("cash", 0))
+            bp = float(acct.get("buying_power", 0))
+            results.append(("Account", f"Equity: ${equity:,.2f}  Cash: ${cash:,.2f}  BP: ${bp:,.2f}"))
+        else:
+            results.append(("Account", "⚠ Could not fetch account info"))
+
+        # Positions
+        if sub in ("", "positions", "all"):
+            positions = alpaca_get("/v2/positions")
+            if positions and isinstance(positions, list) and len(positions) > 0:
+                lines = []
+                for p in positions:
+                    sym = p.get("symbol", "?")
+                    qty = p.get("qty", 0)
+                    ap = float(p.get("avg_entry_price", 0))
+                    mv = float(p.get("market_value", 0))
+                    upl = float(p.get("unrealized_pl", 0))
+                    upl_pct = (upl / (ap * float(qty))) * 100 if ap and qty else 0
+                    lines.append(
+                        f"  {sym}: {qty} @ ${ap:.2f} | MV ${mv:,.2f} | UPL ${upl:,.2f} ({upl_pct:+.1f}%)"
+                    )
+                results.append(("Positions", "\n".join(lines) if lines else "flat"))
+            else:
+                results.append(("Positions", "flat"))
+
+        # Orders
+        if sub in ("", "orders", "all"):
+            orders = alpaca_get("/v2/orders?status=open&limit=10")
+            if orders and isinstance(orders, list) and len(orders) > 0:
+                lines = []
+                for o in orders:
+                    sym = o.get("symbol", "?")
+                    side = o.get("side", "?")
+                    qty = o.get("qty", 0)
+                    lim = o.get("limit_price") or o.get("stop_price") or "MKT"
+                    status = o.get("status", "?")
+                    lines.append(f"  {sym}: {side.upper()} {qty} @ {lim} [{status}]")
+                results.append(("Orders", "\n".join(lines) if lines else "none"))
+            else:
+                results.append(("Orders", "none"))
+
+        # Print
+        for title, content in results:
+            _cprint(f"\n  {'━' * 40}", "dim")
+            _cprint(f"  {title.upper()}", "bold")
+            _cprint(f"  {content}")
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_constants import display_hermes_home
@@ -7234,6 +7319,8 @@ class HermesCLI:
             self.show_toolsets()
         elif canonical == "config":
             self.show_config()
+        elif canonical == "trades":
+            self._handle_trades_command(cmd_original)
         elif canonical == "redraw":
             # Manual recovery for terminal buffer drift from multiplexer
             # tab switches, subshell ``clear``, SSH window restores, etc.

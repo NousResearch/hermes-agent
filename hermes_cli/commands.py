@@ -190,8 +190,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
+    CommandDef("trades", "Show trading status: positions, orders, account balance",
+                "Info", aliases=("portfolio",),
+                args_hint="[positions|orders|account|all]",
+                subcommands=("positions", "orders", "account", "all")),
     CommandDef("insights", "Show usage insights and analytics", "Info",
-               args_hint="[days]"),
+                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
@@ -242,6 +246,29 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
+# Cached quick_commands loader (reads config.yaml once, reused across all consumers)
+_QC_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def _load_quick_commands() -> dict[str, dict[str, Any]]:
+    """Load quick_commands from config.yaml (cached after first call)."""
+    global _QC_CACHE
+    if _QC_CACHE is not None:
+        return _QC_CACHE
+    try:
+        import yaml, pathlib
+
+        p = pathlib.Path.home() / ".hermes" / "config.yaml"
+        if p.exists():
+            data = yaml.safe_load(open(p)) or {}
+        else:
+            data = {}
+        _QC_CACHE = data.get("quick_commands") or {}
+    except Exception:
+        _QC_CACHE = {}
+    return _QC_CACHE
+
+
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
@@ -249,6 +276,20 @@ for _cmd in COMMAND_REGISTRY:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+
+# Inject user-defined quick_commands into COMMANDS
+for _qc_name, _qc in _load_quick_commands().items():
+    if not isinstance(_qc, dict):
+        continue
+    _qc_type = _qc.get("type", "")
+    _qc_cmd = _qc.get("command", "")
+    if _qc_type == "exec":
+        _desc = f"exec: {_qc_cmd[:60]}{'…' if len(_qc_cmd) > 60 else ''}"
+    elif _qc_type == "alias":
+        _desc = f"alias → {_qc.get('target', '')}"
+    else:
+        _desc = _qc_type or "quick command"
+    COMMANDS[f"/{_qc_name}"] = _desc
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -258,6 +299,13 @@ for _cmd in COMMAND_REGISTRY:
         _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+
+# Add "User commands" category for quick_commands
+_QC_CAT = COMMANDS_BY_CATEGORY.setdefault("User commands", {})
+for _qc_name in _load_quick_commands():
+    _qc_cat_key = f"/{_qc_name}"
+    if _qc_cat_key not in _QC_CAT:
+        _QC_CAT[_qc_cat_key] = COMMANDS.get(_qc_cat_key, "quick command")
 
 
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
@@ -334,6 +382,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "status",
         "steer",
         "stop",
+        "trades",
         "update",
     }
 )
@@ -491,6 +540,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
+    for qc_name, qc in _load_quick_commands().items():
+        if not isinstance(qc, dict):
+            continue
+        tg_name = _sanitize_telegram_name(qc_name)
+        if tg_name:
+            qc_type = qc.get("type", "")
+            desc = f"{qc_type}: {qc.get('command', qc.get('target', ''))}"[:200]
+            result.append((tg_name, desc))
     return result
 
 
@@ -1640,6 +1697,26 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
+
+        # User-defined quick_commands from config.yaml
+        for qc_name, qc in _load_quick_commands().items():
+            if not isinstance(qc, dict):
+                continue
+            if qc_name.startswith(word):
+                qc_type = qc.get("type", "")
+                qc_cmd = qc.get("command", "")
+                if qc_type == "exec":
+                    short_desc = f"exec: {qc_cmd[:50]}{'…' if len(qc_cmd) > 50 else ''}"
+                elif qc_type == "alias":
+                    short_desc = f"alias → {qc.get('target', '')}"
+                else:
+                    short_desc = qc_type or "quick command"
+                yield Completion(
+                    self._completion_text(qc_name, word),
+                    start_position=-len(word),
+                    display=f"/{qc_name}",
+                    display_meta=f"⚙ {short_desc}",
+                )
 
 
 # ---------------------------------------------------------------------------

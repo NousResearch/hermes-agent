@@ -670,6 +670,50 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_mentions=_build_allowed_mentions(),
                 **proxy_kwargs_for_bot(proxy_url),
             )
+
+            # Load Opus codec explicitly — required for Discord voice to decode
+            # incoming Opus packets. Without this, discord.opus.Decoder() returns
+            # None and VoiceReceiver._on_packet() silently drops all audio.
+            #
+            # Note: discord.opus.load_opus("opus") fails because macOS dlopen()
+            # can't find "opus" as a bare name — it needs the full path from
+            # ctypes.util.find_library(). We load it directly and set _lib.
+            try:
+                if not discord.opus.is_loaded():
+                    import ctypes.util
+                    ctypes_ptr = ctypes  # local alias for brevity
+                    lib_name = ctypes.util.find_library("opus")
+                    if lib_name:
+                        lib = ctypes.cdll.LoadLibrary(lib_name)
+                        # Mirror the argtypes/restype setup from exported_functions.
+                        # Without this, OpusError and other calls crash on macOS.
+                        lib.opus_get_version_string.argtypes = []
+                        lib.opus_get_version_string.restype = ctypes.c_char_p
+                        lib.opus_strerror.argtypes = [ctypes.c_int]
+                        lib.opus_strerror.restype = ctypes.c_char_p
+                        lib.opus_encoder_get_size.argtypes = [ctypes.c_int]
+                        lib.opus_encoder_get_size.restype = ctypes.c_int
+                        lib.opus_encoder_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+                        lib.opus_encoder_create.restype = ctypes.POINTER(discord.opus.EncoderStruct)
+                        lib.opus_encoder_ctl.argtypes = [ctypes.POINTER(discord.opus.EncoderStruct), ctypes.c_int]
+                        lib.opus_encoder_ctl.restype = ctypes.c_int32
+                        lib.opus_encoder_destroy.argtypes = [ctypes.POINTER(discord.opus.EncoderStruct)]
+                        lib.opus_decoder_get_size.argtypes = [ctypes.c_int]
+                        lib.opus_decoder_get_size.restype = ctypes.c_int
+                        lib.opus_decoder_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+                        lib.opus_decoder_create.restype = ctypes.POINTER(discord.opus.DecoderStruct)
+                        lib.opus_decoder_ctl.argtypes = [ctypes.POINTER(discord.opus.DecoderStruct), ctypes.c_int]
+                        lib.opus_decoder_ctl.restype = ctypes.c_int32
+                        lib.opus_decoder_destroy.argtypes = [ctypes.POINTER(discord.opus.DecoderStruct)]
+                        discord.opus._lib = lib
+                        logger.info("[%s] Opus codec loaded (libopus %s)", self.name, lib.opus_get_version_string().decode())
+                    else:
+                        logger.warning("[%s] Could not find opus library", self.name)
+                else:
+                    logger.info("[%s] Opus codec already loaded", self.name)
+            except Exception as e:
+                logger.warning("[%s] Opus load error: %s", self.name, e)
+
             adapter_self = self  # capture for closure
 
             # Register event handlers

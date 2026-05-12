@@ -80,11 +80,34 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user picked ElevenLabs as their TTS provider but never ran
+    the post-setup hook (e.g. enabled it by editing config.yaml directly).
+    Raises ``ImportError`` on lazy-install failure so existing callers'
+    error-handling paths keep working.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.elevenlabs", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import
+        # so older code paths still get a clean ImportError.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 

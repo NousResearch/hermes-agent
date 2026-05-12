@@ -420,12 +420,21 @@ class TestTzdataDependencyDeclared:
         root = Path(__file__).resolve().parents[2]
         source = (root / "pyproject.toml").read_text(encoding="utf-8")
         # The dependency line should be conditional on sys_platform == 'win32'
-        # and should NOT be in the core dependencies for Linux/macOS.
-        assert (
-            'tzdata>=2023.3; sys_platform == \'win32\'' in source
-            or "tzdata>=2023.3; sys_platform == 'win32'" in source
-            or 'tzdata>=2023.3; sys_platform == "win32"' in source
-        ), "tzdata must be a Windows-only dep in pyproject.toml dependencies"
+        # and should NOT be in the core dependencies for Linux/macOS. We do
+        # not care about the exact pinned version (which is bumped over time)
+        # — only that tzdata is declared with a win32 marker. This is an
+        # invariant check, not a snapshot test.
+        import re
+        # Match `"tzdata` … `; sys_platform == 'win32'"` allowing any version
+        # specifier in between (==X.Y.Z, >=X.Y.Z,<W, etc.) and either quote
+        # style on the marker.
+        pattern = re.compile(
+            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"]\s*"'
+        )
+        assert pattern.search(source), (
+            "tzdata must be a Windows-only dep in pyproject.toml dependencies "
+            "(declared with a `; sys_platform == 'win32'` marker)"
+        )
 
 
 # ---------------------------------------------------------------------------

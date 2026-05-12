@@ -296,19 +296,101 @@ def _build_apikey_providers_list() -> list:
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
+    ack_target = getattr(args, 'ack', None)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
-    
+
+    # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
+    # return without running the rest of the diagnostics — the user has
+    # already seen the advisory and just wants to silence it.
+    if ack_target:
+        from hermes_cli.security_advisories import (
+            ADVISORIES,
+            ack_advisory,
+        )
+        valid_ids = {a.id for a in ADVISORIES}
+        if ack_target not in valid_ids:
+            print(color(
+                f"Unknown advisory ID: {ack_target!r}. Known IDs: "
+                f"{', '.join(sorted(valid_ids)) or '(none)'}",
+                Colors.RED,
+            ))
+            sys.exit(2)
+        if ack_advisory(ack_target):
+            print(color(
+                f"  ✓ Acknowledged advisory {ack_target}. "
+                f"It will no longer trigger startup banners.",
+                Colors.GREEN,
+            ))
+        else:
+            print(color(
+                f"  ✗ Failed to persist ack for {ack_target}. "
+                f"Check ~/.hermes/config.yaml is writable.",
+                Colors.RED,
+            ))
+            sys.exit(1)
+        return
+
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    # =========================================================================
+    # Check: Security advisories  (RUNS FIRST — these are the most urgent)
+    # =========================================================================
+    print()
+    print(color("◆ Security Advisories", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.security_advisories import (
+            detect_compromised,
+            filter_unacked,
+            full_remediation_text,
+            get_acked_ids,
+        )
+        all_hits = detect_compromised()
+        fresh_hits = filter_unacked(all_hits)
+        if fresh_hits:
+            for hit in fresh_hits:
+                check_fail(
+                    f"{hit.advisory.title}",
+                    f"({hit.package}=={hit.installed_version})",
+                )
+                # Print the full remediation block, indented under the
+                # check_fail header so it reads as a single section.
+                for line in full_remediation_text(hit):
+                    if line:
+                        print(f"    {color(line, Colors.YELLOW)}")
+                    else:
+                        print()
+                # Funnel into the action list so the summary block surfaces it
+                # for users who scroll past the section.
+                manual_issues.append(
+                    f"Resolve security advisory {hit.advisory.id}: "
+                    f"uninstall {hit.package}=={hit.installed_version} and "
+                    f"rotate credentials, then run "
+                    f"`hermes doctor --ack {hit.advisory.id}`."
+                )
+            # Acked-but-still-installed: show as informational so the user
+            # knows the package is still on disk after the ack.
+            acked_ids = get_acked_ids()
+            for h in all_hits:
+                if h.advisory.id in acked_ids:
+                    check_warn(
+                        f"{h.package}=={h.installed_version} still installed "
+                        f"(advisory {h.advisory.id} acknowledged)",
+                    )
+        else:
+            check_ok("No active security advisories")
+    except Exception as e:
+        # Never let a bug in the advisory check block the rest of doctor.
+        check_warn(f"Security advisory check failed: {e}")
     
     # =========================================================================
     # Check: Python version

@@ -14222,6 +14222,7 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        _dedup_lock = threading.Lock()  # Guards last_progress_msg and repeat_count across concurrent tool workers
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -14344,15 +14345,18 @@ class GatewayRunner:
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
-                repeat_count[0] += 1
-                # Update the last line in progress_lines with a counter
-                # via a special "dedup" queue message.
-                progress_queue.put(("__dedup__", msg, repeat_count[0]))
-                return
-            last_progress_msg[0] = msg
-            repeat_count[0] = 0
-            
+            # _dedup_lock serializes concurrent tool workers (ThreadPoolExecutor)
+            # so the check-then-update sequence is atomic (issue #24604).
+            with _dedup_lock:
+                if msg == last_progress_msg[0]:
+                    repeat_count[0] += 1
+                    # Update the last line in progress_lines with a counter
+                    # via a special "dedup" queue message.
+                    progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                    return
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+
             progress_queue.put(msg)
         
         # Background task to send progress messages

@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context or override reasoning options for the current turn**. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -380,7 +380,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str, "reasoning_config": dict}`; either key may be omitted |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -510,13 +510,14 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. It can inject context into the current turn's user message, override reasoning options for that turn, or do both.
 
 **Callback signature:**
 
 ```python
 def my_callback(session_id: str, user_message: str, conversation_history: list,
-                is_first_turn: bool, model: str, platform: str, **kwargs):
+                is_first_turn: bool, model: str, reasoning_config: dict | None,
+                platform: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -526,15 +527,25 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
+| `reasoning_config` | `dict \| None` | The agent's configured reasoning options before any turn override |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
+**Fires:** In `agent/turn_context.py`, after context compression but before the main tool-calling loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
-**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+**Return value:** A callback may return a dict containing `"context"`, `"reasoning_config"`, or both. A plain non-empty string is equivalent to `{"context": "..."}`. Return `None` to make no change.
 
 ```python
 # Inject context
 return {"context": "Recalled memories:\n- User likes Python\n- Working on hermes-agent"}
+
+# Increase reasoning effort for this turn
+return {"reasoning_config": {"enabled": True, "effort": "high"}}
+
+# Combine both behaviors
+return {
+    "context": "Treat this as a high-risk migration.",
+    "reasoning_config": {"enabled": True, "effort": "high"},
+}
 
 # Plain string (equivalent)
 return "Recalled memories:\n- User likes Python"
@@ -547,9 +558,11 @@ return None
 
 All injected context is **ephemeral** — added at API call time only. The original user message in the conversation history is never mutated, and nothing is persisted to the session database.
 
-When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
+Reasoning overrides are also **ephemeral**. They apply to every model request in the current turn, including tool-loop follow-ups and iteration-limit summary or retry requests. The configured `reasoning_config` is never mutated and becomes active again after the turn.
 
-**Use cases:** Memory recall, RAG context injection, guardrails, per-turn analytics.
+When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name). When multiple plugins return reasoning overrides, the last valid dictionary in that order wins.
+
+**Use cases:** Memory recall, RAG context injection, guardrails, per-turn analytics, and selectively increasing or disabling model reasoning.
 
 **Example — memory recall:**
 
@@ -1339,7 +1352,7 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 }
 ```
 
-`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `reasoning_config`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
 
 **stdout — optional response:**
 
@@ -1350,6 +1363,9 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
+
+// Inject context and increase reasoning for the current turn:
+{"context": "This needs careful analysis", "reasoning_config": {"enabled": true, "effort": "high"}}
 
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}

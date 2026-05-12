@@ -45,6 +45,8 @@ class _FakeAgent:
         self.base_url = "https://openrouter.ai/api/v1"
         self.api_key = "sk-x"
         self.api_mode = "chat_completions"
+        self.reasoning_config = {"enabled": True, "effort": "low"}
+        self._turn_reasoning_config = None
         self.platform = "cli"
         self.quiet_mode = True
         self.max_iterations = 90
@@ -199,6 +201,53 @@ def test_task_id_passthrough():
     ctx = _build(agent, task_id="fixed-task")
     assert ctx.effective_task_id == "fixed-task"
     assert agent._current_task_id == "fixed-task"
+
+
+def test_pre_llm_call_sets_turn_reasoning_and_context():
+    agent = _FakeAgent()
+    hook_result = {
+        "context": "plugin context",
+        "reasoning_config": {"enabled": True, "effort": "high"},
+    }
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[hook_result]) as invoke:
+        ctx = _build(agent)
+
+    assert ctx.plugin_user_context == "plugin context"
+    assert agent._turn_reasoning_config == {"enabled": True, "effort": "high"}
+    assert invoke.call_args.kwargs["reasoning_config"] == {
+        "enabled": True,
+        "effort": "low",
+    }
+    assert invoke.call_args.kwargs["reasoning_config"] is not agent.reasoning_config
+    assert hook_result["reasoning_config"] == {
+        "enabled": True,
+        "effort": "high",
+    }
+
+
+def test_pre_llm_call_resets_stale_turn_reasoning():
+    agent = _FakeAgent()
+    agent._turn_reasoning_config = {"enabled": True, "effort": "high"}
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        _build(agent)
+
+    assert agent._turn_reasoning_config is None
+
+
+def test_last_pre_llm_call_reasoning_override_wins():
+    agent = _FakeAgent()
+    hook_results = [
+        {"reasoning_config": {"enabled": True, "effort": "medium"}},
+        {"reasoning_config": {"enabled": True, "effort": "high"}},
+    ]
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+        ctx = _build(agent)
+
+    assert ctx.plugin_user_context == ""
+    assert agent._turn_reasoning_config == {"enabled": True, "effort": "high"}
 
 
 def test_persist_user_message_becomes_original():
@@ -416,4 +465,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

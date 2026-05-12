@@ -84,6 +84,24 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_pre_llm_call_reasoning_config_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_llm_call",
+            '{"reasoning_config": {"enabled": true, "effort": "high"}}',
+        )
+        assert r == {"reasoning_config": {"enabled": True, "effort": "high"}}
+
+    def test_pre_llm_call_context_and_reasoning_config_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_llm_call",
+            '{"context": "remember this", '
+            '"reasoning_config": {"enabled": true, "effort": "high"}}',
+        )
+        assert r == {
+            "context": "remember this",
+            "reasoning_config": {"enabled": True, "effort": "high"},
+        }
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',
@@ -415,6 +433,35 @@ class TestCallbackSubprocess:
             model="gpt-4", platform="cli",
         )
         assert result == {"context": "env-note"}
+
+    def test_pre_llm_call_reasoning_override_flows_through_subprocess(
+        self, tmp_path
+    ):
+        script = _write_script(
+            tmp_path,
+            "reasoning.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"reasoning_config": '
+            '{"enabled": true, "effort": "high"}}\\n\'\n',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_llm_call", command=str(script)
+        )
+        callback = shell_hooks._make_callback(spec)
+
+        result = callback(
+            session_id="s1",
+            user_message="use high reasoning",
+            conversation_history=[],
+            is_first_turn=True,
+            model="gpt-5.6",
+            reasoning_config={"enabled": True, "effort": "low"},
+            platform="cli",
+        )
+
+        assert result == {
+            "reasoning_config": {"enabled": True, "effort": "high"}
+        }
 
     def test_shlex_handles_paths_with_spaces(self, tmp_path):
         dir_with_space = tmp_path / "path with space"

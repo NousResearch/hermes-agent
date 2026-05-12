@@ -4,7 +4,7 @@
 
 import { Buffer } from 'buffer'
 
-import { env, supportsOsc52Clipboard } from '../../utils/env.js'
+import { env as envModule, supportsOsc52Clipboard } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
@@ -20,7 +20,7 @@ export const ST = ESC + '\\'
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
-  const terminator = env.terminal === 'kitty' ? ST : BEL
+  const terminator = envModule.terminal === 'kitty' ? ST : BEL
 
   return `${OSC_PREFIX}${parts.join(SEP)}${terminator}`
 }
@@ -143,7 +143,7 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
  */
 export function shouldUseNativeClipboard(
   env: NodeJS.ProcessEnv = process.env,
-  terminal: string | null = null
+  terminal: string | null = envModule.terminal
 ): boolean {
   // Over SSH the native tools would write to the wrong machine's clipboard.
   if (env.SSH_CONNECTION) {
@@ -276,7 +276,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // via HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes
   // a complete no-op). Fire-and-forget, but `nativeAttempted` tells us
   // whether ANY native path will be tried.
-  const nativeAttempted = shouldUseNativeClipboard(process.env, env.terminal) && copyNative(text)
+  const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && copyNative(text)
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
 

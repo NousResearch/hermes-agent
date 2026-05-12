@@ -154,7 +154,7 @@ describe('shouldUseNativeClipboard', () => {
     expect(shouldUseNativeClipboard({ HERMES_TUI_COPY_OSC52: 'no' } as NodeJS.ProcessEnv, 'vscode')).toBe(true)
   })
 
-  it('returns false when HERMES_TUI_FORCE_OSC52=1 forces OSC 52 on an allowlisted terminal', () => {
+  it('returns true under TMUX even with HERMES_TUI_FORCE_OSC52=1 on an allowlisted terminal (tmux load-buffer path)', () => {
     // FORCE_OSC52=1 is the user explicitly opting INTO OSC 52 (e.g. they
     // have tmux set up for passthrough). On an allowlisted terminal the
     // race-avoidance still applies.

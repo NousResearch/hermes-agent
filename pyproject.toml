@@ -20,7 +20,6 @@ dependencies = [
   # worm hitting mistralai 2.4.6 on PyPI; if that release had been
   # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
   # install in the hours before the quarantine would have pulled it.
-  # See website/docs/community/security-advisories/shai-hulud-mistralai-2026-05.md.
   #
   # When updating: bump the version below AND regenerate uv.lock with
   # `uv lock` so the transitive resolution stays consistent. Don't

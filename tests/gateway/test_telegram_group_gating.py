@@ -9,12 +9,14 @@ def _make_adapter(
     require_mention=None,
     free_response_chats=None,
     mention_patterns=None,
+    exclusive_bot_mentions=None,
     ignored_threads=None,
     allowed_topics=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
     guest_mode=None,
+    bot_username="hermes_bot",
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -25,6 +27,8 @@ def _make_adapter(
         extra["free_response_chats"] = free_response_chats
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    if exclusive_bot_mentions is not None:
+        extra["exclusive_bot_mentions"] = exclusive_bot_mentions
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
     if allowed_topics is not None:
@@ -51,7 +55,7 @@ def _make_adapter(
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra=extra)
-    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    adapter._bot = SimpleNamespace(id=999, username=bot_username)
     adapter._message_handler = AsyncMock()
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
@@ -107,6 +111,10 @@ def _dm_message(text="hello", *, from_user_id=111):
 def _mention_entity(text, mention="@hermes_bot"):
     offset = text.index(mention)
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
+
+
+def _mention_entities(text, mentions):
+    return [_mention_entity(text, mention) for mention in mentions]
 
 
 def _bot_command_entity(text, command):
@@ -165,6 +173,51 @@ def test_group_messages_can_require_direct_trigger_via_config():
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
+
+
+def test_explicit_multi_bot_mentions_route_only_to_named_bots():
+    text = "@research_bot @ops_bot hi"
+    entities = _mention_entities(text, ["@research_bot", "@ops_bot"])
+
+    default_bot = _make_adapter(require_mention=True, bot_username="default_bot")
+    research_bot = _make_adapter(require_mention=True, bot_username="research_bot")
+    ops_bot = _make_adapter(require_mention=True, bot_username="ops_bot")
+
+    assert default_bot._should_process_message(_group_message(text, reply_to_bot=True, entities=entities)) is False
+    assert research_bot._should_process_message(_group_message(text, entities=entities)) is True
+    assert ops_bot._should_process_message(_group_message(text, entities=entities)) is True
+
+
+def test_entityless_multi_bot_mentions_still_route_exclusively():
+    text = "@research_bot @ops_bot hi"
+
+    default_bot = _make_adapter(require_mention=True, bot_username="default_bot")
+    research_bot = _make_adapter(require_mention=True, bot_username="research_bot")
+    ops_bot = _make_adapter(require_mention=True, bot_username="ops_bot")
+
+    assert default_bot._should_process_message(_group_message(text, reply_to_bot=True)) is False
+    assert research_bot._should_process_message(_group_message(text)) is True
+    assert ops_bot._should_process_message(_group_message(text)) is True
+
+
+def test_raw_bot_mention_fallback_does_not_match_email_or_substring():
+    adapter = _make_adapter(require_mention=True, bot_username="hermes_bot")
+
+    assert adapter._should_process_message(_group_message("email ops@hermes_bot.example")) is False
+    assert adapter._should_process_message(_group_message("prefix@hermes_bot hi")) is False
+    assert adapter._should_process_message(_group_message("hi @hermes_bot")) is True
+
+
+def test_exclusive_bot_mentions_can_be_disabled_for_legacy_groups():
+    adapter = _make_adapter(
+        require_mention=True,
+        exclusive_bot_mentions=False,
+        bot_username="default_bot",
+    )
+
+    assert adapter._should_process_message(
+        _group_message("@research_bot hi", reply_to_bot=True)
+    ) is True
 
 
 def test_free_response_chats_bypass_mention_requirement():
@@ -274,6 +327,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "telegram:\n"
         "  require_mention: true\n"
         "  guest_mode: true\n"
+        "  exclusive_bot_mentions: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
@@ -288,6 +342,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
+    monkeypatch.delenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", raising=False)
     monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
     monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
@@ -298,6 +353,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert config is not None
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
     assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
+    assert __import__("os").environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
     assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
@@ -307,6 +363,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("guest_mode") is True
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):

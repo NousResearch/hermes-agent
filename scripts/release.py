@@ -154,6 +154,8 @@ AUTHOR_MAP = {
     "laoli_no1@163.com": "laoli-no1",
     "39730900+NorethSea@users.noreply.github.com": "NorethSea",
     "963979204@qq.com": "NorethSea",
+    "2283389+JamesX88@users.noreply.github.com": "JamesX88",
+    "JamesX88@users.noreply.github.com": "JamesX88",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",

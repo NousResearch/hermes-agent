@@ -2321,3 +2321,91 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
     assert resolved["provider"] == "minimax-oauth"
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_resolve_runtime_provider_kimi_anthropic_strips_v1(monkeypatch):
+    class _Entry:
+        access_token = "sk-kimi-test"
+        source = "env:KIMI_API_KEY"
+        base_url = "https://api.kimi.com/coding/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "kimi-coding", "default": "kimi-for-coding"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding", target_model="kimi-for-coding")
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"
+    assert resolved["api_key"] == "sk-kimi-test"
+
+
+def test_resolve_runtime_provider_kimi_explicit_strips_v1(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "kimi-coding", "default": "kimi-for-coding"})
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_api_key="sk-kimi-test",
+        explicit_base_url="https://api.kimi.com/coding/v1",
+        target_model="kimi-for-coding",
+    )
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"
+    assert resolved["api_key"] == "sk-kimi-test"
+
+
+def test_resolve_runtime_provider_kimi_api_key_fallback_strips_v1(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "kimi-coding", "default": "kimi-for-coding"})
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {"base_url": "https://api.kimi.com/coding/v1", "api_key": "sk-kimi-test", "source": "env:KIMI_API_KEY"},
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding", target_model="kimi-for-coding")
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"
+    assert resolved["api_key"] == "sk-kimi-test"
+
+
+def test_kimi_anthropic_base_url_normalizer_preserves_non_coding_and_chat_modes():
+    assert (
+        rp._normalize_anthropic_sdk_base_url("kimi-coding", "https://api.kimi.com/coding/v1", "anthropic_messages")
+        == "https://api.kimi.com/coding"
+    )
+    assert (
+        rp._normalize_anthropic_sdk_base_url("kimi-coding", "https://api.kimi.com/v1", "chat_completions")
+        == "https://api.kimi.com/v1"
+    )
+    assert (
+        rp._normalize_anthropic_sdk_base_url("kimi-coding", "https://api.kimi.com/coder/v1", "anthropic_messages")
+        == "https://api.kimi.com/coder/v1"
+    )
+    assert (
+        rp._normalize_anthropic_sdk_base_url("kimi-coding", "https://api.moonshot.ai/v1", "anthropic_messages")
+        == "https://api.moonshot.ai/v1"
+    )

@@ -1248,6 +1248,10 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session Telegram context-HUD enable/disable overrides from /hud.
+        # ``True`` forces the HUD on, ``False`` forces it off for that session
+        # regardless of the platform config default.  Missing key = follow config.
+        self._session_hud_overrides: Dict[str, bool] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -6400,6 +6404,12 @@ class GatewayRunner:
 
         if canonical == "compress":
             return await self._handle_compress_command(event)
+
+        if canonical == "context":
+            return await self._handle_context_command(event)
+
+        if canonical == "hud":
+            return await self._handle_hud_command(event)
 
         if canonical == "usage":
             return await self._handle_usage_command(event)
@@ -11613,6 +11623,217 @@ class GatewayRunner:
             return "\n".join(account_lines)
         return t("gateway.usage.no_data")
 
+    # ── Telegram context HUD ──────────────────────────────────────────────
+
+    _HUD_DEFAULTS: Dict[str, Any] = {
+        "enabled": True,
+        "hide_below_percent": 5,
+        "bar_width": 20,
+        "warn_percent": 60,
+        "danger_percent": 75,
+        "critical_percent": 90,
+        "show_warning_label": False,
+    }
+
+    def _telegram_hud_config(self, user_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return the resolved context-HUD config block.
+
+        Merges defaults with ``platforms.telegram.extra.context_hud`` from the
+        user config.  Unknown keys are ignored.  Missing values fall back to
+        the safe defaults defined on the class.
+        """
+        cfg = dict(self._HUD_DEFAULTS)
+        try:
+            data = user_config if user_config is not None else self._read_user_config()
+        except Exception:
+            data = None
+        if not isinstance(data, dict):
+            return cfg
+        platforms = data.get("platforms") if isinstance(data.get("platforms"), dict) else {}
+        telegram_cfg = platforms.get("telegram") if isinstance(platforms.get("telegram"), dict) else {}
+        extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+        hud_cfg = extra.get("context_hud") if isinstance(extra.get("context_hud"), dict) else {}
+        for key in cfg:
+            if key in hud_cfg:
+                cfg[key] = hud_cfg[key]
+        return cfg
+
+    def _is_telegram_hud_enabled(
+        self,
+        source: Any,
+        session_key: Optional[str] = None,
+        user_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Per-session override beats config default; non-Telegram = off."""
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return False
+        if session_key:
+            override = self._session_hud_overrides.get(session_key)
+            if override is not None:
+                return bool(override)
+        return bool(self._telegram_hud_config(user_config).get("enabled", True))
+
+    def _resolve_session_token_state(
+        self,
+        source: Any,
+        session_key: str,
+    ) -> Dict[str, Any]:
+        """Best-effort snapshot of token state for the current session.
+
+        Returns ``{"used": int, "limit": int, "model": str | None,
+        "provider": str | None, "compressions": int, "source": str}``.  Uses
+        a live agent when available; falls back to a transcript estimate
+        otherwise.  ``limit == 0`` means the caller should treat the limit
+        as unknown.
+        """
+        agent = self._running_agents.get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL:
+            agent = None
+        if not agent:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock is not None and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                if cached:
+                    agent = cached[0] if isinstance(cached, tuple) else cached
+        if agent is not None and hasattr(agent, "context_compressor"):
+            ctx = agent.context_compressor
+            return {
+                "used": int(getattr(ctx, "last_prompt_tokens", 0) or 0),
+                "limit": int(getattr(ctx, "context_length", 0) or 0),
+                "model": getattr(agent, "model", None),
+                "provider": getattr(agent, "provider", None),
+                "compressions": int(getattr(ctx, "compression_count", 0) or 0),
+                "source": "agent",
+            }
+
+        # No agent yet — estimate from transcript so the HUD still has something
+        # to render after a /reset or before the first turn completes.
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            history = self.session_store.load_transcript(session_entry.session_id)
+        except Exception:
+            history = []
+        approx_tokens = 0
+        if history:
+            try:
+                from agent.model_metadata import estimate_messages_tokens_rough
+                msgs = [
+                    {"role": m.get("role"), "content": m.get("content")}
+                    for m in history
+                    if m.get("role") in ("user", "assistant") and m.get("content")
+                ]
+                approx_tokens = int(estimate_messages_tokens_rough(msgs) or 0)
+            except Exception:
+                approx_tokens = 0
+        return {
+            "used": approx_tokens,
+            "limit": 0,
+            "model": None,
+            "provider": None,
+            "compressions": 0,
+            "source": "estimate",
+        }
+
+    def _compute_telegram_hud_prefix(
+        self,
+        source: Any,
+        session_key: str,
+        user_config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Return the HUD prefix string for this Telegram turn, or ``None``.
+
+        Returns ``None`` for non-Telegram platforms, when the HUD is disabled
+        for this session, when no context-length is known, or when the
+        configured ``hide_below_percent`` masks low usage.
+        """
+        if not self._is_telegram_hud_enabled(source, session_key, user_config):
+            return None
+        state = self._resolve_session_token_state(source, session_key)
+        if state["limit"] <= 0:
+            return None
+        cfg = self._telegram_hud_config(user_config)
+        try:
+            from gateway.context_hud import format_hud
+            return format_hud(
+                used_tokens=state["used"],
+                context_length=state["limit"],
+                bar_width=int(cfg.get("bar_width", 20) or 20),
+                hide_below_percent=float(cfg.get("hide_below_percent", 5) or 0),
+                warn_percent=float(cfg.get("warn_percent", 60) or 60),
+                danger_percent=float(cfg.get("danger_percent", 75) or 75),
+                critical_percent=float(cfg.get("critical_percent", 90) or 90),
+                show_warning_label=bool(cfg.get("show_warning_label", False)),
+            )
+        except Exception as exc:
+            logger.debug("HUD format failed: %s", exc)
+            return None
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context — show session context-window state and reset hint."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        session_entry = self.session_store.get_or_create_session(source)
+        state = self._resolve_session_token_state(source, session_key)
+        hud_enabled = self._is_telegram_hud_enabled(source, session_key)
+
+        lines = ["**Context**"]
+        lines.append(f"Session: `{session_entry.session_id}`")
+        if state["model"]:
+            if state["provider"]:
+                lines.append(f"Model: `{state['model']}` ({state['provider']})")
+            else:
+                lines.append(f"Model: `{state['model']}`")
+        if state["limit"] > 0:
+            pct = min(100, int(round(state["used"] / state["limit"] * 100))) if state["limit"] else 0
+            label = "est" if state["source"] == "estimate" else "tokens"
+            lines.append(
+                f"{label.title()}: {state['used']:,} / {state['limit']:,} ({pct}%)"
+            )
+        else:
+            lines.append(f"Tokens (estimated): {state['used']:,} (limit unknown)")
+        if state["compressions"]:
+            lines.append(f"Compressions: {state['compressions']}")
+        if getattr(source, "platform", None) == Platform.TELEGRAM:
+            lines.append(f"HUD: {'on' if hud_enabled else 'off'}")
+        lines.append("Use /reset to start a fresh session.")
+        return "\n".join(lines)
+
+    async def _handle_hud_command(self, event: MessageEvent) -> str:
+        """Handle /hud [on|off|status] — Telegram-only HUD toggle."""
+        source = event.source
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return "The /hud command is Telegram-only."
+        session_key = self._session_key_for_source(source)
+        arg = (event.get_command_args() or "").strip().lower()
+
+        if arg in ("", "status"):
+            enabled = self._is_telegram_hud_enabled(source, session_key)
+            override = self._session_hud_overrides.get(session_key)
+            cfg = self._telegram_hud_config()
+            default_enabled = bool(cfg.get("enabled", True))
+            lines = [
+                f"HUD: {'on' if enabled else 'off'}",
+                f"Default (config): {'on' if default_enabled else 'off'}",
+            ]
+            if override is not None:
+                lines.append(f"Session override: {'on' if override else 'off'}")
+            lines.append("Toggle with /hud on or /hud off.")
+            return "\n".join(lines)
+
+        if arg in ("on", "enable", "enabled", "true", "1"):
+            self._session_hud_overrides[session_key] = True
+            return "HUD on for this session."
+        if arg in ("off", "disable", "disabled", "false", "0"):
+            self._session_hud_overrides[session_key] = False
+            return "HUD off for this session."
+        if arg in ("reset", "clear", "default"):
+            self._session_hud_overrides.pop(session_key, None)
+            enabled = self._is_telegram_hud_enabled(source, session_key)
+            return f"HUD override cleared. Now {'on' if enabled else 'off'} (config default)."
+        return "Usage: /hud [on|off|status]"
+
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()
@@ -14748,6 +14969,11 @@ class GatewayRunner:
                             if source.platform == Platform.TELEGRAM
                             else 0.0
                         )
+                        _hud_prefix = self._compute_telegram_hud_prefix(
+                            source=source,
+                            session_key=session_key,
+                            user_config=user_config,
+                        )
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
@@ -14756,6 +14982,7 @@ class GatewayRunner:
                             fresh_final_after_seconds=_fresh_final_secs,
                             transport=_scfg.transport or "auto",
                             chat_type=getattr(source, "chat_type", "") or "",
+                            hud_prefix=_hud_prefix,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

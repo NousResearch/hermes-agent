@@ -77,17 +77,22 @@ For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-ho
 
 Hermes automatically injects Anthropic-style `cache_control` markers for known-compatible model/provider combinations (for example Claude on Anthropic/OpenRouter and selected compatible gateways). Custom gateways vary: some accept and forward these markers, some ignore them, and strict OpenAI-compatible gateways may reject unknown fields.
 
-Use `prompt_caching.mode` to override the automatic policy:
+Use `providers.<provider_id>.prompt_caching.mode` to override the automatic
+policy for one provider route:
 
 ```yaml
 prompt_caching:
-  mode: auto     # auto | force | off
   cache_ttl: 5m  # 5m | 1h
+
+providers:
+  custom:
+    prompt_caching:
+      mode: force # auto | force | off
 ```
 
 - `auto` (default): enable markers only for known-compatible routes.
-- `force`: always inject markers. Use this only when your provider/gateway supports Anthropic-style `cache_control`. Hermes still chooses the marker layout from the active API mode (`anthropic_messages` uses native layout; OpenAI-compatible `chat_completions` uses envelope layout).
-- `off`: never inject markers, even for routes Hermes would normally auto-detect.
+- `force`: inject markers for that provider route only. Use this only when your provider/gateway supports Anthropic-style `cache_control`; strict OpenAI-compatible gateways may reject the extra fields. Hermes still chooses the marker layout from the active API mode (`anthropic_messages` uses native layout; OpenAI-compatible `chat_completions` uses envelope layout).
+- `off`: disable markers for that provider route, even when Hermes would normally auto-detect support.
 
 `cache_ttl` controls Anthropic cache TTL when supported. Unknown values fall back to `5m`.
 

@@ -28,6 +28,7 @@ def _make_agent(
     agent._base_url_lower = (base_url or "").lower()
     agent.client = MagicMock()
     agent.quiet_mode = True
+    agent._prompt_caching_provider_modes = {}
     return agent
 
 
@@ -179,7 +180,7 @@ class TestOpenAIWireFormatOnCustomProvider:
 
 
 class TestPromptCachingModeOverride:
-    """Users may explicitly override prompt cache marker injection."""
+    """Users may explicitly override prompt cache marker injection per provider."""
 
     def test_force_enables_custom_openai_wire_with_envelope_layout(self):
         agent = _make_agent(
@@ -188,7 +189,7 @@ class TestPromptCachingModeOverride:
             api_mode="chat_completions",
             model="qwen3.6-plus",
         )
-        agent._prompt_caching_mode = "force"
+        agent._prompt_caching_provider_modes = {"custom": "force"}
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_force_enables_custom_anthropic_wire_with_native_layout(self):
@@ -198,7 +199,7 @@ class TestPromptCachingModeOverride:
             api_mode="anthropic_messages",
             model="qwen3.6-plus",
         )
-        agent._prompt_caching_mode = "force"
+        agent._prompt_caching_provider_modes = {"custom": "force"}
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
     def test_off_disables_auto_detected_cache_support(self):
@@ -208,7 +209,7 @@ class TestPromptCachingModeOverride:
             api_mode="chat_completions",
             model="anthropic/claude-sonnet-4.6",
         )
-        agent._prompt_caching_mode = "off"
+        agent._prompt_caching_provider_modes = {"openrouter": "off"}
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
     def test_invalid_mode_falls_back_to_auto(self):
@@ -218,8 +219,26 @@ class TestPromptCachingModeOverride:
             api_mode="chat_completions",
             model="anthropic/claude-sonnet-4.6",
         )
-        agent._prompt_caching_mode = "definitely-not-valid"
+        agent._prompt_caching_provider_modes = {"openrouter": "definitely-not-valid"}
         assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_initial_provider_mode_is_not_used_for_target_provider(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://proxy.example.com/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        agent._prompt_caching_provider_modes = {
+            "custom": "off",
+            "opencode-go": "force",
+        }
+        assert agent._anthropic_prompt_cache_policy(
+            provider="opencode-go",
+            base_url="https://api.opencode.ai/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        ) == (True, False)
 
 
 class TestQwenAlibabaFamily:

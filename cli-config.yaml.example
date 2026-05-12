@@ -85,6 +85,9 @@ model:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
 #     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#   custom:
+#     prompt_caching:
+#       mode: force                  # auto | force | off; applies to this provider route only
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:

@@ -831,6 +831,101 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    def test_provider_prompt_caching_force_enables_custom_openai_wire(self):
+        """providers.<id>.prompt_caching.mode=force enables markers for that provider."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "providers": {
+                        "custom": {"prompt_caching": {"mode": "force"}},
+                    },
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                provider="custom",
+                model="qwen3.6-plus",
+                base_url="https://proxy.example/v1",
+                api_mode="chat_completions",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert (a._use_prompt_caching, a._use_native_cache_layout) == (True, False)
+
+    def test_provider_prompt_caching_off_disables_auto_openrouter_claude(self):
+        """providers.<id>.prompt_caching.mode=off disables an auto-enabled route."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "providers": {
+                        "openrouter": {"prompt_caching": {"mode": "off"}},
+                    },
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                provider="openrouter",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert (a._use_prompt_caching, a._use_native_cache_layout) == (
+                False,
+                False,
+            )
+
+    def test_switch_model_uses_target_provider_prompt_caching_mode(self):
+        """Switching providers re-evaluates cache mode from the target provider config."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "providers": {
+                        "custom": {"prompt_caching": {"mode": "off"}},
+                        "opencode-go": {"prompt_caching": {"mode": "force"}},
+                    },
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                provider="custom",
+                model="qwen3.6-plus",
+                base_url="https://proxy.example/v1",
+                api_mode="chat_completions",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._use_prompt_caching is False
+
+            a.switch_model(
+                "qwen3.6-plus",
+                "opencode-go",
+                api_key="test-key-1234567890",
+                base_url="https://api.opencode.ai/v1",
+                api_mode="chat_completions",
+            )
+
+            assert (a._use_prompt_caching, a._use_native_cache_layout) == (True, False)
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")

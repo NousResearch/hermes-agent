@@ -335,11 +335,21 @@ Prompt caching is automatically enabled when:
 # config.yaml — TTL is configurable (must be "5m" or "1h")
 prompt_caching:
   cache_ttl: "5m"
+
+# Optional per-provider marker override.
+providers:
+  custom:
+    prompt_caching:
+      mode: force # auto | force | off
 ```
+
+`force` applies only to that provider route. Use it only for gateways that
+accept Anthropic-style `cache_control`; strict OpenAI-compatible gateways may
+reject the extra fields.
 
 The CLI shows caching status at startup:
 ```
-💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)
+💾 Prompt caching: ENABLED (custom route, 5m TTL)
 ```
 
 

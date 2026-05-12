@@ -271,6 +271,32 @@ class TestTryActivateFallback:
             agent._try_activate_fallback()
             assert agent._use_prompt_caching is False
 
+    def test_fallback_uses_target_provider_prompt_caching_mode(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "qwen3.6-plus",
+                "base_url": "https://proxy.example/v1",
+            },
+        )
+        agent._prompt_caching_provider_modes = {
+            "openrouter": "off",
+            "custom": "force",
+        }
+        mock_client = _mock_resolve(
+            api_key="sk-custom-key",
+            base_url="https://proxy.example/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "qwen3.6-plus"),
+        ):
+            agent._try_activate_fallback()
+            assert (agent._use_prompt_caching, agent._use_native_cache_layout) == (
+                True,
+                False,
+            )
+
     def test_zai_alt_env_var(self):
         """Z.AI should also check Z_AI_API_KEY as fallback env var."""
         agent = _make_agent(

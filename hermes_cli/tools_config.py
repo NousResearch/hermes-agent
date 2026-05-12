@@ -958,6 +958,8 @@ def _checklist_diff(new_enabled: Set[str], prev: Set[str], platform: str) -> tup
 
 def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
     """Fresh install: one checklist per platform, no menu, keys prompted for every enabled tool."""
+    # Provider choices are shared by every platform in this profile.
+    already_configured: Set[str] = set()
     for pkey in enabled_platforms:
         pinfo = PLATFORMS[pkey]
         current_enabled = _current_platform_tools(config, pkey)
@@ -969,9 +971,12 @@ def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
             print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
         # Walk through ALL selected tools with provider options or key requirements, so browser (Local vs
         # Browserbase), TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when a free provider exists.
-        _configure_list(
-            [ts for ts in sorted(new_enabled) if _is_configurable(ts) and ts not in auto_configured],
-            config, selected=False)
+        to_configure = [
+            ts for ts in sorted(new_enabled)
+            if _is_configurable(ts) and ts not in auto_configured and ts not in already_configured
+        ]
+        _configure_list(to_configure, config, selected=False)
+        already_configured.update(to_configure)
         _save_platform_tools(config, pkey, new_enabled)
         save_config(config)
         print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))

@@ -27,6 +27,8 @@ def test_prepare_android_linux_assets_script_exists_and_is_wired_into_gradle():
     assert "useLegacyPackaging = true" in gradle
     assert "NEEDED_RENAMES" in native_script
     assert "libreadline.so.8" in native_script
+    assert "BIONIC_SPAWN_LAUNCHER_RENAMES" in native_script
+    assert "patch_android_spawn_needed_to_libc" in native_script
 
 
 def test_prepare_android_linux_assets_script_imports_from_android_workdir():
@@ -144,8 +146,11 @@ def test_android_gguf_launchers_use_native_library_directory():
     assert "scripts/prepare_android_native_libs.py" in gradle
     assert "libhermes_android_bash.so" in native_script
     assert "libhermes_android_llama_server.so" in native_script
+    assert "libhermes_android_llama_server_bionic_spawn.so" in native_script
     assert 'nativeExecutablePath(context, "libhermes_android_bash.so")' in bridge
     assert 'put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())' in bridge
     assert 'optString("native_llama_server_path").ifBlank { "llama-server" }' in llama
+    assert "selectLlamaServerPath(context, linuxState)" in llama
+    assert "ANDROID_16K_PAGE_SIZE_BYTES" in llama
     assert ".readTimeout(750, TimeUnit.MILLISECONDS)" in llama
     assert "repeat(360)" in llama

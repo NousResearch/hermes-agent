@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.backend
 
 import android.content.Context
+import android.system.Os
+import android.system.OsConstants
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -57,7 +59,7 @@ object LlamaCppServerController {
         val bashPath = linuxState.optString("bash_path")
         val prefixPath = linuxState.optString("prefix_path")
         val homePath = linuxState.optString("home_path")
-        val llamaServerPath = linuxState.optString("native_llama_server_path").ifBlank { "llama-server" }
+        val llamaServerPath = selectLlamaServerPath(context, linuxState)
         if (bashPath.isBlank() || prefixPath.isBlank()) {
             return LocalBackendStatus(
                 backendKind = BackendKind.LLAMA_CPP,
@@ -110,7 +112,7 @@ object LlamaCppServerController {
                 baseUrl = "http://127.0.0.1:$port/v1",
                 modelName = actualModelName(port, requestedModelName),
                 sourceModelPath = modelPath,
-                statusMessage = "llama.cpp is serving locally from the embedded Linux suite",
+                statusMessage = "llama.cpp is serving locally from the embedded Linux suite${llamaServerCompatibilitySuffix(llamaServerPath)}",
             )
         } catch (error: Throwable) {
             stop()
@@ -142,6 +144,26 @@ object LlamaCppServerController {
 
     private fun shellQuote(value: String): String {
         return "'" + value.replace("'", "'\\''") + "'"
+    }
+
+    private fun selectLlamaServerPath(context: Context, linuxState: JSONObject): String {
+        val defaultPath = linuxState.optString("native_llama_server_path").ifBlank { "llama-server" }
+        val pageSize = devicePageSizeBytes()
+        if (pageSize < ANDROID_16K_PAGE_SIZE_BYTES) {
+            return defaultPath
+        }
+        val nativeDir = linuxState.optString("native_library_dir")
+            .ifBlank { context.applicationInfo.nativeLibraryDir.orEmpty() }
+        val bionicSpawnPath = File(nativeDir, BIONIC_SPAWN_LLAMA_SERVER_LIBRARY_NAME)
+        return if (bionicSpawnPath.isFile) bionicSpawnPath.absolutePath else defaultPath
+    }
+
+    private fun llamaServerCompatibilitySuffix(llamaServerPath: String): String {
+        return if (llamaServerPath.endsWith(BIONIC_SPAWN_LLAMA_SERVER_LIBRARY_NAME)) {
+            " using the Android 16 KB page-size libc posix_spawn compatibility launcher"
+        } else {
+            ""
+        }
     }
 
     private fun drainLogs(startedProcess: Process) {
@@ -189,4 +211,11 @@ object LlamaCppServerController {
             }
         }.getOrDefault(fallback)
     }
+
+    private fun devicePageSizeBytes(): Long {
+        return runCatching { Os.sysconf(OsConstants._SC_PAGESIZE) }.getOrDefault(4096L)
+    }
+
+    private const val ANDROID_16K_PAGE_SIZE_BYTES = 16_384L
+    private const val BIONIC_SPAWN_LLAMA_SERVER_LIBRARY_NAME = "libhermes_android_llama_server_bionic_spawn.so"
 }

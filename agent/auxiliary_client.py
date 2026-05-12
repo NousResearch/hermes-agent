@@ -1557,7 +1557,11 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     return _fallback_client, model
 
 
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(
+    model: str,
+    explicit_api_key: str = None,
+    explicit_base_url: str = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
     There is no auto-selection of the Codex model: the ChatGPT-account
@@ -1565,6 +1569,11 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     allow-list, so any hardcoded default we pick goes stale.  The caller
     is responsible for passing the model (e.g. from the user's own
     ``model.model`` or ``auxiliary.<task>.model`` config).
+
+    When the auxiliary router inherits the live main runtime, prefer the
+    explicit token/base URL from that runtime instead of re-reading auth.json
+    or the credential pool. This keeps preflight compression aligned with
+    the same Codex account the main turn is already using.
 
     Returns (None, None) when no Codex OAuth token is available.
     """
@@ -1574,21 +1583,25 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+
+    codex_token = str(explicit_api_key or "").strip()
+    base_url = str(explicit_base_url or "").strip().rstrip("/") or _CODEX_AUX_BASE_URL
+    if not codex_token:
+        pool_present, entry = _select_pool_entry("openai-codex")
+        if pool_present:
+            codex_token = _pool_runtime_api_key(entry)
+            if codex_token:
+                base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+            else:
+                codex_token = _read_codex_access_token()
+                if not codex_token:
+                    return None, None
+                base_url = _CODEX_AUX_BASE_URL
         else:
             codex_token = _read_codex_access_token()
             if not codex_token:
                 return None, None
             base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = OpenAI(
         api_key=codex_token,
@@ -1988,9 +2001,16 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
+        if runtime_base_url and (
+            main_provider == "openai-codex"
+            or main_provider == "custom"
+            or main_provider.startswith("custom:")
+        ):
+            explicit_base_url = runtime_base_url
+        if runtime_api_key and main_provider == "openai-codex":
+            explicit_api_key = runtime_api_key
         if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
             resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,
@@ -2265,7 +2285,11 @@ def resolve_provider_client(
             )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _build_codex_client(model)
+        client, default = _build_codex_client(
+            model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")

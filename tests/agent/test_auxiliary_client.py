@@ -500,6 +500,27 @@ class TestExplicitProviderRouting:
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
+    def test_build_codex_client_prefers_explicit_runtime_credentials(self):
+        with (
+            patch("agent.auxiliary_client.load_pool", side_effect=AssertionError("credential pool should not run")),
+            patch("agent.auxiliary_client._read_codex_access_token", side_effect=AssertionError("auth store should not run")),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client(
+                "gpt-5.4",
+                explicit_api_key="runtime-codex-token",
+                explicit_base_url="https://runtime.codex.example/v1/",
+            )
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "runtime-codex-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://runtime.codex.example/v1"
+
     def test_codex_pool_entry_takes_priority_over_auth_store(self):
         class _Entry:
             access_token = "pooled-codex-token"
@@ -550,6 +571,28 @@ class TestGetTextAuxiliaryClient:
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
 
+    def test_resolve_auto_main_runtime_codex_uses_runtime_credentials(self):
+        with (
+            patch("agent.auxiliary_client.load_pool", side_effect=AssertionError("credential pool should not run")),
+            patch("agent.auxiliary_client._read_codex_access_token", side_effect=AssertionError("auth store should not run")),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                    "api_key": "runtime-codex-token",
+                    "base_url": "https://runtime.codex.example/v1/",
+                }
+            )
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "runtime-codex-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://runtime.codex.example/v1"
+
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""
@@ -598,6 +641,7 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             from agent.auxiliary_client import _try_nous

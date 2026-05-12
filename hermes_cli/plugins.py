@@ -262,13 +262,19 @@ def _satisfies_version(installed: str, constraint: str) -> bool:
     if constraint.startswith("<"):
         return iv < _parse_version(constraint[1:])
     if constraint.startswith("^"):
-        # ^1.2.3 means >=1.2.3, <2.0.0
+        # ^1.2.3 means >=1.2.3, <2.0.0;  ^1 means >=1.0.0, <2.0.0
         c = _parse_version(constraint[1:])
-        return iv >= c and (len(c) < 2 or iv < (c[0] + 1, 0, 0))
+        if not c:
+            return True
+        return iv >= c and iv < (c[0] + 1, 0, 0)
     if constraint.startswith("~"):
-        # ~1.2.3 means >=1.2.3, <1.3.0
+        # ~1.2.3 means >=1.2.3, <1.3.0;  ~1 means >=1.0.0, <2.0.0 (like ^)
         c = _parse_version(constraint[1:])
-        return iv >= c and (len(c) < 2 or iv < (c[0], c[1] + 1, 0))
+        if not c:
+            return True
+        if len(c) < 2:
+            return iv >= c and iv < (c[0] + 1, 0, 0)
+        return iv >= c and iv < (c[0], c[1] + 1, 0)
     return _parse_version(constraint) == iv if constraint else True
 
 

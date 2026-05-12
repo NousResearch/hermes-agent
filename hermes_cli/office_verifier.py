@@ -502,26 +502,38 @@ def latest_verification_summary(conn, task_id: str) -> dict[str, Any] | None:
     for run in reversed(kb.list_runs(conn, task_id)):
         if isinstance(run.metadata, dict) and isinstance(run.metadata.get("verification_report"), dict):
             return run.metadata["verification_report"]
-    return None
+    events = [e for e in kb.list_events(conn, task_id) if e.kind == "office.verification.completed" and isinstance(e.payload, dict)]
+    return events[-1].payload if events else None
 
 
 def completion_verification_summary(conn, task_id: str) -> dict[str, Any] | None:
     """Return verification report for the latest/current run only.
 
-    Completion must not fall back to stale evidence from an older run.
+    Completion must not fall back to stale evidence from an older run. Manual
+    Office dashboard verification can be run-bound-less when no worker run has
+    ever existed; in that no-run case, use the latest verification event as the
+    current evidence instead of making legacy/ungated Office cards impossible to
+    close through the staged cockpit.
     """
     latest = kb.latest_run(conn, task_id)
     if latest and isinstance(latest.metadata, dict):
         report = latest.metadata.get("verification_report")
         if isinstance(report, dict):
             return report
-    return None
+        return None
+    events = [e for e in kb.list_events(conn, task_id) if e.kind == "office.verification.completed" and isinstance(e.payload, dict)]
+    return events[-1].payload if events else None
 
 
 def has_pending_scope_change(conn, task_id: str) -> bool:
     events = kb.list_events(conn, task_id)
     scope_requests = [e for e in events if e.kind == "office.scope_change_requested"]
-    scope_approvals = [e for e in events if e.kind == "office.scope_change.approved"]
+    scope_approvals = [
+        e for e in events
+        if e.kind == "office.scope_change.approved"
+        and isinstance(e.payload, dict)
+        and e.payload.get("approved") is True
+    ]
     latest_scope_approval_id = max((e.id for e in scope_approvals), default=0)
     return any(e.id > latest_scope_approval_id for e in scope_requests)
 

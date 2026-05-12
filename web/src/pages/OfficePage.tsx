@@ -61,6 +61,10 @@ type OfficeProfileName =
 
 type TaskDiagnostic = { severity?: string; message?: string; kind?: string; last_seen_at?: number; count?: number };
 type TaskWarningSummary = { count?: number; highest_severity?: string; kinds?: Record<string, number>; latest_at?: number };
+type VerificationGate = { gate_id?: string; status?: string; type?: string; evidence_paths?: string[]; missing_artifacts?: string[]; threshold_results?: Array<{ name?: string; status?: string; expected?: unknown; actual?: unknown }> };
+type VerificationReport = { overall_status?: string; report_path?: string; report_hash?: string; run_id?: number; total?: number; passed?: number; failed?: number; partial?: number; blocked?: number; gate_verdicts?: VerificationGate[] };
+type OfficeWorkflow = { stage?: string; final_close_ready?: boolean; final_close_reason?: string; pending_scope_change?: boolean; review?: Record<string, unknown> | null; scope_requests?: TaskEvent[]; verification?: VerificationReport | null };
+type OfficeHealthCheck = { id?: string; label?: string; status?: string; detail?: string };
 
 type KanbanTask = {
   id: string;
@@ -80,6 +84,8 @@ type KanbanTask = {
   link_counts?: { parents: number; children: number };
   progress?: { done: number; total: number } | null;
   diagnostics?: TaskDiagnostic[];
+  verification?: VerificationReport | null;
+  office_workflow?: OfficeWorkflow | null;
 };
 
 type BoardColumn = { name: string; tasks: KanbanTask[] };
@@ -99,6 +105,10 @@ type OfficeStatus = {
     present: string[];
     missing: string[];
   };
+  workflow_states?: string[];
+  health?: { checks?: OfficeHealthCheck[]; summary?: { pass?: number; warn?: number; fail?: number } };
+  quality_gates?: Record<string, unknown>;
+  workspace_root?: string;
 };
 
 type BoardResponse = {
@@ -193,6 +203,21 @@ function taskStatusTone(status: string): string {
   if (status === "triage") return "border-violet-300/60 bg-violet-300/10 text-violet-100";
   if (status === "done") return "border-muted-foreground/40 bg-muted/20 text-muted-foreground";
   return "border-border bg-card/50 text-muted-foreground";
+}
+
+function gateTone(status?: string): string {
+  if (status === "pass") return "border-emerald-300/70 bg-emerald-300/10 text-emerald-100";
+  if (status === "fail") return "border-red-300/70 bg-red-300/10 text-red-100";
+  if (status === "blocked") return "border-amber-300/70 bg-amber-300/10 text-amber-100";
+  if (status === "partial") return "border-sky-300/70 bg-sky-300/10 text-sky-100";
+  return "border-border bg-muted/20 text-muted-foreground";
+}
+
+function workflowTone(stage?: string): string {
+  if (stage === "final_done" || stage === "approved" || stage === "verification_passed") return "border-emerald-300/70 bg-emerald-300/10 text-emerald-100";
+  if (stage === "verification_failed") return "border-red-300/70 bg-red-300/10 text-red-100";
+  if (stage === "review_pending" || stage === "verification_pending") return "border-amber-300/70 bg-amber-300/10 text-amber-100";
+  return "border-border bg-card/40 text-muted-foreground";
 }
 
 function diagnosticTone(severity?: string): string {
@@ -540,6 +565,91 @@ function LiveEventFeed({ events, connected, now, onRefresh }: { events: LiveEven
   );
 }
 
+function OfficeHealthMatrix({ office }: { office?: OfficeStatus }) {
+  const checks = office?.health?.checks ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2"><Shield className="h-5 w-5 text-muted-foreground" /><div><CardTitle>Office Health Preflight</CardTitle><CardDescription>Dependability checks for auth, profiles, gateway, workspace, verifier, and board risk.</CardDescription></div></div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {checks.length === 0 ? <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No health checks reported.</div> : checks.map((check) => (
+          <div key={check.id ?? check.label} className="flex items-center justify-between gap-3 border border-border bg-card/40 p-2 text-xs normal-case">
+            <div><div className="text-foreground">{check.label ?? check.id}</div><div className="mt-0.5 text-muted-foreground">{check.detail}</div></div>
+            <Badge className={cn("border px-2 py-0 text-[10px]", check.status === "pass" ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : check.status === "fail" ? "border-red-300/60 bg-red-300/10 text-red-100" : "border-amber-300/60 bg-amber-300/10 text-amber-100")}>{check.status ?? "unknown"}</Badge>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function WorkflowChecklist({ workflow, states }: { workflow?: OfficeWorkflow | null; states?: string[] }) {
+  const stage = workflow?.stage ?? "intake";
+  const list = states?.length ? states : ["intake", "specified", "routed", "running", "implementation_done", "verification_pending", "verification_passed", "review_pending", "approved", "final_done"];
+  const activeIndex = Math.max(0, list.indexOf(stage));
+  return (
+    <Card>
+      <CardHeader><CardTitle>Office Workflow Controller</CardTitle><CardDescription>Explicit stages prevent collapsing work straight into done.</CardDescription></CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          {list.map((item, index) => (
+            <Badge key={item} className={cn("border px-2 py-0 text-[10px]", item === stage ? workflowTone(item) : index < activeIndex ? "border-emerald-300/40 bg-emerald-300/5 text-emerald-100/80" : "border-border bg-muted/10 text-muted-foreground")}>{item.replace(/_/g, " ")}</Badge>
+          ))}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="border border-border bg-card/40 p-2 text-xs normal-case"><div className="text-muted-foreground">Final close</div><div className={workflow?.final_close_ready ? "text-emerald-100" : "text-amber-100"}>{workflow?.final_close_ready ? "eligible" : "blocked"}</div></div>
+          <div className="border border-border bg-card/40 p-2 text-xs normal-case"><div className="text-muted-foreground">Reason</div><div className="line-clamp-2 text-foreground">{workflow?.final_close_reason ?? "not checked"}</div></div>
+          <div className="border border-border bg-card/40 p-2 text-xs normal-case"><div className="text-muted-foreground">Scope change</div><div className={workflow?.pending_scope_change ? "text-amber-100" : "text-emerald-100"}>{workflow?.pending_scope_change ? "pending" : "clear"}</div></div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function GateMatrix({ report }: { report?: VerificationReport | null }) {
+  const gates = report?.gate_verdicts ?? [];
+  return (
+    <Card>
+      <CardHeader><CardTitle>Verification Gate Matrix</CardTitle><CardDescription>Programmatic evidence. Worker prose does not make gates pass.</CardDescription></CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <Badge className={cn("border", gateTone(report?.overall_status))}>overall {report?.overall_status ?? "missing"}</Badge>
+          {typeof report?.total === "number" && <Badge className="border border-border bg-muted/20 text-muted-foreground">{report.passed ?? 0} pass · {report.failed ?? 0} fail · {report.partial ?? 0} partial · {report.blocked ?? 0} blocked</Badge>}
+          {report?.report_hash && <Badge className="border border-border bg-muted/20 text-muted-foreground">hash {String(report.report_hash).slice(0, 10)}</Badge>}
+        </div>
+        {gates.length === 0 ? <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No verifier report yet. Run verification before review/final close.</div> : gates.map((gate) => (
+          <div key={gate.gate_id} className="border border-border bg-card/40 p-3 text-xs normal-case">
+            <div className="flex items-center justify-between gap-2"><div className="font-semibold text-foreground">{gate.gate_id}</div><Badge className={cn("border px-2 py-0 text-[10px]", gateTone(gate.status))}>{gate.status}</Badge></div>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div><div className="uppercase tracking-[0.12em] text-muted-foreground">Evidence</div><div className="mt-1 text-muted-foreground">{gate.evidence_paths?.length ? gate.evidence_paths.join(", ") : "none"}</div></div>
+              <div><div className="uppercase tracking-[0.12em] text-muted-foreground">Missing</div><div className="mt-1 text-muted-foreground">{gate.missing_artifacts?.length ? gate.missing_artifacts.join(", ") : "none"}</div></div>
+            </div>
+            {(gate.threshold_results?.length ?? 0) > 0 && <div className="mt-2 space-y-1">{gate.threshold_results!.slice(0, 4).map((check, idx) => <div key={idx} className="flex justify-between gap-2 border border-border/60 bg-background/40 px-2 py-1"><span>{check.name}</span><span className={check.status === "pass" ? "text-emerald-100" : "text-red-100"}>{check.status}</span></div>)}</div>}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReviewerDecision({ workflow }: { workflow?: OfficeWorkflow | null }) {
+  const review = workflow?.review;
+  return (
+    <Card>
+      <CardHeader><CardTitle>Reviewer Decision</CardTitle><CardDescription>Actor-bound review evidence for final close.</CardDescription></CardHeader>
+      <CardContent className="space-y-2 text-sm normal-case text-muted-foreground">
+        {!review ? <div className="border border-dashed border-border p-3">No reviewer approval event yet.</div> : (
+          <div className="border border-border bg-card/40 p-3">
+            <div className="flex flex-wrap gap-2"><Badge className={cn("border", review.approved ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-red-300/60 bg-red-300/10 text-red-100")}>{review.approved ? "approved" : "not approved"}</Badge><Badge className="border border-border bg-muted/20 text-muted-foreground">actor {String(review.actor ?? "unknown")}</Badge><Badge className="border border-border bg-muted/20 text-muted-foreground">role {String(review.reviewer_role ?? "unknown")}</Badge></div>
+            <div className="mt-2 text-xs">report {String(review.reviewed_report_hash ?? "missing").slice(0, 14)} · run {String(review.reviewed_run_id ?? "?")}</div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function TaskTableView({ tasks, now, onOpenTask }: { tasks: KanbanTask[]; now: number; onOpenTask: (id: string) => void }) {
   const [sortKey, setSortKey] = useState<"priority" | "status" | "assignee" | "age">("priority");
   const sorted = useMemo(() => [...tasks].sort((a, b) => {
@@ -757,6 +867,8 @@ function TaskDetailDrawer({ taskId, assignees, board, now, onClose, onChanged }:
 
   if (!taskId) return null;
   const task = detail?.task;
+  const workflow = task?.office_workflow;
+  const report = workflow?.verification ?? task?.verification;
   const people = Array.from(new Set([...OFFICE_ROLES.map((role) => role.name), ...assignees])).sort();
 
   return (
@@ -784,14 +896,18 @@ function TaskDetailDrawer({ taskId, assignees, board, now, onClose, onChanged }:
               </div>
 
               <Card>
-                <CardHeader><CardTitle>Operator Actions</CardTitle><CardDescription>Use dashboard-native actions instead of dropping to CLI for routine recovery.</CardDescription></CardHeader>
+                <CardHeader><CardTitle>Staged Office Actions</CardTitle><CardDescription>Submit result → run verification → request/record review → approve scope if needed → final close.</CardDescription></CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex flex-wrap gap-2">
                     {task.status === "triage" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Specify", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/specify`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "dashboard" }) }))} className="gap-2"><Sparkles className="h-4 w-4" /> Specify</Button>}
-                    {(task.status === "blocked" || task.status === "todo" || task.status === "triage") && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Mark ready", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Ready</Button>}
+                    {(task.status === "blocked" || task.status === "todo" || task.status === "triage") && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Mark ready", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Route / Ready</Button>}
+                    {task.status === "running" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Submit result", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/office/submit-result`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: "dashboard", summary: "Implementation result submitted from Office dashboard" }) }))} className="gap-2"><FileText className="h-4 w-4" /> Submit result</Button>}
+                    <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Run verification", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/office/verify`), { method: "POST" }))} className="gap-2"><Shield className="h-4 w-4" /> Run verification</Button>
+                    <Button ghost disabled={Boolean(actionBusy) || report?.overall_status !== "pass"} onClick={() => runAction("Approve review", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/office/review-complete`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: "dashboard-reviewer", reviewer_role: "reviewer", approved: true, findings: [], reviewed_diff_ref: "dashboard" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Approve review</Button>
+                    {workflow?.pending_scope_change && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Approve scope", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/office/scope-approve`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: "dashboard", approved: true, reason: "operator approved from dashboard" }) }))} className="gap-2"><AlertTriangle className="h-4 w-4" /> Approve scope</Button>}
+                    <Button ghost disabled={Boolean(actionBusy) || !workflow?.final_close_ready} onClick={() => runAction("Final close", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/office/final-close`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: "dashboard", summary: "Final close after verification and review" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Final close</Button>
                     {task.status === "running" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Reclaim", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/reclaim`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "dashboard operator reclaim" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Reclaim</Button>}
                     {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Block", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "blocked", block_reason: "blocked from dashboard" }) }))} className="gap-2"><AlertTriangle className="h-4 w-4" /> Block</Button>}
-                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Complete", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "done", summary: "Completed from Office dashboard" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Done</Button>}
                     <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Archive", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "archived" }) }))} className="gap-2"><Archive className="h-4 w-4" /> Archive</Button>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
@@ -804,6 +920,10 @@ function TaskDetailDrawer({ taskId, assignees, board, now, onClose, onChanged }:
                   {actionBusy && <div className="flex items-center gap-2 text-xs normal-case text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> {actionBusy} in progress...</div>}
                 </CardContent>
               </Card>
+
+              <WorkflowChecklist workflow={workflow} />
+              <GateMatrix report={report} />
+              <ReviewerDecision workflow={workflow} />
 
               <Card>
                 <CardHeader><CardTitle>Brief</CardTitle><CardDescription>Original request and latest worker handoff.</CardDescription></CardHeader>
@@ -1027,7 +1147,7 @@ export default function OfficePage() {
             </div>
             <h1 className="mt-1 text-2xl font-bold tracking-[0.06em] text-foreground">Agent Office Command Center</h1>
             <p className="mt-1 max-w-3xl text-sm normal-case text-muted-foreground">
-              Operate the agent office: find work, inspect handoffs, recover stuck tasks, route assignments, and watch flow from intake to done.
+              Operator cockpit for explicit Office workflow: intake → implementation → verification → review → final close. No generic “done” shortcut.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1087,6 +1207,7 @@ export default function OfficePage() {
           </div>
           <div className="space-y-4">
             <BoardPicker boards={boards} selectedBoard={selectedBoard} onSelectBoard={setSelectedBoard} onSwitchCurrent={(slug) => void switchCurrentBoard(slug)} />
+            <OfficeHealthMatrix office={data?.office} />
             <LiveEventFeed events={liveEvents} connected={liveConnected} now={now} onRefresh={() => { void load(); void loadBoards(); }} />
             <TaskExplorer tasks={filteredTasks} now={now} query={query} setQuery={setQuery} status={statusFilter} setStatus={setStatusFilter} assignee={assigneeFilter} setAssignee={setAssigneeFilter} assignees={assignees} onOpenTask={setSelectedTaskId} />
             <TaskCreatePanel assignees={data?.assignees ?? []} board={selectedBoard} onCreated={() => { void load(); void loadBoards(); }} />

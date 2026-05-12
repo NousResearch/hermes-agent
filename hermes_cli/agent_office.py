@@ -9,6 +9,7 @@ aliases for the dashboard.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,6 +186,67 @@ _KEYWORD_ROUTES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+OFFICE_WORKFLOW_STATES: tuple[str, ...] = (
+    "intake",
+    "specified",
+    "routed",
+    "running",
+    "implementation_done",
+    "verification_pending",
+    "verification_passed",
+    "verification_failed",
+    "review_pending",
+    "approved",
+    "final_done",
+)
+
+
+def default_verification_gates(task_id: str, title: str | None = None) -> list[dict[str, Any]]:
+    """Machine-readable fallback gates attached to every Office-created task.
+
+    Explicit spec gates can override this later, but Office final-close should
+    never depend only on prose. The default gate forces a real scorecard artifact
+    that reviewers/verifiers can inspect.
+    """
+    return [
+        {
+            "id": "office-gate-scorecard",
+            "title": "Evidence-backed gate scorecard",
+            "requirement_ref": task_id,
+            "type": "quality_gate_scorecard",
+            "required": True,
+            "commands": [],
+            "expected_artifacts": [
+                {
+                    "path": ".hermes/office/gate-scorecard.json",
+                    "must_exist": True,
+                    "min_bytes": 20,
+                    "content_regex": "gate|verdict|evidence|pass|fail|blocked",
+                }
+            ],
+            "thresholds": [],
+            "evidence_policy": "inspect_existing",
+            "allow_blocked": False,
+        }
+    ]
+
+
+def attach_default_gates_to_body(body: str | None, task_id: str, title: str | None = None) -> str:
+    """Append default Office verification gates unless the body already has gates."""
+    text = body or ""
+    if "verification_gates" in text:
+        return text
+    gates = json.dumps(default_verification_gates(task_id, title), indent=2)
+    guidance = (
+        "\n\nOffice verification contract:\n"
+        "Before requesting final close, produce .hermes/office/gate-scorecard.json "
+        "with gates, commands/checks, artifact paths, verdicts, and rationale. "
+        "Do not silently reduce scope; use SCOPE_CHANGE_REQUEST ... END_SCOPE_CHANGE_REQUEST.\n"
+        "```json verification_gates\n" + gates + "\n```"
+    )
+    return text.rstrip() + guidance
+
+
 @dataclass(frozen=True)
 class RouteDecision:
     profile: str
@@ -284,7 +346,7 @@ def validate_office_profiles() -> dict[str, Any]:
 
 
 def status(board: Optional[str] = None) -> dict[str, Any]:
-    """Small status payload for the dashboard Office pill."""
+    """Status/preflight payload for the dashboard Office cockpit."""
     cfg = office_config()
     preferred = str(cfg.get("board") or "inbox")
     board_slug = board or preferred
@@ -298,6 +360,23 @@ def status(board: Optional[str] = None) -> dict[str, Any]:
     except Exception:
         gateway_pid = None
     profiles = validate_office_profiles()
+    workspace_root = Path(str(cfg.get("workspace_root") or "/Users/akhilkinnera/Documents/My Workspace")).expanduser()
+    health_checks = [
+        {"id": "office_enabled", "label": "Office enabled", "status": "pass" if cfg.get("enabled", True) else "fail", "detail": "agent_office.enabled"},
+        {"id": "board_exists", "label": "Office board exists", "status": "pass" if board_exists else "fail", "detail": board_slug},
+        {"id": "gateway", "label": "Gateway/dispatcher", "status": "pass" if gateway_pid else "warn", "detail": f"pid {gateway_pid}" if gateway_pid else "not detected"},
+        {"id": "profiles", "label": "Office profiles", "status": "pass" if not profiles.get("missing") else "fail", "detail": f"{len(profiles.get('present', []))}/{profiles.get('expected', 0)} present"},
+        {"id": "workspace_root", "label": "Workspace root", "status": "pass" if workspace_root.exists() and os.access(workspace_root, os.W_OK) else "fail", "detail": str(workspace_root)},
+        {"id": "quality_gates", "label": "Quality gates", "status": "pass" if (cfg.get("quality_gates") or {}).get("apply_to_every_task") else "warn", "detail": "default gates attached to Office-created work"},
+    ]
+    health = {
+        "checks": health_checks,
+        "summary": {
+            "pass": sum(1 for c in health_checks if c["status"] == "pass"),
+            "warn": sum(1 for c in health_checks if c["status"] == "warn"),
+            "fail": sum(1 for c in health_checks if c["status"] == "fail"),
+        },
+    }
     return {
         "enabled": bool(cfg.get("enabled", True)),
         "preferred_board": preferred,
@@ -307,7 +386,9 @@ def status(board: Optional[str] = None) -> dict[str, Any]:
         "gateway_pid": gateway_pid,
         "profiles": profiles,
         "roles": {role: role_seats(role, cfg=cfg) for role in OFFICE_ROLES},
-        "workspace_root": cfg.get("workspace_root"),
+        "workspace_root": str(workspace_root),
+        "workflow_states": list(OFFICE_WORKFLOW_STATES),
+        "health": health,
         "default_mode": cfg.get("default_mode", "yolo"),
         "event_aliases": dict(_EVENT_ALIASES),
         "quality_gates": cfg.get("quality_gates") or {},

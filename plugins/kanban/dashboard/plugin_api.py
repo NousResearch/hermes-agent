@@ -40,6 +40,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import time
 from dataclasses import asdict
@@ -200,6 +201,87 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "summary": r.summary,
         "metadata": r.metadata,
         "error": r.error,
+    }
+
+def _office_task_workflow(conn: sqlite3.Connection, task_id: str, task: Optional[kanban_db.Task] = None) -> dict[str, Any]:
+    task = task or kanban_db.get_task(conn, task_id)
+    events = kanban_db.list_events(conn, task_id)
+    kinds = [e.kind for e in events]
+    review_events = [e for e in events if e.kind == "office.review.completed" and isinstance(e.payload, dict)]
+    scope_events = [e for e in events if e.kind == "office.scope_change_requested"]
+    approved_scope = [e for e in events if e.kind == "office.scope_change.approved"]
+    verification = None
+    final_ready = False
+    final_reason = "not checked"
+    try:
+        from hermes_cli.office_verifier import final_completion_ready, latest_verification_summary, has_pending_scope_change
+        verification = latest_verification_summary(conn, task_id)
+        final_ready, final_reason = final_completion_ready(conn, task_id)
+        pending_scope = has_pending_scope_change(conn, task_id)
+    except Exception as exc:
+        pending_scope = bool(scope_events and (not approved_scope or approved_scope[-1].id < scope_events[-1].id))
+        final_reason = f"workflow check error: {exc}"
+
+    status = task.status if task else "unknown"
+    if status == "done":
+        stage = "final_done"
+    elif review_events and review_events[-1].payload.get("approved") is True:
+        stage = "approved"
+    elif verification and verification.get("overall_status") == "pass":
+        stage = "verification_passed" if not review_events else "review_pending"
+    elif verification and verification.get("overall_status") in {"fail", "blocked", "partial"}:
+        stage = "verification_failed"
+    elif any(k in kinds for k in ("office.implementation.submitted", "blocked")) and status in {"blocked", "running", "ready"}:
+        stage = "implementation_done"
+    elif status == "running":
+        stage = "running"
+    elif task and task.assignee:
+        stage = "routed"
+    elif any(k in kinds for k in ("specified", "triaged")) or status in {"todo", "ready"}:
+        stage = "specified"
+    else:
+        stage = "intake"
+
+    latest_review = review_events[-1].payload if review_events else None
+    return {
+        "stage": stage,
+        "final_close_ready": bool(final_ready),
+        "final_close_reason": final_reason,
+        "pending_scope_change": bool(pending_scope),
+        "review": latest_review,
+        "review_event_id": review_events[-1].id if review_events else None,
+        "scope_requests": [_event_dict(e) for e in scope_events[-5:]],
+        "verification": verification,
+    }
+
+
+def _office_board_health(conn: sqlite3.Connection, board_status: dict[str, Any]) -> dict[str, Any]:
+    checks = list((board_status.get("health") or {}).get("checks") or [])
+    rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status").fetchall()
+    counts = {str(r["status"]): int(r["n"]) for r in rows}
+    failed_gates = conn.execute("SELECT COUNT(*) AS n FROM task_events WHERE kind = 'office.verification.gate_failed'").fetchone()["n"]
+    pending_scope = 0
+    for row in conn.execute("SELECT DISTINCT task_id FROM task_events WHERE kind = 'office.scope_change_requested'").fetchall():
+        events = kanban_db.list_events(conn, row["task_id"])
+        last_req = max((e.id for e in events if e.kind == "office.scope_change_requested"), default=0)
+        last_ok = max((e.id for e in events if e.kind == "office.scope_change.approved" and isinstance(e.payload, dict) and e.payload.get("approved") is True), default=0)
+        if last_req > last_ok:
+            pending_scope += 1
+    checks.extend([
+        {"id": "blocked_tasks", "label": "Blocked tasks", "status": "warn" if counts.get("blocked", 0) else "pass", "detail": str(counts.get("blocked", 0))},
+        {"id": "failed_gates", "label": "Failed verifier gates", "status": "fail" if failed_gates else "pass", "detail": str(failed_gates)},
+        {"id": "scope_requests", "label": "Scope-change requests", "status": "warn" if pending_scope else "pass", "detail": str(pending_scope)},
+        {"id": "python_tool", "label": "Verifier Python", "status": "pass" if shutil.which("python3") or shutil.which("python") else "fail", "detail": shutil.which("python3") or shutil.which("python") or "missing"},
+        {"id": "git_tool", "label": "Git available", "status": "pass" if shutil.which("git") else "warn", "detail": shutil.which("git") or "missing"},
+        {"id": "hermes_home", "label": "HERMES_HOME", "status": "pass" if os.environ.get("HERMES_HOME") or Path.home().joinpath(".hermes").exists() else "warn", "detail": os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")},
+    ])
+    return {
+        "checks": checks,
+        "summary": {
+            "pass": sum(1 for c in checks if c.get("status") == "pass"),
+            "warn": sum(1 for c in checks if c.get("status") == "warn"),
+            "fail": sum(1 for c in checks if c.get("status") == "fail"),
+        },
     }
 
 
@@ -457,6 +539,9 @@ def get_board(
             )
         ]
 
+        office_status = agent_office.status(board or "inbox")
+        office_status["health"] = _office_board_health(conn, office_status)
+
         return {
             "columns": [
                 {"name": name, "tasks": columns[name]} for name in columns.keys()
@@ -466,7 +551,7 @@ def get_board(
             "links": links,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
-            "office": agent_office.status(board or "inbox"),
+            "office": office_status,
         }
     finally:
         conn.close()
@@ -494,6 +579,7 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
             task_d["verification"] = latest_verification_summary(conn, task_id)
         except Exception:
             task_d["verification"] = None
+        task_d["office_workflow"] = _office_task_workflow(conn, task_id, task)
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -553,6 +639,18 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
         )
         task = kanban_db.get_task(conn, task_id)
+        office_assignees = set(agent_office.OFFICE_PROFILES) | set(agent_office.OFFICE_ROLES)
+        is_office_work = bool(payload.triage or (task and task.assignee in office_assignees))
+        if task is not None and is_office_work and (agent_office.office_config().get("quality_gates") or {}).get("apply_to_every_task", True):
+            gated_body = agent_office.attach_default_gates_to_body(task.body, task.id, task.title)
+            if gated_body != (task.body or ""):
+                with kanban_db.write_txn(conn):
+                    conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (gated_body, task.id))
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'office.gates.attached', ?, ?)",
+                        (task.id, json.dumps({"source": "dashboard-create", "gate_template": "default"}), int(time.time())),
+                    )
+                task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
@@ -759,6 +857,163 @@ def _set_status_direct(
     if new_status in ("done", "ready"):
         kanban_db.recompute_ready(conn)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Office workflow actions
+# ---------------------------------------------------------------------------
+
+class OfficeSubmitBody(BaseModel):
+    summary: str
+    actor: str = "dashboard"
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class OfficeReviewBody(BaseModel):
+    approved: bool
+    actor: str = "dashboard"
+    reviewer_role: str = "reviewer"
+    independent_from: Optional[str] = None
+    findings: list[Any] = Field(default_factory=list)
+    reviewed_diff_ref: str = "dashboard"
+
+
+class OfficeScopeApproveBody(BaseModel):
+    actor: str = "dashboard"
+    approved: bool = True
+    reason: Optional[str] = None
+
+
+class OfficeFinalCloseBody(BaseModel):
+    summary: str = "Final close from Office dashboard"
+    actor: str = "dashboard"
+
+
+@router.post("/tasks/{task_id}/office/submit-result")
+def office_submit_result(task_id: str, payload: OfficeSubmitBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        run = kanban_db.active_run(conn, task_id) or kanban_db.latest_run(conn, task_id)
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'office.implementation.submitted', ?, ?)",
+                (task_id, run.id if run else None, json.dumps({"actor": payload.actor, "summary": payload.summary, "artifacts": payload.artifacts}), int(time.time())),
+            )
+        kanban_db.add_comment(conn, task_id, author=payload.actor, body=f"IMPLEMENTATION_DONE\n{payload.summary}")
+        return {"ok": True, "workflow": _office_task_workflow(conn, task_id)}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/office/verify")
+def office_verify(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        task = kanban_db.get_task(conn, task_id)
+        if task is not None and "verification_gates" not in (task.body or ""):
+            gated_body = agent_office.attach_default_gates_to_body(task.body, task.id, task.title)
+            with kanban_db.write_txn(conn):
+                conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (gated_body, task.id))
+                conn.execute(
+                    "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'office.gates.attached', ?, ?)",
+                    (task.id, json.dumps({"source": "dashboard-verify", "gate_template": "default"}), int(time.time())),
+                )
+        from hermes_cli.office_verifier import verify_task
+        run = kanban_db.latest_run(conn, task_id)
+        report = verify_task(conn, task_id, run_id=run.id if run else None, strict=True)
+        return {"ok": report.get("overall_status") == "pass", "report": report, "workflow": _office_task_workflow(conn, task_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/office/review-complete")
+def office_review_complete(task_id: str, payload: OfficeReviewBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        from hermes_cli.office_verifier import completion_verification_summary
+        report = completion_verification_summary(conn, task_id)
+        if not report:
+            raise HTTPException(status_code=409, detail="missing latest verifier report")
+        if payload.approved and report.get("overall_status") != "pass":
+            raise HTTPException(status_code=409, detail="cannot approve review until verifier report passes")
+        reviewer = payload.actor or "dashboard"
+        if payload.independent_from and payload.independent_from == reviewer:
+            raise HTTPException(status_code=400, detail="reviewer must be independent from implementer")
+        event_payload = {
+            "approved": bool(payload.approved),
+            "actor": reviewer,
+            "reviewer_role": payload.reviewer_role,
+            "independent_from": payload.independent_from,
+            "independence_proof": "actor != independent_from" if payload.independent_from else "operator-attested",
+            "reviewed_report_path": report.get("report_path"),
+            "reviewed_report_hash": report.get("report_hash"),
+            "reviewed_run_id": report.get("run_id"),
+            "reviewed_diff_ref": payload.reviewed_diff_ref,
+            "findings": payload.findings,
+            "gate_report_overall_status": report.get("overall_status"),
+        }
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'office.review.completed', ?, ?)",
+                (task_id, report.get("run_id"), json.dumps(event_payload), int(time.time())),
+            )
+        return {"ok": True, "review": event_payload, "workflow": _office_task_workflow(conn, task_id)}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/office/scope-approve")
+def office_scope_approve(task_id: str, payload: OfficeScopeApproveBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        if not payload.approved:
+            with kanban_db.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'office.scope_change.rejected', ?, ?)",
+                    (task_id, json.dumps({"actor": payload.actor, "approved": False, "reason": payload.reason}), int(time.time())),
+                )
+            raise HTTPException(status_code=409, detail="scope change was rejected; final close remains blocked until an approved scope-change event exists")
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'office.scope_change.approved', ?, ?)",
+                (task_id, json.dumps({"actor": payload.actor, "approved": True, "reason": payload.reason}), int(time.time())),
+            )
+        return {"ok": True, "workflow": _office_task_workflow(conn, task_id)}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/office/final-close")
+def office_final_close(task_id: str, payload: OfficeFinalCloseBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        ok = kanban_db.complete_task(conn, task_id, summary=payload.summary)
+        if not ok:
+            workflow = _office_task_workflow(conn, task_id)
+            raise HTTPException(status_code=409, detail=workflow.get("final_close_reason") or "final close not allowed")
+        return {"ok": True, "task": _task_dict(kanban_db.get_task(conn, task_id))}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

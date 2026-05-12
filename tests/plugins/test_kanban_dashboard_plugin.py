@@ -81,6 +81,127 @@ def test_board_empty(client):
     assert "profiles" in data["office"]
 
 
+def test_office_created_task_gets_default_gates_and_workflow(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Build dashboard cockpit", "assignee": "coder", "priority": 2},
+    )
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert "verification_gates" in (task["body"] or "")
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    workflow = payload["task"]["office_workflow"]
+    assert workflow["stage"] in {"routed", "specified"}
+    assert workflow["final_close_ready"] is False
+
+
+def test_office_workflow_actions_verify_review_and_final_close(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".hermes" / "office").mkdir(parents=True)
+    (workspace / ".hermes" / "office" / "gate-scorecard.json").write_text(
+        '{"gate":"office-gate-scorecard","verdict":"pass","evidence":["targeted tests"]}',
+        encoding="utf-8",
+    )
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Implement evidence gate",
+            "assignee": "coder",
+            "workspace_kind": "dir",
+            "workspace_path": str(workspace),
+        },
+    )
+    task = r.json()["task"]
+    with kb.connect() as conn:
+        claimed = kb.claim_task(conn, task["id"], claimer="coder", ttl_seconds=60)
+        assert claimed is not None
+    submit = client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/submit-result", json={"summary": "implemented", "actor": "coder"})
+    assert submit.status_code == 200, submit.text
+    verify = client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/verify")
+    assert verify.status_code == 200, verify.text
+    assert verify.json()["report"]["overall_status"] == "pass"
+    review = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/office/review-complete",
+        json={"approved": True, "actor": "reviewer", "reviewer_role": "reviewer", "independent_from": "coder", "findings": []},
+    )
+    assert review.status_code == 200, review.text
+    close = client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/final-close", json={"summary": "verified and reviewed", "actor": "dashboard"})
+    assert close.status_code == 200, close.text
+    assert close.json()["task"]["status"] == "done"
+
+
+def test_office_verify_lazily_attaches_gates_to_ungated_unassigned_task(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".hermes" / "office").mkdir(parents=True)
+    (workspace / ".hermes" / "office" / "gate-scorecard.json").write_text(
+        '{"gate":"office-gate-scorecard","verdict":"pass","evidence":["lazy default gate"]}',
+        encoding="utf-8",
+    )
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Legacy ungated Office task", "workspace_kind": "dir", "workspace_path": str(workspace)},
+    ).json()["task"]
+    assert "verification_gates" not in (task["body"] or "")
+
+    verify = client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/verify")
+    assert verify.status_code == 200, verify.text
+    assert verify.json()["report"]["overall_status"] == "pass"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert "verification_gates" in (detail["task"]["body"] or "")
+    assert detail["task"]["office_workflow"]["stage"] == "verification_passed"
+
+
+def test_scope_rejection_does_not_unblock_final_close(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".hermes" / "office").mkdir(parents=True)
+    (workspace / ".hermes" / "office" / "gate-scorecard.json").write_text(
+        '{"gate":"office-gate-scorecard","verdict":"pass","evidence":["scope rejection"]}',
+        encoding="utf-8",
+    )
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Scope rejection", "assignee": "coder", "workspace_kind": "dir", "workspace_path": str(workspace)},
+    ).json()["task"]
+    with kb.connect() as conn:
+        claimed = kb.claim_task(conn, task["id"], claimer="coder", ttl_seconds=60)
+        assert claimed is not None
+    assert client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/verify").status_code == 200
+    assert client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/office/review-complete",
+        json={"approved": True, "actor": "reviewer", "reviewer_role": "reviewer", "independent_from": "coder"},
+    ).status_code == 200
+    with kb.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'office.scope_change_requested', ?, ?)",
+                (task["id"], '{"requirement_ref":"R1"}', int(time.time())),
+            )
+    rejected = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/office/scope-approve",
+        json={"approved": False, "actor": "operator", "reason": "not acceptable"},
+    )
+    assert rejected.status_code == 409
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["task"]["office_workflow"]["pending_scope_change"] is True
+    close = client.post(f"/api/plugins/kanban/tasks/{task['id']}/office/final-close", json={"summary": "should stay blocked"})
+    assert close.status_code == 409
+
+
+def test_board_office_health_surfaces_preflight_matrix(client):
+    data = client.get("/api/plugins/kanban/board").json()
+    health = data["office"]["health"]
+    labels = {check["id"] for check in health["checks"]}
+    assert {"profiles", "workspace_root", "quality_gates", "python_tool", "git_tool", "hermes_home"}.issubset(labels)
+    assert "summary" in health
+
+
 def test_event_detail_includes_agent_office_event_alias(client):
     task = client.post(
         "/api/plugins/kanban/tasks",

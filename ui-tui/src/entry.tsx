@@ -20,6 +20,12 @@ if (!process.stdin.isTTY) {
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
 
+// Clear visible screen + scrollback buffer. Without this, tmux may retain
+// stale TUI output in its scrollback buffer from the previous session,
+// which is visible when the user scrolls up or briefly before AlternateScreen
+// takes over on restart. See entry.tsx → AlternateScreen flow.
+process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
+
 const gw = new GatewayClient()
 
 gw.start()

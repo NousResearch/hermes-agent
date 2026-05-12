@@ -38,6 +38,7 @@ CARD_CLICKED is ACK'd only in v1 (follow-up PR implements interactivity).
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -3247,7 +3248,7 @@ async def _standalone_send(
 
     url = f"https://chat.googleapis.com/v1/{chat_id}/messages"
     try:
-        import aiohttp as _aiohttp
+        _aiohttp = importlib.import_module("aiohttp")
     except ImportError:
         return {"error": "Google Chat standalone send: aiohttp not installed"}
 

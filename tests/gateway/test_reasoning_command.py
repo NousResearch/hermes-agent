@@ -75,6 +75,9 @@ class TestReasoningCommand:
 
     def test_reasoning_is_known_command(self):
         source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
+        inner = getattr(gateway_run.GatewayRunner, "_handle_message_inner", None)
+        if inner is not None:
+            source += inspect.getsource(inner)
         assert '"reasoning"' in source
 
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):

@@ -1725,7 +1725,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info(
                 "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
+                len(all_jobs),
                 _max_workers if _max_workers else "unbounded",
             )
 

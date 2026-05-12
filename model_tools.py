@@ -790,6 +790,14 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
@@ -799,6 +807,7 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
+                agent_id=_agent_id,
             )
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -811,6 +820,14 @@ def handle_function_call(
         # valid string return wins; non-string returns are ignored.
         try:
             from hermes_cli.plugins import invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             hook_results = invoke_hook(
                 "transform_tool_result",
                 tool_name=function_name,
@@ -820,6 +837,7 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
+                agent_id=_agent_id,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

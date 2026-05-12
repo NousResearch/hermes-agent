@@ -12044,11 +12044,20 @@ class AIAgent:
                 # session-scoped state (e.g. warm a memory cache).
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _agent_id = None
+                    try:
+                        from agent.profile import get_active_profile
+                        _p = get_active_profile()
+                        if _p:
+                            _agent_id = _p.id
+                    except Exception:
+                        pass
                     _invoke_hook(
                         "on_session_start",
                         session_id=self.session_id,
                         model=self.model,
                         platform=getattr(self, "platform", None) or "",
+                        agent_id=_agent_id,
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
@@ -12145,6 +12154,14 @@ class AIAgent:
         _plugin_user_context = ""
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             _pre_results = _invoke_hook(
                 "pre_llm_call",
                 session_id=self.session_id,
@@ -12154,6 +12171,7 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                agent_id=_agent_id,
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
@@ -12634,6 +12652,14 @@ class AIAgent:
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        _agent_id = None
+                        try:
+                            from agent.profile import get_active_profile
+                            _p = get_active_profile()
+                            if _p:
+                                _agent_id = _p.id
+                        except Exception:
+                            pass
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
@@ -12649,6 +12675,7 @@ class AIAgent:
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=self.max_tokens,
+                            agent_id=_agent_id,
                         )
                     except Exception:
                         pass
@@ -14527,6 +14554,14 @@ class AIAgent:
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _agent_id = None
+                    try:
+                        from agent.profile import get_active_profile
+                        _p = get_active_profile()
+                        if _p:
+                            _agent_id = _p.id
+                    except Exception:
+                        pass
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
                     _assistant_text = assistant_message.content or ""
                     _invoke_hook(
@@ -14544,6 +14579,7 @@ class AIAgent:
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
                         usage=self._usage_summary_for_api_request_hook(response),
+                        agent_id=_agent_id,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )
@@ -15514,12 +15550,21 @@ class AIAgent:
         if final_response and not interrupted:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 _transform_results = _invoke_hook(
                     "transform_llm_output",
                     response_text=final_response,
                     session_id=self.session_id or "",
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    agent_id=_agent_id,
                 )
                 for _hook_result in _transform_results:
                     if isinstance(_hook_result, str) and _hook_result:
@@ -15535,6 +15580,14 @@ class AIAgent:
         if final_response and not interrupted:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 _invoke_hook(
                     "post_llm_call",
                     session_id=self.session_id,
@@ -15543,6 +15596,7 @@ class AIAgent:
                     conversation_history=list(messages),
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    agent_id=_agent_id,
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
@@ -15650,6 +15704,14 @@ class AIAgent:
         # Plugins can use this for cleanup, flushing buffers, etc.
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             _invoke_hook(
                 "on_session_end",
                 session_id=self.session_id,
@@ -15657,6 +15719,7 @@ class AIAgent:
                 interrupted=interrupted,
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
+                agent_id=_agent_id,
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)

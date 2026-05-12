@@ -1591,6 +1591,9 @@ class BasePlatformAdapter(ABC):
                 event=event,
                 gateway=self._gateway_ref,
                 route_match=route_match,
+                # Note: intentionally NOT passing agent_id — this hook's
+                # purpose is to DECIDE the agent_id. The resolved value
+                # will be stamped on event.source.agent_id after this call.
             )
             for r in results or []:
                 if isinstance(r, str) and r.strip():

@@ -1416,6 +1416,14 @@ def get_pre_tool_call_block_message(
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return fmt.format(tool_name=tool_name)
 
+    _agent_id = None
+    try:
+        from agent.profile import get_active_profile
+        _p = get_active_profile()
+        if _p:
+            _agent_id = _p.id
+    except Exception:
+        pass
     hook_results = invoke_hook(
         "pre_tool_call",
         tool_name=tool_name,
@@ -1423,6 +1431,7 @@ def get_pre_tool_call_block_message(
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        agent_id=_agent_id,
     )
 
     for result in hook_results:

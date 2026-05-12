@@ -276,8 +276,15 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
-
-        _invoke_hook(event_type, session_id=session_id, platform="tui")
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
+        _invoke_hook(event_type, session_id=session_id, platform="tui", agent_id=_agent_id)
     except Exception:
         pass
 

@@ -4551,6 +4551,25 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # D1 Task 4: resolve worker runtime from config (default: local).
+        # `kanban.worker_runtime` selects how dispatch_once spawns workers:
+        # `local` (today's behavior — bare subprocess), `docker` (per-task
+        # isolated container), `modal` / `ssh` (future). Default is local
+        # so existing setups keep working unchanged.
+        runtime_name = (kanban_cfg.get("worker_runtime") or "local").strip().lower()
+        runtime_cfg = kanban_cfg.get(runtime_name) or {}
+        try:
+            from tools.environments.kanban_spawn import load_runtime
+            kanban_runtime = load_runtime(runtime_name, runtime_cfg)
+        except (ImportError, ValueError, RuntimeError) as exc:
+            logger.error(
+                "kanban dispatcher: failed to load worker_runtime=%r: %s. "
+                "Dispatcher disabled until config is fixed.",
+                runtime_name, exc,
+            )
+            return
+        logger.info("kanban dispatcher: worker_runtime=%s", kanban_runtime.name)
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4584,6 +4603,7 @@ class GatewayRunner:
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
+                    spawn_fn=kanban_runtime.spawn,    # D1 Task 4: route through runtime
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
                 )

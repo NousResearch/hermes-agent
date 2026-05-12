@@ -574,6 +574,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-hermes-tweet',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'software-development',
                   key: 'skills-optional-software-development',
                   collapsed: true,

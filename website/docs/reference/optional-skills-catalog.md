@@ -181,6 +181,12 @@ hermes skills uninstall <skill-name>
 | [**oss-forensics**](/docs/user-guide/skills/optional/security/security-oss-forensics) | Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories. Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence collection, hypothesis formation/validation, and st... |
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**hermes-tweet**](/docs/user-guide/skills/optional/social-media/social-media-hermes-tweet) | Native Hermes Agent plugin workflow for Xquik X automation. Use when the user wants Hermes-native tools for X search, account reads, trends, posts, replies, likes, reposts, follows, direct messages, monitors, extraction jobs, draws, medi... |
+
 ## software-development
 
 | Skill | Description |

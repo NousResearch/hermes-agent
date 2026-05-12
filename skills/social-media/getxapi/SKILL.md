@@ -29,7 +29,6 @@ Use this skill for:
 - posting standalone tweets and replies
 - fetching user timelines
 - checking account credits
-- image analysis workflows (pair with mmx vision)
 
 Do NOT use for:
 - deleting tweets (no delete endpoint — must delete manually on x.com)

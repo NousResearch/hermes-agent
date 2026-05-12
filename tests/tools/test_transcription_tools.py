@@ -1102,6 +1102,137 @@ class TestTranscribeAudioMistralDispatch:
 
 
 # ============================================================================
+# _transcribe_telnyx
+# ============================================================================
+
+class TestTranscribeTelnyx:
+    def test_no_key(self, monkeypatch):
+        monkeypatch.delenv("TELNYX_API_KEY", raising=False)
+        from tools.transcription_tools import _transcribe_telnyx
+        result = _transcribe_telnyx("/tmp/test.ogg", "openai/whisper-large-v3-turbo")
+        assert result["success"] is False
+        assert "TELNYX_API_KEY" in result["error"]
+
+    def test_successful_transcription(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("TELNYX_API_KEY", "KEYtest")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "hello from telnyx"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_telnyx
+            result = _transcribe_telnyx(sample_ogg, "openai/whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello from telnyx"
+        assert result["provider"] == "telnyx"
+        data = mock_post.call_args.kwargs.get("data", mock_post.call_args[1].get("data", {}))
+        assert data["model"] == "openai/whisper-large-v3-turbo"
+
+    def test_sends_configured_language(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("TELNYX_API_KEY", "KEYtest")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "hola"}
+
+        config = {"telnyx": {"language": "es"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_telnyx
+            _transcribe_telnyx(sample_ogg, "openai/whisper-large-v3-turbo")
+
+        data = mock_post.call_args.kwargs.get("data", mock_post.call_args[1].get("data", {}))
+        assert data["language"] == "es"
+
+    def test_api_error_returns_failure(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("TELNYX_API_KEY", "KEYtest")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"errors": [{"detail": "Authentication failed"}]}
+        mock_response.text = '{"errors":[{"detail":"Authentication failed"}]}'
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_telnyx
+            result = _transcribe_telnyx(sample_ogg, "openai/whisper-large-v3-turbo")
+
+        assert result["success"] is False
+        assert "HTTP 401" in result["error"]
+        assert "Authentication failed" in result["error"]
+
+
+# ============================================================================
+# _get_provider — Telnyx
+# ============================================================================
+
+class TestGetProviderTelnyx:
+    def test_telnyx_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("TELNYX_API_KEY", "KEYtest")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "telnyx"}) == "telnyx"
+
+    def test_telnyx_explicit_no_key_returns_none(self, monkeypatch):
+        monkeypatch.delenv("TELNYX_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "telnyx"}) == "none"
+
+    def test_auto_detect_does_not_pick_telnyx_implicitly(self, monkeypatch):
+        monkeypatch.setenv("TELNYX_API_KEY", "KEYtest")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "none"
+
+
+# ============================================================================
+# transcribe_audio — Telnyx dispatch
+# ============================================================================
+
+class TestTranscribeAudioTelnyxDispatch:
+    def test_dispatches_to_telnyx(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "telnyx"}), \
+             patch("tools.transcription_tools._get_provider", return_value="telnyx"), \
+             patch("tools.transcription_tools._transcribe_telnyx",
+                   return_value={"success": True, "transcript": "hi", "provider": "telnyx"}) as mock_telnyx:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "telnyx"
+        mock_telnyx.assert_called_once()
+
+    def test_config_telnyx_model_used(self, sample_ogg):
+        config = {"provider": "telnyx", "telnyx": {"model": "custom/telnyx-stt"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="telnyx"), \
+             patch("tools.transcription_tools._transcribe_telnyx",
+                   return_value={"success": True, "transcript": "hi"}) as mock_telnyx:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_telnyx.call_args[0][1] == "custom/telnyx-stt"
+
+    def test_model_override_passed_to_telnyx(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="telnyx"), \
+             patch("tools.transcription_tools._transcribe_telnyx",
+                   return_value={"success": True, "transcript": "hi"}) as mock_telnyx:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="override-model")
+
+        assert mock_telnyx.call_args[0][1] == "override-model"
+
+
+# ============================================================================
 # _transcribe_xai
 # ============================================================================
 

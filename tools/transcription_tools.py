@@ -9,6 +9,7 @@ Provides speech-to-text transcription with six providers:
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **telnyx** — Telnyx AI Speech-to-Text API, requires ``TELNYX_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
 
@@ -84,13 +85,16 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_TELNYX_STT_MODEL = os.getenv("STT_TELNYX_MODEL", "openai/whisper-large-v3-turbo")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
+TELNYX_STT_LANGUAGE_ENV = "TELNYX_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+TELNYX_STT_BASE_URL = os.getenv("TELNYX_STT_BASE_URL", "https://api.telnyx.com/v2/ai")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -265,6 +269,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "telnyx":
+            if get_env_value("TELNYX_API_KEY"):
+                return "telnyx"
+            logger.warning(
+                "STT provider 'telnyx' configured but TELNYX_API_KEY not set"
+            )
+            return "none"
+
         if provider == "xai":
             if get_env_value("XAI_API_KEY"):
                 return "xai"
@@ -289,6 +301,8 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    # Telnyx keys are commonly present in Telnyx deployments for non-STT tools,
+    # so do not auto-select Telnyx implicitly. Use ``stt.provider: telnyx``.
     if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"
@@ -687,6 +701,93 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: telnyx (AI Speech-to-Text API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_telnyx(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using the Telnyx AI Speech-to-Text API.
+
+    Uses ``POST /v2/ai/audio/transcriptions`` with multipart/form-data.
+    Requires ``TELNYX_API_KEY``. Optional language can be set with
+    ``stt.telnyx.language`` or ``TELNYX_STT_LANGUAGE``.
+    """
+    api_key = get_env_value("TELNYX_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "TELNYX_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    telnyx_config = stt_config.get("telnyx", {})
+    base_url = str(
+        telnyx_config.get("base_url")
+        or get_env_value("TELNYX_STT_BASE_URL")
+        or TELNYX_STT_BASE_URL
+    ).strip().rstrip("/")
+    language = str(
+        telnyx_config.get("language")
+        or os.getenv(TELNYX_STT_LANGUAGE_ENV)
+        or ""
+    ).strip()
+
+    try:
+        import requests
+
+        data: Dict[str, str] = {"model": model_name}
+        if language:
+            data["language"] = language
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                f"{base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (Path(file_path).name, audio_file)},
+                data=data,
+                timeout=120,
+            )
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                err_body = response.json()
+                errors = err_body.get("errors")
+                if isinstance(errors, list) and errors:
+                    detail = errors[0].get("detail") or errors[0].get("title") or ""
+                if not detail:
+                    detail = err_body.get("error", {}).get("message", "") or response.text[:300]
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Telnyx STT API error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+        transcript_text = _extract_transcript_text(result)
+
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Telnyx STT returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via Telnyx STT (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "telnyx"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Telnyx STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Telnyx STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: xAI (Grok STT API)
 # ---------------------------------------------------------------------------
 
@@ -853,6 +954,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "telnyx":
+        telnyx_cfg = stt_config.get("telnyx", {})
+        model_name = model or telnyx_cfg.get("model", DEFAULT_TELNYX_STT_MODEL)
+        return _transcribe_telnyx(file_path, model_name)
+
     if provider == "xai":
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
@@ -866,7 +972,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, set TELNYX_API_KEY with stt.provider: telnyx for Telnyx STT, "
+            "set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

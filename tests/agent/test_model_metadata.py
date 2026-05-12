@@ -547,6 +547,48 @@ class TestGetModelContextLength:
             assert result == CONTEXT_PROBE_TIERS[0]
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    def test_stale_minimax_cache_32k_is_invalidated(self, mock_models_dev, mock_fetch, tmp_path):
+        """Stale 32K cache entries for MiniMax must not keep tripping the 64K floor."""
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "https://api.minimax.io/anthropic"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("MiniMax-M2.7", base_url, 32768)
+            result = get_model_context_length(
+                "MiniMax-M2.7",
+                base_url=base_url,
+                provider="minimax",
+            )
+            assert result == 204800
+            assert get_cached_context_length("MiniMax-M2.7", base_url) is None
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_openrouter_32k_underreport_for_minimax_falls_through_to_default(self, mock_fetch, mock_models_dev):
+        """Unknown-provider fallback must reject stale OpenRouter 32K for MiniMax."""
+        mock_fetch.return_value = {
+            "MiniMax-M2.7": {"context_length": 32768}
+        }
+        result = get_model_context_length("MiniMax-M2.7")
+        assert result == 204800
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    def test_non_minimax_32k_cache_is_still_respected(self, mock_models_dev, mock_fetch, tmp_path):
+        """The stale-32K invalidation must stay narrow and not touch unrelated models."""
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "http://local"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.5:27b", base_url, 32768)
+            result = get_model_context_length(
+                "qwen3.5:27b",
+                base_url=base_url,
+            )
+            assert result == 32768
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_metadata_beats_fuzzy_default(self, mock_endpoint_fetch, mock_fetch):
         mock_fetch.return_value = {}

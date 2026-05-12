@@ -445,13 +445,40 @@ def _embedded_profile_env_path(config: dict[str, Any]):
     return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
+def _load_simple_env(path: Path) -> dict[str, str]:
+    """Load a simple KEY=VALUE env file (no comments, no quotes, no multiline)."""
+    if not path.exists():
+        return {}
+    result: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            result[key.strip()] = value.strip()
+    return result
+
+
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
-    """Write the profile-scoped env file that standalone hindsight-embed uses."""
+    """Write the profile-scoped env file that standalone hindsight-embed uses.
+
+    Preserves any extra env vars (e.g. throttling settings) that were set via
+    ``hindsight-embed profile set-env`` or manually — only the keys managed by
+    ``_build_embedded_profile_env`` are overwritten; everything else is kept.
+    """
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+
+    # Read existing env file to preserve user-set variables (throttling, etc.)
+    existing = _load_simple_env(profile_env)
+
+    # Managed keys from plugin config overwrite whatever was there before
+    managed = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    existing.update(managed)
+
     profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
+        "".join(f"{key}={value}\n" for key, value in existing.items()),
         encoding="utf-8",
     )
     return profile_env

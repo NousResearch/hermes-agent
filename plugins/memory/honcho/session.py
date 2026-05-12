@@ -1017,7 +1017,13 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            # Fallback: when ai_observe_others is on, the card may live on the
+            # target peer itself rather than as the observer's local representation.
+            # Query the target peer's own card directly when the observer path is empty.
+            if not card and target_peer_id is not None and observer_peer_id != target_peer_id:
+                card = self._fetch_peer_card(target_peer_id)
+            return card
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []

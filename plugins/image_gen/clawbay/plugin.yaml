@@ -1,0 +1,5 @@
+name: clawbay
+version: 1.0.0
+description: "Clawbay OpenAI-compatible GPT image generation backend. Uses providers.clawbay from config.yaml."
+author: Rohit/Switch
+kind: backend

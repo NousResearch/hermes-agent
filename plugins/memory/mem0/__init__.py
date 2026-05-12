@@ -52,6 +52,7 @@ def _load_config() -> dict:
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
+        "base_url": os.environ.get("MEM0_BASE_URL", ""),
     }
 
     config_path = get_hermes_home() / "mem0.json"
@@ -117,7 +118,13 @@ CONCLUDE_SCHEMA = {
 # ---------------------------------------------------------------------------
 
 class Mem0MemoryProvider(MemoryProvider):
-    """Mem0 Platform memory with server-side extraction and semantic search."""
+    """Mem0 memory with server-side extraction and semantic search.
+
+    Supports both the hosted Mem0 Platform API and self-hosted server.
+    For self-hosted, set MEM0_BASE_URL in env or mem0.json to point at
+    the local server (e.g. http://127.0.0.1:8888). When MEM0_BASE_URL
+    is set, the provider uses direct HTTP calls instead of the cloud SDK.
+    """
 
     def __init__(self):
         self._config = None
@@ -131,6 +138,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
+        # Self-hosted mode
+        self._base_url = ""
+        self._use_http = False
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
@@ -141,7 +151,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
-        return bool(cfg.get("api_key"))
+        # Available if either cloud api_key or self-hosted base_url is set
+        return bool(cfg.get("api_key")) or bool(cfg.get("base_url"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -203,11 +214,32 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._base_url = self._config.get("base_url", "").rstrip("/")
+        self._use_http = bool(self._base_url)
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+
+    # ------------------------------------------------------------------
+    # HTTP helpers for self-hosted mode
+    # ------------------------------------------------------------------
+    def _http(self, method: str, path: str, *, json_data: dict = None, params: dict = None) -> Any:
+        """Make an HTTP request to the self-hosted Mem0 server."""
+        import urllib.request
+        import urllib.parse
+        url = f"{self._base_url}{path}"
+        if params:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        data = json.dumps(json_data).encode() if json_data else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode()
+            return json.loads(body) if body else {}
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -250,13 +282,18 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                client = self._get_client()
-                results = self._unwrap_results(client.search(
-                    query=query,
-                    filters=self._read_filters(),
-                    rerank=self._rerank,
-                    top_k=5,
-                ))
+                if self._use_http:
+                    data = self._http("POST", "/search-raw",
+                        json_data={"query": query, "filters": self._read_filters()})
+                    results = self._unwrap_results(data)
+                else:
+                    client = self._get_client()
+                    results = self._unwrap_results(client.search(
+                        query=query,
+                        filters=self._read_filters(),
+                        rerank=self._rerank,
+                        top_k=5,
+                    ))
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -276,12 +313,16 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _sync():
             try:
-                client = self._get_client()
                 messages = [
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, **self._write_filters())
+                if self._use_http:
+                    self._http("POST", "/memories",
+                        json_data={"messages": messages, **self._write_filters()})
+                else:
+                    client = self._get_client()
+                    client.add(messages, **self._write_filters())
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -303,14 +344,19 @@ class Mem0MemoryProvider(MemoryProvider):
                 "error": "Mem0 API temporarily unavailable (multiple consecutive failures). Will retry automatically."
             })
 
-        try:
-            client = self._get_client()
-        except Exception as e:
-            return tool_error(str(e))
+        if not self._use_http:
+            try:
+                client = self._get_client()
+            except Exception as e:
+                return tool_error(str(e))
 
         if tool_name == "mem0_profile":
             try:
-                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                if self._use_http:
+                    data = self._http("GET", "/memories", params=self._read_filters())
+                    memories = self._unwrap_results(data)
+                else:
+                    memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -327,12 +373,17 @@ class Mem0MemoryProvider(MemoryProvider):
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = self._unwrap_results(client.search(
-                    query=query,
-                    filters=self._read_filters(),
-                    rerank=rerank,
-                    top_k=top_k,
-                ))
+                if self._use_http:
+                    data = self._http("POST", "/search-raw",
+                        json_data={"query": query, "filters": self._read_filters(), "top_k": top_k})
+                    results = self._unwrap_results(data)
+                else:
+                    results = self._unwrap_results(client.search(
+                        query=query,
+                        filters=self._read_filters(),
+                        rerank=rerank,
+                        top_k=top_k,
+                    ))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -347,11 +398,16 @@ class Mem0MemoryProvider(MemoryProvider):
             if not conclusion:
                 return tool_error("Missing required parameter: conclusion")
             try:
-                client.add(
-                    [{"role": "user", "content": conclusion}],
-                    **self._write_filters(),
-                    infer=False,
-                )
+                if self._use_http:
+                    self._http("POST", "/memories",
+                        json_data={"messages": [{"role": "user", "content": conclusion}],
+                                   "infer": False, **self._write_filters()})
+                else:
+                    client.add(
+                        [{"role": "user", "content": conclusion}],
+                        **self._write_filters(),
+                        infer=False,
+                    )
                 self._record_success()
                 return json.dumps({"result": "Fact stored."})
             except Exception as e:

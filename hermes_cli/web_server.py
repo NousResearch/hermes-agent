@@ -786,6 +786,15 @@ async def get_sessions(limit: int = 20, offset: int = 0):
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                if "last_prompt_tokens" not in s:
+                    s["last_prompt_tokens"] = 0
+                if "context_length" not in s:
+                    try:
+                        from agent.model_metadata import get_model_context_length
+                        model_name = s.get("model") or ""
+                        s["context_length"] = get_model_context_length(model_name) if model_name else 0
+                    except Exception:
+                        s["context_length"] = 0
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -2412,6 +2421,15 @@ async def get_session_detail(session_id: str):
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        if "last_prompt_tokens" not in session:
+            session["last_prompt_tokens"] = 0
+        if "context_length" not in session:
+            try:
+                from agent.model_metadata import get_model_context_length
+                model_name = session.get("model") or ""
+                session["context_length"] = get_model_context_length(model_name) if model_name else 0
+            except Exception:
+                session["context_length"] = 0
         return session
     finally:
         db.close()

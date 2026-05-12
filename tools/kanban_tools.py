@@ -611,6 +611,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                scheduled_at=args.get("scheduled_at"),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
@@ -1009,6 +1010,16 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "scheduled_at": {
+                "type": "integer",
+                "description": (
+                    "Unix epoch timestamp. The task will not be "
+                    "dispatched until this time arrives. NULL or "
+                    "omitted = dispatch immediately when ready. Use "
+                    "this to defer work to a future time — e.g. "
+                    "tomorrow morning, next Friday evening."
                 ),
             },
         },

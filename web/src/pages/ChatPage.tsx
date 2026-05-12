@@ -35,6 +35,12 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  consumeChatRecoveryAfterAuthReload,
+  getRememberedChatSessionId,
+  rememberChatSessionId,
+  scheduleDashboardAuthReload,
+} from "@/lib/chatRecovery";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -160,12 +166,64 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
-  // param changes do NOT remount the component. Resume-in-chat from the
+  // changes do NOT remount the component. Resume-in-chat from the
   // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
+  const [recoveryPending, setRecoveryPending] = useState(() => {
+    const pending = consumeChatRecoveryAfterAuthReload();
+    return !resumeParam && pending;
+  });
   const channel = useMemo(() => getOrCreateChannelId(resumeParam), [resumeParam]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+    rememberChatSessionId(resumeParam);
+  }, [resumeParam]);
+
+  useEffect(() => {
+    if (!recoveryPending || resumeParam) return;
+
+    let cancelled = false;
+
+    const resumeTo = (sessionId: string) => {
+      if (cancelled) return;
+      rememberChatSessionId(sessionId);
+      const next = new URLSearchParams(searchParams);
+      next.set("resume", sessionId);
+      setSearchParams(next, { replace: true });
+      setRecoveryPending(false);
+    };
+
+    const remembered = getRememberedChatSessionId();
+    if (remembered) {
+      resumeTo(remembered);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    api
+      .getMostRecentSession()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.session_id) {
+          resumeTo(res.session_id);
+        } else {
+          setRecoveryPending(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRecoveryPending(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [recoveryPending, resumeParam, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -281,6 +339,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const token = window.__HERMES_SESSION_TOKEN__;
     // Banner already initialised above; just bail before wiring xterm/WS.
     if (!token) {
+      return;
+    }
+    if (recoveryPending && !resumeParam) {
       return;
     }
 
@@ -584,7 +645,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (wsRef.current === ws) wsRef.current = null;
         if (unmounting) return;
         if (ev.code === 4401) {
-          setBanner("Auth failed. Reload the page to refresh the session token.");
+          const reloadQueued = scheduleDashboardAuthReload({
+            sessionId: resumeParam ?? getRememberedChatSessionId(),
+          });
+          setBanner(
+            reloadQueued
+              ? "Dashboard restarted or token expired. Reloading and resuming chat…"
+              : "Auth failed after reload. Refresh the page to get a new dashboard token.",
+          );
           return;
         }
         if (ev.code === 4403) {
@@ -665,7 +733,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, recoveryPending, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -730,6 +798,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
+  const statusBanner = banner ?? (recoveryPending && !resumeParam
+    ? "Recovering previous chat session…"
+    : null);
+
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -808,9 +880,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
-      {banner && (
+      {statusBanner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
-          {banner}
+          {statusBanner}
         </div>
       )}
 

@@ -65,6 +65,8 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getMostRecentSession: () =>
+    fetchJSON<MostRecentSessionResponse>("/api/sessions/most-recent"),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
@@ -404,6 +406,13 @@ export interface SessionLatestDescendantResponse {
   session_id: string;
   path: string[];
   changed: boolean;
+}
+
+export interface MostRecentSessionResponse {
+  session_id: string | null;
+  title?: string;
+  started_at?: number;
+  source?: string;
 }
 
 export interface PaginatedSessions {

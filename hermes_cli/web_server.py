@@ -806,6 +806,45 @@ async def get_sessions(limit: int = 20, offset: int = 0, resumable: bool = True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/sessions/most-recent")
+async def get_most_recent_session(resumable: bool = True):
+    """Return the latest human-resumable session for chat recovery.
+
+    Browser chat uses this after a dashboard auth-token refresh when the old
+    page had no explicit ?resume= target. Keep the filter aligned with the
+    session picker: hide internal/scheduled sources and empty sessions by
+    default so a freshly-created sidebar helper session does not steal recovery.
+    """
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            exclude_sources = _RESUMABLE_SESSION_EXCLUDE_SOURCES if resumable else None
+            rows = db.list_sessions_rich(
+                limit=200,
+                offset=0,
+                exclude_sources=exclude_sources,
+                resumable_only=resumable,
+            )
+            for row in rows:
+                if exclude_sources and (row.get("source") or "") in exclude_sources:
+                    continue
+                if resumable and (row.get("message_count") or 0) <= 0:
+                    continue
+                return {
+                    "session_id": row.get("id"),
+                    "title": row.get("title") or "",
+                    "started_at": row.get("started_at") or 0,
+                    "source": row.get("source") or "",
+                }
+            return {"session_id": None}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/most-recent failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20, resumable: bool = True):
     """Full-text search across session message content using FTS5."""

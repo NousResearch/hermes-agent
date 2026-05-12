@@ -8,8 +8,6 @@ Verifies that:
 
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -21,16 +19,38 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _clear_provider_caches():
     """Force providers/__init__.py to re-discover on next list_providers()."""
     import providers as _pkg
-    _pkg._REGISTRY.clear()
-    _pkg._ALIASES.clear()
-    _pkg._discovered = False
-    # Evict any cached plugin modules so the next import re-executes.
-    for mod in list(sys.modules.keys()):
-        if (
-            mod.startswith("plugins.model_providers")
-            or mod.startswith("_hermes_user_provider")
-        ):
-            del sys.modules[mod]
+    _pkg._reset_provider_discovery_state(clear_modules=True)
+
+
+def _write_user_provider_plugin(
+    hermes_home: Path,
+    name: str,
+    *,
+    aliases: tuple[str, ...] = (),
+    base_url: str = "https://user-override.example.com/v1",
+) -> Path:
+    """Create a minimal user model-provider plugin under HERMES_HOME."""
+    plugin_dir = hermes_home / "plugins" / "model-providers" / name
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "__init__.py").write_text(
+        "from providers import register_provider\n"
+        "from providers.base import ProviderProfile\n"
+        "\n"
+        "register_provider(ProviderProfile(\n"
+        f'    name="{name}",\n'
+        f"    aliases={aliases!r},\n"
+        f'    env_vars=("{name.upper().replace("-", "_")}_API_KEY",),\n'
+        f'    base_url="{base_url}",\n'
+        '    auth_type="api_key",\n'
+        "))\n"
+    )
+    (plugin_dir / "plugin.yaml").write_text(
+        f"name: {name}\n"
+        "kind: model-provider\n"
+        "version: 0.0.1\n"
+        "description: Test user override\n"
+    )
+    return plugin_dir
 
 
 def test_bundled_plugins_discovered():
@@ -73,26 +93,11 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     # env var is the source of truth. Most code paths re-read it each call.
 
     # Drop a user plugin that replaces 'gmi'
-    user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
-    user_gmi.mkdir(parents=True)
-    (user_gmi / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
-        "\n"
-        "custom_gmi = ProviderProfile(\n"
-        '    name="gmi",\n'
-        '    aliases=("gmi-user-override-test",),\n'
-        '    env_vars=("GMI_API_KEY",),\n'
-        '    base_url="https://user-override.example.com/v1",\n'
-        '    auth_type="api_key",\n'
-        ")\n"
-        "register_provider(custom_gmi)\n"
-    )
-    (user_gmi / "plugin.yaml").write_text(
-        "name: gmi-user-override\n"
-        "kind: model-provider\n"
-        "version: 0.0.1\n"
-        "description: Test user override\n"
+    _write_user_provider_plugin(
+        hermes_home,
+        "gmi",
+        aliases=("gmi-user-override-test",),
+        base_url="https://user-override.example.com/v1",
     )
 
     _clear_provider_caches()
@@ -106,6 +111,32 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     assert "gmi-user-override-test" in gmi.aliases
 
     # Clean up: reset discovery state so other tests see the bundled version
+    _clear_provider_caches()
+
+
+def test_runtime_discovers_new_user_provider_without_manual_reset(tmp_path, monkeypatch):
+    """A newly created user provider plugin should be picked up mid-process."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _clear_provider_caches()
+    from providers import get_provider_profile
+
+    assert get_provider_profile("repro-provider") is None
+
+    _write_user_provider_plugin(
+        hermes_home,
+        "repro-provider",
+        aliases=("repro",),
+        base_url="https://repro.example/v1",
+    )
+
+    profile = get_provider_profile("repro-provider")
+    assert profile is not None
+    assert profile.base_url == "https://repro.example/v1"
+    assert get_provider_profile("repro").name == "repro-provider"
+
     _clear_provider_caches()
 
 

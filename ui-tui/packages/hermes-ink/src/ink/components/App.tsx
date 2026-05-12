@@ -781,15 +781,29 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       return
     }
 
+    if ((m.button & 0x20) !== 0) {
+      if (app.mouseCaptureTarget) {
+        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
+
+        return
+      }
+
+      if (baseButton !== 0) {
+        return
+      }
+
+      // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
+      // calls notifySelectionChange internally — no extra onSelectionChange.
+      app.props.onSelectionDrag(col, row)
+
+      return
+    }
+
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
       if (baseButton === 2 && hasSelection(sel)) {
-        if ((m.button & 0x20) !== 0) {
-          return
-        }
-
         if (!app.props.getSelectedText()) {
           return
         }
@@ -815,20 +829,6 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       }
 
       app.props.onMouseDownAt(col, row, baseButton)
-
-      return
-    }
-
-    if ((m.button & 0x20) !== 0) {
-      if (app.mouseCaptureTarget) {
-        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
-
-        return
-      }
-
-      // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
-      // calls notifySelectionChange internally — no extra onSelectionChange.
-      app.props.onSelectionDrag(col, row)
 
       return
     }

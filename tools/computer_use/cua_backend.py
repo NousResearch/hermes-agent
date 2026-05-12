@@ -57,10 +57,18 @@ _WINDOW_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Regex to parse element lines from get_window_state AX tree markdown:
-#   "  - [N] AXRole "label""
+# Regex to parse element lines from get_window_state AX tree markdown.
+#
+# Handles two output formats from different cua-driver versions:
+#   Classic:  "  - [N] AXRole \"label\""
+#   New:       "[N] AXRole (order) id=Label"
+#
+# Group 1: element index
+# Group 2: AX role
+# Group 3: quoted label (classic format)
+# Group 4: id= label (new format)
 _ELEMENT_LINE_RE = re.compile(
-    r'^\s*-\s+\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)")?',
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
     re.MULTILINE,
 )
 
@@ -107,13 +115,19 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
 
 
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
-    """Parse UIElement list from get_window_state AX tree markdown."""
+    """Parse UIElement list from get_window_state AX tree markdown.
+
+    Handles both the classic ``"label"``-quoted format and the newer
+    ``id=Label`` format introduced in cua-driver v0.1.6.
+    """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
+        # group(3) = quoted label (classic); group(4) = id= label (new)
+        label = m.group(3) or m.group(4) or ""
         elements.append(UIElement(
             index=int(m.group(1)),
             role=m.group(2),
-            label=m.group(3) or "",
+            label=label,
             bounds=(0, 0, 0, 0),
         ))
     return elements
@@ -325,6 +339,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
+        self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -389,6 +404,10 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
+        # Record the resolved app name so capture_after= follow-ups can re-target
+        # the same app rather than falling back to the frontmost window.
+        if app or not self._last_app:
+            self._last_app = app_name
 
         # Step 2: capture.
         png_b64: Optional[str] = None
@@ -643,6 +662,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
+            self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
             return ActionResult(
                 ok=True, action="focus_app",
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "

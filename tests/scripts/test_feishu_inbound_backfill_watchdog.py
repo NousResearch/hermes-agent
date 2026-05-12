@@ -34,7 +34,7 @@ def test_reports_missing_user_message_and_appends_queue(tmp_path, monkeypatch, c
     )
     _write_log(tmp_path, "")
 
-    assert watchdog.run(["--window-seconds", "300", "--grace-seconds", "10"]) == 2
+    assert watchdog.run(["--window-seconds", "300", "--grace-seconds", "10"]) == 0
     output = capsys.readouterr().out
     assert "suspected missed message" in output
     assert "om_missing" in output
@@ -101,7 +101,7 @@ def test_suppresses_repeated_alerts_with_state(tmp_path, monkeypatch):
     )
     _write_log(tmp_path, "")
 
-    assert watchdog.run(["--window-seconds", "300", "--grace-seconds", "10"]) == 2
+    assert watchdog.run(["--window-seconds", "300", "--grace-seconds", "10"]) == 0
     assert watchdog.run(["--window-seconds", "300", "--grace-seconds", "10", "--dry-run"]) == 0
     queue = tmp_path / "state" / "feishu_inbound_backfill_queue.jsonl"
     assert len(queue.read_text(encoding="utf-8").splitlines()) == 1

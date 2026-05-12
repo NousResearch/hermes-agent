@@ -1,6 +1,6 @@
 ---
 name: whisper
-description: "Use when transcribing audio (podcasts, meetings, voice memos, lectures, video soundtracks), translating non-English audio to English text, generating subtitles in SRT/VTT, or building a speech-to-text pipeline. Triggers: 'transcribe this audio', 'extract speech from <file>', 'subtitle this video', 'translate this Spanish audio'. OpenAI Whisper: 99 languages, 6 model sizes (tiny→large/turbo), word-level timestamps, `initial_prompt` for domain vocabulary. For real-time/streaming prefer `faster-whisper`."
+description: "Use when transcribing audio (podcasts, meetings, voice memos, lectures, video soundtracks), translating non-English audio to English text, generating subtitles in SRT/VTT, or building a speech-to-text pipeline. Triggers: 'transcribe this audio', 'extract speech from <file>', 'subtitle this video', 'translate this Spanish audio to English', 'word-level timestamps'. For real-time/streaming prefer `faster-whisper`."
 version: 1.0.0
 author: Orchestra Research
 license: MIT

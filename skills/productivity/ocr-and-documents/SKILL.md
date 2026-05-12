@@ -1,6 +1,6 @@
 ---
 name: ocr-and-documents
-description: "Use when extracting text from a local PDF, scanned document, or image-based PDF; when `web_extract` failed for a remote PDF and a local fallback is needed; or for batch PDF processing. Chooses `pymupdf` (lightweight, text-based PDFs) vs `marker-pdf` (OCR, equations, complex layouts) based on document characteristics. For arXiv papers prefer the `alphaxiv` skill first; for DOCX use python-docx; for PPTX use the `powerpoint` skill."
+description: "Use when extracting text from a local PDF, scanned document, or image-based PDF; when `web_extract` failed for a remote PDF and a local fallback is needed; or for batch PDF processing. Triggers: 'OCR this scan', 'extract text from this PDF', 'parse equations from <paper>', 'read this PDF'. Chooses `pymupdf` (lightweight, text-based PDFs) vs `marker-pdf` (OCR, equations, complex layouts) based on document characteristics. For arXiv papers prefer the `alphaxiv` skill first; for DOCX use python-docx; for PPTX use the `powerpoint` skill."
 version: 2.3.0
 author: Hermes Agent
 license: MIT

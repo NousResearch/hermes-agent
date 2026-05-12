@@ -551,26 +551,26 @@ class _IdempotencyCache:
 
     async def get_or_set(self, key: str, fingerprint: str, compute_coro):
         self._purge()
-        item = self._store.get(key)
-        if item and item["fp"] == fingerprint:
+        cache_key = (key, fingerprint)
+        item = self._store.get(cache_key)
+        if item:
             return item["resp"]
 
-        inflight_key = (key, fingerprint)
-        task = self._inflight.get(inflight_key)
+        task = self._inflight.get(cache_key)
         if task is None:
             async def _compute_and_store():
                 resp = await compute_coro()
                 import time as _t
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+                self._store[cache_key] = {"resp": resp, "ts": _t.time()}
                 self._purge()
                 return resp
 
             task = asyncio.create_task(_compute_and_store())
-            self._inflight[inflight_key] = task
+            self._inflight[cache_key] = task
 
             def _clear_inflight(done_task: "asyncio.Task[Any]") -> None:
-                if self._inflight.get(inflight_key) is done_task:
-                    self._inflight.pop(inflight_key, None)
+                if self._inflight.get(cache_key) is done_task:
+                    self._inflight.pop(cache_key, None)
 
             task.add_done_callback(_clear_inflight)
 
@@ -580,9 +580,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if context:
+        subset["__context__"] = context
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -1243,7 +1249,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                context={
+                    "session_id": session_id,
+                    "gateway_session_key": gateway_session_key,
+                },
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:

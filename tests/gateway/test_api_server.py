@@ -27,6 +27,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _idem_cache,
     _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
@@ -1288,6 +1289,115 @@ class TestChatCompletionsEndpoint:
                     session_ids.append(mock_run.call_args.kwargs["session_id"])
 
         assert session_ids[0] != session_ids[1]
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_is_scoped_by_session_id(self, auth_adapter):
+        """Same Idempotency-Key/body must not replay across session-continuity scopes."""
+        _idem_cache._store.clear()
+        _idem_cache._inflight.clear()
+
+        class FakeSessionDB:
+            def get_messages_as_conversation(self, session_id):
+                return [{"role": "user", "content": f"PRIVATE_HISTORY_FOR_{session_id}"}]
+
+        async def _mock_run_agent(**kwargs):
+            history = kwargs["conversation_history"]
+            session_id = kwargs["session_id"]
+            return (
+                {
+                    "final_response": f"computed_for={session_id}; history={history}",
+                    "messages": [],
+                    "api_calls": 1,
+                },
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(auth_adapter)
+        body = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "summarize my previous conversation"}],
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(auth_adapter, "_ensure_session_db", return_value=FakeSessionDB()),
+                patch.object(auth_adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run,
+            ):
+                victim_resp = await cli.post(
+                    "/v1/chat/completions",
+                    json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Id": "victim",
+                    },
+                )
+                attacker_resp = await cli.post(
+                    "/v1/chat/completions",
+                    json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Id": "attacker",
+                    },
+                )
+                attacker_data = await attacker_resp.json()
+
+        assert victim_resp.status == 200
+        assert attacker_resp.status == 200
+        assert mock_run.call_count == 2
+        attacker_content = attacker_data["choices"][0]["message"]["content"]
+        assert "computed_for=attacker" in attacker_content
+        assert "PRIVATE_HISTORY_FOR_attacker" in attacker_content
+        assert "PRIVATE_HISTORY_FOR_victim" not in attacker_content
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_is_scoped_by_session_key(self, auth_adapter):
+        """Same Idempotency-Key/body must not replay across memory/session-key scopes."""
+        _idem_cache._store.clear()
+        _idem_cache._inflight.clear()
+
+        async def _mock_run_agent(**kwargs):
+            gateway_session_key = kwargs["gateway_session_key"]
+            return (
+                {
+                    "final_response": f"computed_for_key={gateway_session_key}",
+                    "messages": [],
+                    "api_calls": 1,
+                },
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(auth_adapter)
+        body = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "use my memory"}],
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                first_resp = await cli.post(
+                    "/v1/chat/completions",
+                    json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "memory-a",
+                    },
+                )
+                second_resp = await cli.post(
+                    "/v1/chat/completions",
+                    json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-Session-Key": "memory-b",
+                    },
+                )
+                second_data = await second_resp.json()
+
+        assert first_resp.status == 200
+        assert second_resp.status == 200
+        assert mock_run.call_count == 2
+        assert second_data["choices"][0]["message"]["content"] == "computed_for_key=memory-b"
 
 
 # ---------------------------------------------------------------------------

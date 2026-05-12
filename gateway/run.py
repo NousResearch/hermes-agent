@@ -64,6 +64,16 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT = 30.0
+_STALE_CODE_SENTINEL_RELATIVE_PATHS = (
+    "gateway/run.py",
+    "gateway/platforms/base.py",
+    "gateway/platforms/telegram.py",
+    "gateway/inbound_journal.py",
+    "hermes_cli/config.py",
+    "run_agent.py",
+    "model_tools.py",
+)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -1386,6 +1396,11 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+        # Snapshot gateway source mtimes so a background monitor can restart
+        # after updates before the next user message hits the hot path.
+        self._stale_code_baseline = self._capture_stale_code_snapshot()
+        self._stale_code_restart_deferred = False
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -3217,6 +3232,118 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _stale_code_sentinel_paths(self) -> tuple[Path, ...]:
+        """Return source files whose newer mtime means this gateway is stale."""
+        root = Path(__file__).resolve().parents[1]
+        paths: list[Path] = []
+        for rel in _STALE_CODE_SENTINEL_RELATIVE_PATHS:
+            path = root / rel
+            if path.exists():
+                paths.append(path)
+        return tuple(paths)
+
+    def _capture_stale_code_snapshot(self) -> Dict[str, int]:
+        snapshot: Dict[str, int] = {}
+        for path in self._stale_code_sentinel_paths():
+            try:
+                snapshot[str(path)] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+        return snapshot
+
+    def _detect_stale_code(self) -> bool:
+        """Detect source files updated after this gateway process started."""
+        if getattr(self, "_restart_requested", False):
+            return False
+        baseline = getattr(self, "_stale_code_baseline", None)
+        if not isinstance(baseline, dict) or not baseline:
+            self._stale_code_baseline = self._capture_stale_code_snapshot()
+            return False
+        for path_text, old_mtime_ns in baseline.items():
+            try:
+                current_mtime_ns = Path(path_text).stat().st_mtime_ns
+            except OSError:
+                continue
+            if current_mtime_ns > old_mtime_ns:
+                logger.info(
+                    "Detected gateway source update after startup: %s mtime_ns %s -> %s",
+                    path_text,
+                    old_mtime_ns,
+                    current_mtime_ns,
+                )
+                return True
+        return False
+
+    def _load_stale_code_check_interval(self) -> float:
+        raw = os.getenv("HERMES_GATEWAY_STALE_CODE_CHECK_INTERVAL")
+        if raw is None:
+            try:
+                from hermes_cli.config import load_config
+
+                raw = cfg_get(
+                    load_config(),
+                    "gateway",
+                    "stale_code_check_interval",
+                    default=_STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT,
+                )
+            except Exception:
+                raw = _STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = _STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT
+        return max(1.0, value)
+
+    def _trigger_stale_code_restart(self) -> bool:
+        """Request a restart for stale in-memory gateway code."""
+        if getattr(self, "_restart_requested", False):
+            return False
+        via_service = bool(os.environ.get("INVOCATION_ID"))
+        logger.info(
+            "Requesting gateway restart after stale-code detection (via_service=%s)",
+            via_service,
+        )
+        return self.request_restart(detached=not via_service, via_service=via_service)
+
+    async def _stale_code_monitor_tick(self) -> str:
+        """Run one stale-code monitor pass. Returns state for tests/logging."""
+        if getattr(self, "_restart_requested", False):
+            return "restart_already_requested"
+
+        if getattr(self, "_stale_code_restart_deferred", False):
+            if self._running_agent_count() > 0:
+                return "deferred_active"
+            self._stale_code_restart_deferred = False
+            self._trigger_stale_code_restart()
+            return "idle_restart"
+
+        if not self._detect_stale_code():
+            return "not_stale"
+
+        if self._running_agent_count() > 0:
+            self._stale_code_restart_deferred = True
+            logger.info(
+                "Stale gateway code detected; deferring restart until %d active session(s) drain",
+                self._running_agent_count(),
+            )
+            return "deferred_active"
+
+        self._trigger_stale_code_restart()
+        return "idle_restart"
+
+    async def _stale_code_monitor_watcher(self, interval: Optional[float] = None) -> None:
+        """Background stale-code monitor so updates are noticed before user input."""
+        delay = interval if interval is not None else self._load_stale_code_check_interval()
+        await asyncio.sleep(delay)
+        while self._running:
+            try:
+                await self._stale_code_monitor_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Stale-code monitor tick failed: %s", exc, exc_info=True)
+            await asyncio.sleep(delay)
+
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
@@ -3826,6 +3953,10 @@ class GatewayRunner:
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
+
+        # Start background stale-code monitor so planned updates are noticed
+        # before the first post-update user message hits the hot path.
+        asyncio.create_task(self._stale_code_monitor_watcher())
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the

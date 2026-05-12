@@ -6464,31 +6464,28 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return
 
-    # If origin/main has commits not on upstream, don't trample
-    if origin_ahead > 0:
-        print()
-        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
-        print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
-        return
-
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
         return
 
-    # origin/main is strictly behind upstream/main (can fast-forward)
+    # origin/main has upstream commits to pull.
+    # If origin also has local commits (e.g. patches), use a regular merge
+    # instead of fast-forward-only so both histories are preserved.
     print()
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
+    if origin_ahead > 0:
+        print(f"  (fork also has {origin_ahead} local commit(s) — merging)")
     print("→ Pulling from upstream...")
 
+    pull_args = (
+        git_cmd + ["pull", "--ff-only", "upstream", "main"]
+        if origin_ahead == 0
+        else git_cmd + ["pull", "upstream", "main"]
+    )
+
     try:
-        subprocess.run(
-            git_cmd + ["pull", "--ff-only", "upstream", "main"],
-            cwd=cwd,
-            check=True,
-        )
+        subprocess.run(pull_args, cwd=cwd, check=True)
     except subprocess.CalledProcessError:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."

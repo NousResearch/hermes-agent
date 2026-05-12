@@ -65,10 +65,8 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
-_CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+# Backward-compatible alias — tests and external code may reference this set.
+from agent.unicode_scanner import find_unsafe_invisibles, INVISIBLE_CHARS_BLOCKLIST as _CRON_INVISIBLE_CHARS  # noqa: E402
 
 # U+200D Zero-Width Joiner is also a legitimate, required part of many
 # Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
@@ -127,10 +125,9 @@ def _scan_cron_prompt(prompt: str) -> str:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
         prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
-    for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_for_invisible_scan:
-            return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+    # Check invisible unicode (ZWJ inside emoji clusters is allowed)
+    for _char, cp in find_unsafe_invisibles(prompt_to_scan):
+        return f"Blocked: prompt contains invisible unicode U+{cp:04X} (possible injection)." (fix: allow ZWJ inside emoji grapheme clusters in context/memory/cron scanners)
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."

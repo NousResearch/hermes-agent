@@ -82,19 +82,15 @@ _MEMORY_THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
 ]
 
-# Subset of invisible chars for injection detection
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+# Backward-compatible alias — tests and external code may reference this set.
+from agent.unicode_scanner import find_unsafe_invisibles, INVISIBLE_CHARS_BLOCKLIST as _INVISIBLE_CHARS  # noqa: E402
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
+    # Check invisible unicode (ZWJ inside emoji clusters is allowed)
+    for _char, cp in find_unsafe_invisibles(content):
+        return f"Blocked: content contains invisible unicode character U+{cp:04X} (possible injection)."
 
     # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:

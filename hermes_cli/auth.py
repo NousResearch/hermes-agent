@@ -893,7 +893,7 @@ def _file_lock(
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")
 
-    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
+    with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
         deadline = time.monotonic() + max(1.0, timeout_seconds)
         while True:
             try:
@@ -1450,7 +1450,7 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in ("copilot", "lmstudio"):
+        if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2541,7 +2541,7 @@ def refresh_codex_oauth_pure(
         # A 401/403 from the token endpoint always means the refresh token
         # is invalid/expired — force relogin even if the body error code
         # wasn't one of the known strings above.
-        if response.status_code in (401, 403) and not relogin_required:
+        if response.status_code in {401, 403} and not relogin_required:
             relogin_required = True
         raise AuthError(
             message,
@@ -2827,9 +2827,12 @@ def _poll_for_token(
 # import instead of running the full device-code flow every time.
 #
 # File lives at ${HERMES_SHARED_AUTH_DIR}/nous_auth.json, defaulting to
-# ~/.hermes/shared/nous_auth.json. It is OUTSIDE any named profile's
-# HERMES_HOME so named profiles (which typically live under
-# ~/.hermes/profiles/<name>/) all see the same file.
+# ``<hermes-root>/shared/nous_auth.json`` where ``<hermes-root>`` is what
+# ``get_default_hermes_root()`` returns — ``~/.hermes`` on Linux/macOS,
+# ``%LOCALAPPDATA%\hermes`` on native Windows, or the Docker/custom root.
+# It is OUTSIDE any named profile's HERMES_HOME so named profiles (which
+# typically live under ``<hermes-root>/profiles/<name>/``) all see the
+# same file.
 #
 # Written on successful login and on every runtime refresh so the stored
 # refresh_token stays current even if one profile refreshes and rotates it.
@@ -2846,25 +2849,33 @@ def _nous_shared_auth_dir() -> Path:
 
     Honors ``HERMES_SHARED_AUTH_DIR`` so tests can redirect it to a tmp
     path without touching the real user's home. Defaults to
-    ``~/.hermes/shared/``.
+    ``<hermes-root>/shared/``, where ``<hermes-root>`` is what
+    :func:`hermes_constants.get_default_hermes_root` returns — so
+    Linux/macOS classic installs land at ``~/.hermes/shared/``, native
+    Windows installs at ``%LOCALAPPDATA%\\hermes\\shared\\``, and
+    Docker / custom ``HERMES_HOME`` deployments at
+    ``<HERMES_HOME>/shared/``. Sits outside any named profile so all
+    profiles under the same root share the store.
     """
     override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".hermes" / "shared"
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "shared"
 
 
 def _nous_shared_store_path() -> Path:
     path = _nous_shared_auth_dir() / NOUS_SHARED_STORE_FILENAME
     # Seat belt: if pytest is running and this resolves to a path under the
-    # real user's home, refuse rather than silently corrupt cross-profile
+    # real user's Hermes root, refuse rather than silently corrupt cross-profile
     # state. Tests must set HERMES_SHARED_AUTH_DIR to a tmp_path (conftest
     # does not do this automatically — mirror the _auth_file_path() guard
     # so forgetting to set it fails loudly instead of writing to the real
     # shared store).
     if os.environ.get("PYTEST_CURRENT_TEST"):
+        from hermes_constants import get_default_hermes_root
         real_home_shared = (
-            Path.home() / ".hermes" / "shared" / NOUS_SHARED_STORE_FILENAME
+            get_default_hermes_root() / "shared" / NOUS_SHARED_STORE_FILENAME
         ).resolve(strict=False)
         try:
             resolved = path.resolve(strict=False)
@@ -2936,7 +2947,7 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
         "expires_at",
     ):
         value = shared.get(key)
-        if value not in (None, ""):
+        if value not in {None, ""}:
             state[key] = value
     return True
 
@@ -3117,10 +3128,10 @@ def _refresh_access_token(
 ) -> Dict[str, Any]:
     response = client.post(
         f"{portal_base_url}/api/oauth/token",
+        headers={"x-nous-refresh-token": refresh_token},
         data={
             "grant_type": "refresh_token",
             "client_id": client_id,
-            "refresh_token": refresh_token,
         },
     )
 
@@ -3975,7 +3986,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in ("kimi-coding", "kimi-coding-cn"):
+    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -4079,7 +4090,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in ("kimi-coding", "kimi-coding-cn"):
+    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -4499,7 +4510,7 @@ def _login_openai_codex(
                     reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     reuse = "y"
-                if reuse in ("", "y", "yes"):
+                if reuse in {"", "y", "yes"}:
                     config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
                     print()
                     print("Login successful!")
@@ -4520,7 +4531,7 @@ def _login_openai_codex(
                 do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "n"
-            if do_import in ("y", "yes"):
+            if do_import in {"y", "yes"}:
                 _save_codex_tokens(cli_tokens)
                 base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
                 config_path = _update_config_for_provider("openai-codex", base_url)
@@ -4612,7 +4623,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break
-                elif poll_resp.status_code in (403, 404):
+                elif poll_resp.status_code in {403, 404}:
                     continue  # User hasn't completed login yet
                 else:
                     raise AuthError(
@@ -5177,7 +5188,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 do_import = input("Import these credentials? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "y"
-            if do_import in ("", "y", "yes"):
+            if do_import in {"", "y", "yes"}:
                 print("Rehydrating Nous session from shared credentials...")
                 auth_state = _try_import_shared_nous_state(
                     timeout_seconds=timeout_seconds,
@@ -5240,6 +5251,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             from hermes_cli.models import (
                 get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
+                union_with_portal_free_recommendations,
             )
             model_ids = get_curated_nous_model_ids()
 
@@ -5249,6 +5261,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 pricing = get_pricing_for_provider("nous")
                 free_tier = check_nous_free_tier()
                 if free_tier:
+                    # The Portal's freeRecommendedModels endpoint is the
+                    # source of truth for what's free *right now*. Augment
+                    # the curated list with anything new the Portal flags
+                    # as free so users on older Hermes builds still see
+                    # newly-launched free models without a CLI release.
+                    _portal_for_recs = auth_state.get("portal_base_url", "")
+                    model_ids, pricing = union_with_portal_free_recommendations(
+                        model_ids, pricing, _portal_for_recs,
+                    )
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )

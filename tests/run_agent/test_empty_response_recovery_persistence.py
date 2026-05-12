@@ -21,9 +21,21 @@ def _agent_with_stubbed_persistence():
 
 
 def test_persist_session_strips_trailing_empty_recovery_scaffolding():
+    """After stripping scaffolding, also rewind past orphan trailing tool-result
+    messages that the failed iteration left behind. Otherwise the next user
+    message lands after a bare ``tool`` and produces a protocol-invalid
+    sequence that most providers silently fail on, retriggering the empty-
+    retry loop indefinitely.
+    """
     agent = _agent_with_stubbed_persistence()
     messages = [
         {"role": "user", "content": "run the task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "x", "arguments": "{}"}}],
+        },
         {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
         {
             "role": "assistant",
@@ -42,9 +54,11 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
 
     AIAgent._persist_session(agent, messages, conversation_history=[])
 
+    # After strip + rewind, only the original user message remains. The
+    # assistant(tool_calls) + tool pair is dropped because its iteration
+    # never produced a real response.
     assert messages == [
         {"role": "user", "content": "run the task"},
-        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
     ]
     assert agent.saved_session_logs[-1] == messages
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)

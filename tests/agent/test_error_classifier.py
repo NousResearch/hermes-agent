@@ -587,6 +587,28 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
 
+    def test_runtime_error_cli_turn_timed_out_classifies_as_timeout(self):
+        # RuntimeError from a local claude-cli shim that wraps a subprocess
+        # timeout must classify as FailoverReason.timeout, not unknown, so
+        # the retry loop rebuilds the client instead of treating the turn as
+        # an empty model response (#22548).
+        e = RuntimeError("claude CLI turn timed out")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_runtime_error_request_timed_out_classifies_as_timeout(self):
+        e = RuntimeError("request timed out after 120s")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_runtime_error_deadline_exceeded_classifies_as_timeout(self):
+        e = RuntimeError("deadline exceeded")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
     # ── Error code classification ──
 
     def test_error_code_resource_exhausted(self):

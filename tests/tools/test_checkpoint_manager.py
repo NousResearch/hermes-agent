@@ -21,6 +21,7 @@ from tools.checkpoint_manager import (
     _store_path,
     _ref_name,
     _project_meta_path,
+    _touch_project,
     format_checkpoint_list,
     DEFAULT_EXCLUDES,
     CHECKPOINT_BASE,
@@ -606,6 +607,43 @@ class TestErrorResilience:
             raise OSError("git exploded")
         monkeypatch.setattr("tools.checkpoint_manager._run_git", broken_run_git)
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
+
+
+class TestTouchProjectMalformedMeta:
+    """_touch_project must not raise when the project metadata file is corrupted.
+
+    The try/except in _touch_project only catches ``(OSError, ValueError)``.
+    When ``json.load`` succeeds but returns a non-dict (e.g. a list ``[]``,
+    ``null``, or a scalar), the subsequent ``meta["workdir"] = ...`` raises
+    ``TypeError: list indices must be integers…``.  This TypeError propagates
+    uncaught out of ``_touch_project`` and up through ``_take`` into
+    ``ensure_checkpoint``, where it is swallowed by the broad ``except
+    Exception`` safety net — but the effect is that the checkpoint is silently
+    skipped for the entire session.
+
+    Fix: add ``if not isinstance(meta, dict): meta = {}`` after parsing,
+    mirroring the same guard already present in ``_list_projects``.
+    """
+
+    @pytest.mark.parametrize("payload", ["[]", "null", "42", '"oops"'])
+    def test_non_dict_meta_does_not_raise(self, tmp_path, payload):
+        store = tmp_path / "store"
+        workdir = str(tmp_path / "project")
+        _init_store(store, workdir)
+
+        dir_hash = _project_hash(workdir)
+        meta_path = _project_meta_path(store, dir_hash)
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(payload, encoding="utf-8")
+
+        # Must not raise TypeError
+        _touch_project(store, workdir)
+
+        # Metadata file should now be a valid dict with last_touch updated
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        assert "last_touch" in data
+        assert "workdir" in data
 
 
 # =========================================================================

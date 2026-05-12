@@ -4,6 +4,7 @@ description: "Spotify: play, search, queue, manage playlists and devices."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   tools: [spotify_playback, spotify_devices, spotify_queue, spotify_search, spotify_playlists, spotify_albums, spotify_library]
 metadata:

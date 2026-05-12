@@ -16,6 +16,7 @@ YouTube transcripts to summaries, threads, blogs.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/media/youtube-content` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

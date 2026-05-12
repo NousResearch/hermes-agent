@@ -9,6 +9,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -189,6 +190,25 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    # Prefer our own portable Git install first — this way a broken or
+    # partially-uninstalled system Git can't hijack the bash lookup.  The
+    # install.ps1 installer always drops portable Git here when the user
+    # didn't already have a working system Git.
+    #
+    # Layouts (both checked so upgrades between MinGit and PortableGit
+    # installs work transparently):
+    #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
+    #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
+    _local_appdata = os.environ.get("LOCALAPPDATA", "")
+    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    if _hermes_portable_git:
+        for candidate in (
+            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
     found = shutil.which("bash")
     if found:
         return found
@@ -196,7 +216,7 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
@@ -235,7 +255,15 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
+    # The "/usr/bin not already present → inject sane POSIX path" heuristic
+    # only makes sense on POSIX.  On Windows the PATH separator is ";"
+    # (the split(":") above turns a full Windows PATH into a single
+    # unrecognisable chunk, which then triggers prepending POSIX paths
+    # to a Windows PATH — completely wrong).  Skip the injection entirely
+    # on Windows; the native PATH already points at whatever shell
+    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
+    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
+    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
 
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
@@ -245,6 +273,17 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+
+    # Inject ContextVar-based session vars into subprocess env.
+    # ContextVars don't propagate to child processes, so we bridge them here.
+    try:
+        from gateway.session_context import get_session_env, _UNSET, _VAR_MAP
+        for var_name, var in _VAR_MAP.items():
+            value = var.get()
+            if value is not _UNSET and value:
+                run_env[var_name] = value
+    except Exception:
+        pass
 
     return run_env
 
@@ -357,7 +396,29 @@ class LocalEnvironment(BaseEnvironment):
         Check the environment configured for this backend first so callers can
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
+
+        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
+        can't open the path, and the Windows default temp (``%TEMP%``) often
+        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
+        break unquoted bash interpolations.  Use a dedicated cache dir under
+        ``HERMES_HOME`` instead — single-word path, guaranteed to exist, same
+        string resolves in both Git Bash and native Python.
         """
+        if _IS_WINDOWS:
+            # Derive a Windows-safe temp dir under HERMES_HOME.  Using
+            # forward slashes makes the same string work unchanged in bash
+            # command interpolations AND in Python ``open()`` — Windows
+            # accepts forward slashes in filesystem paths, and we control
+            # the path so we can guarantee no spaces.
+            try:
+                from hermes_constants import get_hermes_home
+                cache_dir = get_hermes_home() / "cache" / "terminal"
+            except Exception:
+                cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Force forward slashes so the same string serves both contexts.
+            return str(cache_dir).replace("\\", "/")
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -439,7 +500,7 @@ class LocalEnvironment(BaseEnvironment):
         def _group_alive(pgid: int) -> bool:
             try:
                 # POSIX-only: _IS_WINDOWS is handled before this helper is used.
-                os.killpg(pgid, 0)
+                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
                 return True
             except ProcessLookupError:
                 return False
@@ -477,7 +538,7 @@ class LocalEnvironment(BaseEnvironment):
                         raise
 
                 try:
-                    os.killpg(pgid, signal.SIGTERM)
+                    os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
                     return
 
@@ -489,7 +550,7 @@ class LocalEnvironment(BaseEnvironment):
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
-                    os.killpg(pgid, signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
                     return
                 _wait_for_group_exit(pgid, 2.0)
@@ -512,7 +573,7 @@ class LocalEnvironment(BaseEnvironment):
         ``_run_bash`` recovery path will resolve a safe fallback if needed.
         """
         try:
-            with open(self._cwd_file) as f:
+            with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path

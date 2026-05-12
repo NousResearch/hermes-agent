@@ -966,11 +966,21 @@ class ShellFileOperations(FileOperations):
         verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        if verify_result.stdout != new_content:
+        # Normalize line endings before comparing.  On Windows, Python's
+        # default text-mode ``open()`` translates ``\n`` → ``\r\n`` on
+        # write, so the file on disk legitimately holds CRLFs while our
+        # ``new_content`` string has bare LFs.  Without this normalization
+        # every patch on Windows returns a bogus "wrote 39, read 42"
+        # false-negative even though the edit landed correctly.  POSIX
+        # backends don't translate, so this is a no-op there.
+        _verify_stdout_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
+        if _verify_stdout_normalized != _new_content_normalized:
             return PatchResult(error=(
                 f"Post-write verification failed for {path}: on-disk content "
                 f"differs from intended write "
-                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                f"(wrote {len(_new_content_normalized)} chars, read back "
+                f"{len(_verify_stdout_normalized)} chars after normalizing line endings). "
                 "The patch did not persist. Re-read the file and try again."
             ))
 
@@ -1234,7 +1244,7 @@ class ShellFileOperations(FileOperations):
 
         search_root = Path(path)
         has_hidden_path_ancestor = any(
-            part not in (".", "..") and part.startswith(".")
+            part not in {".", ".."} and part.startswith(".")
             for part in search_root.parts
         )
 
@@ -1295,7 +1305,7 @@ class ShellFileOperations(FileOperations):
                     rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
                 except ValueError:
                     rel_parts = Path(file_path).parts
-                if any(part not in (".", "..") and part.startswith(".") for part in rel_parts):
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
                     continue
                 filtered_files.append(file_path)
             files = filtered_files[offset:offset + limit]

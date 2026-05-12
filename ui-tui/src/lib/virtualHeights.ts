@@ -43,8 +43,15 @@ export const estimatedMsgHeight = (
     compact,
     details,
     limitHistory = false,
-    userPrompt = ''
-  }: { compact: boolean; details: boolean; limitHistory?: boolean; userPrompt?: string }
+    userPrompt = '',
+    withSeparator = false
+  }: {
+    compact: boolean
+    details: boolean
+    limitHistory?: boolean
+    userPrompt?: string
+    withSeparator?: boolean
+  }
 ) => {
   if (msg.kind === 'intro') {
     return msg.info?.version ? 9 : 5
@@ -78,6 +85,13 @@ export const estimatedMsgHeight = (
     h += 2
   } else if (msg.kind === 'slash') {
     h++
+  }
+
+  // Inter-turn separator above non-first user messages (1 rule row + 1
+  // top-margin row). The render-side gate is in appLayout.tsx; we trust
+  // the caller to pass `withSeparator` only when it matches that gate.
+  if (withSeparator) {
+    h += 2
   }
 
   return Math.max(1, h)

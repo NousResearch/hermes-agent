@@ -409,6 +409,19 @@ def test_mac_cdp_fill_config_requires_session_and_blocks_secrets(tmp_path):
     assert "error" in secret
     assert "secret" in secret["error"].lower()
 
+    validation_js = json.loads(
+        browser_cdp_tool.browser_mac_cdp_fill_config(
+            url="https://example.com/form",
+            allowed_domains=["example.com"],
+            fields=[{"selector": "#title", "value": "ok"}],
+            session_id="fill-001",
+            validation_expression="document.querySelector('form').submit()",
+            shared_root=str(tmp_path),
+        )
+    )
+    assert "error" in validation_js
+    assert "validationExpression" in validation_js["error"]
+
 
 def test_mac_cdp_fill_config_writes_non_submitting_config(tmp_path):
     raw = browser_cdp_tool.browser_mac_cdp_fill_config(
@@ -417,7 +430,6 @@ def test_mac_cdp_fill_config_writes_non_submitting_config(tmp_path):
         fields=[{"selector": "#title", "kind": "value", "value": "hello"}],
         session_id="fill-001",
         output_prefix="flow",
-        validation_expression="({ok:true})",
         shared_root=str(tmp_path),
         write_local_config=True,
     )

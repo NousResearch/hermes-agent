@@ -161,6 +161,11 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
     session_id = str(spec.get("sessionId") or "").strip()
     if mode == "fill" and not session_id:
         raise ValueError("fill mode requires a non-empty sessionId from a prior inventory pass")
+    if mode == "fill" and spec.get("validationExpression"):
+        raise ValueError(
+            "custom validationExpression is not permitted for guarded fill configs; "
+            "arbitrary JavaScript could submit, save, or otherwise mutate the page"
+        )
 
     root = _as_path(shared_root)
     prefix = _sanitize_prefix(spec.get("outputPrefix"), mode)
@@ -190,7 +195,7 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
             {
                 "fields": _validate_fields(spec.get("fields")),
                 "postFillWaitSec": float(spec.get("postFillWaitSec", 1.0)),
-                "validationExpression": spec.get("validationExpression") or "({ok:true})",
+                "validationExpression": "({ok:true})",
                 "outputPath": _validate_shared_output(root / f"{prefix}-form-fill-result.json", root),
                 "screenshotPath": _validate_shared_output(root / f"{prefix}-form-fill-screenshot.png", root),
             }

@@ -465,9 +465,13 @@ def _mac_sidecar_config_payload(
         "sideEffectPolicy": cfg.get("sideEffectPolicy"),
         "url": cfg.get("url"),
         "next_step": (
-            "Install config_json to config_path via mac_write_file, then run "
-            "runner_path via mac_run_shared_python. For fill configs, first "
-            "state sideEffectPolicy to the user and obtain explicit approval."
+            "Before running, state sideEffectPolicy to the user and obtain "
+            "explicit approval for this URL and field set; then install "
+            "config_json to config_path via mac_write_file and run runner_path "
+            "via mac_run_shared_python."
+            if mode == "fill"
+            else "Install config_json to config_path via mac_write_file, then "
+            "run runner_path via mac_run_shared_python for the read-only pass."
         ),
     }
     if cfg.get("readOnly") is True:
@@ -742,7 +746,10 @@ MAC_CDP_FILL_SCHEMA: Dict[str, Any] = {
             },
             "session_id": {"type": "string", "description": "Required correlation ID from a prior read-only inventory pass."},
             "output_prefix": {"type": "string", "description": "Optional safe filename prefix for result/screenshot artifacts."},
-            "validation_expression": {"type": "string", "description": "Optional JS expression returning validation info after fill."},
+            "validation_expression": {
+                "type": "string",
+                "description": "Deprecated/blocked for guarded fill: arbitrary JS validation is rejected because it can cause side effects.",
+            },
             "shared_root": {"type": "string", "description": "Mac shared-worker root. Defaults to Kagura local-worker shared root."},
             "config_path": {"type": "string", "description": "Optional intended output config JSON path under shared_root."},
             "write_local_config": {"type": "boolean", "description": "Advanced/testing only: also write config_path on the current Hermes host."},

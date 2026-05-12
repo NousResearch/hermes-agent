@@ -82,7 +82,7 @@ def test_fill_config_rejects_submit_secret_and_missing_session(tmp_path):
         assert expected.lower() in str(exc.value).lower()
 
 
-def test_fill_config_requires_fields_and_preserves_validation(tmp_path):
+def test_fill_config_requires_fields_and_blocks_custom_validation_js(tmp_path):
     cfg = builder.build_config(
         {
             "mode": "fill",
@@ -90,17 +90,29 @@ def test_fill_config_requires_fields_and_preserves_validation(tmp_path):
             "sessionId": "abc",
             "allowedDomains": ["example.com"],
             "fields": [{"selector": "#title", "kind": "value", "value": "こんにちは"}],
-            "validationExpression": "({ok: document.querySelector(\"#title\").value.length > 0})",
         },
         shared_root=tmp_path,
     )
     assert cfg["url"] == "https://example.com/form?x=1&sessionId=abc"
     assert cfg["allowSubmit"] is False
     assert cfg["fields"][0]["value"] == "こんにちは"
-    assert cfg["validationExpression"].startswith("({ok:")
+    assert cfg["validationExpression"] == "({ok:true})"
     assert cfg["sideEffectPolicy"]["approvalRequiredBeforeRun"] is True
     assert "autosave" in " ".join(cfg["sideEffectPolicy"]["knownSideEffects"])
     assert "obtain approval" in cfg["sideEffectPolicy"]["approvalInstruction"]
+
+    with pytest.raises(ValueError, match="custom validationExpression"):
+        builder.build_config(
+            {
+                "mode": "fill",
+                "url": "https://example.com/form?x=1",
+                "sessionId": "abc",
+                "allowedDomains": ["example.com"],
+                "fields": [{"selector": "#title", "kind": "value", "value": "こんにちは"}],
+                "validationExpression": "document.querySelector('form').submit()",
+            },
+            shared_root=tmp_path,
+        )
 
 
 def test_write_config_uses_mode_specific_default_name(tmp_path):

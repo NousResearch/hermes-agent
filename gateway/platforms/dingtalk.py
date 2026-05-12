@@ -34,6 +34,7 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -890,19 +891,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            raw_status_code = getattr(resp, "status_code", 500) or 500
-            if isinstance(raw_status_code, (int, float, str)):
-                try:
-                    status_code = int(raw_status_code)
-                except (TypeError, ValueError):
-                    status_code = 500
-            else:
+            status_code_raw = getattr(resp, "status_code", None)
+            try:
+                status_code = int(status_code_raw) if status_code_raw is not None else 500
+            except (TypeError, ValueError):
                 status_code = 500
-            if status_code == 500 and raw_status_code != 500:
+            if status_code == 500 and status_code_raw not in (None, 500):
                 logger.debug(
                     "[%s] Non-integer DingTalk webhook status_code %r; treating as 500",
                     self.name,
-                    raw_status_code,
+                    status_code_raw,
                 )
 
             if status_code < 300:
@@ -911,9 +909,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = getattr(resp, "text", "")
-            if not isinstance(body, str):
-                body = str(body)
+            body = str(getattr(resp, "text", "") or "")
             logger.warning(
                 "[%s] Send failed HTTP %d: %s", self.name, status_code, body[:200]
             )
@@ -1199,7 +1195,7 @@ class DingTalkAdapter(BasePlatformAdapter):
     ) -> None:
         """Stream content to an existing AI Card."""
         if not self._card_sdk_ready():
-            self._log_card_sdk_unavailable()
+            logger.debug("[%s] AI Card SDK unavailable; skipping stream update", self.name)
             return
 
         stream_request = dingtalk_card_models.StreamingUpdateRequest(
@@ -1448,8 +1444,39 @@ class _IncomingHandler(
             if isinstance(data, str):
                 data = json.loads(data)
 
-            # Parse dict into ChatbotMessage using SDK's from_dict
-            chatbot_msg = ChatbotMessage.from_dict(data)
+            if ChatbotMessage is not None and hasattr(ChatbotMessage, "from_dict"):
+                # Parse dict into ChatbotMessage using SDK's from_dict
+                chatbot_msg = ChatbotMessage.from_dict(data)
+            else:
+                # Unit-test / no-SDK fallback: build a minimal message object
+                # with the attribute names the adapter expects.
+                chatbot_msg = SimpleNamespace()
+                if isinstance(data, dict):
+                    chatbot_msg.message_id = data.get("msgId") or data.get("msg_id") or ""
+                    chatbot_msg.conversation_id = (
+                        data.get("conversationId") or data.get("conversation_id") or ""
+                    )
+                    chatbot_msg.conversation_type = (
+                        data.get("conversationType") or data.get("conversation_type") or "1"
+                    )
+                    chatbot_msg.sender_id = data.get("senderId") or data.get("sender_id") or ""
+                    chatbot_msg.sender_staff_id = (
+                        data.get("senderStaffId") or data.get("sender_staff_id") or ""
+                    )
+                    chatbot_msg.sender_nick = data.get("senderNick") or data.get("sender_nick") or ""
+                    chatbot_msg.text = data.get("text") or ""
+                    chatbot_msg.rich_text = data.get("rich_text") or None
+                    chatbot_msg.session_webhook = (
+                        data.get("sessionWebhook") or data.get("session_webhook") or ""
+                    )
+                    chatbot_msg.session_webhook_expired_time = (
+                        data.get("sessionWebhookExpiredTime")
+                        or data.get("session_webhook_expired_time")
+                        or 0
+                    )
+                    chatbot_msg.is_in_at_list = bool(
+                        data.get("isInAtList") or data.get("is_in_at_list") or False
+                    )
 
             # Ensure session_webhook is populated even if the SDK's
             # from_dict() did not map it (field name mismatch across

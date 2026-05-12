@@ -10,36 +10,47 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 @pytest.fixture
-def fake_card_sdk_modules(monkeypatch):
-    """Provide minimal DingTalk Card SDK model classes for card-path tests."""
+def dummy_dingtalk_card_sdk_models(monkeypatch):
+    """Provide minimal model classes for AI card tests when optional SDK deps
+    aren't installed. The adapter code constructs these models, but the tests
+    use MagicMocks for the SDK client so only attribute plumbing matters.
+    """
 
-    class _Model:
+    class _DummyModel:
         def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
+            self.__dict__.update(kwargs)
 
-    fake_card_models = SimpleNamespace(
-        CreateCardRequest=_Model,
-        CreateCardRequestCardData=_Model,
-        CreateCardRequestImGroupOpenSpaceModel=_Model,
-        CreateCardRequestImRobotOpenSpaceModel=_Model,
-        CreateCardHeaders=_Model,
-        DeliverCardRequest=_Model,
-        DeliverCardRequestImGroupOpenDeliverModel=_Model,
-        DeliverCardRequestImRobotOpenDeliverModel=_Model,
-        DeliverCardHeaders=_Model,
-        StreamingUpdateRequest=_Model,
-        StreamingUpdateHeaders=_Model,
+    dummy_card_models = SimpleNamespace(
+        CreateCardRequest=_DummyModel,
+        CreateCardRequestCardData=_DummyModel,
+        CreateCardRequestImGroupOpenSpaceModel=_DummyModel,
+        CreateCardRequestImRobotOpenSpaceModel=_DummyModel,
+        CreateCardHeaders=_DummyModel,
+        DeliverCardRequest=_DummyModel,
+        DeliverCardRequestImGroupOpenDeliverModel=_DummyModel,
+        DeliverCardRequestImRobotOpenDeliverModel=_DummyModel,
+        DeliverCardHeaders=_DummyModel,
+        StreamingUpdateRequest=_DummyModel,
+        StreamingUpdateHeaders=_DummyModel,
     )
-    fake_tea_models = SimpleNamespace(RuntimeOptions=lambda: SimpleNamespace())
+    dummy_robot_models = SimpleNamespace(
+        RobotRecallEmotionRequestTextEmotion=_DummyModel,
+        RobotRecallEmotionRequest=_DummyModel,
+        RobotRecallEmotionHeaders=_DummyModel,
+        RobotReplyEmotionRequestTextEmotion=_DummyModel,
+        RobotReplyEmotionRequest=_DummyModel,
+        RobotReplyEmotionHeaders=_DummyModel,
+        RobotMessageFileDownloadRequest=_DummyModel,
+        RobotMessageFileDownloadHeaders=_DummyModel,
+    )
+    dummy_tea_util_models = SimpleNamespace(RuntimeOptions=_DummyModel)
 
-    monkeypatch.setattr("gateway.platforms.dingtalk.CARD_SDK_AVAILABLE", True)
-    monkeypatch.setattr(
-        "gateway.platforms.dingtalk.dingtalk_card_models",
-        fake_card_models,
-    )
-    monkeypatch.setattr("gateway.platforms.dingtalk.tea_util_models", fake_tea_models)
-    return fake_card_models
+    import gateway.platforms.dingtalk as dingtalk_mod
+
+    monkeypatch.setattr(dingtalk_mod, "CARD_SDK_AVAILABLE", True)
+    monkeypatch.setattr(dingtalk_mod, "dingtalk_card_models", dummy_card_models)
+    monkeypatch.setattr(dingtalk_mod, "dingtalk_robot_models", dummy_robot_models)
+    monkeypatch.setattr(dingtalk_mod, "tea_util_models", dummy_tea_util_models)
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +839,7 @@ class TestMessageContextIsolation:
 class TestCardLifecycle:
 
     @pytest.fixture
-    def adapter_with_card(self, fake_card_sdk_modules):
+    def adapter_with_card(self, dummy_dingtalk_card_sdk_models):
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -1025,7 +1036,7 @@ class TestDingTalkAdapterAICards:
         mock_stream_client,
         mock_http_client,
         mock_message,
-        fake_card_sdk_modules,
+        dummy_dingtalk_card_sdk_models,
     ):
         from gateway.platforms.dingtalk import DingTalkAdapter
 

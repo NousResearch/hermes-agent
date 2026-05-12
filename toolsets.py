@@ -77,6 +77,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Diff analysis and security tools
+    "diff_analyze", "secrets_detect",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -254,6 +256,18 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "git": {
+        "description": "Git diff analysis - compare commits, branches, and working tree",
+        "tools": ["diff_analyze"],
+        "includes": []
+    },
+
+    "security": {
+        "description": "Security tools: secrets detection, vulnerability scanning",
+        "tools": ["secrets_detect"],
         "includes": []
     },
 

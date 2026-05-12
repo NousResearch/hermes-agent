@@ -77,6 +77,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Semantic code search tools
+    "semantic_search",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -116,7 +118,13 @@ TOOLSETS = {
         "tools": ["x_search"],
         "includes": []
     },
-    
+
+    "code_search": {
+        "description": "Semantic code search: natural language queries over code intent using embeddings",
+        "tools": ["semantic_search"],
+        "includes": []
+    },
+
     "vision": {
         "description": "Image analysis and vision tools",
         "tools": ["vision_analyze"],

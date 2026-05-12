@@ -1342,10 +1342,8 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
         """Return context length, but reject stale 32k values for Kimi models.
 
-        OpenRouter reports 32768 for moonshotai/kimi-k2.6 and similar Kimi
-        models; the actual supported context is 262144.  Apply the same guard
-        used for the generic OpenRouter path (step 6 in resolve_context_length)
-        so the Nous portal path does not short-circuit it.
+        Apply the same guard used for the generic OpenRouter path (step 6 in 
+        resolve_context_length) so the Nous portal path does not short-circuit it.
         """
         ctx = entry.get("context_length")
         if ctx is None:

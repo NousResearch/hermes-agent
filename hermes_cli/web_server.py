@@ -83,7 +83,19 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Generated fresh on every server start — dies when the process exits.
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+# IMPORTANT: This runs at import time. On Windows, the background-server
+# path sets _HERMES_DASHBOARD_TOKEN *before* spawning the subprocess that
+# imports this module, so the subprocess picks up the parent's token.
+# Do NOT move this into start_server() — it must remain module-level
+# because uvicorn imports the app object directly.
+_token_file = os.environ.get("_HERMES_TOKEN_FILE")
+if _token_file and os.path.isfile(_token_file):
+    try:
+        _SESSION_TOKEN = Path(_token_file).read_text().strip()
+    except OSError:
+        _SESSION_TOKEN = secrets.token_urlsafe(32)
+else:
+    _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -4402,8 +4414,14 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    background: bool = False,
 ):
-    """Start the web UI server."""
+    """Start the web UI server.
+
+    If *background* is True, fork the server into a background process so the
+    CLI returns immediately.  The parent opens the browser then exits; the
+    child keeps serving until killed via ``hermes dashboard --stop``.
+    """
     import uvicorn
 
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
@@ -4429,14 +4447,83 @@ def start_server(
     app.state.bound_host = host
     app.state.bound_port = port
 
-    if open_browser:
-        import webbrowser
+    if not background:
+        # Foreground mode (original behaviour)
+        if open_browser:
+            import webbrowser
 
-        def _open():
+            def _open():
+                time.sleep(1.0)
+                webbrowser.open(f"http://{host}:{port}")
+
+            threading.Thread(target=_open, daemon=True).start()
+
+        print(f"  Hermes Web UI → http://{host}:{port}")
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+        return
+
+    # --- Background mode: fork so the child inherits the session token ---
+    print(f"  Hermes Web UI → http://{host}:{port}")
+
+    if sys.platform == "win32":
+        # Windows has no fork — use subprocess with token passed via temp file
+        import tempfile
+        token_fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".token", delete=False, prefix="hermes-")
+        token_fh.write(_SESSION_TOKEN)
+        token_fh.close()
+        os.chmod(token_fh.name, 0o600)
+        env = {**os.environ, "_HERMES_TOKEN_FILE": token_fh.name}
+        subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "hermes_cli.web_server:app",
+             "--host", host, "--port", str(port), "--log-level", "warning"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+            close_fds=True,
+        )
+        if open_browser:
+            import webbrowser
             time.sleep(1.0)
             webbrowser.open(f"http://{host}:{port}")
+        print(f"  Started — stop with: hermes dashboard --stop")
+        return
 
-        threading.Thread(target=_open, daemon=True).start()
+    try:
+        pid = os.fork()
+    except OSError as exc:
+        raise SystemExit(
+            f"Failed to fork background server: {exc}\n"
+            "Try running in foreground mode."
+        ) from exc
 
-    print(f"  Hermes Web UI → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    if pid > 0:
+        # Parent: wait for child to be listening, then open browser and exit
+        import socket as _socket
+        for _ in range(50):  # up to 5 seconds
+            time.sleep(0.1)
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                    s.settimeout(0.5)
+                    s.connect((host, port))
+                break
+            except OSError:
+                continue
+        if open_browser:
+            import webbrowser
+            webbrowser.open(f"http://{host}:{port}")
+        print(f"  PID {pid} — stop with: hermes dashboard --stop")
+        return
+
+    # Child: detach from controlling terminal and serve
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull, 0)  # stdin
+    os.dup2(devnull, 1)  # stdout
+    os.dup2(devnull, 2)  # stderr
+    if devnull > 2:
+        os.close(devnull)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    except Exception as exc:
+        _log.exception("Dashboard server crashed: %s", exc)
+    finally:
+        os._exit(0)

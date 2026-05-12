@@ -9058,6 +9058,108 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _focus_browser_tab(url: str) -> None:
+    """Focus an existing browser tab matching *url*, or open a new one as fallback."""
+    import sys
+
+    dispatch = {
+        "darwin": _focus_tab_macos,
+        "win32": _focus_tab_windows,
+        "linux": _focus_tab_linux,
+    }
+    handler = dispatch.get(sys.platform)
+    if handler:
+        handler(url)
+    else:
+        import webbrowser
+        webbrowser.open(url)
+
+
+def _applescript_escape(s: str) -> str:
+    """Escape a string for safe embedding in a double-quoted AppleScript string."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_BROWSER_NAME_MAP: dict[str, str] = {
+    "safari": "Safari",
+    "googlechrome": "Google Chrome",
+    "chrome": "Google Chrome",
+    "firefox": "Firefox",
+    "microsoft edge": "Microsoft Edge",
+    "msedge": "Microsoft Edge",
+    "brave": "Brave Browser",
+    "arc": "Arc",
+}
+
+
+def _focus_tab_macos(url: str) -> None:
+    """macOS: detect default browser, focus existing tab or open new one."""
+    import subprocess
+    import webbrowser
+
+    try:
+        default = webbrowser.get().name.lower()
+        app_name = _BROWSER_NAME_MAP.get(default)
+    except webbrowser.Error:
+        app_name = None
+
+    all_browsers = ["Safari", "Google Chrome", "Arc", "Firefox", "Microsoft Edge", "Brave Browser"]
+    if app_name and app_name in all_browsers:
+        all_browsers.remove(app_name)
+        all_browsers.insert(0, app_name)
+
+    script_template = '''
+tell application "{app}"
+    activate
+    set found to false
+    repeat with w in windows
+        set tabCount to count of tabs of w
+        repeat with i from 1 to tabCount
+            set tabUrl to URL of tab i of w
+            if tabUrl starts with "{url}" then
+                set active tab index of w to i
+                set index of w to 1
+                set found to true
+                exit repeat
+            end if
+        end repeat
+        if found then exit repeat
+    end repeat
+    if not found then
+        open location "{url}"
+    end if
+end tell
+'''
+    safe_url = _applescript_escape(url)
+    for app in all_browsers:
+        script = script_template.format(app=_applescript_escape(app), url=safe_url)
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+
+    webbrowser.open(url)
+
+
+def _focus_tab_windows(url: str) -> None:
+    """Windows: use os.startfile to open URL (avoids shell injection)."""
+    try:
+        os.startfile(url)
+    except (OSError, AttributeError):
+        import webbrowser
+        webbrowser.open(url)
+
+
+def _focus_tab_linux(url: str) -> None:
+    """Linux: try xdg-open, then webbrowser fallback."""
+    import subprocess
+    try:
+        subprocess.run(["xdg-open", url], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        import webbrowser
+        webbrowser.open(url)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -9077,6 +9179,21 @@ def cmd_dashboard(args):
         # we killed at least one, 1 if they were all unkillable.
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
+
+    # If dashboard is already running, focus the existing browser tab.
+    import socket
+    host = args.host
+    port = args.port
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1)
+            sock.connect((host, port))
+        url = f"http://{host}:{port}"
+        print(f"  Hermes Web UI already running → {url}")
+        _focus_browser_tab(url)
+        return
+    except OSError:
+        pass
 
     try:
         import fastapi  # noqa: F401
@@ -9117,9 +9234,10 @@ def cmd_dashboard(args):
     start_server(
         host=args.host,
         port=args.port,
-        open_browser=not args.no_open,
+        open_browser=not getattr(args, "no_open", False),
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        background=True,
     )
 
 

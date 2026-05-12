@@ -14331,6 +14331,7 @@ class GatewayRunner:
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
+            _raw_preview = preview or ""  # save before truncation for dedup key
             if preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
@@ -14340,17 +14341,18 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
+
             # Dedup: collapse consecutive identical progress messages.
-            # Common with execute_code where models iterate with the same
-            # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
+            # Key uses raw (pre-truncation) preview so commands that share a
+            # long common prefix but differ in the tail are not falsely merged.
+            _dedup_key = f"{tool_name}\x00{_raw_preview}"
+            if _dedup_key == last_progress_msg[0]:
                 repeat_count[0] += 1
                 # Update the last line in progress_lines with a counter
                 # via a special "dedup" queue message.
                 progress_queue.put(("__dedup__", msg, repeat_count[0]))
                 return
-            last_progress_msg[0] = msg
+            last_progress_msg[0] = _dedup_key
             repeat_count[0] = 0
             
             progress_queue.put(msg)

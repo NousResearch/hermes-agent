@@ -1350,7 +1350,7 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
         ctx = entry.get("context_length")
         if ctx is None:
             return None
-        if ctx == 32768 and _model_name_suggests_kimi(or_id):
+        if ctx <= 32768 and _model_name_suggests_kimi(or_id):
             logger.info(
                 "Rejecting OpenRouter metadata context=%s for %r "
                 "(Kimi-family underreport, Nous path); falling through to hardcoded defaults",

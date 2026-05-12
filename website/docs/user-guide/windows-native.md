@@ -100,13 +100,35 @@ Python's default stdio on Windows uses the console's active code page (usually c
 The fix is in `hermes_cli/stdio.py::configure_windows_stdio()`, called early in every entry point (`cli.py::main`, `hermes_cli/main.py::main`, `gateway/run.py::main`). It:
 
 1. Flips the console code page to CP_UTF8 (65001) via `kernel32.SetConsoleCP` / `SetConsoleOutputCP`.
-2. Reconfigures `sys.stdout` / `sys.stderr` / `sys.stdin` to UTF-8 with `errors='replace'`.
-3. Sets `PYTHONIOENCODING=utf-8` and `PYTHONUTF8=1` (via `setdefault`, so explicit user values win) so child Python subprocesses inherit UTF-8.
-4. Sets `EDITOR=notepad` if neither `EDITOR` nor `VISUAL` is set (see the Editor section below).
+2. Calls `SetConsoleMode` with `ENABLE_VIRTUAL_TERMINAL_PROCESSING` so ANSI escapes render as colors instead of literal `←[33m` garbage (see [Setup wizard UI](#setup-wizard-ui) below).
+3. Reconfigures `sys.stdout` / `sys.stderr` / `sys.stdin` to UTF-8 with `errors='replace'`.
+4. Sets `PYTHONIOENCODING=utf-8` and `PYTHONUTF8=1` (via `setdefault`, so explicit user values win) so child Python subprocesses inherit UTF-8.
+5. Sets `EDITOR=notepad` if neither `EDITOR` nor `VISUAL` is set (see the Editor section below).
 
 Idempotent. No-op on non-Windows.
 
 **Opt out:** `HERMES_DISABLE_WINDOWS_UTF8=1` in the environment falls back to the legacy cp1252 stdio path. Useful for bisecting an encoding bug; unlikely to be the right setting in normal operation.
+
+## Setup wizard UI
+
+`hermes setup` renders its banner with raw ANSI escape sequences (`\x1b[35m┌────...`). On a fresh Windows 10 / 11 **Windows Console Host** — the one `cmd.exe` and PowerShell 5.1 attach to by default — `ENABLE_VIRTUAL_TERMINAL_PROCESSING` is **off**, so those escapes print as literal `←[35m` text and the wizard banner shows up as a wall of garbage glyphs. Windows Terminal sets the flag automatically; the legacy console does not. `irm install.ps1 | iex` lands new users in the legacy host more often than not (it's still the default for `powershell.exe`).
+
+Hermes's `configure_windows_stdio()` now turns the flag on at startup via `SetConsoleMode`, matching what Node, Rust, Go, and Cargo do. After that one call the same banner that looked broken before renders with proper colors in every supported host.
+
+On the rare pre-Win10-1809 console where `SetConsoleMode` rejects the flag, Hermes detects the failure (`hermes_cli.stdio.is_legacy_windows_console()`) and:
+
+- `hermes_cli.colors.should_use_color()` returns `False`, so the wizard prints uncoloured text instead of literal escape codes.
+- The `curses_ui` numbered fallbacks substitute ASCII glyphs (`[x]`, `(*)`, `( )`, `>`) for the Unicode versions (`[✓]`, `(●)`, `(○)`, `→`) so the menu still renders with the default raster font.
+
+**Arrow-key navigation.** The setup wizard prefers `curses` for arrow-key checklists. The `curses` module isn't bundled with Windows Python — install the `windows-curses` shim to get arrow keys:
+
+```powershell
+pip install windows-curses
+```
+
+Without `windows-curses`, the wizard transparently falls back to a numbered prompt ("Select by number, then press Enter to confirm") and prints a one-time hint pointing at this fix. Both paths complete the same configuration; the arrow-key path is just prettier.
+
+**Force ASCII glyphs anywhere:** set `HERMES_ASCII_GLYPHS=1` to force the ASCII fallback on any platform (handy for screen readers, exotic terminal fonts, or CI snapshot tests that dislike Unicode).
 
 ## The editor (`Ctrl-X Ctrl-E`, `/edit`)
 
@@ -285,6 +307,12 @@ The installer provisions Node 22 at `%LOCALAPPDATA%\hermes\node` but your PATH m
 
 **Chinese / Japanese / Arabic characters show as `?` in the CLI.**
 The UTF-8 stdio shim didn't activate. Check that `HERMES_DISABLE_WINDOWS_UTF8` is NOT set (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). If it's empty and you still see `?`, the console host (very old `cmd.exe`) may not support UTF-8 at all — switch to Windows Terminal.
+
+**Setup wizard banner shows literal `←[35m` glyphs.**
+Your console host doesn't have VT processing enabled and the auto-fix in `configure_windows_stdio()` couldn't turn it on. Easiest fix: upgrade to **Windows Terminal** (it's free and bundled on Windows 11) or use PowerShell 7+, both of which honor ANSI escapes natively. If you must stay on PowerShell 5.1 / `cmd.exe`, Hermes will detect the legacy host and suppress colours so the wizard at least reads cleanly. See [Setup wizard UI](#setup-wizard-ui) for the full story.
+
+**Setup wizard menus don't respond to arrow keys.**
+The wizard uses `curses` for arrow-key navigation and `curses` isn't bundled with Windows Python. Run `pip install windows-curses` once and arrow keys come back. Without it, the wizard falls back to a numbered prompt — type the option number then press Enter. Both paths complete the same configuration.
 
 **Gateway can't send Telegram photos — "`BadRequest: payload contains invalid characters`".**
 This is unrelated to Windows but sometimes surfaces first there. Usually it means your file path contains unescaped backslashes in a JSON body. Telegram should be receiving paths Hermes normalizes, not raw Windows paths — if you're seeing this inside a custom plugin, make sure you're passing the Hermes-provided path, not `str(Path(...))` from user input.

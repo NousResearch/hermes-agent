@@ -2197,6 +2197,21 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
         self.assertIn("depth 1", prompt)
         self.assertIn("max_spawn_depth=2", prompt)
 
+    def test_codex_orchestrator_prompt_uses_native_collaboration(self):
+        prompt = _build_child_system_prompt(
+            "Survey approaches", role="orchestrator",
+            max_spawn_depth=2, child_depth=1,
+            collaboration_backend="codex-app-server",
+        )
+        self.assertIn("Codex-Native Orchestrator Role", prompt)
+        self.assertIn("spawn_agent", prompt)
+        self.assertIn("wait_agent", prompt)
+        self.assertIn("Hermes `delegate_task` is NOT available", prompt)
+        self.assertNotIn("You have access to the `delegate_task` tool", prompt)
+        self.assertNotIn("pass role='orchestrator'", prompt)
+        self.assertIn("depth 1", prompt)
+        self.assertIn("max_spawn_depth=2", prompt)
+
     def test_orchestrator_prompt_at_depth_floor_says_children_are_leaves(self):
         """With max_spawn_depth=2 and child_depth=1, the orchestrator's
         own children would be at depth 2 (the floor) → must be leaves."""
@@ -2596,6 +2611,60 @@ class TestCodexAppServerDelegation(unittest.TestCase):
         self.assertEqual(child.command, "codex")
         self.assertEqual(child.args, ["app-server", "--listen", "stdio://"])
         self.assertEqual(child.reasoning_effort, "low")
+
+    def test_codex_app_server_orchestrator_defaults_to_hermes_control_plane(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        mock_child = _make_role_mock_child()
+        with patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2}), \
+             patch("run_agent.AIAgent", return_value=mock_child) as MockAgent:
+            child = _build_child_agent(
+                task_index=0,
+                goal="coordinate nested codex workers",
+                context=None,
+                toolsets=None,
+                model="gpt-5.5",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                role="orchestrator",
+                override_provider="codex-app-server",
+            )
+
+        self.assertIs(child, mock_child)
+        kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(kwargs["provider"], parent.provider)
+        self.assertEqual(kwargs["model"], parent.model)
+        self.assertIn("delegation", kwargs["enabled_toolsets"])
+        self.assertIn("You have access to the `delegate_task` tool", kwargs["ephemeral_system_prompt"])
+        self.assertNotIn("spawn_agent", kwargs["ephemeral_system_prompt"])
+
+    def test_codex_app_server_orchestrator_native_spawn_tools_when_experimental_flag_enabled(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        with patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2, "codex_native_orchestrators": True}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            child = _build_child_agent(
+                task_index=0,
+                goal="coordinate nested codex workers",
+                context=None,
+                toolsets=None,
+                model="gpt-5.5",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                role="orchestrator",
+                override_provider="codex-app-server",
+            )
+
+        MockAgent.assert_not_called()
+        from agent.codex_app_server_client import CodexAppServerSubagent
+
+        self.assertIsInstance(child, CodexAppServerSubagent)
+        self.assertEqual(child.role, "orchestrator")
+        self.assertIn("spawn_agent", child.context)
+        self.assertIn("Hermes `delegate_task` is NOT available", child.context)
+        self.assertNotIn("You have access to the `delegate_task` tool", child.context)
 
 
 if __name__ == "__main__":

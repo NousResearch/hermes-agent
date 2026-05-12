@@ -6499,11 +6499,33 @@ class AIAgent:
 
         Returns the repaired name if found in valid_tool_names, else None.
         """
+        # CC alias hits are well-known and silent — see agent/cc_aliases.py
+        self._last_repair_silent = False
         import re
         from difflib import get_close_matches
 
         if not tool_name:
             return None
+
+        # CC canonical alias fast-path. The Anthropic OAuth path swaps
+        # hermes tool entries for canonical CC schemas (Bash, Read, Edit,
+        # Write, Grep) on the outbound side via cc_aliases.replace_with_cc_canonical
+        # so the billing classifier accepts the request. The model then
+        # emits tool_use blocks with the CC names. cc_aliases.adapt_tool_use
+        # translates them back at dispatch (model_tools.py), but validation
+        # against valid_tool_names runs *before* dispatch — so without this
+        # fast-path the model burns a round-trip self-correcting to the
+        # hermes name. Match exactly (CC names are case-sensitive: ``Bash``,
+        # not ``bash``) and short-circuit before any normalization.
+        try:
+            from agent.cc_aliases import CC_TO_HERMES
+            hermes_name = CC_TO_HERMES.get(tool_name)
+            if hermes_name and hermes_name in self.valid_tool_names:
+                # CC alias hits are well-known and silent — see agent/cc_aliases.py
+                self._last_repair_silent = True
+                return hermes_name
+        except Exception:
+            pass
 
         def _norm(s: str) -> str:
             return s.lower().replace("-", "_").replace(" ", "_")
@@ -15462,10 +15484,12 @@ class AIAgent:
                                 # board.  The bare print() this replaced was
                                 # the source of the "[subagent-N] Auto-repaired"
                                 # lines that interleaved with the swarm board.
-                                self._vprint(
-                                    f"{self.log_prefix}🔧 Auto-repaired tool name: "
-                                    f"'{tc.function.name}' -> '{repaired}'"
-                                )
+                                # CC alias hits are well-known and silent — see agent/cc_aliases.py
+                                if not getattr(self, "_last_repair_silent", False):
+                                    self._vprint(
+                                        f"{self.log_prefix}🔧 Auto-repaired tool name: "
+                                        f"'{tc.function.name}' -> '{repaired}'"
+                                    )
                                 tc.function.name = repaired
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls

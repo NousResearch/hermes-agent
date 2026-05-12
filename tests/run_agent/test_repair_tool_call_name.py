@@ -115,3 +115,45 @@ class TestEdgeCases:
     def test_very_long_name_does_not_match_by_accident(self, repair):
         # Fuzzy match should not claim a tool for something obviously unrelated.
         assert repair("ThisIsNotRemotelyARealToolName_tool") is None
+
+
+class TestCCCanonicalAliasFastPath:
+    """Anthropic OAuth path emits CC canonical names (Bash, Read, Edit,
+    Write, Grep) because cc_aliases.replace_with_cc_canonical substitutes
+    them on the outbound side to satisfy the plan-budget billing
+    classifier. Validation runs before dispatch, so _repair_tool_call
+    must translate these back to their hermes equivalents — exact match,
+    case-sensitive, no normalization.
+    """
+
+    def test_repairs_cc_bash_to_terminal(self):
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names={"terminal", "read_file"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("Bash") == "terminal"
+
+    def test_repairs_cc_read_to_read_file(self, repair):
+        assert repair("Read") == "read_file"
+
+    def test_repairs_cc_edit_to_patch(self, repair):
+        assert repair("Edit") == "patch"
+
+    def test_repairs_cc_write_to_write_file(self, repair):
+        assert repair("Write") == "write_file"
+
+    def test_repairs_cc_grep_to_search_files(self):
+        # search_files isn't in the default VALID set; build a fixture
+        # that includes it so we can verify the alias resolves.
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names=VALID | {"search_files"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("Grep") == "search_files"
+
+    def test_cc_alias_only_when_hermes_name_valid(self):
+        # If the mapped hermes name isn't registered, the fast-path must
+        # NOT return it — fall through to the rest of the repair logic
+        # (which has nothing matching "Bash" → returns None here).
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names={"read_file", "patch"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("Bash") is None

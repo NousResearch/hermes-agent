@@ -1482,10 +1482,19 @@ DEFAULT_CONFIG = {
     # tier — handy for Telegram/Discord chats where the cwd is the
     # user's home directory.
     "lsp": {
-        # Master toggle.  Setting this to false disables the entire
-        # subsystem — no servers spawn, no background event loop, no
-        # cost.
-        "enabled": True,
+        # Master toggle.  Default is OFF for the same audit-compliance
+        # reason that ``install_strategy`` defaults to "manual": the
+        # LSP layer wakes background subprocesses, opens file handles,
+        # and (with auto-install) reaches out to package registries.
+        # All of that is opt-in.  Users who want LSP diagnostics
+        # enable explicitly:
+        #
+        #     lsp:
+        #       enabled: true
+        #
+        # Setting this to false disables the entire subsystem — no
+        # servers spawn, no background event loop, no cost.
+        "enabled": False,
 
         # Diagnostic-wait mode for the post-write check.
         # ``"document"`` waits up to ``wait_timeout`` seconds for the
@@ -1497,9 +1506,17 @@ DEFAULT_CONFIG = {
         # How to handle missing server binaries.
         # ``"auto"`` — try to install via npm/go/pip into
         #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
+        # ``"manual"`` — only use binaries already on PATH.  This is
+        #               the default: silent network installs of
+        #               agent-driven file edits are a poor fit for
+        #               audited environments (SOC 2 / ISO 27001 /
+        #               supply-chain compliance) where every package
+        #               pull wants to be deliberate.  Users who want
+        #               the convenience can opt in by setting
+        #               ``install_strategy: auto`` in their config or
+        #               running ``hermes lsp install <server>``.
         # ``"off"`` — alias for ``manual``.
-        "install_strategy": "auto",
+        "install_strategy": "manual",
 
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,

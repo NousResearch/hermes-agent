@@ -721,6 +721,16 @@ def _run_cleanup():
         shutdown_cached_clients()
     except Exception:
         pass
+    # Shut down the LSP service if it was started during this session.
+    # Without this, spawned language-server subprocesses (pyright, gopls,
+    # tsserver, etc.) are orphaned when the daemon thread dies on exit —
+    # they accumulate over time and waste hundreds of MB of RAM per
+    # orphan.  Safe to call even if the service was never started.
+    try:
+        from agent.lsp import shutdown_service as _lsp_shutdown
+        _lsp_shutdown()
+    except Exception:
+        pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:

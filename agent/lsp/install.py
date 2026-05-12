@@ -8,10 +8,13 @@ toolchain.
 Strategies:
 
 - ``auto`` — attempt to install with the best available package
-  manager.  This is the default.
+  manager. Opt-in; users must explicitly set
+  ``lsp.install_strategy: auto`` in config.
 - ``manual`` — never install; if a binary is missing, the server is
   silently skipped and the user is told about it via ``hermes lsp
-  status``.
+  status``. This is the default for audit-compliance reasons
+  (SOC 2 / ISO 27001): silent network installs during agent-driven
+  file edits are a poor fit for audited environments.
 - ``off`` — same as ``manual`` for now (kept distinct so we can
   evolve behavior later, e.g. logging differently).
 
@@ -41,48 +44,80 @@ logger = logging.getLogger("agent.lsp.install")
 # tuple of strategy name + package name + executable name.  When the
 # install completes, we look for the executable in
 # ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.
+#
+# Versions are PINNED to exact releases verified to work with the LSP
+# protocol surface this codebase exercises (initialize, didOpen, didSave,
+# wait_for_diagnostics with version, didClose, shutdown).  Updating a pin
+# means: bump the version below, run ``tests/agent/lsp/`` against the new
+# release, then update.  Do NOT use ``@latest`` or unversioned package
+# strings — every fresh user install would otherwise pull whatever the
+# registry happens to publish that day, including potentially compromised
+# or breaking-change releases.  This is the same discipline Dependabot
+# enforces for application dependencies; it applies just as much to the
+# tools we shell out to.
 INSTALL_RECIPES: Dict[str, Dict[str, str]] = {
     # Python
-    "pyright": {"strategy": "npm", "pkg": "pyright", "bin": "pyright-langserver"},
+    "pyright": {"strategy": "npm", "pkg": "pyright@1.1.409", "bin": "pyright-langserver"},
     # JS/TS family
     "typescript-language-server": {
         "strategy": "npm",
-        "pkg": "typescript-language-server",
+        "pkg": "typescript-language-server@5.2.0",
         "bin": "typescript-language-server",
     },
     "@vue/language-server": {
         "strategy": "npm",
-        "pkg": "@vue/language-server",
+        "pkg": "@vue/language-server@3.2.8",
         "bin": "vue-language-server",
     },
     "svelte-language-server": {
         "strategy": "npm",
-        "pkg": "svelte-language-server",
+        "pkg": "svelte-language-server@0.18.0",
         "bin": "svelteserver",
     },
     "@astrojs/language-server": {
         "strategy": "npm",
-        "pkg": "@astrojs/language-server",
+        "pkg": "@astrojs/language-server@2.16.8",
         "bin": "astro-ls",
     },
     "yaml-language-server": {
         "strategy": "npm",
-        "pkg": "yaml-language-server",
+        "pkg": "yaml-language-server@1.23.0",
         "bin": "yaml-language-server",
+        # TODO: yaml-language-server@1.23.0 ships yaml@2.7.1 which has
+        # CVE-2026-33532 / GHSA-48c2-rrv3-qjmp (stack-overflow DoS on
+        # deeply nested collections; CVSS 4.3 low).  Fixed in yaml@2.8.3;
+        # upstream yaml-language-server tracker is
+        # https://github.com/redhat-developer/yaml-language-server/issues/1221
+        # — bump as soon as the upstream cuts a patched release.
+        # Risk in our deployment: low.  Server runs over stdio, only
+        # parses YAML files the agent already chose to edit; an attacker-
+        # controlled deeply-nested YAML payload could DoS the server but
+        # not escape it.  The backend gate (LSP only runs on local
+        # workspaces, not remote sandboxes) further bounds exposure.
     },
     "bash-language-server": {
         "strategy": "npm",
-        "pkg": "bash-language-server",
+        "pkg": "bash-language-server@5.6.0",
         "bin": "bash-language-server",
     },
-    "intelephense": {"strategy": "npm", "pkg": "intelephense", "bin": "intelephense"},
+    "intelephense": {"strategy": "npm", "pkg": "intelephense@1.18.2", "bin": "intelephense"},
     "dockerfile-language-server-nodejs": {
         "strategy": "npm",
-        "pkg": "dockerfile-language-server-nodejs",
+        "pkg": "dockerfile-language-server-nodejs@0.15.0",
         "bin": "docker-langserver",
     },
-    # Go
-    "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@latest", "bin": "gopls"},
+    # Go — pinned to a specific release tag rather than ``@latest`` so
+    # ``go install`` is deterministic across machines and over time.
+    #
+    # Security note: gopls v0.21.1 has CVE-2026-42503 (RCE via
+    # ``-listen``/``-port`` flags binding 0.0.0.0; CVSS 8.8 high).  The
+    # CVE is **only** exploitable when those flags are passed at spawn.
+    # Our default invocation (``agent/lsp/servers.py::_spawn_gopls``)
+    # passes ``command=[bin_path]`` with no flags, so the default stdio
+    # transport is unaffected.  If a user supplies ``binary_overrides``
+    # with a custom argv, they must avoid those flags; that's a local-
+    # config decision under their control, not a default-config risk.
+    "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@v0.21.1", "bin": "gopls"},
     # Rust — too heavy (hundreds of MB to bootstrap).  We do NOT
     # auto-install rust-analyzer; users install via rustup.
     "rust-analyzer": {"strategy": "manual", "pkg": "", "bin": "rust-analyzer"},

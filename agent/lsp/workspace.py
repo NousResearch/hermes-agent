@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -27,7 +29,102 @@ logger = logging.getLogger("agent.lsp.workspace")
 # Cache: cwd → (worktree_root, is_git) so repeated calls don't re-stat.
 # Cleared on shutdown.  Keyed by absolute resolved path so symlink
 # folds collapse to one entry.
-_workspace_cache: dict = {}
+#
+# Bounded LRU (max 1024 entries) + thread-safe via ``_workspace_cache_lock``.
+# Long-lived gateway processes touch many distinct paths over their
+# lifetime; an unbounded dict would grow without ceiling.  1024 is two
+# orders of magnitude past what any single agent session realistically
+# encounters, so the LRU eviction tail is effectively never hit in
+# practice — the bound exists to defend the gateway against pathological
+# input streams (e.g. a bug that resolves a million unique synthetic
+# paths) rather than to gate normal operation.
+_WORKSPACE_CACHE_MAX = 1024
+_workspace_cache: "OrderedDict[str, Tuple[Optional[str], bool]]" = OrderedDict()
+_workspace_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str) -> Optional[Tuple[Optional[str], bool]]:
+    """Thread-safe LRU read.  Moves the entry to most-recent on hit."""
+    with _workspace_cache_lock:
+        val = _workspace_cache.get(key)
+        if val is not None:
+            _workspace_cache.move_to_end(key)
+        return val
+
+
+def _cache_set(key: str, value: Tuple[Optional[str], bool]) -> None:
+    """Thread-safe LRU write.  Evicts the oldest entry past the cap."""
+    with _workspace_cache_lock:
+        _workspace_cache[key] = value
+        _workspace_cache.move_to_end(key)
+        while len(_workspace_cache) > _WORKSPACE_CACHE_MAX:
+            _workspace_cache.popitem(last=False)
+
+
+def invalidate_workspace_cache(path: Optional[str] = None) -> int:
+    """Public invalidation hook for the workspace resolution cache.
+
+    Long-lived processes (gateway, persistent CLI) need to invalidate
+    cached resolution when workspace topology changes underneath them:
+
+    - A ``.git`` directory materializes after ``git init`` or ``git clone``.
+    - A worktree is removed or moved.
+    - The user changes shells / cwds across repos.
+
+    Without invalidation, ``find_git_worktree("/x")`` returns the stale
+    answer it computed minutes ago even though ``/x/.git`` now exists.
+
+    Semantics:
+
+    - ``path=None`` clears the entire cache.
+    - ``path="/some/path"`` clears any entry whose **key** equals
+      ``normalize_path(path)`` AND any entry whose **value** is a
+      git-root at or under ``normalize_path(path)``.  The latter is
+      important: if ``/x/.git`` is removed, every cached descendant
+      that resolved up to ``/x`` is now stale.
+
+    Returns the number of entries removed.  Safe to call concurrently;
+    the lock guards the whole sweep.
+
+    Callers: typically the LSP service when it observes a workspace
+    boundary change, or hermes CLI commands that mutate worktree layout
+    (``hermes lsp invalidate-cache``, future ``hermes git checkout``
+    hooks, etc.).
+    """
+    if path is None:
+        with _workspace_cache_lock:
+            n = len(_workspace_cache)
+            _workspace_cache.clear()
+        if n:
+            logger.debug("workspace cache cleared (%d entries)", n)
+        return n
+
+    target = normalize_path(path)
+    target_prefix = target.rstrip(os.sep) + os.sep
+    removed = 0
+    with _workspace_cache_lock:
+        # Build the kill list first (can't mutate during iteration).
+        to_remove = []
+        for k, (root, _is_git) in _workspace_cache.items():
+            if k == target or k.startswith(target_prefix):
+                to_remove.append(k)
+                continue
+            # Value-side match: cached root sits under the path being
+            # invalidated.  Catches "I removed /x/.git but /x/sub still
+            # has a stale entry pointing at /x".
+            if root is not None and (root == target or root.startswith(target_prefix)):
+                to_remove.append(k)
+        for k in to_remove:
+            _workspace_cache.pop(k, None)
+            removed += 1
+    if removed:
+        logger.debug("workspace cache: invalidated %d entries under %s", removed, target)
+    return removed
+
+
+def clear_workspace_cache() -> int:
+    """Convenience alias for ``invalidate_workspace_cache(None)``."""
+    return invalidate_workspace_cache(None)
 
 
 def normalize_path(path: str) -> str:
@@ -60,7 +157,7 @@ def find_git_worktree(start: str) -> Optional[str]:
         return None
 
     # Cache check
-    cached = _workspace_cache.get(str(start_path))
+    cached = _cache_get(str(start_path))
     if cached is not None:
         root, _is_git = cached
         return root
@@ -74,7 +171,7 @@ def find_git_worktree(start: str) -> Optional[str]:
         try:
             if git_marker.exists():
                 resolved = str(cur)
-                _workspace_cache[str(start_path)] = (resolved, True)
+                _cache_set(str(start_path), (resolved, True))
                 return resolved
         except OSError:
             # Permission error on a parent dir — bail out cleanly.
@@ -84,7 +181,7 @@ def find_git_worktree(start: str) -> Optional[str]:
             break
         cur = parent
 
-    _workspace_cache[str(start_path)] = (None, False)
+    _cache_set(str(start_path), (None, False))
     return None
 
 
@@ -210,7 +307,8 @@ def clear_cache() -> None:
     Called on service shutdown so a subsequent re-init doesn't pick
     up stale results from a previous session.
     """
-    _workspace_cache.clear()
+    with _workspace_cache_lock:
+        _workspace_cache.clear()
 
 
 __all__ = [
@@ -220,4 +318,6 @@ __all__ = [
     "normalize_path",
     "resolve_workspace_for_file",
     "clear_cache",
+    "invalidate_workspace_cache",
+    "clear_workspace_cache",
 ]

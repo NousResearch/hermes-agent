@@ -820,7 +820,8 @@ class ShellFileOperations(FileOperations):
     # WRITE Implementation
     # =========================================================================
 
-    def write_file(self, path: str, content: str) -> WriteResult:
+    def write_file(self, path: str, content: str,
+                   *, _lsp_baseline_token: Optional[str] = None) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
 
@@ -838,6 +839,16 @@ class ShellFileOperations(FileOperations):
         Args:
             path: File path to write
             content: Content to write
+            _lsp_baseline_token: Internal escape hatch for callers (e.g.
+                ``patch_replace``) that need to capture their own LSP
+                baseline at a higher level than the write itself.  When
+                set, ``write_file`` does NOT snapshot a fresh baseline
+                of its own — it reuses the supplied token, then returns
+                without consuming it so the outer caller can run a
+                final lint pass against its own pre-state.  Underscore-
+                prefixed because this is an implementation detail of
+                the file_operations layer, NOT part of the public
+                contract.
 
         Returns:
             WriteResult with bytes written, lint summary, or error.
@@ -872,7 +883,18 @@ class ShellFileOperations(FileOperations):
         # by this specific edit.  Mirrors claude-code's
         # ``beforeFileEdited`` pattern but wired to the local LSP
         # rather than an external IDE.
-        self._snapshot_lsp_baseline(path)
+        #
+        # If a token was supplied by a re-entrant caller (patch_replace),
+        # reuse it rather than burning a fresh one.  The outer caller is
+        # responsible for consuming it.  In that mode we pass ``None`` to
+        # the delta check so write_file's own lint stage doesn't pop the
+        # token out from under the outer caller.
+        if _lsp_baseline_token is None:
+            lsp_baseline_token = self._snapshot_lsp_baseline(path)
+            token_for_delta = lsp_baseline_token
+        else:
+            lsp_baseline_token = _lsp_baseline_token
+            token_for_delta = None  # outer caller owns the token
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -902,7 +924,22 @@ class ShellFileOperations(FileOperations):
             bytes_written = len(content.encode('utf-8'))
 
         # Post-write lint with delta refinement.
-        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        #
+        # When re-entered from ``patch_replace`` (``_lsp_baseline_token`` is
+        # set), the outer caller will run its own LSP delta check using the
+        # token it captured.  Running LSP here would either:
+        #   - waste a roundtrip (token=None → full diagnostics → may return
+        #     pre-existing errors as if they were new), or
+        #   - consume the token early (token=T → outer caller's pop fails).
+        # Pass ``skip_lsp=True`` so the inner call is syntax-tier only and
+        # the outer ``patch_replace`` owns the LSP semantic layer.
+        lint_result = self._check_lint_delta(
+            path,
+            pre_content=pre_content,
+            post_content=content,
+            baseline_token=token_for_delta,
+            skip_lsp=(_lsp_baseline_token is not None),
+        )
 
         return WriteResult(
             bytes_written=bytes_written,
@@ -959,8 +996,17 @@ class ShellFileOperations(FileOperations):
             except Exception:
                 pass
             return PatchResult(error=err_msg)
+        # Capture LSP baseline at the patch_replace level (BEFORE the
+        # nested write_file call).  The baseline reflects the file's
+        # pre-edit state.  We then pass the token to write_file so it
+        # doesn't snapshot its own (which would otherwise reflect the
+        # already-written content, defeating the delta).
+        lsp_baseline_token = self._snapshot_lsp_baseline(path)
+
         # Write back
-        write_result = self.write_file(path, new_content)
+        write_result = self.write_file(
+            path, new_content, _lsp_baseline_token=lsp_baseline_token
+        )
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 
@@ -997,7 +1043,15 @@ class ShellFileOperations(FileOperations):
         # Auto-lint with delta refinement: only surface errors introduced
         # by this patch, filtering out pre-existing lint failures so the
         # agent isn't distracted by problems that were already there.
-        lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
+        # Use the token we captured BEFORE the write so the LSP delta
+        # is computed against the true pre-edit state, not the just-
+        # written content.
+        lint_result = self._check_lint_delta(
+            path,
+            pre_content=content,
+            post_content=new_content,
+            baseline_token=lsp_baseline_token,
+        )
 
         return PatchResult(
             success=True,
@@ -1094,7 +1148,9 @@ class ShellFileOperations(FileOperations):
         )
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
-                          post_content: Optional[str] = None) -> LintResult:
+                          post_content: Optional[str] = None,
+                          baseline_token: Optional[str] = None,
+                          skip_lsp: bool = False) -> LintResult:
         """
         Run post-write lint with pre-write baseline comparison.
 
@@ -1142,9 +1198,10 @@ class ShellFileOperations(FileOperations):
         # Hot path: clean post-write syntactically — try the LSP layer
         # for semantic diagnostics before declaring victory.
         if post.success or post.skipped:
-            lsp_block = self._maybe_lsp_diagnostics(path)
-            if lsp_block:
-                return LintResult(success=False, output=lsp_block)
+            if not skip_lsp:
+                lsp_block = self._maybe_lsp_diagnostics(path, baseline_token=baseline_token)
+                if lsp_block:
+                    return LintResult(success=False, output=lsp_block)
             return post
 
         # Post-write has syntax errors.  If we have pre-content, run the
@@ -1209,8 +1266,16 @@ class ShellFileOperations(FileOperations):
             return False
         return isinstance(env, LocalEnvironment)
 
-    def _snapshot_lsp_baseline(self, path: str) -> None:
+    def _snapshot_lsp_baseline(self, path: str) -> Optional[str]:
         """Capture pre-edit LSP diagnostics so the post-write delta is correct.
+
+        Returns an opaque baseline token that MUST be threaded through
+        to the matching :meth:`_maybe_lsp_diagnostics` call so the
+        post-write check filters against THIS edit's pre-state and not
+        a sibling write's rolled-forward state.
+
+        Returns ``None`` when LSP is not active (non-local backend,
+        feature off, no git workspace, no matching server, etc.).
 
         Best-effort.  Silent on every failure path — LSP is an
         enrichment layer and must never break a write.
@@ -1219,21 +1284,27 @@ class ShellFileOperations(FileOperations):
         etc.) — the server can't see files inside the sandbox.
         """
         if not self._lsp_local_only():
-            return
+            return None
         try:
             from agent.lsp import get_service
             svc = get_service()
         except Exception:  # noqa: BLE001
-            return
+            return None
         if svc is None:
-            return
+            return None
         try:
-            svc.snapshot_baseline(path)
+            return svc.snapshot_baseline(path)
         except Exception:  # noqa: BLE001
-            pass
+            return None
 
-    def _maybe_lsp_diagnostics(self, path: str) -> str:
+    def _maybe_lsp_diagnostics(self, path: str, baseline_token: Optional[str] = None) -> str:
         """Best-effort LSP semantic diagnostics for ``path``.
+
+        ``baseline_token`` MUST be the token returned by the matching
+        :meth:`_snapshot_lsp_baseline` call.  When ``None`` (no
+        snapshot was taken, or LSP wasn't active at snapshot time),
+        every diagnostic surfaces — the caller has explicitly opted
+        out of delta filtering.
 
         Returns a formatted ``<diagnostics>`` block, or empty string
         when LSP is unavailable / disabled / produced no errors.
@@ -1259,7 +1330,9 @@ class ShellFileOperations(FileOperations):
         if svc is None or not svc.enabled_for(path):
             return ""
         try:
-            diagnostics = svc.get_diagnostics_sync(path, delta=True)
+            diagnostics = svc.get_diagnostics_sync(
+                path, delta=True, baseline_token=baseline_token
+            )
         except Exception:  # noqa: BLE001
             return ""
         if not diagnostics:

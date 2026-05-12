@@ -121,10 +121,13 @@ def test_service_e2e_delta_filter(mock_pyright):
     )
     try:
         assert svc.enabled_for(str(f))
-        # Baseline first — server pushes 1 error.
-        svc.snapshot_baseline(str(f))
-        # Re-poll: same error is in baseline, so delta is empty.
-        new_diags = svc.get_diagnostics_sync(str(f))
+        # Baseline first — server pushes 1 error.  snapshot_baseline now
+        # returns a token (token-keyed delta design) so the matching
+        # post-write call can consume it explicitly.
+        token = svc.snapshot_baseline(str(f))
+        assert token is not None
+        # Re-poll using the token: same error is in baseline, so delta is empty.
+        new_diags = svc.get_diagnostics_sync(str(f), baseline_token=token)
         assert new_diags == []
     finally:
         svc.shutdown()

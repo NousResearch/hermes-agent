@@ -39,6 +39,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from concurrent.futures import Future as ConcurrentFuture
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -129,6 +130,23 @@ class _BackgroundLoop:
         self._loop = None
         self._thread = None
 
+    def schedule(self, coro) -> Optional[ConcurrentFuture]:
+        """Submit a coroutine to run on the loop *without* blocking.
+
+        Returns a ``concurrent.futures.Future`` that can be cancelled
+        from the calling thread.  Use this for long-running background
+        tasks (e.g. the idle reaper) whose result you don't await but
+        whose lifecycle you do want to manage.  Returns ``None`` if
+        the loop hasn't been started.
+        """
+        if self._loop is None:
+            return None
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError:
+            # Loop closed between None-check and schedule.
+            return None
+
 
 class LSPService:
     """The process-wide LSP service.
@@ -177,11 +195,27 @@ class LSPService:
         self._last_used: Dict[Tuple[str, str], float] = {}
         self._state_lock = threading.Lock()
 
-        # Delta baseline: file path → snapshot of diagnostics taken
-        # immediately before a write.  ``get_diagnostics_sync`` filters
-        # out anything in the baseline so the agent only sees errors
-        # introduced by the current edit.
-        self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+        # Delta baseline: opaque token → {"path": abs_path, "diags": [...], "created": ts}.
+        # The token-keyed design (replacing the earlier path-keyed dict) makes
+        # the baseline-to-lint relationship explicit and gateway-safe: each
+        # snapshot_baseline() returns a fresh token, the caller threads it
+        # through to get_diagnostics_sync(baseline_token=...), and there is
+        # no implicit global state that two concurrent edits could collide
+        # on.  ``_evict_stale_baselines`` reaps any tokens whose write path
+        # crashed between snapshot and lint.
+        self._delta_baseline: Dict[str, Dict[str, Any]] = {}
+        self._baseline_lock = threading.Lock()
+
+        # Idle-reaper handle.  When ``enabled`` is True we schedule a
+        # background coroutine on ``self._loop`` that periodically
+        # shuts down clients whose ``_last_used`` is older than
+        # ``self._idle_timeout``.  Without this, a long-lived gateway
+        # process accumulates one LSP subprocess per (language,
+        # workspace) ever touched — pyright at ~200MB, gopls at ~80MB,
+        # tsserver at ~150MB.  ``shutdown()`` cancels the handle.
+        self._reaper_handle: Optional[ConcurrentFuture] = None
+        if self._enabled:
+            self._reaper_handle = self._loop.schedule(self._reaper_loop())
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -201,10 +235,13 @@ class LSPService:
         if not isinstance(lsp_cfg, dict):
             lsp_cfg = {}
 
-        enabled = bool(lsp_cfg.get("enabled", True))
+        # NOTE: fallback default mirrors hermes_cli.config.DEFAULT_CONFIG['lsp']
+        # — opt-in for audit-compliance reasons.  If the user's config has no
+        # ``lsp.enabled`` key at all, treat that as "user hasn't opted in".
+        enabled = bool(lsp_cfg.get("enabled", False))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
-        install_strategy = lsp_cfg.get("install_strategy", "auto")
+        install_strategy = lsp_cfg.get("install_strategy", "manual")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
         binary_overrides: Dict[str, List[str]] = {}
@@ -259,24 +296,70 @@ class LSPService:
         ws_root, gated_in = resolve_workspace_for_file(file_path)
         return bool(ws_root and gated_in)
 
-    def snapshot_baseline(self, file_path: str) -> None:
-        """Snapshot current diagnostics for ``file_path`` as the delta baseline.
+    def snapshot_baseline(self, file_path: str) -> Optional[str]:
+        """Snapshot current diagnostics for ``file_path`` as a delta baseline.
 
-        Called BEFORE a write so the next ``get_diagnostics_sync()``
-        can filter out pre-existing errors.  Best-effort — failures
-        are silently swallowed so a flaky server can't break a write.
+        Called BEFORE a write so the matching post-write
+        ``get_diagnostics_sync(..., baseline_token=token)`` can filter
+        out pre-existing errors.  Best-effort — failures are silently
+        swallowed so a flaky server can't break a write.
+
+        Returns an opaque token identifying this specific snapshot, or
+        ``None`` if LSP is not active for this file.
+
+        The token-keyed design (vs. the earlier path-keyed map) is
+        load-bearing for two scenarios:
+
+        * **Gateway concurrency.** Two chats editing the same path in
+          different worktrees won't stomp each other's baselines.
+        * **Recursive write paths.** ``patch_replace`` calls
+          ``write_file`` (which snapshots + post-write-checks) and then
+          runs its own post-write check; without token isolation the
+          second check sees the rolled-forward baseline from the first
+          and always reports clean.
         """
         if not self.enabled_for(file_path):
-            return
+            return None
+        token = uuid.uuid4().hex
         try:
             diags = self._loop.run(self._snapshot_async(file_path), timeout=8.0)
-            self._delta_baseline[os.path.abspath(file_path)] = diags or []
+            with self._baseline_lock:
+                self._delta_baseline[token] = {
+                    "path": os.path.abspath(file_path),
+                    "diags": diags or [],
+                    "created": time.time(),
+                }
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
-            # Set empty baseline so the next call still does the
-            # comparison (any post-edit diagnostic will be considered
-            # "new" — safe default).
-            self._delta_baseline[os.path.abspath(file_path)] = []
+            # Empty baseline still gets a token — any post-edit diagnostic
+            # is then considered "new" (safe default).
+            with self._baseline_lock:
+                self._delta_baseline[token] = {
+                    "path": os.path.abspath(file_path),
+                    "diags": [],
+                    "created": time.time(),
+                }
+        # Bound the token map so a long-lived gateway doesn't leak entries
+        # for any tokens the caller forgets to consume.
+        self._evict_stale_baselines()
+        return token
+
+    def _evict_stale_baselines(self) -> None:
+        """Drop baseline entries older than 5 minutes.
+
+        Bounded fallback for callers that snapshot but never call
+        ``get_diagnostics_sync`` with the token (e.g. a write that
+        fails between snapshot and lint).  5 minutes is generous —
+        legitimate write→lint cycles complete in well under a second.
+        """
+        cutoff = time.time() - 300.0
+        with self._baseline_lock:
+            stale = [
+                tok for tok, entry in self._delta_baseline.items()
+                if entry["created"] < cutoff
+            ]
+            for tok in stale:
+                self._delta_baseline.pop(tok, None)
 
     def get_diagnostics_sync(
         self,
@@ -284,14 +367,23 @@ class LSPService:
         *,
         delta: bool = True,
         timeout: Optional[float] = None,
+        baseline_token: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Synchronously open ``file_path`` in the right server, wait for
         diagnostics, return them.
 
-        If ``delta`` is True (default), the result is filtered against
-        any baseline previously captured via :meth:`snapshot_baseline`.
-        Diagnostics present in the baseline are removed so the caller
-        only sees errors introduced by the current edit.
+        If ``delta`` is True (default) and a ``baseline_token`` is
+        supplied, the result is filtered against the baseline that
+        ``snapshot_baseline()`` captured for that token.  Diagnostics
+        present in the baseline are removed so the caller only sees
+        errors introduced by the current edit.  The token is consumed
+        (popped) on use so a follow-up call without a fresh snapshot
+        won't reuse stale state.
+
+        When ``baseline_token`` is ``None`` (no prior snapshot) the
+        delta filter is a no-op — every diagnostic surfaces.  Callers
+        wanting delta semantics MUST thread a token from a paired
+        ``snapshot_baseline()`` call.
 
         Returns an empty list when LSP is disabled, when no workspace
         can be detected, when no server matches, or when the server
@@ -317,21 +409,14 @@ class LSPService:
             logger.debug("LSP diagnostics fetch failed for %s: %s", file_path, e)
             return []
 
-        abs_path = os.path.abspath(file_path)
-        if delta:
-            baseline = self._delta_baseline.get(abs_path) or []
-            if baseline:
-                seen = {_diag_key(d) for d in baseline}
-                diags = [d for d in diags if _diag_key(d) not in seen]
-            # Roll baseline forward — next call returns deltas relative
-            # to the just-emitted state, mirroring claude-code's
-            # diagnosticTracking.
-            try:
-                fresh = self._loop.run(self._current_diags_async(file_path), timeout=2.0) or []
-            except Exception:  # noqa: BLE001
-                fresh = []
-            if fresh:
-                self._delta_baseline[abs_path] = fresh
+        if delta and baseline_token is not None:
+            with self._baseline_lock:
+                entry = self._delta_baseline.pop(baseline_token, None)
+            if entry is not None:
+                baseline_diags = entry.get("diags") or []
+                if baseline_diags:
+                    seen = {_diag_key(d) for d in baseline_diags}
+                    diags = [d for d in diags if _diag_key(d) not in seen]
 
         if diags:
             eventlog.log_diagnostics(server_id, file_path, len(diags))
@@ -343,6 +428,13 @@ class LSPService:
         """Tear down all clients and stop the background loop."""
         if not self._enabled:
             return
+        # Cancel the reaper first so it doesn't race with the client
+        # teardown below.  ``ConcurrentFuture.cancel()`` is best-effort
+        # while the coroutine is mid-sleep — the cancellation flag
+        # propagates to ``asyncio.sleep`` which raises CancelledError.
+        if self._reaper_handle is not None:
+            self._reaper_handle.cancel()
+            self._reaper_handle = None
         try:
             self._loop.run(self._shutdown_async(), timeout=10.0)
         except Exception as e:  # noqa: BLE001
@@ -473,6 +565,70 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+
+    async def _reaper_loop(self) -> None:
+        """Periodically shut down LSP clients idle past the timeout.
+
+        Runs forever on the background event loop.  Each iteration:
+
+        1. Sleep for ``idle_timeout / 2`` seconds (so a client just
+           past the threshold gets reaped within one full timeout
+           window, not two).
+        2. Snapshot ``_last_used`` under the state lock.
+        3. For each entry older than the cutoff, pop the client out
+           of ``_clients`` and call ``client.shutdown()`` without
+           holding the lock (shutdown can take a few seconds and we
+           don't want to block in-flight requests).
+
+        Cancelled by ``shutdown()``.  Any exception inside the loop
+        is logged and swallowed — the reaper must never crash the
+        background loop.
+        """
+        # Don't run faster than every 10s even if idle_timeout is very
+        # low (test-only).  Keeps the loop from busy-spinning.
+        interval = max(self._idle_timeout / 2.0, 10.0)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._reap_idle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.debug("LSP reaper iteration failed: %s", e)
+
+    async def _reap_idle(self) -> None:
+        """Reap clients idle past ``_idle_timeout`` seconds.
+
+        Separated from ``_reaper_loop`` so tests can drive a single
+        reap pass without waiting for the sleep interval.
+        """
+        cutoff = time.time() - self._idle_timeout
+        with self._state_lock:
+            stale_keys = [
+                key for key, last in self._last_used.items()
+                if last < cutoff
+            ]
+            stale_clients = []
+            for key in stale_keys:
+                client = self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                if client is not None:
+                    stale_clients.append((key, client))
+        # Drop the lock before calling client.shutdown() — it does
+        # network I/O over stdio and can take a few seconds.
+        for key, client in stale_clients:
+            server_id, workspace_root = key
+            try:
+                await client.shutdown()
+                logger.debug(
+                    "LSP reaped idle client server=%s workspace=%s",
+                    server_id, workspace_root,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "LSP reaper shutdown error for server=%s workspace=%s: %s",
+                    server_id, workspace_root, e,
+                )
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:

@@ -6797,7 +6797,7 @@ class GatewayRunner:
                         except Exception:
                             pass
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
@@ -6828,14 +6828,12 @@ class GatewayRunner:
                 if mtype.startswith("text/"):
                     context_note = (
                         f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {agent_path}]"
+                        f"The file is saved at: {agent_path}.]"
                     )
                 else:
                     context_note = (
                         f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {agent_path}. "
-                        f"Ask the user what they'd like you to do with it.]"
+                        f"The file is saved at: {agent_path}.]"
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 

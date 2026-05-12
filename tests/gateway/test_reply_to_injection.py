@@ -10,7 +10,7 @@ which prior message the user is referencing.
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -112,6 +112,33 @@ async def test_no_prefix_without_reply_context():
     )
 
     assert result == "hello"
+
+
+@pytest.mark.asyncio
+async def test_reply_to_document_media_gets_agent_visible_path_note():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="装一下这个吧",
+        message_type=MessageType.TEXT,
+        source=source,
+        reply_to_message_id="om_parent",
+        reply_to_text="[Attachment: lark-cli-shared-app-setup.md]",
+        media_urls=["/tmp/doc_123_lark-cli-shared-app-setup.md"],
+        media_types=["text/markdown"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to: "[Attachment: lark-cli-shared-app-setup.md]"]')
+    assert "The user sent a text document: 'lark-cli-shared-app-setup.md'" in result
+    assert "The file is saved at: /tmp/doc_123_lark-cli-shared-app-setup.md" in result
+    assert result.endswith("装一下这个吧")
 
 
 @pytest.mark.asyncio

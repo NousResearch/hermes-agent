@@ -5423,6 +5423,16 @@ class HermesCLI:
             return []
         return [s for s in sessions if s.get("id") != self.session_id]
 
+    def _handle_sessions_command(self, cmd: str):
+        """Handle /sessions — list recent sessions or resume by id/title."""
+        parts = cmd.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+        if target:
+            self._handle_resume_command(f"/resume {target}")
+        else:
+            if not self._show_recent_sessions(reason="sessions", limit=20):
+                _cprint("  No previous sessions found.")
+
     def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
@@ -7434,6 +7444,8 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":

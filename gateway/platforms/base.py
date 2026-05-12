@@ -3035,6 +3035,27 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
+                # If the response is a single local image attachment plus text
+                # (e.g. cron/script alerts emitting ``MEDIA:/path.png\ncaption``),
+                # Telegram-style platforms should deliver one photo message with
+                # the text as the media caption, not a detached text post followed
+                # by a captionless image.
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                _caption_for_single_image = None
+                if text_content and not images and not force_document_attachments:
+                    _candidate_image_paths = []
+                    for _media_path, _is_voice in media_files:
+                        if (Path(_media_path).suffix.lower() in _IMAGE_EXTS
+                                and not _is_voice):
+                            _candidate_image_paths.append(_media_path)
+                    for _file_path in local_files:
+                        if Path(_file_path).suffix.lower() in _IMAGE_EXTS:
+                            _candidate_image_paths.append(_file_path)
+                    if len(_candidate_image_paths) == 1:
+                        _caption_for_single_image = text_content
+                        text_content = ""
+
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
@@ -3092,8 +3113,6 @@ class BasePlatformAdapter(ABC):
 
 
                 # Send extracted media files — route by file type
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 # Partition images out of media_files + local_files so they
                 # can be sent as a single batch (Signal RPC). When
@@ -3122,7 +3141,13 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
-                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                        _batch = [
+                            (
+                                f"file://{_quote(p)}",
+                                _caption_for_single_image if len(_image_paths) == 1 else "",
+                            )
+                            for p in _image_paths
+                        ]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,

@@ -439,6 +439,7 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
+    caption: str | None = None,
 ) -> None:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
@@ -450,18 +451,19 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import should_send_media_as_audio
 
-    for media_path, _is_voice in media_files:
+    for idx, (media_path, _is_voice) in enumerate(media_files):
         try:
             ext = Path(media_path).suffix.lower()
             route_platform = platform if platform is not None else getattr(adapter, "platform", None)
+            media_caption = caption if idx == 0 else None
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
-                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, caption=media_caption, metadata=metadata)
             elif ext in _VIDEO_EXTS:
-                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, caption=media_caption, metadata=metadata)
             elif ext in _IMAGE_EXTS:
-                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, caption=media_caption, metadata=metadata)
             else:
-                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, caption=media_caption, metadata=metadata)
 
             future = asyncio.run_coroutine_threadsafe(coro, loop)
             try:
@@ -524,8 +526,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivery_content = content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    from pathlib import Path
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_caption = None
+    if cleaned_delivery_content.strip() and len(media_files) == 1:
+        media_ext = Path(media_files[0][0]).suffix.lower()
+        if media_ext in (_IMAGE_EXTS | _VIDEO_EXTS):
+            media_caption = cleaned_delivery_content.strip()
 
     try:
         config = load_gateway_config()
@@ -580,8 +588,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
-                # Send cleaned text (MEDIA tags stripped) — not the raw content
-                text_to_send = cleaned_delivery_content.strip()
+                # Send cleaned text (MEDIA tags stripped) unless it is being used
+                # as the caption for a single media attachment.
+                text_to_send = "" if media_caption else cleaned_delivery_content.strip()
                 adapter_ok = True
                 if text_to_send:
                     future = asyncio.run_coroutine_threadsafe(
@@ -611,6 +620,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         loop,
                         job,
                         platform=platform,
+                        caption=media_caption,
                     )
 
                 if adapter_ok:

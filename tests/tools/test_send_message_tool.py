@@ -244,7 +244,7 @@ class TestSendMessageTool:
 
 
 class TestSendTelegramMediaDelivery:
-    def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
+    def test_sends_single_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
@@ -268,11 +268,10 @@ class TestSendTelegramMediaDelivery:
 
         assert result["success"] is True
         assert result["message_id"] == "2"
-        bot.send_message.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
-        sent_text = bot.send_message.await_args.kwargs["text"]
-        assert "MEDIA:" not in sent_text
-        assert sent_text == "Hello there"
+        sent_kwargs = bot.send_photo.await_args.kwargs
+        assert sent_kwargs["caption"] == "Hello there"
 
     def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
         voice_path = tmp_path / "voice.ogg"

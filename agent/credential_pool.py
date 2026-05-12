@@ -924,9 +924,13 @@ class CredentialPool:
 
         if self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
-            # Increment usage counter so subsequent selections distribute load
+            # Increment usage counter so subsequent selections distribute load.
+            # Persist it too: gateway/profile restarts and separate processes load
+            # pools from auth.json, so an in-memory-only counter would keep all
+            # profiles tied at 0 and repeatedly prefer the first priority entry.
             updated = replace(entry, request_count=entry.request_count + 1)
             self._replace_entry(entry, updated)
+            self._persist()
             self._current_id = entry.id
             return updated
 

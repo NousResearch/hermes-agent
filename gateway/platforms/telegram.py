@@ -2893,6 +2893,26 @@ class TelegramAdapter(BasePlatformAdapter):
         if not photos:
             return
 
+        if len(photos) == 1:
+            image_url, alt_text = photos[0]
+            caption = alt_text[:1024] if alt_text else None
+            if image_url.startswith("file://"):
+                from urllib.parse import unquote as _unquote
+                await self.send_image_file(
+                    chat_id=chat_id,
+                    image_path=_unquote(image_url[7:]),
+                    caption=caption,
+                    metadata=metadata,
+                )
+            else:
+                await self.send_image(
+                    chat_id=chat_id,
+                    image_url=image_url,
+                    caption=caption,
+                    metadata=metadata,
+                )
+            return
+
         from urllib.parse import unquote as _unquote
         _thread = self._metadata_thread_id(metadata)
 
@@ -3605,6 +3625,34 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring invalid Telegram thread id: %r", self.name, value)
         return ignored
 
+    def _telegram_allowed_threads(self) -> set[int]:
+        """Return the whitelist of Telegram forum topic thread IDs the bot will respond in.
+
+        When non-empty, group/supergroup messages are processed only when their
+        ``message_thread_id`` is present and included in this set. This acts as a
+        hard gate before mention/reply logic, letting a bot be pinned to a single
+        forum topic instead of an entire supergroup.
+        """
+        raw = self.config.extra.get("allowed_threads")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOWED_THREADS", "")
+
+        if isinstance(raw, list):
+            values = raw
+        else:
+            values = str(raw).split(",")
+
+        allowed: set[int] = set()
+        for value in values:
+            text = str(value).strip()
+            if not text:
+                continue
+            try:
+                allowed.add(int(text))
+            except (TypeError, ValueError):
+                logger.warning("[%s] Ignoring invalid allowed Telegram thread id: %r", self.name, value)
+        return allowed
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
@@ -3762,6 +3810,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
+        chat_type = str(getattr(getattr(message, "chat", None), "type", "")).split(".")[-1].lower()
+        allowed_threads = self._telegram_allowed_threads()
+        if chat_type == "supergroup" and allowed_threads:
+            # Telegram's General forum topic is asymmetric: sendMessage must omit
+            # message_thread_id, and incoming ordinary General-topic messages may
+            # also arrive without message_thread_id. Treat missing thread_id as
+            # General (1) when the allowlist explicitly includes 1.
+            if thread_id is None:
+                if int(self._GENERAL_TOPIC_THREAD_ID) not in allowed_threads:
+                    return False
+            else:
+                try:
+                    if int(thread_id) not in allowed_threads:
+                        return False
+                except (TypeError, ValueError):
+                    logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+                    return False
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():

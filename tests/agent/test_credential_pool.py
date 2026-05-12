@@ -734,12 +734,17 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     )
 
     from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
     assert entry is not None
     assert entry.id == "key-b"
     assert entry.access_token == "sk-or-light"
+
+    persisted = read_credential_pool("openrouter")
+    persisted_light = next(item for item in persisted if item["id"] == "key-b")
+    assert persisted_light["request_count"] == 11
 
 
 def test_thread_safety_concurrent_select(tmp_path, monkeypatch):

@@ -10,6 +10,7 @@ def _make_adapter(
     free_response_chats=None,
     mention_patterns=None,
     ignored_threads=None,
+    allowed_threads=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
@@ -17,23 +18,17 @@ def _make_adapter(
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
-    extra = {}
-    if require_mention is not None:
-        extra["require_mention"] = require_mention
-    if free_response_chats is not None:
-        extra["free_response_chats"] = free_response_chats
-    if mention_patterns is not None:
-        extra["mention_patterns"] = mention_patterns
-    if ignored_threads is not None:
-        extra["ignored_threads"] = ignored_threads
-    if allow_from is not None:
-        extra["allow_from"] = allow_from
-    if group_allow_from is not None:
-        extra["group_allow_from"] = group_allow_from
-    if allowed_chats is not None:
-        extra["allowed_chats"] = allowed_chats
-    if guest_mode is not None:
-        extra["guest_mode"] = guest_mode
+    extra = {
+        "require_mention": False if require_mention is None else require_mention,
+        "free_response_chats": [] if free_response_chats is None else free_response_chats,
+        "mention_patterns": [] if mention_patterns is None else mention_patterns,
+        "ignored_threads": [] if ignored_threads is None else ignored_threads,
+        "allowed_threads": [] if allowed_threads is None else allowed_threads,
+        "allow_from": [] if allow_from is None else allow_from,
+        "group_allow_from": [] if group_allow_from is None else group_allow_from,
+        "allowed_chats": [] if allowed_chats is None else allowed_chats,
+        "guest_mode": False if guest_mode is None else guest_mode,
+    }
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -51,6 +46,7 @@ def _group_message(
     text="hello",
     *,
     chat_id=-100,
+    chat_type="group",
     from_user_id=111,
     thread_id=None,
     reply_to_bot=False,
@@ -67,7 +63,7 @@ def _group_message(
         entities=entities or [],
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
-        chat=SimpleNamespace(id=chat_id, type="group"),
+        chat=SimpleNamespace(id=chat_id, type=chat_type),
         from_user=SimpleNamespace(id=from_user_id),
         reply_to_message=reply_to_message,
     )
@@ -209,6 +205,14 @@ def test_ignored_threads_drop_group_messages_before_other_gates():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is False
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=42)) is False
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=99)) is True
+
+
+def test_allowed_threads_gate_only_applies_to_supergroup_forums():
+    adapter = _make_adapter(require_mention=False, allowed_threads=[31, 42])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_type="group", thread_id=99)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_type="supergroup", thread_id=31)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_type="supergroup", thread_id=99)) is False
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

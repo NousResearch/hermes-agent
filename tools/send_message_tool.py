@@ -783,6 +783,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
+        caption_for_single_media = None
+        send_text_separately = True
+        if formatted.strip() and len(media_files) == 1:
+            _media_ext = os.path.splitext(media_files[0][0])[1].lower()
+            if _media_ext in (_IMAGE_EXTS | _VIDEO_EXTS) and not force_document:
+                caption_for_single_media = formatted[:1024]
+                send_text_separately = False
         thread_kwargs = {}
         if thread_id is not None:
             # Reuse the gateway adapter's General-topic mapping: in Telegram
@@ -812,7 +819,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
-        if formatted.strip():
+        if send_text_separately and formatted.strip():
             try:
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
@@ -854,12 +861,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 with open(media_path, "rb") as f:
                     if ext in _IMAGE_EXTS and not force_document:
+                        kwargs = dict(thread_kwargs)
+                        if caption_for_single_media:
+                            kwargs.update(caption=caption_for_single_media, parse_mode=send_parse_mode)
                         last_msg = await bot.send_photo(
-                            chat_id=int_chat_id, photo=f, **thread_kwargs
+                            chat_id=int_chat_id, photo=f, **kwargs
                         )
                     elif ext in _VIDEO_EXTS:
+                        kwargs = dict(thread_kwargs)
+                        if caption_for_single_media:
+                            kwargs.update(caption=caption_for_single_media, parse_mode=send_parse_mode)
                         last_msg = await bot.send_video(
-                            chat_id=int_chat_id, video=f, **thread_kwargs
+                            chat_id=int_chat_id, video=f, **kwargs
                         )
                     elif ext in _VOICE_EXTS and is_voice:
                         last_msg = await bot.send_voice(

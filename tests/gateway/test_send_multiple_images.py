@@ -126,7 +126,22 @@ class TestTelegramMultiImage:
         a = TelegramAdapter(config)
         a._bot = MagicMock()
         a._bot.send_media_group = AsyncMock(return_value=[MagicMock(message_id=1)])
+        a.send_image = AsyncMock(return_value=MagicMock(success=True, message_id="img"))
+        a.send_image_file = AsyncMock(return_value=MagicMock(success=True, message_id="file"))
         return a
+
+    def test_single_local_image_uses_send_image_file_with_caption(self, adapter):
+        images = [("file:///tmp/only.png", "caption text")]
+
+        _run(adapter.send_multiple_images("12345", images))
+
+        adapter._bot.send_media_group.assert_not_called()
+        adapter.send_image_file.assert_awaited_once_with(
+            chat_id="12345",
+            image_path="/tmp/only.png",
+            caption="caption text",
+            metadata=None,
+        )
 
     def test_single_batch_under_10_calls_send_media_group_once(self, adapter):
         """3 photos → one send_media_group call with 3 items."""

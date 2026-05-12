@@ -683,14 +683,14 @@ class TestDeliverResultWrapping:
         # Audio should still be delivered as a voice bubble
         adapter.send_voice.assert_called_once()
 
-    def test_live_adapter_sends_cleaned_text_not_raw(self):
-        """The live adapter path must send cleaned text (MEDIA tags stripped),
-        not the raw delivery_content with embedded MEDIA: tags."""
+    def test_live_adapter_uses_single_image_caption_for_telegram(self):
+        """Single Telegram image deliveries should use the cleaned text as the
+        native media caption instead of sending a detached text message."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
         adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_image_file.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -722,9 +722,10 @@ class TestDeliverResultWrapping:
                 loop=loop,
             )
 
-        text_sent = adapter.send.call_args[0][1]
-        assert "MEDIA:" not in text_sent
-        assert "Report" in text_sent
+        adapter.send.assert_not_called()
+        adapter.send_image_file.assert_called_once()
+        assert adapter.send_image_file.call_args.kwargs["image_path"] == "/tmp/chart.png"
+        assert adapter.send_image_file.call_args.kwargs["caption"] == "Report"
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""

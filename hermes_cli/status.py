@@ -126,7 +126,7 @@ def show_status(args):
     keys: dict[str, str | tuple[str, ...]] = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+
         "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "DeepSeek": "DEEPSEEK_API_KEY",
         "xAI / Grok": "XAI_API_KEY",
@@ -168,10 +168,6 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
-    from hermes_cli.auth import get_anthropic_key
-    anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
-    print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
     # Auth Providers (OAuth)

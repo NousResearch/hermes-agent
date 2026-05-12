@@ -9932,13 +9932,35 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        DeepSeek v4 thinking, Kimi / Moonshot thinking, and Xiaomi MiMo
+        thinking mode all reject replays of assistant tool-call messages that
+        omit ``reasoning_content`` (refs #15250, #17400; Xiaomi MiMo docs:
+        usage-guide/passing-back-reasoning_content).
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_xiaomi_tool_reasoning()
+        )
+
+    def _needs_xiaomi_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode.
+
+        MiMo requires ``reasoning_content`` to be passed back in multi-turn
+        Agent conversations when history contains assistant tool calls;
+        omitting it causes HTTP 400 ("The reasoning_content in the thinking
+        mode must be passed back to the API.").
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").strip().lower()
+        if "/" in model:
+            model_leaf = model.rsplit("/", 1)[-1]
+        else:
+            model_leaf = model
+        return (
+            provider in {"xiaomi", "mimo", "xiaomi-mimo"}
+            or model_leaf.startswith(("mimo-", "mimo_", "xiaomi-mimo-", "xiaomi_mimo_"))
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:

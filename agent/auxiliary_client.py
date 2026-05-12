@@ -1328,7 +1328,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
                 extra["default_headers"] = copilot_default_headers()
             # 9Router support - must use non-OpenAI User-Agent to avoid 403
-            elif "9router" in base_url.lower() or "router." in base_url.lower():
+            # Detection: URL contains '9router', 'router.', or :20128 (default 9Router port)
+            elif ("9router" in base_url.lower() or "router." in base_url.lower() 
+                  or ":20128" in base_url):
                 extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
             else:
                 try:
@@ -1366,7 +1368,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
             extra["default_headers"] = copilot_default_headers()
         # 9Router support - must use non-OpenAI User-Agent to avoid 403
-        elif "9router" in base_url.lower() or "router." in base_url.lower():
+        # Detection: URL contains '9router', 'router.', or :20128 (default 9Router port)
+        elif ("9router" in base_url.lower() or "router." in base_url.lower() 
+              or ":20128" in base_url):
             extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
         else:
             try:
@@ -2850,7 +2854,9 @@ def resolve_provider_client(
                     is_agent_turn=True, is_vision=is_vision
                 )
             # 9Router support - must use non-OpenAI User-Agent to avoid 403
-            elif "9router" in custom_base.lower() or "router." in custom_base.lower():
+            # Detection: URL contains '9router', 'router.', or :20128 (default 9Router port)
+            elif ("9router" in custom_base.lower() or "router." in custom_base.lower() 
+                  or ":20128" in custom_base):
                 extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
             else:
                 # Fall back to profile.default_headers for providers that
@@ -3052,7 +3058,9 @@ def resolve_provider_client(
             ))
         # 9Router support - must use non-OpenAI User-Agent to avoid 403
         # 9Router blocks requests with "OpenAI" in User-Agent header
-        elif "9router" in base_url.lower() or "router." in base_url.lower():
+        # Detection: URL contains '9router', 'router.', or localhost:20128 (default 9Router port)
+        elif ("9router" in base_url.lower() or "router." in base_url.lower() 
+              or ":20128" in base_url):
             headers["User-Agent"] = "HermesAgent/1.0"
         else:
             # Fall back to profile.default_headers for providers that declare

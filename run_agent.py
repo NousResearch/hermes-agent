@@ -7147,7 +7147,9 @@ class AIAgent:
             )
         # 9Router support - must use non-OpenAI User-Agent to avoid 403
         # 9Router blocks requests with "OpenAI" in User-Agent header
-        elif "9router" in base_url.lower() or "router." in base_url.lower():
+        # Detection: URL contains '9router', 'router.', or localhost:20128 (default 9Router port)
+        elif ("9router" in base_url.lower() or "router." in base_url.lower() 
+              or ":20128" in base_url):
             self._client_kwargs["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
         else:
             # No URL-specific headers — check profile.default_headers before clearing.

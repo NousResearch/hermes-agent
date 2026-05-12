@@ -16261,6 +16261,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
             except Exception:
                 pass
+            # The old process may have died but its msvcrt.locking byte-range
+            # lock on gateway.lock is still held by a lingering OS handle.
+            # Retry the runtime lock for a few seconds; if it becomes available
+            # the takeover proceeds, otherwise _startup_inner will log the
+            # familiar "already held" error and exit.
+            from gateway.status import acquire_gateway_runtime_lock
+            for _retry in range(10):
+                if acquire_gateway_runtime_lock():
+                    break
+                time.sleep(0.3)
+            else:
+                # Lock still unavailable — _startup_inner will try once more
+                # and fail, which is the same outcome as before.
+                pass
         else:
             hermes_home = str(get_hermes_home())
             logger.error(

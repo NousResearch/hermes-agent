@@ -677,13 +677,6 @@ def stop() -> None:
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
-    # Clear the lock file so a fresh gateway can start clean.
-    from hermes_cli.config import get_hermes_home
-    lock_path = Path(get_hermes_home()) / "gateway.lock"
-    try:
-        lock_path.write_text("")
-    except Exception:
-        pass
     if stopped_any:
         print("✓ Gateway stopped")
     else:
@@ -694,10 +687,6 @@ def restart() -> None:
     """Stop the gateway then start it again."""
     _assert_windows()
     stop()
-    # Give Windows a moment to release the port + stale lock handle.
+    # Give Windows a moment to release the listening port.
     time.sleep(1.0)
-    # Start fresh — bypass _spawn_detached's lock check by using
-    # subprocess.run with DETACHED_PROCESS, same as _spawn_detached
-    # but with a sleep between kill and spawn so the old handle dies.
-    time.sleep(1.0)
-    _spawn_detached()
+    start()

@@ -6005,7 +6005,7 @@ class AIAgent:
         _apm_cwd = os.getenv("TERMINAL_CWD") or None
         _apm_policy = None  # Phase 3: loaded below, used in instruction loading
 
-        _apm_did_something = False
+        _apm_project_active = False
 
         # If apm.yml is absent, clean up stale APM skill symlinks from a
         # previous project so they don't persist across project switches.
@@ -6018,41 +6018,41 @@ class AIAgent:
             _apm_project_active = False
         else:
             _apm_project_active = True
-        try:
-            # Phase 2: Auto-install if lockfile is newer than modules
-            if should_auto_install(_apm_cwd):
-                logger.info("APM lockfile newer than modules — running apm install")
-                ok, _out = install_apm_dependencies(_apm_cwd)
-                if ok:
-                    _apm_did_something = True
-        except Exception:
-            pass  # Non-fatal
 
-        try:
-            # Phase 3: Load policy before symlinking so it can filter
-            _apm_policy = load_apm_policy(_apm_cwd)
-        except Exception:
-            pass  # Non-fatal
+        if _apm_project_active:
+            try:
+                # Phase 2: Auto-install if lockfile is newer than modules
+                if should_auto_install(_apm_cwd):
+                    logger.info("APM lockfile newer than modules — running apm install")
+                    ok, _out = install_apm_dependencies(_apm_cwd)
+            except Exception:
+                pass  # Non-fatal
 
-        try:
-            symlink_apm_skills(_apm_cwd, policy=_apm_policy)
-        except Exception:
-            pass  # Non-fatal
+            try:
+                # Phase 3: Load policy before symlinking so it can filter
+                _apm_policy = load_apm_policy(_apm_cwd)
+            except Exception:
+                pass  # Non-fatal
 
-        try:
-            # Phase 2: Detect and log skill staleness
-            stale, changed, new = detect_apm_staleness(_apm_cwd)
-            if changed or new:
-                logger.info(
-                    "APM staleness detected: %d changed, %d new skills",
-                    len(changed), len(new),
-                )
-            # Phase 2: Validate lockfile against modules
-            valid, issues = validate_lockfile_against_modules(_apm_cwd)
-            if not valid:
-                logger.warning("APM lockfile validation issues: %s", "; ".join(issues[:3]))
-        except Exception:
-            pass  # Non-fatal
+            try:
+                symlink_apm_skills(_apm_cwd, policy=_apm_policy)
+            except Exception:
+                pass  # Non-fatal
+
+            try:
+                # Phase 2: Detect and log skill staleness
+                stale, changed, new = detect_apm_staleness(_apm_cwd)
+                if changed or new:
+                    logger.info(
+                        "APM staleness detected: %d changed, %d new skills",
+                        len(changed), len(new),
+                    )
+                # Phase 2: Validate lockfile against modules
+                valid, issues = validate_lockfile_against_modules(_apm_cwd)
+                if not valid:
+                    logger.warning("APM lockfile validation issues: %s", "; ".join(issues[:3]))
+            except Exception:
+                pass  # Non-fatal
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -6125,31 +6125,32 @@ class AIAgent:
             if context_files_prompt:
                 context_parts.append(context_files_prompt)
 
-            # ── APM: load package instructions & agents ─
-            try:
-                apm_instructions = load_apm_instructions(_context_cwd, policy=_apm_policy)
-                if apm_instructions:
-                    context_parts.append(apm_instructions)
-                # Phase 3: Log policy state if active
-                if _apm_policy:
-                    logger.debug(
-                        "APM policy active: allow_skills=%s, deny_packages=%s",
-                        _apm_policy.get("allow_skills", [])[:3],
-                        _apm_policy.get("deny_packages", [])[:3],
-                    )
-            except Exception:
-                pass  # Non-fatal
+            # ── APM: load package instructions and agents ─
+            if _apm_project_active:
+                try:
+                    apm_instructions = load_apm_instructions(_context_cwd, policy=_apm_policy)
+                    if apm_instructions:
+                        context_parts.append(apm_instructions)
+                    # Phase 3: Log policy state if active
+                    if _apm_policy:
+                        logger.debug(
+                            "APM policy active: allow_skills=%s, deny_packages=%s",
+                            _apm_policy.get("allow_skills", [])[:3],
+                            _apm_policy.get("deny_packages", [])[:3],
+                        )
+                except Exception:
+                    pass  # Non-fatal
 
-            # ── APM: security audit ──
-            try:
-                from agent.apm_consumer import run_apm_audit, audit_report_for_prompt
-                audit_clean, audit_findings = run_apm_audit(_context_cwd)
-                if audit_findings:
-                    audit_block = audit_report_for_prompt(audit_findings)
-                    if audit_block:
-                        context_parts.append(audit_block)
-            except Exception:
-                pass  # Non-fatal
+                # ── APM: security audit ──
+                try:
+                    from agent.apm_consumer import run_apm_audit, audit_report_for_prompt
+                    audit_clean, audit_findings = run_apm_audit(_context_cwd)
+                    if audit_findings:
+                        audit_block = audit_report_for_prompt(audit_findings)
+                        if audit_block:
+                            context_parts.append(audit_block)
+                except Exception:
+                    pass  # Non-fatal
 
         # ── Volatile tier (changes per session/turn — never cached) ───
         volatile_parts: List[str] = []

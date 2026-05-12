@@ -444,6 +444,52 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_bridges_discord_bot_handoff_settings_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        """discord.allow_bots must work from config.yaml, not only .env.
+
+        Regression guard for Discord mention handoff: two Hermes agents using
+        Discord-mediated A2A routing need bot-authored messages to be admitted
+        when the sender explicitly @mentions this bot.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_bots: mentions\n"
+            "  ignore_no_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+        monkeypatch.delenv("DISCORD_IGNORE_NO_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "mentions"
+        assert os.environ.get("DISCORD_IGNORE_NO_MENTION") == "true"
+
+    def test_discord_bot_handoff_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_bots: all\n"
+            "  ignore_no_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
+        monkeypatch.setenv("DISCORD_IGNORE_NO_MENTION", "true")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "none"
+        assert os.environ.get("DISCORD_IGNORE_NO_MENTION") == "true"
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

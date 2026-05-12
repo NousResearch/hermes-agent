@@ -302,6 +302,8 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  ignore_no_mention: true         # Stay silent when another bot/user is mentioned but Hermes is not
+  allow_bots: none                # none | mentions | all; use mentions for Discord-mediated A2A handoff
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
@@ -323,6 +325,30 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+#### `discord.ignore_no_mention`
+
+**Type:** boolean — **Default:** `true`
+
+When enabled, Hermes stays silent if a server message mentions other users or bots but does **not** mention this bot. This prevents one Hermes instance from jumping into a message intended for another agent in a shared Discord channel.
+
+#### `discord.allow_bots`
+
+**Type:** string — **Default:** `"none"` — valid values: `"none"`, `"mentions"`, `"all"`
+
+By default, Hermes ignores messages authored by other Discord bots to prevent bot loops. For Discord-mediated agent-to-agent handoff, set this to `mentions` on the receiving Hermes instance:
+
+```yaml
+discord:
+  allow_bots: mentions
+  ignore_no_mention: true
+```
+
+With `mentions`, a bot-authored message is admitted only when it explicitly `@mentions` this bot. This is the recommended setting for multi-agent handoff because it allows targeted goal-contract messages while still rejecting unrelated bot chatter. `all` should only be used in tightly controlled channels.
+
+:::warning
+Agent-to-agent Discord handoff requires **separate Discord bot identities/tokens** for each Hermes instance. A Hermes gateway always ignores messages from its own bot user, so two agents sharing the same Discord bot token cannot use mentions to talk to each other.
+:::
 
 #### `discord.free_response_channels`
 

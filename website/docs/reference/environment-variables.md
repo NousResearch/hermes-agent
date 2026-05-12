@@ -252,6 +252,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_HOME_CHANNEL_NAME` | Display name for the Discord home channel |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord slash-command startup sync policy: `safe` (diff and reconcile), `bulk` (legacy `tree.sync()`), or `off` |
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
+| `DISCORD_IGNORE_NO_MENTION` | Stay silent when another user/bot is mentioned but this bot is not (default: `true`) |
+| `DISCORD_ALLOW_BOTS` | Accept inbound messages from other bots: `none` (default), `mentions`, or `all`. Use `mentions` for targeted Discord-mediated A2A handoff. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
 | `DISCORD_REACTIONS` | Enable emoji reactions on messages during processing (default: `true`) |

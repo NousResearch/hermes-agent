@@ -853,6 +853,10 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                if "ignore_no_mention" in discord_cfg and not os.getenv("DISCORD_IGNORE_NO_MENTION"):
+                    os.environ["DISCORD_IGNORE_NO_MENTION"] = str(discord_cfg["ignore_no_mention"]).lower()
+                if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+                    os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

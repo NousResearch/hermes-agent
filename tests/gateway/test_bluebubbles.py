@@ -166,7 +166,7 @@ class TestBlueBubblesHelpers:
         assert all("(" not in chunk for chunk in chunks)
 
     @pytest.mark.asyncio
-    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+    async def test_send_keeps_paragraphs_in_one_bubble_by_default(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         sent = []
 
@@ -180,7 +180,32 @@ class TestBlueBubblesHelpers:
         monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
         monkeypatch.setattr(adapter, "_api_post", fake_api_post)
 
-        result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
+        text = "first thought\n\nsecond thought"
+        result = await adapter.send("user@example.com", text)
+
+        assert result.success is True
+        assert sent == [text]
+
+    @pytest.mark.asyncio
+    async def test_send_can_split_paragraphs_when_explicitly_enabled(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            sent.append(payload["message"])
+            return {"data": {"guid": f"msg-{len(sent)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "user@example.com",
+            "first thought\n\nsecond thought",
+            metadata={"split_bubbles": True},
+        )
 
         assert result.success is True
         assert sent == ["first thought", "second thought"]

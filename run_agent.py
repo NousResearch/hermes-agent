@@ -2658,6 +2658,41 @@ class AIAgent:
         # ── LM Studio: preload before probing context length ──
         self._ensure_lmstudio_runtime_loaded()
 
+        # ── Re-resolve config_context_length for the new provider ──
+        # The top-level model.context_length (stored as _config_context_length
+        # at startup) can shadow the new provider's context_length when
+        # switching providers mid-session.  Clear it and re-resolve from the
+        # new provider's config entry.
+        try:
+            from hermes_cli.config import load_config, get_custom_provider_context_length
+            _sm_fresh_cfg = load_config()
+            _sm_cfg_ctx = _sm_fresh_cfg.get("model", {})
+            _sm_new_cfg_ctx = _sm_cfg_ctx.get("context_length") if isinstance(_sm_cfg_ctx, dict) else None
+            # Only use the top-level context_length if the new provider IS the
+            # default provider — otherwise it belongs to a different endpoint.
+            _sm_default_provider = (_sm_cfg_ctx.get("provider") or "") if isinstance(_sm_cfg_ctx, dict) else ""
+            if new_provider and _sm_default_provider and new_provider != _sm_default_provider:
+                _sm_new_cfg_ctx = None
+            if _sm_new_cfg_ctx is not None:
+                try:
+                    self._config_context_length = int(_sm_new_cfg_ctx)
+                except (TypeError, ValueError):
+                    self._config_context_length = None
+            else:
+                # Try per-provider custom_providers context_length
+                _sm_cps = None
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _sm_cps = get_compatible_custom_providers(_sm_fresh_cfg)
+                except Exception:
+                    pass
+                _sm_cp_ctx = get_custom_provider_context_length(
+                    new_model, self.base_url, custom_providers=_sm_cps, config=_sm_fresh_cfg
+                )
+                self._config_context_length = int(_sm_cp_ctx) if _sm_cp_ctx else None
+        except Exception:
+            pass
+
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length

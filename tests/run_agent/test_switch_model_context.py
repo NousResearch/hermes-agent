@@ -72,3 +72,82 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+# ── Provider-switching regression tests ──────────────────────────────
+# Covers the bug where top-level model.context_length (1M) persists
+# across /model switches and shadows the new provider's context_length.
+
+
+@patch("run_agent.load_config")
+@patch("hermes_cli.config.get_custom_provider_context_length", return_value=None)
+@patch("hermes_cli.config.get_compatible_custom_providers", return_value=[])
+@patch("agent.model_metadata.get_model_context_length", return_value=8_192)
+def test_switch_to_local_provider_clears_stale_config_context(
+    mock_ctx_len, mock_cps, mock_cp_ctx, mock_load_config
+):
+    """Switching from cloud (1M ctx) to local (8K ctx) should not shadow
+    the local provider's context_length with the stale 1M value."""
+    mock_load_config.return_value = {
+        "model": {"default": "mimo-pro", "provider": "custom", "context_length": 1_000_000}
+    }
+
+    agent = _make_agent_with_compressor(config_context_length=1_000_000)
+    assert agent._config_context_length == 1_000_000
+
+    agent.switch_model("local-model", "custom:local", base_url="http://localhost:8080/v1")
+
+    # _config_context_length should be cleared (None) since the new provider
+    # is not the default provider
+    assert agent._config_context_length is None
+    # get_model_context_length should have been called with None
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") is None
+
+
+@patch("run_agent.load_config")
+@patch("hermes_cli.config.get_custom_provider_context_length", return_value=None)
+@patch("hermes_cli.config.get_compatible_custom_providers", return_value=[])
+@patch("agent.model_metadata.get_model_context_length", return_value=8_192)
+def test_switch_to_local_no_explicit_ctx(
+    mock_ctx_len, mock_cps, mock_cp_ctx, mock_load_config
+):
+    """When config has no explicit context_length and we switch providers,
+    _config_context_length should be re-resolved (None if no override)."""
+    mock_load_config.return_value = {
+        "model": {"default": "mimo-pro", "provider": "custom"}
+    }
+
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    agent.switch_model("local-model", "custom:local", base_url="http://localhost:8080/v1")
+
+    assert agent._config_context_length is None
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") is None
+
+
+@patch("run_agent.load_config")
+@patch("hermes_cli.config.get_custom_provider_context_length", return_value=None)
+@patch("hermes_cli.config.get_compatible_custom_providers", return_value=[])
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+def test_same_provider_keeps_config_context(
+    mock_ctx_len, mock_cps, mock_cp_ctx, mock_load_config
+):
+    """Switching models within the same provider should preserve the
+    config context_length."""
+    mock_load_config.return_value = {
+        "model": {"default": "mimo-pro", "provider": "custom", "context_length": 1_000_000}
+    }
+
+    agent = _make_agent_with_compressor(config_context_length=1_000_000)
+
+    # Same provider (custom) — context_length should be preserved
+    agent.switch_model("another-model", "custom", base_url="http://localhost:4000/v1")
+
+    assert agent._config_context_length == 1_000_000
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") == 1_000_000

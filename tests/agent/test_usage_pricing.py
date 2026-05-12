@@ -190,3 +190,117 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 
     assert float(entry.input_cost_per_million) == 0.5
     assert float(entry.output_cost_per_million) == 2.0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# pricing_overrides — user-supplied prices win over auto-discovery sources.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_pricing_overrides_resolve_for_custom_provider(monkeypatch):
+    """A user override for a custom_providers-routed model (e.g. Fireworks)
+    should resolve via get_pricing_entry, even though Fireworks has no
+    pricing API and isn't in the bundled docs snapshot."""
+    monkeypatch.setattr(
+        "agent.usage_pricing._load_user_pricing_overrides",
+        lambda: [
+            {
+                "provider": "custom:fireworks",
+                "model": "kimi-k2p6",
+                "input_per_million": 0.95,
+                "output_per_million": 4.00,
+                "cache_read_per_million": 0.16,
+                "source_url": "https://docs.fireworks.ai/serverless/pricing",
+            }
+        ],
+    )
+
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="custom:fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 0.95
+    assert float(entry.output_cost_per_million) == 4.00
+    assert float(entry.cache_read_cost_per_million) == 0.16
+
+
+def test_pricing_overrides_match_full_model_id_or_basename(monkeypatch):
+    """The matcher should accept either the full slash-prefixed id or the
+    basename, so users don't have to know which form Hermes routes with
+    for their particular custom_providers configuration."""
+    monkeypatch.setattr(
+        "agent.usage_pricing._load_user_pricing_overrides",
+        lambda: [
+            {
+                # Full id form
+                "provider": "custom:fireworks",
+                "model": "accounts/fireworks/models/kimi-k2p6",
+                "input_per_million": 1.0,
+                "output_per_million": 2.0,
+            }
+        ],
+    )
+
+    # Basename form on the route should still hit the full-id override.
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="custom:fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.0
+
+
+def test_pricing_overrides_take_precedence_over_docs_snapshot(monkeypatch):
+    """When both a user override and a bundled snapshot entry exist for the
+    same (provider, model), the override wins. This is the supported way
+    to correct stale rates without waiting for a Hermes release."""
+    monkeypatch.setattr(
+        "agent.usage_pricing._load_user_pricing_overrides",
+        lambda: [
+            {
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "input_per_million": 99.0,  # absurd value to prove override wins
+                "output_per_million": 99.0,
+            }
+        ],
+    )
+
+    entry = get_pricing_entry("claude-opus-4-7", provider="anthropic")
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 99.0
+
+
+def test_pricing_overrides_skip_entries_missing_required_fields(monkeypatch):
+    """Entries without input_per_million OR output_per_million are skipped
+    silently — we don't want a single bad entry to mask later valid ones
+    or crash cost computation."""
+    monkeypatch.setattr(
+        "agent.usage_pricing._load_user_pricing_overrides",
+        lambda: [
+            {"provider": "custom:fireworks", "model": "kimi-k2p6"},  # no rates
+            {
+                "provider": "custom:fireworks",
+                "model": "kimi-k2p6",
+                "input_per_million": 0.95,
+                "output_per_million": 4.00,
+            },
+        ],
+    )
+
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="custom:fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    # The first (incomplete) entry should be skipped; the second wins.
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.95

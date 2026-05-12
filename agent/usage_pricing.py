@@ -559,6 +559,93 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+def _load_user_pricing_overrides() -> list:
+    """Read the ``pricing_overrides:`` list from ``~/.hermes/config.yaml``.
+
+    Returns an empty list when the key is absent, the config can't be
+    loaded, or the value isn't a list. Imports ``load_config`` lazily so
+    that ``agent.usage_pricing`` doesn't pull in the CLI config module at
+    import time (which would invert the dependency direction).
+    """
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return []
+    try:
+        cfg = load_config()
+    except Exception:
+        return []
+    raw = cfg.get("pricing_overrides") if isinstance(cfg, dict) else None
+    return raw if isinstance(raw, list) else []
+
+
+def _entry_from_user_override(entry: Dict[str, Any]) -> Optional[PricingEntry]:
+    """Build a ``PricingEntry`` from one ``pricing_overrides`` list item.
+
+    Requires ``input_per_million`` and ``output_per_million``. Other rate
+    fields are optional. Bad / missing required fields produce ``None``.
+    """
+    if not isinstance(entry, dict):
+        return None
+    ipm = _to_decimal(entry.get("input_per_million"))
+    opm = _to_decimal(entry.get("output_per_million"))
+    if ipm is None or opm is None:
+        return None
+    source_url = entry.get("source_url")
+    pricing_version = entry.get("pricing_version")
+    return PricingEntry(
+        input_cost_per_million=ipm,
+        output_cost_per_million=opm,
+        cache_read_cost_per_million=_to_decimal(entry.get("cache_read_per_million")),
+        cache_write_cost_per_million=_to_decimal(entry.get("cache_write_per_million")),
+        request_cost=_to_decimal(entry.get("request_cost")),
+        source="user_override",
+        source_url=str(source_url) if isinstance(source_url, str) else None,
+        pricing_version=str(pricing_version) if isinstance(pricing_version, str) else None,
+    )
+
+
+def _lookup_user_override_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    """Match the first ``pricing_overrides`` entry whose ``provider`` matches
+    ``route.provider`` and whose ``model`` matches either the full
+    ``route.model`` or its last path segment (basename).
+
+    Provider strings of the form ``custom:<name>`` are preserved by
+    ``resolve_billing_route``; for those, ``route.model`` is the basename
+    (e.g. ``kimi-k2p6``). For ``provider == "custom"`` (no suffix),
+    ``route.model`` is the full id (e.g. ``accounts/fireworks/models/kimi-k2p6``).
+    Matching against both forms means users don't have to think about
+    that distinction.
+    """
+    overrides = _load_user_pricing_overrides()
+    if not overrides:
+        return None
+    target_provider = (route.provider or "").lower()
+    target_model = (route.model or "").lower()
+    target_basename = target_model.rsplit("/", 1)[-1]
+    for raw in overrides:
+        if not isinstance(raw, dict):
+            continue
+        ep = str(raw.get("provider", "")).strip().lower()
+        em = str(raw.get("model", "")).strip().lower()
+        if not ep or not em:
+            continue
+        if ep != target_provider:
+            continue
+        em_basename = em.rsplit("/", 1)[-1]
+        # Match either form on either side: lets users write the full
+        # "accounts/.../kimi-k2p6" or just "kimi-k2p6" without caring
+        # which form their custom_providers setup routes with.
+        if em != target_model and em_basename != target_model and em != target_basename:
+            continue
+        entry = _entry_from_user_override(raw)
+        if entry is not None:
+            return entry
+        # Bad entry (missing required rates) — keep scanning so a single
+        # malformed item doesn't mask a later valid one for the same model.
+    return None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     # Direct lookup first
@@ -644,6 +731,13 @@ def get_pricing_entry(
             source="none",
             pricing_version="included-route",
         )
+    # User-supplied overrides win over all auto-discovery sources. This is
+    # the supported escape hatch for providers without a pricing API
+    # (e.g. Fireworks) and for keeping rates current when the bundled
+    # ``_OFFICIAL_DOCS_PRICING`` snapshot lags behind a vendor change.
+    user_entry = _lookup_user_override_pricing(route)
+    if user_entry is not None:
+        return user_entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:

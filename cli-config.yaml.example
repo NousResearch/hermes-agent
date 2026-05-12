@@ -96,6 +96,45 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Pricing Overrides (cost reporting for any model/provider)
+# =============================================================================
+# Hermes derives per-turn cost from token counts × pricing. For providers
+# that don't expose pricing through their API (e.g. Fireworks AI) and for
+# any model not in the bundled docs snapshot, declare prices here. Entries
+# win over auto-discovery so you can also use this to fix stale defaults.
+#
+# Match keys:
+#   provider:  the provider string Hermes resolves to. For models served
+#              by a custom_providers entry named "fireworks", it's
+#              "custom:fireworks". Run `hermes config show` to confirm.
+#   model:     match against either the full model id
+#              ("accounts/fireworks/models/kimi-k2p6") OR its basename
+#              ("kimi-k2p6"). Either form works.
+#
+# Rate fields (USD per 1M tokens unless noted):
+#   input_per_million        required
+#   output_per_million       required
+#   cache_read_per_million   optional
+#   cache_write_per_million  optional
+#   request_cost             optional — flat USD per request
+#   source_url               optional — free-form, helps audits
+#   pricing_version          optional — free-form label
+#
+# pricing_overrides:
+#   - provider: custom:fireworks
+#     model: kimi-k2p6
+#     input_per_million: 0.95
+#     output_per_million: 4.00
+#     cache_read_per_million: 0.16
+#     source_url: https://docs.fireworks.ai/serverless/pricing
+#     pricing_version: fireworks-2026-05
+#   - provider: custom:fireworks
+#     model: glm-5p1
+#     input_per_million: 1.40
+#     output_per_million: 4.40
+#     cache_read_per_million: 0.26
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

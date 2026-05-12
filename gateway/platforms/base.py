@@ -47,8 +47,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     value. Telegram private-chat topics created through Hermes' DM-topic helper
     are exposed in updates as ``message_thread_id`` plus a reply anchor, but
     outbound sends only render in the correct Telegram lane when the adapter
-    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
-    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    supplies both ``message_thread_id`` and ``reply_to_message_id``. Feishu
+    topics likewise must be routed through message.reply with
+    reply_in_thread=true; metadata carries that reply anchor to non-text send
+    paths that do not receive an explicit ``reply_to``.
     """
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
@@ -59,6 +61,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    if _platform_name(getattr(source, "platform", None)) == "feishu":
+        anchor = reply_to_message_id or getattr(source, "message_id", None) or thread_id
+        if anchor is not None:
+            metadata["reply_to_message_id"] = str(anchor)
     return metadata
 
 

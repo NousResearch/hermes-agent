@@ -2930,11 +2930,17 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Feishu can report the same topic as root_id (om_...) on the first
+        # reply and thread_id (omt_...) on later messages. Use the root message
+        # id when available so one Feishu topic maps to one Hermes session key
+        # instead of splitting across om_/omt_ variants.
+        root_id = getattr(message, "root_id", None) or None
+        platform_thread_id = getattr(message, "thread_id", None) or None
+        thread_id = root_id or platform_thread_id or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
+            or root_id
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -2969,6 +2975,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,
@@ -4261,7 +4268,11 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
-            effective_reply_to = metadata.get("reply_to_message_id")
+            # Feishu topics must be sent through message.reply with
+            # reply_in_thread=true. If a caller only has the canonical topic
+            # root id, use it as the reply target instead of falling back to
+            # message.create, which would post into the main DM.
+            effective_reply_to = metadata.get("reply_to_message_id") or metadata.get("thread_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(

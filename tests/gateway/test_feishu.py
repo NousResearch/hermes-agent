@@ -1922,6 +1922,47 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_text, "父消息内容")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_uses_root_id_as_canonical_topic_id(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt_topic",
+            root_id="om_topic_root",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"reply in topic"}',
+            message_id="om_current",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_current",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "om_topic_root")
+        self.assertEqual(event.source.message_id, "om_current")
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2000,6 +2041,68 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(captured["request"].message_id, "om_trigger")
         self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_thread_id_as_reply_anchor_when_reply_target_missing(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+            def create(self, request):
+                raise AssertionError("Feishu topic sends must not fall back to message.create")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="status update",
+                    metadata={"thread_id": "om_topic_root"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_topic_root")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    def test_thread_metadata_for_source_includes_feishu_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _thread_metadata_for_source
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="dm",
+            thread_id="om_topic_root",
+            message_id="om_current",
+        )
+
+        metadata = _thread_metadata_for_source(source)
+
+        self.assertEqual(
+            metadata,
+            {
+                "thread_id": "om_topic_root",
+                "reply_to_message_id": "om_current",
+            },
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):

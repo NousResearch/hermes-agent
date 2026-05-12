@@ -2589,6 +2589,7 @@ def _model_flow_nous(config, current_model="", args=None):
         get_pricing_for_provider,
         check_nous_free_tier,
         partition_nous_models_by_tier,
+        union_with_portal_free_recommendations,
     )
 
     model_ids = get_curated_nous_model_ids()
@@ -2629,19 +2630,8 @@ def _model_flow_nous(config, current_model="", args=None):
     # Check if user is on free tier
     free_tier = check_nous_free_tier()
 
-    # For free users: partition models into selectable/unavailable based on
-    # whether they are free per the Portal-reported pricing.
-    unavailable_models: list[str] = []
-    if free_tier:
-        model_ids, unavailable_models = partition_nous_models_by_tier(
-            model_ids, pricing, free_tier=True
-        )
-
-    if not model_ids and not unavailable_models:
-        print("No models available for Nous Portal after filtering.")
-        return
-
-    # Resolve portal URL for upgrade links (may differ on staging)
+    # Resolve portal URL early — needed both for upgrade links and for the
+    # freeRecommendedModels endpoint below.
     _nous_portal_url = ""
     try:
         _nous_state = get_provider_auth_state("nous")
@@ -2649,6 +2639,24 @@ def _model_flow_nous(config, current_model="", args=None):
             _nous_portal_url = _nous_state.get("portal_base_url", "")
     except Exception:
         pass
+
+    # For free users: partition models into selectable/unavailable based on
+    # whether they are free per the Portal-reported pricing.  First augment
+    # with the Portal's freeRecommendedModels list so newly-launched free
+    # models show up even if this CLI build's hardcoded curated list and
+    # docs-hosted manifest haven't caught up yet.
+    unavailable_models: list[str] = []
+    if free_tier:
+        model_ids, pricing = union_with_portal_free_recommendations(
+            model_ids, pricing, _nous_portal_url,
+        )
+        model_ids, unavailable_models = partition_nous_models_by_tier(
+            model_ids, pricing, free_tier=True
+        )
+
+    if not model_ids and not unavailable_models:
+        print("No models available for Nous Portal after filtering.")
+        return
 
     if free_tier and not model_ids:
         print("No free models currently available.")

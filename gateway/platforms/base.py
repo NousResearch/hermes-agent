@@ -3035,14 +3035,28 @@ class BasePlatformAdapter(ABC):
         )
 
         async def _stop_typing_task() -> None:
+            interrupt_event.set()
+            if typing_task.done():
+                return
             typing_task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
+                await asyncio.wait_for(asyncio.shield(typing_task), timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 # Cancellation cleanup must not block adapter shutdown.  The
-                # typing task is already cancelled; if the parent task is also
-                # cancelling, let this message-processing task unwind now.
+                # typing task is already cancelled and has the stop event set;
+                # the direct stop below prevents stale platform indicators even
+                # if task unwinding is slow.
                 pass
+            finally:
+                try:
+                    await asyncio.wait_for(
+                        self.stop_typing(event.source.chat_id),
+                        timeout=1.0,
+                    )
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
         
         try:
             await self._run_processing_hook("on_processing_start", event)

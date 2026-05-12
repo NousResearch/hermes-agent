@@ -389,3 +389,23 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+def test_config_bridges_telegram_hidden_command_chats(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  hide_commands_in_chats:\n"
+        "    - \"-123\"\n"
+        "    - -456\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_HIDE_COMMAND_CHATS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_HIDE_COMMAND_CHATS"] == "-123,-456"

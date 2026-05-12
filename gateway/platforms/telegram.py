@@ -1389,20 +1389,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
             try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
+                await self._register_command_menu()
             except Exception as e:
                 logger.warning(
                     "[%s] Could not register Telegram command menu: %s",
@@ -3494,6 +3481,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
+        if os.getenv("TELEGRAM_TYPING_INDICATORS", "true").strip().lower() in {"0", "false", "no", "off"}:
+            return
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
@@ -3794,6 +3783,62 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring invalid Telegram thread id: %r", self.name, value)
         return ignored
+
+    def _telegram_hide_commands_in_chats(self) -> set[str]:
+        raw = self.config.extra.get("hide_commands_in_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_HIDE_COMMAND_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    @staticmethod
+    def _telegram_scope_chat_id(chat_id: str) -> int | str:
+        text = str(chat_id).strip()
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return text
+
+    async def _register_command_menu(self) -> None:
+        if not self._bot:
+            return
+
+        from telegram import BotCommand
+        from hermes_cli.commands import telegram_menu_commands
+
+        # Telegram allows up to 100 commands but has an undocumented
+        # payload size limit. Skill descriptions are truncated to 40
+        # chars in telegram_menu_commands() to fit 100 commands safely.
+        menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+        await self._bot.set_my_commands([
+            BotCommand(name, desc) for name, desc in menu_commands
+        ])
+
+        hidden_chats = sorted(self._telegram_hide_commands_in_chats())
+        for chat_id in hidden_chats:
+            scope_chat_id = self._telegram_scope_chat_id(chat_id)
+            for scope_type in ("chat", "chat_administrators"):
+                await self._bot.set_my_commands(
+                    [],
+                    scope={"type": scope_type, "chat_id": scope_chat_id},
+                )
+                await self._bot.set_my_commands(
+                    [],
+                    scope={"type": scope_type, "chat_id": scope_chat_id},
+                    language_code="en",
+                )
+
+        if hidden_count:
+            logger.info(
+                "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                self.name, len(menu_commands), hidden_count,
+            )
+        if hidden_chats:
+            logger.info(
+                "[%s] Telegram menu hidden in %d configured chat(s).",
+                self.name, len(hidden_chats),
+            )
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""

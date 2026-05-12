@@ -821,6 +821,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if "hide_commands_in_chats" in platform_cfg:
+                    bridged["hide_commands_in_chats"] = platform_cfg["hide_commands_in_chats"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
@@ -1001,8 +1003,15 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ignored_threads, list):
                         ignored_threads = ",".join(str(v) for v in ignored_threads)
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
+                hidden_command_chats = telegram_cfg.get("hide_commands_in_chats")
+                if hidden_command_chats is not None and not os.getenv("TELEGRAM_HIDE_COMMAND_CHATS"):
+                    if isinstance(hidden_command_chats, list):
+                        hidden_command_chats = ",".join(str(v) for v in hidden_command_chats)
+                    os.environ["TELEGRAM_HIDE_COMMAND_CHATS"] = str(hidden_command_chats)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+                if "typing_indicators" in telegram_cfg and not os.getenv("TELEGRAM_TYPING_INDICATORS"):
+                    os.environ["TELEGRAM_TYPING_INDICATORS"] = str(telegram_cfg["typing_indicators"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
                 # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode

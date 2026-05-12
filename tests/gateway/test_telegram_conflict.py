@@ -288,6 +288,77 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_hides_menu_in_configured_chats(monkeypatch):
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"hide_commands_in_chats": ["-1003895961542"]},
+        )
+    )
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.commands.telegram_menu_commands",
+        lambda max_commands=100: ([("status", "Show status")], 0),
+    )
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+
+    calls = bot.set_my_commands.await_args_list
+    assert len(calls) == 5
+    assert calls[0].args
+    assert calls[0].args[0]
+    assert calls[0].args[0] != []
+    assert calls[0].kwargs == {}
+
+    expected = [
+        {"scope": {"type": "chat", "chat_id": -1003895961542}},
+        {"scope": {"type": "chat", "chat_id": -1003895961542}, "language_code": "en"},
+        {"scope": {"type": "chat_administrators", "chat_id": -1003895961542}},
+        {"scope": {"type": "chat_administrators", "chat_id": -1003895961542}, "language_code": "en"},
+    ]
+    for call, kwargs in zip(calls[1:], expected):
+        assert call.args == ([],)
+        assert call.kwargs == kwargs
+
+
+@pytest.mark.asyncio
 async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 

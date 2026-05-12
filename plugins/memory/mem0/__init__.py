@@ -25,6 +25,12 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
+try:
+    from agent.redact import redact_sensitive_text
+except Exception:  # pragma: no cover - defensive fallback during partial imports
+    def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+        return text
+
 logger = logging.getLogger(__name__)
 
 # Circuit breaker: after this many consecutive failures, pause API calls
@@ -218,6 +224,11 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"user_id": self._user_id, "agent_id": self._agent_id}
 
     @staticmethod
+    def _redact_for_mem0(text: Any) -> str:
+        """Redact secrets before sending user/assistant text to Mem0's API."""
+        return redact_sensitive_text("" if text is None else str(text), force=True)
+
+    @staticmethod
     def _unwrap_results(response: Any) -> list:
         """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
         if isinstance(response, dict):
@@ -251,8 +262,9 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._get_client()
+                safe_query = self._redact_for_mem0(query)
                 results = self._unwrap_results(client.search(
-                    query=query,
+                    query=safe_query,
                     filters=self._read_filters(),
                     rerank=self._rerank,
                     top_k=5,
@@ -278,8 +290,8 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client = self._get_client()
                 messages = [
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": assistant_content},
+                    {"role": "user", "content": self._redact_for_mem0(user_content)},
+                    {"role": "assistant", "content": self._redact_for_mem0(assistant_content)},
                 ]
                 client.add(messages, **self._write_filters())
                 self._record_success()
@@ -321,7 +333,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to fetch profile: {e}")
 
         elif tool_name == "mem0_search":
-            query = args.get("query", "")
+            query = self._redact_for_mem0(args.get("query", ""))
             if not query:
                 return tool_error("Missing required parameter: query")
             rerank = args.get("rerank", False)
@@ -343,7 +355,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 return tool_error(f"Search failed: {e}")
 
         elif tool_name == "mem0_conclude":
-            conclusion = args.get("conclusion", "")
+            conclusion = self._redact_for_mem0(args.get("conclusion", ""))
             if not conclusion:
                 return tool_error("Missing required parameter: conclusion")
             try:

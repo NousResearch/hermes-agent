@@ -199,6 +199,67 @@ class TestMem0ResponseUnwrapping:
 
 
 # ---------------------------------------------------------------------------
+# Outbound redaction
+# ---------------------------------------------------------------------------
+
+
+class TestMem0OutboundRedaction:
+    """Sensitive text should be redacted before any Mem0 API call leaves Hermes."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_sync_turn_redacts_messages_before_add(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        raw_token = "tok_" + "a" * 40
+
+        provider.sync_turn(
+            f"Authorization: Bearer {raw_token}",
+            f"I saw Authorization: Bearer {raw_token}",
+            session_id="s1",
+        )
+        provider._sync_thread.join(timeout=2)
+
+        sent = json.dumps(client.captured_add[0]["messages"])
+        assert raw_token not in sent
+
+    def test_search_redacts_query_before_api_call(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        raw_token = "tok_" + "b" * 40
+
+        provider.handle_tool_call("mem0_search", {"query": f"Authorization: Bearer {raw_token}"})
+
+        assert raw_token not in client.captured_search["query"]
+
+    def test_prefetch_redacts_query_before_api_call(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        raw_token = "tok_" + "d" * 40
+
+        provider.queue_prefetch(f"Authorization: Bearer {raw_token}")
+        provider._prefetch_thread.join(timeout=2)
+
+        assert raw_token not in client.captured_search["query"]
+
+    def test_conclude_redacts_fact_before_add(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        raw_token = "tok_" + "c" * 40
+
+        provider.handle_tool_call("mem0_conclude", {"conclusion": f"Authorization: Bearer {raw_token}"})
+
+        sent = json.dumps(client.captured_add[0]["messages"])
+        assert raw_token not in sent
+
+
+# ---------------------------------------------------------------------------
 # Default preservation
 # ---------------------------------------------------------------------------
 

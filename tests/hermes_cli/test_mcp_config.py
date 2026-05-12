@@ -650,3 +650,143 @@ class TestMcpLogin:
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
 
+
+# ---------------------------------------------------------------------------
+# Tests: _probe_single_server honors per-server connect_timeout + picks
+# OAuth-appropriate defaults (issue #24097).
+# ---------------------------------------------------------------------------
+
+
+class TestProbeConnectTimeout:
+    def test_resolve_uses_configured_value_when_present(self):
+        from hermes_cli.mcp_config import _resolve_probe_timeout
+
+        assert _resolve_probe_timeout(
+            {"url": "https://x", "auth": "oauth", "connect_timeout": 600}
+        ) == 600.0
+        # Even non-OAuth servers honor the field.
+        assert _resolve_probe_timeout(
+            {"command": "npx", "connect_timeout": 5}
+        ) == 5.0
+        # Stringy YAML values (yaml.safe_load returns ints, but users
+        # occasionally quote numbers in config) must still coerce.
+        assert _resolve_probe_timeout(
+            {"url": "https://x", "auth": "oauth", "connect_timeout": "120"}
+        ) == 120.0
+
+    def test_resolve_falls_back_to_oauth_default_when_unset(self):
+        from hermes_cli.mcp_config import (
+            _resolve_probe_timeout,
+            _OAUTH_PROBE_TIMEOUT,
+        )
+
+        # OAuth-based remote server, no connect_timeout in config.
+        assert _resolve_probe_timeout(
+            {"url": "https://x", "auth": "oauth"}
+        ) == _OAUTH_PROBE_TIMEOUT
+        # 40s (current bug) is well below the OAuth ceiling; sanity check
+        # the default lives above the historical 40s cutoff from #24097.
+        assert _OAUTH_PROBE_TIMEOUT > 40.0
+
+    def test_resolve_falls_back_to_short_default_for_non_oauth(self):
+        from hermes_cli.mcp_config import (
+            _resolve_probe_timeout,
+            _DEFAULT_PROBE_TIMEOUT,
+        )
+
+        # Stdio server — fast, automated connect.
+        assert _resolve_probe_timeout(
+            {"command": "npx", "args": ["some-server"]}
+        ) == _DEFAULT_PROBE_TIMEOUT
+        # Header-auth remote server — still automated, no browser.
+        assert _resolve_probe_timeout(
+            {"url": "https://x", "auth": "header"}
+        ) == _DEFAULT_PROBE_TIMEOUT
+
+    def test_resolve_ignores_invalid_configured_value(self):
+        from hermes_cli.mcp_config import (
+            _resolve_probe_timeout,
+            _OAUTH_PROBE_TIMEOUT,
+            _DEFAULT_PROBE_TIMEOUT,
+        )
+
+        # Non-numeric strings, None, negatives, and zero are all bad data
+        # — fall back to the auth-appropriate default rather than passing
+        # a broken value into asyncio.wait_for.
+        for bad in ("forever", None, 0, -5, ""):
+            assert _resolve_probe_timeout(
+                {"url": "https://x", "auth": "oauth", "connect_timeout": bad}
+            ) == _OAUTH_PROBE_TIMEOUT
+            assert _resolve_probe_timeout(
+                {"command": "npx", "connect_timeout": bad}
+            ) == _DEFAULT_PROBE_TIMEOUT
+
+    def test_probe_passes_resolved_timeout_to_run_on_mcp_loop(
+        self, monkeypatch
+    ):
+        """End-to-end: when called with no explicit timeout, the resolved
+        per-server value flows through to ``_run_on_mcp_loop`` (and thus,
+        by construction, to the inner ``asyncio.wait_for``)."""
+        from hermes_cli import mcp_config
+
+        captured: Dict[str, Any] = {}
+
+        def _fake_run_on_mcp_loop(coro, timeout):
+            captured["run_timeout"] = timeout
+            # Cancel the unstarted coroutine so the Python warning
+            # "coroutine was never awaited" doesn't fire under -W error.
+            coro.close()
+
+        monkeypatch.setattr(
+            "tools.mcp_tool._ensure_mcp_loop", lambda: None
+        )
+        monkeypatch.setattr(
+            "tools.mcp_tool._stop_mcp_loop", lambda: None
+        )
+        monkeypatch.setattr(
+            "tools.mcp_tool._connect_server",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("connect_server should not run")
+            ),
+        )
+        monkeypatch.setattr(
+            "tools.mcp_tool._run_on_mcp_loop", _fake_run_on_mcp_loop
+        )
+
+        # Configured value wins over the OAuth default.
+        captured.clear()
+        mcp_config._probe_single_server(
+            "srv",
+            {"url": "https://x", "auth": "oauth", "connect_timeout": 250},
+        )
+        assert captured["run_timeout"] == 250.0 + 10
+
+        # No configured value + OAuth → OAuth default, not the historical 30.
+        captured.clear()
+        mcp_config._probe_single_server(
+            "srv", {"url": "https://x", "auth": "oauth"}
+        )
+        assert (
+            captured["run_timeout"]
+            == mcp_config._OAUTH_PROBE_TIMEOUT + 10
+        )
+
+        # Stdio with no config → short default.
+        captured.clear()
+        mcp_config._probe_single_server(
+            "srv", {"command": "npx", "args": ["x"]}
+        )
+        assert (
+            captured["run_timeout"]
+            == mcp_config._DEFAULT_PROBE_TIMEOUT + 10
+        )
+
+        # Explicit timeout from the caller wins over both config and defaults.
+        captured.clear()
+        mcp_config._probe_single_server(
+            "srv",
+            {"url": "https://x", "auth": "oauth", "connect_timeout": 250},
+            connect_timeout=15.0,
+        )
+        assert captured["run_timeout"] == 15.0 + 10
+

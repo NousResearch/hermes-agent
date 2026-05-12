@@ -164,10 +164,46 @@ def _apply_mcp_preset(
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
 
+# OAuth probes shell out to the user's browser, so the connect step can
+# block on a human typing credentials. Anything below ~5 minutes regularly
+# times out on first-time logins (the user has to sign in, click Authorize,
+# and bounce back to the loopback callback). 30s is fine for stdio and
+# pre-authenticated transports where the connect is purely automated.
+_OAUTH_PROBE_TIMEOUT = 300.0
+_DEFAULT_PROBE_TIMEOUT = 30.0
+
+
+def _resolve_probe_timeout(config: dict) -> float:
+    """Pick the connect timeout for ``_probe_single_server``.
+
+    Honors a per-server ``connect_timeout`` field in ``mcp_servers.<name>``
+    when present and numeric; otherwise selects a default based on whether
+    the server uses OAuth (browser-mediated, slow) or any other transport.
+    """
+    configured = config.get("connect_timeout")
+    if configured is not None:
+        try:
+            value = float(configured)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and value > 0:
+            return value
+    if config.get("auth") == "oauth":
+        return _OAUTH_PROBE_TIMEOUT
+    return _DEFAULT_PROBE_TIMEOUT
+
+
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
+
+    When ``connect_timeout`` is ``None`` (the normal call path), the
+    timeout is resolved from the server config: a ``connect_timeout``
+    field in ``mcp_servers.<name>`` wins, otherwise it falls back to
+    300s for OAuth-based servers (whose probe runs a browser-mediated
+    handshake) and 30s for everything else. Explicit callers may pass
+    a value to override.
 
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
@@ -178,6 +214,9 @@ def _probe_single_server(
         _connect_server,
         _stop_mcp_loop,
     )
+
+    if connect_timeout is None:
+        connect_timeout = _resolve_probe_timeout(config)
 
     _ensure_mcp_loop()
 

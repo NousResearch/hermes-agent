@@ -3465,6 +3465,15 @@ class AIAgent:
             return True, True
         if (is_openrouter or is_nous_portal) and is_claude:
             return True, False
+        # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
+        # cache_control path as Portal Claude. Portal proxies to OpenRouter
+        # and the upstream Qwen route accepts cache_control markers; without
+        # this branch the alibaba-family check below only matches
+        # provider=opencode/alibaba and Portal traffic falls through to
+        # (False, False), serving 0% cache hits and re-billing the full
+        # prompt on every turn.
+        if is_nous_portal and "qwen" in model_lower:
+            return True, False
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
             return True, True
@@ -3540,7 +3549,19 @@ class AIAgent:
         eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
         eff_model = (model if model is not None else self.model) or ""
 
-        if "claude" not in eff_model.lower():
+        model_lower = eff_model.lower()
+        is_claude = "claude" in model_lower
+        is_nous_portal = "nousresearch" in eff_base_url.lower()
+
+        # Nous Portal: Claude AND Qwen both get long-lived caching.
+        # Portal proxies to OpenRouter with identical cache_control
+        # semantics; any model on Portal that accepts envelope-layout
+        # markers via _anthropic_prompt_cache_policy also benefits from
+        # the documented 1h cross-session TTL.
+        if is_nous_portal and (is_claude or "qwen" in model_lower):
+            return True
+
+        if not is_claude:
             return False
 
         # Native Anthropic + Anthropic OAuth subscription
@@ -3554,7 +3575,7 @@ class AIAgent:
 
         # Nous Portal — front-ends OpenRouter behind the scenes; identical
         # wire format and cache_control semantics.
-        if "nousresearch" in eff_base_url.lower():
+        if is_nous_portal:
             return True
 
         return False

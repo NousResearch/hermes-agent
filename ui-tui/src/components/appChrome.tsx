@@ -86,7 +86,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const ui = useStore($uiState)
   const style = ui.indicatorStyle
-  const { verbs } = useI18n()
+  const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
   const [now, setNow] = useState(() => Date.now())
@@ -116,7 +116,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   const { frame } = renderIndicator(style, tick)
   const verb = verbs[verbTick % verbs.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verbSegment = showVerb ? ` ${locale === 'zh' ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra

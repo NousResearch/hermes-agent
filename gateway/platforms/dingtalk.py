@@ -34,6 +34,7 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -822,7 +823,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         is_final_reply = reply_to is not None
 
         # Try AI Card first (using alibabacloud_dingtalk.card_1_0 SDK).
-        if self._card_template_id and current_message and self._card_sdk:
+        if (
+            self._card_template_id
+            and current_message
+            and CARD_SDK_AVAILABLE
+            and self._card_sdk
+            and dingtalk_card_models
+            and tea_util_models
+        ):
             # Close any previously-open streaming cards for this chat
             # before creating a new one (handles tool-progress → final-
             # response handoff; also cleans up lingering commentary cards).
@@ -861,18 +869,24 @@ class DingTalkAdapter(BasePlatformAdapter):
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            if resp.status_code < 300:
+            status_code_raw = getattr(resp, "status_code", None)
+            try:
+                status_code = int(status_code_raw) if status_code_raw is not None else 500
+            except (TypeError, ValueError):
+                status_code = 500
+
+            if status_code < 300:
                 # Webhook path: fire Done only for final replies, same as
                 # the card path.
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = resp.text
+            body = str(getattr(resp, "text", "") or "")
             logger.warning(
-                "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
+                "[%s] Send failed HTTP %d: %s", self.name, status_code, body[:200]
             )
             return SendResult(
-                success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
+                success=False, error=f"HTTP {status_code}: {body[:200]}"
             )
         except httpx.TimeoutException:
             return SendResult(
@@ -986,6 +1000,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         state, and we track that in ``_streaming_cards`` for sibling
         cleanup on the next send.
         """
+        if (
+            not CARD_SDK_AVAILABLE
+            or not self._card_sdk
+            or not dingtalk_card_models
+            or not tea_util_models
+        ):
+            logger.debug("[%s] AI Card SDK unavailable, using webhook fallback", self.name)
+            return None
+
         try:
             token = await self._get_access_token()
             if not token:
@@ -1145,6 +1168,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> None:
         """Stream content to an existing AI Card."""
+        if (
+            not CARD_SDK_AVAILABLE
+            or not self._card_sdk
+            or not dingtalk_card_models
+            or not tea_util_models
+        ):
+            logger.debug("[%s] AI Card SDK unavailable; skipping stream update", self.name)
+            return
+
         stream_request = dingtalk_card_models.StreamingUpdateRequest(
             out_track_id=out_track_id,
             guid=str(uuid.uuid4()),
@@ -1185,7 +1217,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         recall: bool = False,
     ) -> None:
         """Add or recall an emoji reaction on a message."""
-        if not self._robot_sdk or not open_msg_id or not open_conversation_id:
+        if (
+            not CARD_SDK_AVAILABLE
+            or not self._robot_sdk
+            or not dingtalk_robot_models
+            or not tea_util_models
+            or not open_msg_id
+            or not open_conversation_id
+        ):
             return
         action = "recall" if recall else "reply"
         try:
@@ -1290,7 +1329,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         self, code: str, robot_code: str, token: str, obj, key: str
     ) -> None:
         """Fetch download URL for a single code using the robot SDK."""
-        if not self._robot_sdk:
+        if (
+            not CARD_SDK_AVAILABLE
+            or not self._robot_sdk
+            or not dingtalk_robot_models
+            or not tea_util_models
+        ):
             logger.warning(
                 "[%s] Robot SDK not initialized, cannot resolve media code",
                 self.name,
@@ -1388,8 +1432,39 @@ class _IncomingHandler(
             if isinstance(data, str):
                 data = json.loads(data)
 
-            # Parse dict into ChatbotMessage using SDK's from_dict
-            chatbot_msg = ChatbotMessage.from_dict(data)
+            if ChatbotMessage is not None and hasattr(ChatbotMessage, "from_dict"):
+                # Parse dict into ChatbotMessage using SDK's from_dict
+                chatbot_msg = ChatbotMessage.from_dict(data)
+            else:
+                # Unit-test / no-SDK fallback: build a minimal message object
+                # with the attribute names the adapter expects.
+                chatbot_msg = SimpleNamespace()
+                if isinstance(data, dict):
+                    chatbot_msg.message_id = data.get("msgId") or data.get("msg_id") or ""
+                    chatbot_msg.conversation_id = (
+                        data.get("conversationId") or data.get("conversation_id") or ""
+                    )
+                    chatbot_msg.conversation_type = (
+                        data.get("conversationType") or data.get("conversation_type") or "1"
+                    )
+                    chatbot_msg.sender_id = data.get("senderId") or data.get("sender_id") or ""
+                    chatbot_msg.sender_staff_id = (
+                        data.get("senderStaffId") or data.get("sender_staff_id") or ""
+                    )
+                    chatbot_msg.sender_nick = data.get("senderNick") or data.get("sender_nick") or ""
+                    chatbot_msg.text = data.get("text") or ""
+                    chatbot_msg.rich_text = data.get("rich_text") or None
+                    chatbot_msg.session_webhook = (
+                        data.get("sessionWebhook") or data.get("session_webhook") or ""
+                    )
+                    chatbot_msg.session_webhook_expired_time = (
+                        data.get("sessionWebhookExpiredTime")
+                        or data.get("session_webhook_expired_time")
+                        or 0
+                    )
+                    chatbot_msg.is_in_at_list = bool(
+                        data.get("isInAtList") or data.get("is_in_at_list") or False
+                    )
 
             # Ensure session_webhook is populated even if the SDK's
             # from_dict() did not map it (field name mismatch across

@@ -1,0 +1,168 @@
+name: Track Upstream
+
+# Keeps ash's fork rebased onto NousResearch/hermes-agent:main.
+#
+# Daily at 06:30 UTC (offset from the WebUI fork's track-upstream at 06:00):
+#   1. Fetch upstream/main
+#   2. If we're not behind, no-op
+#   3. Try to rebase our custom commits (Bankr wallet + browser_sidecar +
+#      a handful of small QoL fixes) onto upstream/main
+#   4a. Clean rebase  → force-push to ash/main + the docker-publish workflow
+#       fires automatically on the push (it watches main).
+#   4b. Conflicts     → push the conflicted state to a dated branch + leave
+#       a Job Summary tile with a one-click Compare URL for manual
+#       resolution.
+#
+# Manual trigger via "Run workflow" is supported for ad-hoc syncing.
+
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  rebase-onto-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout ash/main with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/NousResearch/hermes-agent.git
+
+      - name: Fetch upstream main
+        run: git fetch upstream main
+
+      - name: Determine sync state
+        id: state
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          AHEAD=$(git rev-list --count upstream/main..HEAD)
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+          echo "behind=$BEHIND"   >> "$GITHUB_OUTPUT"
+          echo "ahead=$AHEAD"     >> "$GITHUB_OUTPUT"
+          echo "upstream=$UPSTREAM_HEAD" >> "$GITHUB_OUTPUT"
+          echo "ash/main is $BEHIND commits behind / $AHEAD commits ahead of upstream/main."
+          echo "Latest upstream commit: $UPSTREAM_HEAD"
+
+      - name: No-op if already up to date
+        if: steps.state.outputs.behind == '0'
+        run: echo "Already up to date — exiting."
+
+      - name: Attempt rebase
+        if: steps.state.outputs.behind != '0'
+        id: rebase
+        continue-on-error: true
+        run: |
+          set +e
+          git rebase upstream/main
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > /tmp/conflicted_files.txt || true
+            git rebase --abort || true
+          fi
+
+      - name: Push (clean rebase)
+        if: steps.rebase.outputs.status == 'clean'
+        run: |
+          git push origin main --force-with-lease
+          echo "✓ ash/main rebased onto upstream/main ($BEHIND new commits absorbed)."
+          echo "✓ docker-publish workflow will fire automatically on this push."
+        env:
+          BEHIND: ${{ steps.state.outputs.behind }}
+
+      - name: Push conflict-resolution branch (conflicted rebase)
+        if: steps.rebase.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEHIND: ${{ steps.state.outputs.behind }}
+        run: |
+          BRANCH="upstream-sync-$(date +%Y%m%d-%H%M%S)"
+          git checkout -B "$BRANCH" upstream/main
+
+          # Cherry-pick our custom commits one at a time so the resulting branch
+          # cleanly shows where conflicts landed; record any failures.
+          CUSTOM_COMMITS=$(git log --reverse --format=%H "$BRANCH"..origin/main 2>/dev/null || true)
+          FAILED=""
+          for sha in $CUSTOM_COMMITS; do
+            if ! git cherry-pick --no-commit "$sha"; then
+              FAILED="${FAILED}- ${sha} ($(git log -1 --format=%s "$sha"))%0A"
+              git cherry-pick --abort || true
+            else
+              git commit --allow-empty -m "$(git log -1 --format='%s%n%n%b' "$sha")"
+            fi
+          done
+
+          git push origin "$BRANCH"
+
+          CONFLICTED=$(cat /tmp/conflicted_files.txt 2>/dev/null | tr '\n' ' ')
+
+          PR_TITLE="Sync upstream — manual conflict resolution required"
+          PR_BODY=$(cat <<EOF
+          Auto-track-upstream detected new commits on \`NousResearch/hermes-agent:main\`
+          but the rebase of ash's custom commits hit conflicts.
+
+          **Upstream HEAD**: ${{ steps.state.outputs.upstream }}
+          **Behind by**: ${{ steps.state.outputs.behind }} commits
+          **Conflicted files**: ${CONFLICTED:-(see cherry-pick attempts below)}
+
+          **Cherry-pick failures**:
+          ${FAILED:-(none — conflicts were in the rebase itself)}
+
+          Resolve conflicts on this branch, push, then merge into main.
+          The docker-publish workflow will fire automatically on merge.
+          EOF
+          )
+
+          if gh pr create --title "$PR_TITLE" --body "$PR_BODY" --base main --head "$BRANCH" 2>/tmp/pr_err; then
+            echo "✓ Opened PR for conflict resolution."
+          else
+            COMPARE_URL="https://github.com/${{ github.repository }}/compare/main...$BRANCH"
+            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## ⚠ Upstream sync needs manual conflict resolution
+
+          Daily \`track-upstream\` found $BEHIND new upstream commits
+          but \`git rebase upstream/main\` hit conflicts. Branch
+          \`$BRANCH\` was pushed with our custom commits cherry-picked
+          where possible; conflicts are still in tree.
+
+          **Open PR manually:** [Compare → main ← $BRANCH]($COMPARE_URL)
+
+          **Conflicted files:** \`${CONFLICTED:-(none from the rebase itself; cherry-pick details below)}\`
+
+          **Cherry-pick failures:**
+          ${FAILED:-(none)}
+
+          ---
+          *Auto-PR creation failed* — \`GITHUB_TOKEN\` lacks PR-create permission
+          in this fork. Fix once: Settings → Actions → General → "Allow GitHub
+          Actions to create and approve pull requests" → enable. Then this
+          message will be replaced with a real PR link on the next conflict.
+
+          Error from \`gh pr create\`:
+          \`\`\`
+          $(cat /tmp/pr_err 2>/dev/null || echo '(none)')
+          \`\`\`
+          SUMMARY
+            echo "::warning::PR creation failed (token lacks permission). Branch $BRANCH was pushed; open the PR manually at $COMPARE_URL."
+            exit 0
+          fi

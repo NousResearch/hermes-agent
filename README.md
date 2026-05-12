@@ -4,6 +4,8 @@
 
 # Hermes Agent ☤
 
+> **Fork note:** this `rousegordon-ops/hermes-agent` branch is a Railway/Telegram deployment fork of upstream Nous Research Hermes Agent. See [FORK_NOTES.md](FORK_NOTES.md) for the intentional differences from the base project.
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>

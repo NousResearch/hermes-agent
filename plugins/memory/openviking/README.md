@@ -4,7 +4,7 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 
 ## Requirements
 
-- `pip install openviking`
+- `httpx` installed in the Hermes environment
 - OpenViking server running (`openviking-server`)
 - Embedding + VLM model configured in `~/.openviking/ov.conf`
 
@@ -28,13 +28,30 @@ All config via environment variables in `.env`:
 |---------|---------|-------------|
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | API key (optional) |
+| `OPENVIKING_ACCOUNT` | `default` | Tenant account |
+| `OPENVIKING_USER` | `default` | Tenant user |
+| `OPENVIKING_AGENT` | `hermes` | Tenant agent namespace |
+
+## Recall
+
+Before each model turn, Hermes asks OpenViking for relevant memory context.
+The plugin overfetches candidates, deduplicates repeated memories, reranks for
+query overlap, and injects a bounded evidence block. This keeps prompt context
+focused while still leaving OpenViking tools available for targeted follow-up.
+
+## Writes
+
+After each completed turn, Hermes mirrors the user message and assistant reply
+into the OpenViking session. Hermes native memory `add` and `replace` writes are
+also mirrored as explicit memory notes, then OpenViking extracts durable memory
+when the session commits.
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `viking_search` | Semantic search with fast/deep/auto modes |
-| `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
-| `viking_browse` | Filesystem-style navigation (list/tree/stat) |
+| `viking_search` | Search durable memory and indexed resources |
+| `viking_read` | Read one URI or up to three URIs (abstract/overview/full) |
+| `viking_browse` | Diagnostic URI navigation (list/tree/stat), with capped output |
 | `viking_remember` | Store a fact for extraction on session commit |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |

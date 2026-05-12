@@ -8501,7 +8501,20 @@ class AIAgent:
                                 "stream" in _err_lower
                                 and "not supported" in _err_lower
                             )
-                            if _is_stream_unsupported:
+                            # Detect custom providers (e.g. LLM Gateway) that
+                            # fail streaming when tools are present, returning
+                            # empty/invalid responses (JSONDecodeError with
+                            # "Expecting value" on empty body).  Disable
+                            # streaming so the next attempt uses the
+                            # non-streaming path which succeeds.
+                            _has_tools = bool(api_kwargs.get("tools"))
+                            _is_json_decode = (
+                                "jsondecodeerror" in _err_lower
+                                or "expecting value" in _err_lower
+                                or "expecting ':' delimiter" in _err_lower
+                            )
+                            _is_stream_tool_failure = _has_tools and _is_json_decode
+                            if _is_stream_unsupported or _is_stream_tool_failure:
                                 self._disable_streaming = True
                                 self._safe_print(
                                     "\n⚠  Streaming is not supported for this "

@@ -81,6 +81,7 @@ data class HermesAutomationRunEvent(
     val success: Boolean,
     val exitCode: Int,
     val result: String,
+    val resultSummary: String = "",
     val startedAtEpochMs: Long,
     val finishedAtEpochMs: Long,
     val dispatchSource: String = "",
@@ -89,7 +90,43 @@ data class HermesAutomationRunEvent(
     val remoteTaskId: String = "",
     val remoteTaskName: String = "",
 ) {
+    fun summaryText(): String {
+        return resultSummary.ifBlank {
+            val status = if (success) "completed" else "failed"
+            val details = result
+                .lineSequence()
+                .map { it.trim() }
+                .firstOrNull { it.isNotBlank() }
+                .orEmpty()
+            if (details.isBlank()) {
+                "$automationLabel $status with exit code $exitCode."
+            } else {
+                "$automationLabel $status: $details"
+            }
+        }.take(MAX_RESULT_SUMMARY_CHARS)
+    }
+
+    fun structuredResultJson(): JSONObject {
+        return JSONObject()
+            .put("status", if (success) "completed" else "failed")
+            .put("summary", summaryText())
+            .put("success", success)
+            .put("exit_code", exitCode)
+            .put("result_text", result)
+            .put("duration_ms", (finishedAtEpochMs - startedAtEpochMs).coerceAtLeast(0L))
+            .put("automation_id", automationId)
+            .put("automation_label", automationLabel)
+            .put("action_type", actionType)
+            .put("trigger", trigger)
+            .put("dispatch_source", dispatchSource)
+            .put("dispatch_channel", dispatchChannel)
+            .put("remote_execution_id", remoteExecutionId)
+            .put("remote_task_id", remoteTaskId)
+            .put("remote_task_name", remoteTaskName)
+    }
+
     fun toJson(): JSONObject {
+        val summary = summaryText()
         return JSONObject()
             .put("id", id)
             .put("automation_id", automationId)
@@ -99,6 +136,9 @@ data class HermesAutomationRunEvent(
             .put("success", success)
             .put("exit_code", exitCode)
             .put("result", result)
+            .put("result_summary", summary)
+            .put("execution_result_summary", summary)
+            .put("structured_result", structuredResultJson())
             .put("started_at_epoch_ms", startedAtEpochMs)
             .put("finished_at_epoch_ms", finishedAtEpochMs)
             .put("duration_ms", (finishedAtEpochMs - startedAtEpochMs).coerceAtLeast(0L))
@@ -120,6 +160,8 @@ data class HermesAutomationRunEvent(
                 success = json.optBoolean("success", false),
                 exitCode = json.optInt("exit_code", -1),
                 result = json.optString("result"),
+                resultSummary = json.optString("result_summary")
+                    .ifBlank { json.optString("execution_result_summary") },
                 startedAtEpochMs = json.optLong("started_at_epoch_ms", 0L),
                 finishedAtEpochMs = json.optLong("finished_at_epoch_ms", 0L),
                 dispatchSource = json.optString("dispatch_source"),
@@ -129,6 +171,8 @@ data class HermesAutomationRunEvent(
                 remoteTaskName = json.optString("remote_task_name"),
             )
         }
+
+        private const val MAX_RESULT_SUMMARY_CHARS = 500
     }
 }
 

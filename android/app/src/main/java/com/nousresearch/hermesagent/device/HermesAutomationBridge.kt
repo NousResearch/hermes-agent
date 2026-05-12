@@ -544,6 +544,9 @@ object HermesAutomationBridge {
             .put("success", latest?.success ?: JSONObject.NULL)
             .put("exit_code", latest?.exitCode ?: JSONObject.NULL)
             .put("result", latest?.result.orEmpty())
+            .put("result_summary", latest?.summaryText().orEmpty())
+            .put("execution_result_summary", latest?.summaryText().orEmpty())
+            .put("structured_result", latest?.structuredResultJson() ?: JSONObject())
         return JSONObject()
             .put("success", latest != null || !hasFilter)
             .put("status", status)
@@ -2329,25 +2332,24 @@ object HermesAutomationBridge {
             lastResult = resultText,
         )
         store.upsert(updated)
-        store.addRunEvent(
-            HermesAutomationRunEvent(
-                id = UUID.randomUUID().toString(),
-                automationId = record.id,
-                automationLabel = record.label,
-                actionType = record.actionType,
-                trigger = trigger,
-                success = success,
-                exitCode = exitCode,
-                result = resultText,
-                startedAtEpochMs = startedAtEpochMs,
-                finishedAtEpochMs = finishedAtEpochMs,
-                dispatchSource = dispatch.source,
-                dispatchChannel = dispatch.channel,
-                remoteExecutionId = dispatch.executionId,
-                remoteTaskId = dispatch.taskId,
-                remoteTaskName = dispatch.taskName,
-            )
+        val runEvent = HermesAutomationRunEvent(
+            id = UUID.randomUUID().toString(),
+            automationId = record.id,
+            automationLabel = record.label,
+            actionType = record.actionType,
+            trigger = trigger,
+            success = success,
+            exitCode = exitCode,
+            result = resultText,
+            startedAtEpochMs = startedAtEpochMs,
+            finishedAtEpochMs = finishedAtEpochMs,
+            dispatchSource = dispatch.source,
+            dispatchChannel = dispatch.channel,
+            remoteExecutionId = dispatch.executionId,
+            remoteTaskId = dispatch.taskId,
+            remoteTaskName = dispatch.taskName,
         )
+        store.addRunEvent(runEvent)
         runCatching {
             HermesTaskerEventBridge.notifyAutomationFinished(
                 context = context,
@@ -2361,6 +2363,9 @@ object HermesAutomationBridge {
             .put("success", success)
             .put("trigger", trigger)
             .put("automation", updated.toJson())
+            .put("result_summary", runEvent.summaryText())
+            .put("execution_result_summary", runEvent.summaryText())
+            .put("structured_result", runEvent.structuredResultJson())
             .put("result", rawResult)
     }
 
@@ -4217,12 +4222,16 @@ object HermesAutomationBridge {
             .put("last_run_label", latestRun?.automationLabel.orEmpty())
             .put("last_run_trigger", latestRun?.trigger.orEmpty())
             .put("last_run_result", latestRun?.result.orEmpty())
+            .put("last_run_result_summary", latestRun?.summaryText().orEmpty())
+            .put("last_run_structured_result", latestRun?.structuredResultJson() ?: JSONObject())
             .put("last_dispatch_epoch_ms", latestDispatch?.finishedAtEpochMs ?: JSONObject.NULL)
             .put("last_dispatch_source", latestDispatch?.dispatchSource.orEmpty())
             .put("last_dispatch_channel", latestDispatch?.dispatchChannel.orEmpty())
             .put("last_dispatch_execution_id", latestDispatch?.remoteExecutionId.orEmpty())
             .put("last_dispatch_task_id", latestDispatch?.remoteTaskId.orEmpty())
             .put("last_dispatch_task_name", latestDispatch?.remoteTaskName.orEmpty())
+            .put("last_dispatch_result_summary", latestDispatch?.summaryText().orEmpty())
+            .put("last_dispatch_structured_result", latestDispatch?.structuredResultJson() ?: JSONObject())
             .put(
                 "supported_dispatch_channels",
                 JSONArray(

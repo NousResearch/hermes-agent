@@ -245,6 +245,8 @@ class HermesAutomationInstrumentedTest {
         assertEquals("42", latestRun.getString("remote_execution_id"))
         assertEquals("7", latestRun.getString("remote_task_id"))
         assertEquals("OpenGUI dispatch smoke", latestRun.getString("remote_task_name"))
+        assertTrue(latestRun.getString("execution_result_summary").contains("OpenGUI dispatch smoke completed"))
+        assertEquals("completed", latestRun.getJSONObject("structured_result").getString("status"))
 
         val executionStatus = JSONObject(
             HermesAutomationBridge.performActionJson(
@@ -261,6 +263,8 @@ class HermesAutomationInstrumentedTest {
         assertEquals("7", execution.getString("task_id"))
         assertEquals("OpenGUI dispatch smoke", execution.getString("task_name"))
         assertEquals("opengui_standby", execution.getString("source"))
+        assertTrue(execution.getString("result_summary").contains("OpenGUI dispatch smoke completed"))
+        assertEquals("completed", execution.getJSONObject("structured_result").getString("status"))
 
         val heartbeat = JSONObject(
             HermesAutomationBridge.performActionJson(
@@ -285,6 +289,8 @@ class HermesAutomationInstrumentedTest {
         assertTrue(standby.getBoolean("standby_heartbeat_supported"))
         assertEquals("discord", standby.getString("last_heartbeat_source"))
         assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("status"))
+        assertTrue(standby.getString("last_dispatch_result_summary").contains("OpenGUI dispatch smoke completed"))
+        assertEquals("completed", standby.getJSONObject("last_dispatch_structured_result").getString("status"))
 
         val devices = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_devices"))
         assertTrue(devices.toString(), devices.getBoolean("success"))

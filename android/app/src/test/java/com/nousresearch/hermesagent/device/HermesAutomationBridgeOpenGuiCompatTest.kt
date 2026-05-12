@@ -105,6 +105,53 @@ class HermesAutomationBridgeOpenGuiCompatTest {
     }
 
     @Test
+    fun openguiExecutionStatusIncludesStructuredResultSummary() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.addRunEvent(
+            HermesAutomationRunEvent(
+                id = "local-run-structured",
+                automationId = "automation-structured",
+                automationLabel = "Structured result smoke",
+                actionType = ACTION_TYPE_FILE_WRITE,
+                trigger = TRIGGER_REMOTE_DISPATCH,
+                success = true,
+                exitCode = 0,
+                result = "wrote /sdcard/Download/result.txt",
+                startedAtEpochMs = 2_000,
+                finishedAtEpochMs = 2_500,
+                dispatchSource = "opengui_standby",
+                dispatchChannel = "rest",
+                remoteExecutionId = "100",
+                remoteTaskId = "task-100",
+                remoteTaskName = "Structured result smoke",
+            ),
+        )
+
+        val status = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "operator_execution_status",
+                JSONObject().put("executionId", "100"),
+            ),
+        )
+
+        assertTrue(status.toString(), status.getBoolean("success"))
+        val execution = status.getJSONObject("execution")
+        assertEquals("completed", execution.getString("status"))
+        assertTrue(execution.getString("execution_result_summary").contains("Structured result smoke completed"))
+        assertEquals("completed", execution.getJSONObject("structured_result").getString("status"))
+        assertEquals("Structured result smoke", execution.getJSONObject("structured_result").getString("remote_task_name"))
+        assertTrue(status.getJSONArray("runs").getJSONObject(0).has("structured_result"))
+
+        val standby = JSONObject(HermesAutomationBridge.performActionJson(context, "operator_standby_status"))
+            .getJSONObject("standby_dispatch")
+        assertTrue(standby.getString("last_dispatch_result_summary").contains("Structured result smoke completed"))
+        assertEquals("completed", standby.getJSONObject("last_dispatch_structured_result").getString("status"))
+    }
+
+    @Test
     fun openguiModelRoutingCommandExposesPlannerAndVisionRoles() {
         val context = RuntimeEnvironment.getApplication()
 

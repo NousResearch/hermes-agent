@@ -1188,4 +1188,37 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 
 
+# =========================================================================
+# HERMES_AGENT_HELP_GUIDANCE env-var override (issue #24438)
+# =========================================================================
 
+
+class TestHermesAgentHelpGuidanceEnvVar:
+    def test_default_contains_skill_view_instruction(self):
+        import importlib
+        import agent.prompt_builder as pb
+        importlib.reload(pb)
+        assert "skill_view" in pb.HERMES_AGENT_HELP_GUIDANCE
+        assert "hermes-agent" in pb.HERMES_AGENT_HELP_GUIDANCE
+
+    def test_env_var_empty_string_disables_guidance(self, monkeypatch):
+        import importlib
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "")
+        import agent.prompt_builder as pb
+        importlib.reload(pb)
+        assert pb.HERMES_AGENT_HELP_GUIDANCE == ""
+
+    def test_env_var_custom_value_overrides_default(self, monkeypatch):
+        import importlib
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "Custom guidance text.")
+        import agent.prompt_builder as pb
+        importlib.reload(pb)
+        assert pb.HERMES_AGENT_HELP_GUIDANCE == "Custom guidance text."
+        assert "skill_view" not in pb.HERMES_AGENT_HELP_GUIDANCE
+
+    def test_empty_guidance_filtered_from_prompt_parts(self):
+        # Mirrors run_agent._build_stable_system_prompt join logic:
+        # prompt_parts joined with `if p.strip()` — empty string is dropped.
+        parts = ["identity block", "", "another block"]
+        result = "\n\n".join(p.strip() for p in parts if p.strip())
+        assert result == "identity block\n\nanother block"

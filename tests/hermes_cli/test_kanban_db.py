@@ -1397,6 +1397,46 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
+def test_resolve_hermes_argv_returns_none_when_hermes_not_importable(monkeypatch):
+    """When shutil.which misses AND hermes_cli is not importable, return None.
+
+    Regression for #24491: the original fallback always returned the module
+    form even when ``importlib.util.find_spec("hermes_cli")`` is None, so
+    _default_spawn would emit a confusing FileNotFoundError from subprocess
+    instead of the descriptive RuntimeError. After the fix, _resolve_hermes_argv
+    returns None when neither PATH lookup nor import resolution succeeds,
+    letting _default_spawn raise the correct RuntimeError.
+    """
+    import sys
+    import shutil
+    import importlib.util
+    import hermes_cli.kanban_db as kb
+
+    def fake_which(name):
+        return None
+
+    class FakeSpec:
+        pass
+
+    fake_spec = FakeSpec()
+
+    with monkeypatch.context() as m:
+        m.setattr(shutil, "which", fake_which)
+        m.delitem(sys.modules, "hermes_cli", raising=False)
+        # Simulate hermes_cli not being importable
+        original_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name, package=None):
+            if name == "hermes_cli":
+                return None
+            return original_find_spec(name, package)
+
+        m.setattr(importlib.util, "find_spec", fake_find_spec)
+        argv = kb._resolve_hermes_argv()
+
+    assert argv is None, f"expected None when hermes not importable, got {argv}"
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

@@ -382,6 +382,94 @@ class TestBlueBubblesWebhookParsing:
         record = adapter._extract_payload_record(payload)
         assert record["text"] == "hello"
 
+    @pytest.mark.asyncio
+    async def test_webhook_acks_read_status_without_waking_agent(self, monkeypatch):
+        import json
+
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_handle_message(event):
+            calls.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class FakeRequest:
+            query = {"password": "secret"}
+            headers = {}
+
+            async def read(self):
+                return json.dumps(
+                    {
+                        "type": "chat-read-status-changed",
+                        "data": {
+                            "guid": "READ-EVENT-GUID",
+                            "handle": {"address": "+155****4567"},
+                            "chats": [{"guid": "any;-;+155****4567"}],
+                            "isFromMe": False,
+                        },
+                    }
+                ).encode()
+
+        response = await adapter._handle_webhook(FakeRequest())
+
+        assert response.status == 200
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_webhook_dedupes_duplicate_message_guid(self, monkeypatch):
+        import asyncio
+        import json
+
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_handle_message(event):
+            calls.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class FakeRequest:
+            query = {"password": "secret"}
+            headers = {}
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def read(self):
+                return json.dumps(self.payload).encode()
+
+        first = {
+            "type": "new-message",
+            "data": {
+                "guid": "DUP-GUID",
+                "text": "Bangarang rufio",
+                "handle": {"address": "+155****4567"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;+155****4567"}],
+            },
+        }
+        second = {
+            "type": "new-message",
+            "data": {
+                "guid": "DUP-GUID",
+                "text": "Bangarang rufio",
+                "handle": {"address": "+155****4567"},
+                "chatIdentifier": "+155****4567",
+                "isFromMe": False,
+            },
+        }
+
+        resp1 = await adapter._handle_webhook(FakeRequest(first))
+        await asyncio.sleep(0)
+        resp2 = await adapter._handle_webhook(FakeRequest(second))
+        await asyncio.sleep(0)
+
+        assert resp1.status == 200
+        assert resp2.status == 200
+        assert len(calls) == 1
+        assert calls[0].text == "Bangarang rufio"
+
 
 class TestBlueBubblesGuidResolution:
     def test_raw_guid_returned_as_is(self, monkeypatch):

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -157,6 +158,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._recent_inbound_message_ids: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -854,6 +856,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _is_duplicate_inbound(self, message_id: Optional[str]) -> bool:
+        """Return True when BlueBubbles replays the same inbound message event."""
+        if not message_id:
+            return False
+        now = time.time()
+        # Keep a tiny rolling window. BB duplicate webhook fanout arrives within
+        # milliseconds; five minutes is enough to suppress retries without
+        # growing unbounded in long-lived gateway processes.
+        cutoff = now - 300
+        for key, seen_at in list(self._recent_inbound_message_ids.items()):
+            if seen_at < cutoff:
+                self._recent_inbound_message_ids.pop(key, None)
+        if message_id in self._recent_inbound_message_ids:
+            return True
+        self._recent_inbound_message_ids[message_id] = now
+        return False
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -889,22 +908,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
         record = self._extract_payload_record(payload) or {}
         if event_type and event_type not in _MESSAGE_EVENTS:
-            # BlueBubbles event names have drifted across versions. If the
-            # payload still looks like a message, keep processing; otherwise
-            # acknowledge non-message events without waking the agent.
-            looks_like_message = any(
-                key in record
-                for key in (
-                    "text",
-                    "message",
-                    "body",
-                    "attachments",
-                    "handle",
-                    "chats",
-                    "chatGuid",
-                    "chatIdentifier",
-                )
+            # BlueBubbles event names drift across versions. Only unknown
+            # events with actual user content should wake the agent; status
+            # events often include chats/handles but no message body.
+            message_text = self._value(
+                record.get("text"), record.get("message"), record.get("body")
             )
+            attachments = record.get("attachments") or []
+            looks_like_message = bool(message_text) or bool(attachments)
             if not looks_like_message:
                 return web.Response(text="ok")
             logger.info(
@@ -1006,6 +1017,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if self._is_duplicate_inbound(message_id):
+            logger.info(
+                "[bluebubbles] duplicate inbound message ignored: message_id=%s",
+                _redact(message_id or ""),
+            )
+            return web.Response(text="ok")
+
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         source = self.build_source(
@@ -1021,11 +1044,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

@@ -414,6 +414,17 @@ Topics with a `skill` field automatically load that skill when a new session sta
 
 For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
 
+### Bulk reset across topics (`/new all`)
+
+Switching models or providers from one topic (`/model …`) only affects that topic's session — other topics keep whatever model was active when they were last touched. Use `/new all` (or `/reset all`, `/new *`) to reset **every** topic session in the current group/forum in one command, so all threads start from the same baseline.
+
+```text
+You (in topic "Website"):  /new all
+Hermes:                     ✨ Reset 5 topic sessions in this group.
+```
+
+Cross-user safety: under `thread_sessions_per_user: true` your `/new all` only resets _your own_ per-user threads — it never wipes another user's threads. Under the default shared-thread mode, threads are reset for everyone (that's the point). See the [Bulk topic reset](/docs/reference/slash-commands#bulk-topic-reset-new-all) reference for the full scope rules. This addresses feature request [#24362](https://github.com/NousResearch/hermes-agent/issues/24362).
+
 :::tip
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::

@@ -591,6 +591,132 @@ def _pip_install(
     )
 
 
+def install_cua_driver(upgrade: bool = False) -> bool:
+    """Install or refresh the cua-driver binary used by Computer Use.
+
+    The upstream installer always pulls the latest release tag, so re-running
+    it is the canonical way to upgrade. We expose two modes:
+
+    * ``upgrade=False`` — original post-setup behaviour: skip if already
+      installed, install otherwise. Used by the toolset enable flow where
+      we don't want to surprise the user with a network fetch.
+    * ``upgrade=True`` — always re-run the installer (or call ``cua-driver
+      update`` if the binary supports it). Used by ``hermes update`` and
+      by ``hermes computer-use install --upgrade``.
+
+    Returns True iff cua-driver is installed (or successfully refreshed)
+    when the function returns. macOS-only — silently returns False on
+    other platforms.
+    """
+    import platform as _plat
+    import shutil
+    import subprocess
+
+    if _plat.system() != "Darwin":
+        if upgrade:
+            # Silent on non-macOS — `hermes update` calls this for every
+            # user; only macOS users with cua-driver care.
+            return False
+        _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+        return False
+
+    binary = shutil.which("cua-driver")
+
+    # Not installed → fresh install path (only when caller asked for it).
+    if not binary and not upgrade:
+        if not shutil.which("curl"):
+            _print_warning("    curl not found — install manually:")
+            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+            return False
+        return _run_cua_driver_installer(label="Installing")
+
+    # Already installed and caller didn't ask to upgrade → just confirm.
+    if binary and not upgrade:
+        try:
+            version = subprocess.run(
+                ["cua-driver", "--version"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+        except Exception:
+            _print_success("    cua-driver already installed.")
+        _print_info("    Grant macOS permissions if not done yet:")
+        _print_info("      System Settings > Privacy & Security > Accessibility")
+        _print_info("      System Settings > Privacy & Security > Screen Recording")
+        return True
+
+    # upgrade=True path — refresh to the latest upstream release.
+    if not shutil.which("curl"):
+        _print_warning("    curl not found — cannot refresh cua-driver.")
+        return bool(binary)
+
+    if binary:
+        # Show before/after version when we have a baseline. Best-effort.
+        try:
+            before = subprocess.run(
+                ["cua-driver", "--version"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except Exception:
+            before = ""
+    else:
+        before = ""
+
+    ok = _run_cua_driver_installer(label="Refreshing", verbose=False)
+    if ok and before:
+        try:
+            after = subprocess.run(
+                ["cua-driver", "--version"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if after and after != before:
+                _print_success(f"    cua-driver upgraded: {before} → {after}")
+            elif after:
+                _print_info(f"    cua-driver up to date: {after}")
+        except Exception:
+            pass
+    return ok
+
+
+def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
+    """Run the upstream cua-driver install.sh. Returns True on success.
+
+    The script is idempotent: it always downloads the latest release, so
+    re-running it on an already-installed system performs an upgrade.
+    """
+    import shutil
+    import subprocess
+
+    install_cmd = (
+        "/bin/bash -c \"$(curl -fsSL "
+        "https://raw.githubusercontent.com/trycua/cua/main/"
+        "libs/cua-driver/scripts/install.sh)\""
+    )
+    if verbose:
+        _print_info(f"    {label} cua-driver (macOS background computer-use)...")
+    else:
+        _print_info(f"    {label} cua-driver...")
+    try:
+        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        if result.returncode == 0 and shutil.which("cua-driver"):
+            if verbose:
+                _print_success("    cua-driver installed.")
+                _print_info("    IMPORTANT — grant macOS permissions now:")
+                _print_info("      System Settings > Privacy & Security > Accessibility")
+                _print_info("      System Settings > Privacy & Security > Screen Recording")
+                _print_info("    Both must allow the terminal / Hermes process.")
+            return True
+        _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
+        _print_info(f"      {install_cmd}")
+        return False
+    except subprocess.TimeoutExpired:
+        _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
+        return False
+    except Exception as e:
+        _print_warning(f"    cua-driver {label.lower()} failed: {e}")
+        return False
+
+
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
@@ -729,51 +855,7 @@ def _run_post_setup(post_setup_key: str):
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
     elif post_setup_key == "cua_driver":
-        # cua-driver provides macOS background computer-use (SkyLight SPIs).
-        # Install via upstream curl script if the binary isn't on $PATH yet.
-        import platform as _plat
-        import subprocess
-        if _plat.system() != "Darwin":
-            _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
-            return
-        if shutil.which("cua-driver"):
-            try:
-                version = subprocess.run(
-                    ["cua-driver", "--version"],
-                    capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-                _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
-            except Exception:
-                _print_success("    cua-driver already installed.")
-            _print_info("    Grant macOS permissions if not done yet:")
-            _print_info("      System Settings > Privacy & Security > Accessibility")
-            _print_info("      System Settings > Privacy & Security > Screen Recording")
-            return
-        if not shutil.which("curl"):
-            _print_warning("    curl not found — install manually:")
-            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
-            return
-        _print_info("    Installing cua-driver (macOS background computer-use)...")
-        try:
-            install_cmd = (
-                "/bin/bash -c \"$(curl -fsSL "
-                "https://raw.githubusercontent.com/trycua/cua/main/"
-                "libs/cua-driver/scripts/install.sh)\""
-            )
-            result = subprocess.run(install_cmd, shell=True, timeout=300)
-            if result.returncode == 0 and shutil.which("cua-driver"):
-                _print_success("    cua-driver installed.")
-                _print_info("    IMPORTANT — grant macOS permissions now:")
-                _print_info("      System Settings > Privacy & Security > Accessibility")
-                _print_info("      System Settings > Privacy & Security > Screen Recording")
-                _print_info("    Both must allow the terminal / Hermes process.")
-            else:
-                _print_warning("    cua-driver install did not complete. Re-run manually:")
-                _print_info(f"      {install_cmd}")
-        except subprocess.TimeoutExpired:
-            _print_warning("    cua-driver install timed out. Re-run manually.")
-        except Exception as e:
-            _print_warning(f"    cua-driver install failed: {e}")
+        install_cua_driver(upgrade=False)
 
     elif post_setup_key == "kittentts":
         try:

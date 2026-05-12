@@ -109,9 +109,40 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-            }
+            headers = kwargs["default_headers"]
+            assert headers["anthropic-beta"] == (
+                "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            )
+            # Third-party endpoints override the SDK's default User-Agent so
+            # Cloudflare-style WAF bot detection doesn't 403 the SDK fingerprint.
+            assert headers["User-Agent"].startswith("hermes-agent/")
+
+    def test_third_party_endpoint_overrides_sdk_user_agent(self):
+        """Custom-provider endpoints get a hermes-agent UA instead of the
+        Anthropic SDK's default ``Anthropic/Python <ver>``, which Cloudflare
+        WAF rules block on self-hosted proxies (#24293)."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "proxy-key-xyz",
+                base_url="https://proxy.example.com/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "proxy-key-xyz"
+            ua = kwargs["default_headers"]["User-Agent"]
+            assert ua.startswith("hermes-agent/"), ua
+            # The Anthropic SDK default fingerprint must NOT leak through.
+            assert "Anthropic/Python" not in ua
+
+    def test_native_anthropic_endpoint_does_not_override_user_agent(self):
+        """Direct anthropic.com requests must NOT carry the third-party UA
+        override — the SDK's default ``Anthropic/Python`` UA is expected by
+        Anthropic's own infrastructure and routing."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-direct")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            headers = kwargs.get("default_headers", {}) or {}
+            assert "User-Agent" not in headers
+            assert "user-agent" not in headers
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

@@ -3613,6 +3613,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     assert calls["tick"] == 3
 
 
+=======
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------

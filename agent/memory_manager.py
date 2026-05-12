@@ -330,6 +330,18 @@ class MemoryManager:
                 provider.name, len(schemas), ext_count, total_tools,
             )
 
+    @property
+    def providers(self) -> List[MemoryProvider]:
+        """All registered providers in order."""
+        return list(self._providers)
+
+    def get_provider(self, name: str) -> Optional[MemoryProvider]:
+        """Get a provider by name, or None if not registered."""
+        for p in self._providers:
+            if p.name == name:
+                return p
+        return None
+
     def remove_provider(self, name: str) -> bool:
         """Deregister a memory provider by name. Returns True if removed."""
         if name == "builtin":

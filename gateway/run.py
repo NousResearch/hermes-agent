@@ -12265,126 +12265,119 @@ class GatewayRunner:
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
     async def _handle_loop_command(self, event: MessageEvent) -> str:
-        """Handle /loop for gateway platforms.
+        """Handle /loop in gateway — thin wrapper around cronjob tool.
 
-        Subcommands: ``/loop`` / ``/loop status`` / ``/loop pause`` /
-        ``/loop resume`` / ``/loop clear``.  Any other text becomes the
-        new loop prompt.
+        Creates a recurring cron job from a single slash command.
+        Subcommands: list, pause, resume, remove.
         """
-        args = (event.get_command_args() or "").strip()
-        lower = args.lower()
+        import json
+        import shlex
+        from tools.cronjob_tools import cronjob as cronjob_tool
+        from cron.jobs import get_job
 
-        mgr, session_entry = self._get_loop_manager_for_event(event)
-        if mgr is None:
-            return "Loop unavailable."
+        def _cron_api(**kwargs):
+            return json.loads(cronjob_tool(**kwargs))
 
-        if not args or lower == "status":
-            return mgr.status_line()
+        text = (event.text or "").strip()
+        # Strip leading "/loop" leaving args
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("loop"):
+            text = text[len("loop"):].lstrip()
 
-        if lower == "pause":
-            state = mgr.pause(reason="user-paused")
-            if state is None:
-                return "No loop set."
-            # Clear any pending loop continuations
-            try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
-                _quick_key = self._session_key_for_source(event.source) if event.source else None
-                if adapter and _quick_key:
-                    self._clear_loop_pending_continuations(_quick_key, adapter)
-            except Exception as exc:
-                logger.debug("loop pause: pending continuation cleanup failed: %s", exc)
-            return f"⏸ Loop paused: {state.prompt}"
+        tokens = shlex.split(text)
 
-        if lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                return "No loop to resume."
-            return f"▶ Loop resumed: {state.prompt}"
+        # No args → show usage + list
+        if not tokens:
+            result = _cron_api(action="list", include_disabled=True)
+            jobs = result.get("jobs", []) if result.get("success") else []
+            loop_jobs = [j for j in jobs if j.get("name", "").startswith("loop:")]
+            lines = [
+                "*/loop <schedule> <prompt>* — e.g. `/loop 5m check deployment`",
+                "Subcommands: `list`, `pause <id>`, `resume <id>`, `remove <id>`",
+            ]
+            if loop_jobs:
+                lines.append("")
+                lines.append(f"*{len(loop_jobs)} loop job(s):*")
+                for job in loop_jobs:
+                    state_icon = "▶" if job.get("state") == "active" else "⏸"
+                    lines.append(f"  {state_icon} `{job['job_id'][:12]}` | {job['schedule']} | {job.get('prompt_preview', '')}")
+            else:
+                lines.append("No loop jobs. Create one with `/loop <schedule> <prompt>`.")
+            return "\n".join(lines)
 
-        if lower in {"clear", "stop", "done"}:
-            had = mgr.is_active() or (mgr.state is not None)
-            mgr.clear()
-            try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
-                _quick_key = self._session_key_for_source(event.source) if event.source else None
-                if adapter and _quick_key:
-                    self._clear_loop_pending_continuations(_quick_key, adapter)
-            except Exception as exc:
-                logger.debug("loop clear: pending continuation cleanup failed: %s", exc)
-            return "✓ Loop cleared." if had else "No active loop."
+        subcommand = tokens[0].lower()
 
-        # Parse optional interval prefix
-        interval_seconds = 300
-        prompt = args
-        tokens = args.split(None, 2)
-        if len(tokens) >= 2 and tokens[0].lower() == "every":
-            from hermes_cli.loop import _parse_interval
-            parsed = _parse_interval(tokens[1])
-            if parsed is not None:
-                interval_seconds = parsed
-                prompt = tokens[2] if len(tokens) > 2 else ""
-        elif len(tokens) >= 1:
-            from hermes_cli.loop import _parse_interval
-            parsed = _parse_interval(tokens[0])
-            if parsed is not None:
-                interval_seconds = parsed
-                prompt = " ".join(tokens[1:]) if len(tokens) > 1 else ""
+        # list
+        if subcommand == "list":
+            result = _cron_api(action="list", include_disabled=True)
+            jobs = result.get("jobs", []) if result.get("success") else []
+            loop_jobs = [j for j in jobs if j.get("name", "").startswith("loop:")]
+            if not loop_jobs:
+                return "No loop jobs found."
+            lines = ["*Loop Jobs:*"]
+            for job in loop_jobs:
+                lines.append(f"• `{job['job_id']}` | {job['schedule']} | {job.get('state', '?')} | {job.get('prompt_preview', '')}")
+            return "\n".join(lines)
+
+        # pause
+        if subcommand == "pause":
+            if len(tokens) < 2:
+                return "Usage: `/loop pause <job_id>`"
+            job_id = tokens[1]
+            result = _cron_api(action="pause", job_id=job_id, reason="paused from /loop")
+            if result.get("success"):
+                return f"⏸ Paused loop job `{job_id}`"
+            return f"⚠ Failed to pause: {result.get('error')}"
+
+        # resume
+        if subcommand == "resume":
+            if len(tokens) < 2:
+                return "Usage: `/loop resume <job_id>`"
+            job_id = tokens[1]
+            result = _cron_api(action="resume", job_id=job_id)
+            if result.get("success"):
+                return f"▶ Resumed loop job `{job_id}` — next run: {result['job'].get('next_run_at', 'N/A')}"
+            return f"⚠ Failed to resume: {result.get('error')}"
+
+        # remove
+        if subcommand == "remove":
+            if len(tokens) < 2:
+                return "Usage: `/loop remove <job_id>`"
+            job_id = tokens[1]
+            result = _cron_api(action="remove", job_id=job_id)
+            if result.get("success"):
+                return f"🗑 Removed loop job `{job_id}`"
+            return f"⚠ Failed to remove: {result.get('error')}"
+
+        # Create: /loop <schedule> <prompt>
+        # Handle "every 5m" syntax where "every" + next token form the schedule
+        if tokens[0].lower() == "every" and len(tokens) > 1:
+            schedule = f"every {tokens[1]}"
+            prompt = " ".join(tokens[2:]) if len(tokens) > 2 else ""
+        else:
+            schedule = tokens[0]
+            prompt = " ".join(tokens[1:]) if len(tokens) > 1 else ""
 
         if not prompt:
-            return "Usage: `/loop <prompt>` or `/loop <interval> <prompt>`"
+            return "Usage: `/loop <schedule> <prompt>`\nExample: `/loop 5m check deployment`"
 
-        try:
-            state = mgr.set(prompt, interval_seconds=interval_seconds)
-        except ValueError as exc:
-            return f"Invalid loop: {exc}"
-
-        # Start background daemon ticker and fire immediate kickoff
-        session_entry = self.session_store.get_or_create_session(event.source)
-        sid = session_entry.session_id if session_entry else None
-
-        if sid:
-            from hermes_cli.loop import load_loop, save_loop
-            import time as _t
-            import threading
-
-            def _loop_ticker() -> None:
-                """Background daemon that ticks every second."""
-                while True:
-                    _t.sleep(1)
-                    s = load_loop(sid)
-                    if s is None or s.status != "active":
-                        break
-                    now = _t.time()
-                    elapsed = now - s.last_fired_at
-                    if s.last_fired_at > 0 and elapsed < s.interval_seconds:
-                        continue
-                    s.last_fired_at = now
-                    s.turns_completed += 1
-                    save_loop(sid, s)
-                    try:
-                        self._dispatch_loop_prompt(
-                            prompt=s.prompt,
-                            source=event.source,
-                        )
-                    except Exception:
-                        pass
-
-            threading.Thread(
-                target=_loop_ticker,
-                name=f"loop-ticker-{sid[:8]}",
-                daemon=True,
-            ).start()
-
-            # Fire the first tick immediately
-            try:
-                self._dispatch_loop_prompt(
-                    prompt=prompt,
-                    source=event.source,
-                )
-            except Exception as exc:
-                logger.debug("loop kickoff dispatch failed: %s", exc)
-
-        return f"⊙ Loop set ({state.interval_seconds}s interval): {state.prompt}"
+        name = f"loop: {prompt[:50]}{'...' if len(prompt) > 50 else ''}"
+        result = _cron_api(
+            action="create",
+            schedule=schedule,
+            prompt=prompt,
+            name=name,
+            deliver="origin",
+        )
+        if result.get("success"):
+            return (
+                f"✅ Loop job created: `{result['job_id']}`\n"
+                f"Schedule: {result['schedule']}\n"
+                f"Next run: {result['next_run_at']}\n"
+                f"To stop: `/loop remove {result['job_id']}`"
+            )
+        return f"⚠ Failed to create loop: {result.get('error')}"
 
     async def _run_background_task(
         self,

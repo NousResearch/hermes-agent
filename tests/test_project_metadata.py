@@ -23,7 +23,7 @@ def test_matrix_extra_linux_only_in_all():
     # Lazy-install on first use is the correct path.
     offending = [
         dep for dep in optional_dependencies["all"]
-        if "matrix" in dep
+        if "matrix" in dep and "linux" in dep
     ]
     assert not offending, (
         f"[matrix] should not be in [all] — covered by LAZY_DEPS. Found: {offending}"

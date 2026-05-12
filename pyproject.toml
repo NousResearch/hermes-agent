@@ -222,11 +222,17 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
+  "hermes-agent[tts-premium]",
+  "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
+  "hermes-agent[voice]",
+  "hermes-agent[dingtalk]",
+  "hermes-agent[feishu]",
   "hermes-agent[google]",
   # matrix: excluded from [all] — covered by LAZY_DEPS (lazy-install at first use).
   # mautrix[encryption] depends on python-olm which has Linux-only wheels and no cp313 builds.

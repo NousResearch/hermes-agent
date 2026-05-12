@@ -63,6 +63,10 @@ def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = 
     if output:
         relative_path = Path(output).expanduser()
         _reject_unsafe_output_fragment(relative_path, label="output path")
+        if not relative_path.name:
+            raise ValueError(
+                "Unsafe Drive download output: path must end with a filename, not a directory separator"
+            )
     else:
         safe_name = Path(remote_name or "download").name or "download"
         relative_path = Path(safe_name)
@@ -78,10 +82,30 @@ def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = 
     except ValueError as exc:
         raise ValueError("Unsafe Drive download output path escapes the current directory") from exc
 
+    if resolved.exists() and resolved.is_dir():
+        raise ValueError("Unsafe Drive download output path resolves to an existing directory")
+
     if is_write_denied(str(resolved)):
         raise ValueError("Unsafe Drive download output path is blocked by Hermes write safety rules")
 
     return resolved
+
+
+def _assert_no_parent_symlinks(path: Path, cwd: Path) -> None:
+    """Raise ValueError if any directory component between *cwd* and *path.parent* is a symlink.
+
+    Call this immediately before opening *path* to guard against TOCTOU
+    symlink substitution attacks on newly-created parent directories.
+    """
+    current = path.parent
+    while True:
+        if current.is_symlink():
+            raise ValueError(
+                f"Drive download path component is a symlink: {current}; refusing to write"
+            )
+        if current == cwd or current == current.parent:
+            break
+        current = current.parent
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -710,6 +734,12 @@ def drive_download(args):
         request = service.files().get_media(fileId=args.file_id)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    cwd = Path.cwd().resolve()
+    try:
+        _assert_no_parent_symlinks(out_path, cwd)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
     fd = os.open(
         str(out_path),
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),

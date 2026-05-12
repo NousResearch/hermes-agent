@@ -246,6 +246,22 @@ def test_drive_download_path_rejects_unsafe_output(api_module, tmp_path, monkeyp
         api_module._safe_drive_download_path(str(tmp_path / "outside.txt"), "ignored.txt")
 
 
+def test_drive_download_path_rejects_directory_output(api_module, tmp_path, monkeypatch):
+    """_safe_drive_download_path rejects output that resolves to a directory."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+
+    # '.' has an empty basename (Path('.').name == '')
+    with pytest.raises(ValueError):
+        api_module._safe_drive_download_path(".", "filename.txt")
+
+    # existing directory as the target
+    existing_dir = tmp_path / "existing"
+    existing_dir.mkdir()
+    with pytest.raises(ValueError):
+        api_module._safe_drive_download_path("existing", "filename.txt")
+
+
 def test_drive_download_path_sanitizes_remote_name_and_enforces_safe_root(api_module, tmp_path, monkeypatch):
     safe_root = tmp_path / "safe"
     safe_root.mkdir()
@@ -312,3 +328,82 @@ def test_drive_download_writes_sanitized_remote_name_inside_cwd(api_module, tmp_
 
     assert (safe_root / "outside.txt").read_bytes() == b"drive bytes"
     assert not outside_target.exists()
+
+
+def test_assert_no_parent_symlinks_rejects_symlink_component(api_module, tmp_path):
+    """_assert_no_parent_symlinks raises when a parent directory is a symlink."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    link = cwd / "link"
+    link.symlink_to(target)
+
+    path = cwd / "link" / "file.txt"
+    with pytest.raises(ValueError, match="symlink"):
+        api_module._assert_no_parent_symlinks(path, cwd)
+
+
+def test_assert_no_parent_symlinks_allows_real_parents(api_module, tmp_path):
+    """_assert_no_parent_symlinks does not raise for real (non-symlink) parents."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    real_dir = cwd / "real"
+    real_dir.mkdir()
+
+    path = real_dir / "file.txt"
+    # Should not raise
+    api_module._assert_no_parent_symlinks(path, cwd)
+
+
+def test_drive_download_rejects_symlink_parent_after_mkdir(api_module, tmp_path, monkeypatch):
+    """drive_download refuses to write when a parent directory is a symlink (TOCTOU guard).
+
+    Simulates the race: _safe_drive_download_path validated the path before
+    the symlink existed; by the time drive_download calls mkdir the parent
+    has been swapped for a symlink.  The post-mkdir guard must detect this.
+    """
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir()
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+
+    monkeypatch.chdir(safe_root)
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+    # The symlink is the attacker-inserted swap: safe_root/linkdir → target_dir.
+    link_dir = safe_root / "linkdir"
+    link_dir.symlink_to(target_dir)
+
+    # Bypass _safe_drive_download_path to supply the pre-swap path (as it would
+    # have been returned before the symlink was created).
+    spoofed_out_path = safe_root / "linkdir" / "payload.bin"
+    monkeypatch.setattr(
+        api_module, "_safe_drive_download_path", lambda *_a, **_kw: spoofed_out_path
+    )
+
+    class FakeFiles:
+        def get(self, **kwargs):
+            return self
+
+        def execute(self):
+            return {"id": "file-1", "name": "payload.bin", "mimeType": "application/octet-stream"}
+
+        def get_media(self, **kwargs):
+            return object()
+
+    class FakeService:
+        def files(self):
+            return FakeFiles()
+
+    googleapiclient_module = types.ModuleType("googleapiclient")
+    http_module = types.ModuleType("googleapiclient.http")
+    http_module.MediaIoBaseDownload = MagicMock()
+    monkeypatch.setitem(sys.modules, "googleapiclient", googleapiclient_module)
+    monkeypatch.setitem(sys.modules, "googleapiclient.http", http_module)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: FakeService())
+
+    args = api_module.argparse.Namespace(file_id="file-1", output="linkdir/payload.bin", export_mime="")
+    with pytest.raises(SystemExit):
+        api_module.drive_download(args)

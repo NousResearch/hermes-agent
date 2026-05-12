@@ -1168,6 +1168,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
+            # _on_delta filters out None (used as a CLI box-close signal),
+            # so the agent never emits an EOS sentinel itself.  Without this
+            # callback, the SSE writer can only learn the agent finished by
+            # observing agent_task.done() after a queue-timeout — which adds
+            # up to one full poll-interval of latency to every response and
+            # is brittle if the writer is parked in run_in_executor while
+            # the task completes.  Pushing None on done is a reliable EOS.
+            agent_task.add_done_callback(lambda _t: _stream_q.put_nowait(None))
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -2197,6 +2205,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
+            # See chat-completions branch above: _on_delta filters None, so
+            # the agent never feeds an EOS sentinel itself.  Wake the SSE
+            # writer immediately on task completion instead of waiting for
+            # the next queue-timeout iteration to spot agent_task.done().
+            agent_task.add_done_callback(lambda _t: _stream_q.put_nowait(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._model_name)

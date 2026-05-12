@@ -1182,6 +1182,156 @@ class TestChatCompletionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# Streaming completion / response promptness — regression for #24451
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingCompletionPromptness:
+    """The agent never emits a None EOS sentinel itself: ``_on_delta``
+    filters None as a CLI box-close signal so it stays off the SSE wire.
+    That left ``_write_sse_chat_completion`` / ``_write_sse_responses``
+    polling ``agent_task.done()`` on every queue-timeout — up to a full
+    0.5s poll interval after the agent actually finished, and (per the
+    upstream report on #24451) sometimes parking the writer in
+    ``run_in_executor`` long enough to send keepalives indefinitely.
+
+    Both streaming entry points now register an
+    ``agent_task.add_done_callback`` that pushes ``None`` onto the stream
+    queue, waking ``stream_q.get(timeout=0.5)`` immediately so the writer
+    exits via its EOS-sentinel branch instead of the polling fallback.
+    """
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_stream_terminates_promptly_with_no_deltas(self, adapter):
+        """Streaming chat-completions must terminate near-instantly when
+        the agent finishes without emitting any deltas.
+
+        Pre-fix the writer needed a full ``stream_q.get(timeout=0.5)``
+        cycle to spot ``agent_task.done()``; the 0.4s assertion would
+        fail without the EOS-pushing done callback and passes with
+        headroom when it is wired correctly.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _silent_agent(**kwargs):
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_silent_agent):
+                start = time.monotonic()
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent",
+                          "messages": [{"role": "user", "content": "hi"}],
+                          "stream": True},
+                )
+                body = await resp.text()
+                elapsed = time.monotonic() - start
+
+            assert resp.status == 200
+            assert "data: [DONE]" in body
+            assert elapsed < 0.4, (
+                f"chat-completions SSE took {elapsed:.3f}s with no deltas; "
+                "should be near-instant via agent_task.add_done_callback."
+            )
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_terminates_promptly_with_no_deltas(self, adapter):
+        """Same guarantee on the /v1/responses path: when the agent
+        finishes without ever invoking ``stream_delta_callback`` (e.g.
+        a no-op turn, or one whose tool-only output is dropped by the
+        handler), ``response.completed`` must still be emitted without
+        a 0.5s poll round-trip.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _silent_agent(**kwargs):
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_silent_agent):
+                start = time.monotonic()
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                body = await resp.text()
+                elapsed = time.monotonic() - start
+
+            assert resp.status == 200
+            assert "event: response.completed" in body
+            assert elapsed < 0.4, (
+                f"responses SSE took {elapsed:.3f}s with no deltas; "
+                "should be near-instant via agent_task.add_done_callback."
+            )
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_eos_sentinel_path_exits_when_done_never_reports(self, adapter):
+        """White-box guard that the EOS sentinel actually escapes the
+        writer when ``agent_task.done()`` keeps returning False — the
+        worst-case race the upstream report describes.
+
+        The fix's add_done_callback is what would push the sentinel in
+        production; we replay that contract here against the writer
+        directly so a future refactor of either side fails loudly.
+        """
+        fake_request = MagicMock()
+        fake_request.headers = {}
+
+        written: list[bytes] = []
+
+        class _FakeStreamResponse:
+            async def prepare(self, req):
+                pass
+
+            async def write(self, payload):
+                written.append(payload)
+
+        import gateway.platforms.api_server as api_mod
+        import queue as _q
+
+        stream_q: _q.Queue = _q.Queue()
+
+        async def _silent_agent():
+            await asyncio.sleep(0.01)
+            return (
+                {"final_response": "ok", "messages": [], "api_calls": 0},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        agent_task = asyncio.ensure_future(_silent_agent())
+        agent_task.add_done_callback(lambda _t: stream_q.put_nowait(None))
+
+        # Pin done() to False so the polling-fallback exit cannot fire;
+        # only the add_done_callback EOS path can rescue the writer.
+        # ``patch.object`` is used instead of direct attribute assignment
+        # so behavior is consistent across CPython 3.11/3.12 + xdist.
+        with patch.object(agent_task, "done", return_value=False), \
+             patch.object(api_mod.web, "StreamResponse", return_value=_FakeStreamResponse()):
+            await asyncio.wait_for(
+                adapter._write_sse_chat_completion(
+                    fake_request,
+                    "chatcmpl-xyz",
+                    "hermes-agent",
+                    int(time.time()),
+                    stream_q,
+                    agent_task,
+                    [None],
+                    session_id="s1",
+                    gateway_session_key=None,
+                ),
+                timeout=3.0,
+            )
+
+        body = b"".join(written).decode()
+        assert "[DONE]" in body
+
+
+# ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests
 # ---------------------------------------------------------------------------
 

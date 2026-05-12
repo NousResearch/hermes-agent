@@ -1862,6 +1862,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "LITELLM_API_KEY": {
+        "description": "LiteLLM proxy API key (optional if proxy doesn't require auth)",
+        "prompt": "LiteLLM proxy API key",
+        "url": "https://docs.litellm.ai/docs/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "LITELLM_BASE_URL": {
+        "description": "LiteLLM proxy base URL (e.g. http://localhost:4000)",
+        "prompt": "LiteLLM proxy URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "XIAOMI_API_KEY": {
         "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",

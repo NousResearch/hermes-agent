@@ -642,6 +642,11 @@ def fetch_endpoint_model_metadata(
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
 
+    # LiteLLM is a multi-backend gateway — /models probing is not useful
+    # and causes auth errors if the proxy requires an API key.
+    if provider in ("litellm",):
+        return {}
+
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(normalized)
         cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
@@ -1591,7 +1596,8 @@ def get_model_context_length(
     # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
     # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
     # once per hour.
-    if base_url:
+    # LiteLLM is not Ollama — skip this probe to avoid 404s.
+    if base_url and provider != "litellm":
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
             save_context_length(model, base_url, ctx)

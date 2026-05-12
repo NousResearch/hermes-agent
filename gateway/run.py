@@ -6871,6 +6871,7 @@ class GatewayRunner:
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    provider=_msg_runtime.get("provider") or "",
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,

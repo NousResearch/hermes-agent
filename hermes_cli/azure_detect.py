@@ -287,7 +287,7 @@ def lookup_context_length(model: str, base_url: str, api_key: str) -> Optional[i
         return None
 
     try:
-        n = get_model_context_length(model, base_url=base_url, api_key=api_key)
+        n = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider)
     except Exception as exc:
         logger.debug("azure_detect: context length lookup failed: %s", exc)
         return None

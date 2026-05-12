@@ -4929,6 +4929,80 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
         _save_model_choice(selected)
 
+        # ── Context length detection ──────────────────────────────
+        # Resolution chain:
+        #   1. Provider-specific probe (e.g. litellm /v1/model/info)
+        #   2. Standard auto-detect (models.dev, hardcoded tables)
+        #   3. 256K fallback → prompt user with pre-filled value
+        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+
+        _detected_ctx = None
+        _ctx_source = ""
+
+        # Step 1: provider-specific probes
+        if provider_id == "litellm" and effective_base:
+            try:
+                import json as _json
+                from urllib.request import Request, urlopen
+
+                _info_url = f"{effective_base}/v1/model/info"
+                _probe_key = existing_key or (get_env_value(key_env) if key_env else "")
+                _headers = {"Authorization": f"Bearer {_probe_key}"} if _probe_key else {}
+                _req = Request(_info_url, headers=_headers)
+                with urlopen(_req, timeout=10) as _resp:
+                    _info_data = _json.loads(_resp.read())
+                for _entry in (_info_data.get("data") or []):
+                    if _entry.get("model_name") == selected:
+                        _mi = _entry.get("model_info") or {}
+                        _detected_ctx = _mi.get("max_tokens") or _mi.get("max_input_tokens")
+                        if _detected_ctx:
+                            _ctx_source = "/v1/model/info"
+                        break
+            except Exception:
+                pass
+
+        # Step 2: standard auto-detect (models.dev, hardcoded tables, etc.)
+        if not _detected_ctx:
+            try:
+                _detected_ctx = get_model_context_length(
+                    selected,
+                    provider=provider_id,
+                    base_url=effective_base,
+                    api_key=existing_key or (get_env_value(key_env) if key_env else ""),
+                )
+                if _detected_ctx and _detected_ctx != DEFAULT_FALLBACK_CONTEXT:
+                    _ctx_source = "auto-detect"
+            except Exception:
+                pass
+
+        # Step 3: prompt with best value pre-filled
+        _default_ctx = _detected_ctx or DEFAULT_FALLBACK_CONTEXT
+        if not _ctx_source:
+            _ctx_source = "fallback"
+        print()
+        print(f"  Context length for {selected}: {_default_ctx:,} (from {_ctx_source})")
+        try:
+            _ctx_input = input(
+                f"  Press Enter to accept, or type a value [{_default_ctx:,}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            _ctx_input = ""
+        if _ctx_input:
+            try:
+                _ctx_val = int(
+                    _ctx_input.replace(",", "")
+                    .replace("k", "000")
+                    .replace("K", "000")
+                )
+                if _ctx_val > 0:
+                    _default_ctx = _ctx_val
+                    _ctx_source = "user"
+            except ValueError:
+                print(f"  Invalid value: {_ctx_input} — using {_default_ctx:,}")
+
+        _save_ctx = _default_ctx
+
         # Update config with provider, base URL, and provider-specific API mode
         cfg = load_config()
         model = cfg.get("model")
@@ -4937,6 +5011,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        model["context_length"] = _save_ctx
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:

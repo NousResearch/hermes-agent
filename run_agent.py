@@ -3941,6 +3941,11 @@ class AIAgent:
         ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
         torn down per-turn as before to prevent resource leakage (the original
         intent of this hook for the Morph backend, see commit fbd3a2fd).
+
+        Skips ``cleanup_browser`` in headed mode so the browser window stays
+        visible between turns. The inactivity reaper in
+        ``browser_tool._cleanup_inactive_browser_sessions`` still handles
+        idle sessions.
         """
         try:
             if is_persistent_env(task_id):
@@ -3955,7 +3960,14 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
         try:
-            cleanup_browser(task_id)
+            if os.environ.get("AGENT_BROWSER_HEADED"):
+                if self.verbose_logging:
+                    logging.debug(
+                        f"Skipping per-turn cleanup_browser for headed session {task_id}; "
+                        f"idle reaper will handle it."
+                    )
+            else:
+                cleanup_browser(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")

@@ -1,0 +1,21 @@
+# CODEOWNERS for hermes-agent
+# Default owners for everything in the repo.
+* @NousResearch/hermes-team
+
+# Documentation
+/docs/ @NousResearch/hermes-team
+README.md @NousResearch/hermes-team
+SKILLS.md @NousResearch/hermes-team
+
+# Skills directory (production AI agent skills)
+/skills/ @NousResearch/hermes-team
+
+# CI/CD workflows
+.github/workflows/ @NousResearch/hermes-team
+
+# Public site
+/site/ @NousResearch/hermes-team
+
+# Root configuration files
+package.json @NousResearch/hermes-team
+tsconfig.json @NousResearch/hermes-team

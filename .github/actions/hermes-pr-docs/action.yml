@@ -1,0 +1,71 @@
+name: "Hermes PR Docs & Review"
+description: "Dokumentiert PRs, schreibt Review-Kommentare und gibt Entwicklungsvorschläge mit Hermes Agent"
+inputs:
+  github_token:
+    description: "GitHub token mit repo/PR comment Rechten"
+    required: true
+  provider:
+    description: "Hermes Provider (z.B. openrouter, openai, anthropic, deepseek)"
+    required: true
+  model:
+    description: "Modellname (z.B. anthropic/claude-sonnet-4)"
+    required: true
+  api_key:
+    description: "API Key für den Provider (optional; wird in ENV gesetzt)"
+    required: false
+  base_url:
+    description: "Optionaler Base-URL für Custom Provider"
+    required: false
+  max_files:
+    description: "Maximale Anzahl geänderter Dateien"
+    required: false
+    default: "50"
+  max_patch_chars:
+    description: "Max. Zeichen für Patch-Daten (Summe)"
+    required: false
+    default: "40000"
+  language:
+    description: "Antwortsprache (default: de)"
+    required: false
+    default: "de"
+  dry_run:
+    description: "true = kein Kommentar posten, nur Output"
+    required: false
+    default: "false"
+  extra_instructions:
+    description: "Zusätzliche Instruktionen für Hermes"
+    required: false
+  comment_title:
+    description: "Titelzeile für den Kommentar"
+    required: false
+    default: "Hermes PR-Doku & Review"
+outputs:
+  comment_body:
+    description: "Generierter Kommentartext"
+    value: ${{ steps.run.outputs.comment_body }}
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Install Hermes Agent
+      shell: bash
+      run: pip install hermes-agent
+    - name: Run Hermes PR review
+      id: run
+      shell: bash
+      run: python scripts/run.py
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_API_KEY: ${{ inputs.api_key }}
+        INPUT_BASE_URL: ${{ inputs.base_url }}
+        INPUT_MAX_FILES: ${{ inputs.max_files }}
+        INPUT_MAX_PATCH_CHARS: ${{ inputs.max_patch_chars }}
+        INPUT_LANGUAGE: ${{ inputs.language }}
+        INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
+        INPUT_COMMENT_TITLE: ${{ inputs.comment_title }}

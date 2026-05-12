@@ -462,7 +462,10 @@ class TestScopedLocks:
             "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        # Post-#21561 the liveness probe routes through
+        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows),
+        # not ``os.kill``.
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
 
@@ -485,7 +488,7 @@ class TestScopedLocks:
             "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
 

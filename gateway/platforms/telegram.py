@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import tempfile
 import html as _html
 import re
@@ -343,6 +344,51 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
 
+    _PROJECT_INTAKE_STEP_ORDER = ("kind", "board", "scope", "risk", "confirm")
+    _PROJECT_INTAKE_CHOICES = {
+        "kind": (
+            ("feature", "Feature / UX improvement"),
+            ("bug", "Bug / regression"),
+            ("research", "Research / investigation"),
+            ("ops", "Operations / workflow"),
+            ("cancel", "Cancel"),
+        ),
+        "board": (
+            ("control", "hermes-kanban-control"),
+            ("triage", "Ask operator / triage only"),
+            ("new", "Needs a new board later"),
+            ("back", "Back"),
+            ("cancel", "Cancel"),
+        ),
+        "scope": (
+            ("spec", "Spec only"),
+            ("impl_after_spec", "Implementation after approved spec"),
+            ("triage_only", "Triage card only"),
+            ("back", "Back"),
+            ("cancel", "Cancel"),
+        ),
+        "risk": (
+            ("safe", "No source/config/gateway changes without approval"),
+            ("normal", "Source changes allowed after clean preflight + tests"),
+            ("manual", "Human review before any dispatch"),
+            ("back", "Back"),
+            ("cancel", "Cancel"),
+        ),
+        "confirm": (
+            ("preview", "Preview only"),
+            ("create", "Create triage card"),
+            ("back", "Back"),
+            ("cancel", "Cancel"),
+        ),
+    }
+    _PROJECT_INTAKE_PROMPTS = {
+        "kind": "What is this?",
+        "board": "Where should it land?",
+        "scope": "How far should automation go?",
+        "risk": "Stop-gate sensitivity?",
+        "confirm": "Final action",
+    }
+
     @staticmethod
     def _env_float_clamped(
         name: str,
@@ -427,6 +473,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Project-intake inline button state: flow_id → fixed questionnaire state.
+        self._project_intake_state: Dict[str, dict] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2215,6 +2263,322 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    @staticmethod
+    def _base36(num: int) -> str:
+        alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+        if num <= 0:
+            return "0"
+        chars: List[str] = []
+        while num:
+            num, rem = divmod(num, 36)
+            chars.append(alphabet[rem])
+        return "".join(reversed(chars))
+
+    def _new_project_intake_flow_id(self) -> str:
+        for _ in range(8):
+            flow_id = secrets.token_urlsafe(9)
+            if flow_id and flow_id not in self._project_intake_state:
+                return flow_id
+        return secrets.token_hex(8)
+
+    @classmethod
+    def _project_intake_label(cls, step: str, choice: str) -> str:
+        for token, label in cls._PROJECT_INTAKE_CHOICES.get(step, ()):  # pragma: no branch - tiny lookup
+            if token == choice:
+                return label
+        return choice.replace("_", " ")
+
+    def _build_project_intake_keyboard(
+        self,
+        flow_id: str,
+        step: str,
+        answers: Optional[Dict[str, str]] = None,
+    ) -> InlineKeyboardMarkup:
+        del answers  # server-side state owns answers; callback data stays compact.
+        buttons = [
+            InlineKeyboardButton(label, callback_data=f"pi:{flow_id}:{step}:{choice}")
+            for choice, label in self._PROJECT_INTAKE_CHOICES.get(step, ())
+        ]
+        return InlineKeyboardMarkup([buttons[i : i + 2] for i in range(0, len(buttons), 2)])
+
+    def _project_intake_step_text(self, state: Dict[str, Any], step: str) -> str:
+        title = str(state.get("title") or "Project intake").strip() or "Project intake"
+        description = str(state.get("description") or "No description provided.").strip()
+        answers = state.get("answers") or {}
+        lines = [f"📋 Project intake: {title}"]
+        if description:
+            lines.extend(["", description])
+        if answers:
+            lines.append("")
+            lines.append("Current selections:")
+            for key in self._PROJECT_INTAKE_STEP_ORDER:
+                if key in answers:
+                    lines.append(f"• {self._PROJECT_INTAKE_PROMPTS[key]} {self._project_intake_label(key, answers[key])}")
+        lines.extend(["", self._PROJECT_INTAKE_PROMPTS.get(step, step)])
+        return "\n".join(lines)
+
+    def _project_intake_preview_text(self, state: Dict[str, Any]) -> str:
+        answers = state.get("answers") or {}
+        lines = [
+            "Project intake preview",
+            "",
+            f"Title: {state.get('title') or 'Project intake'}",
+            f"Description: {state.get('description') or 'No description provided.'}",
+            "",
+            "Selections:",
+        ]
+        for key in self._PROJECT_INTAKE_STEP_ORDER[:-1]:
+            value = answers.get(key, "unset")
+            lines.append(f"• {key}: {self._project_intake_label(key, value)}")
+        return "\n".join(lines)
+
+    def _project_intake_payload(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = dict(state.get("metadata") or {})
+        source: Dict[str, Any] = {"platform": "telegram"}
+        if state.get("chat_id") is not None:
+            source["chat_id"] = str(state.get("chat_id"))
+        if metadata.get("thread_id") is not None:
+            source["thread_id"] = str(metadata.get("thread_id"))
+        if metadata.get("telegram_dm_topic_reply_fallback"):
+            source["telegram_dm_topic_reply_fallback"] = True
+        return {
+            "title": str(state.get("title") or "Project intake").strip() or "Project intake",
+            "description": str(state.get("description") or "").strip(),
+            "answers": dict(state.get("answers") or {}),
+            "source": source,
+        }
+
+    @staticmethod
+    def _project_intake_context_value(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _project_intake_context_matches(
+        self,
+        state: Dict[str, Any],
+        *,
+        chat_id: Optional[Any],
+        thread_id: Optional[str],
+    ) -> bool:
+        expected_chat_id = self._project_intake_context_value(state.get("chat_id"))
+        actual_chat_id = self._project_intake_context_value(chat_id)
+        if expected_chat_id != actual_chat_id:
+            return False
+
+        metadata = dict(state.get("metadata") or {})
+        expected_thread_id = self._project_intake_context_value(metadata.get("thread_id"))
+        actual_thread_id = self._project_intake_context_value(thread_id)
+        return expected_thread_id == actual_thread_id
+
+    def _project_intake_prompt_matches(
+        self,
+        state: Dict[str, Any],
+        *,
+        message_id: Optional[Any],
+    ) -> bool:
+        expected_message_id = self._project_intake_context_value(state.get("prompt_message_id"))
+        if expected_message_id is None:
+            return True
+        actual_message_id = self._project_intake_context_value(message_id)
+        return expected_message_id == actual_message_id
+
+    def _project_intake_missing_required_step(self, state: Dict[str, Any]) -> Optional[str]:
+        answers = dict(state.get("answers") or {})
+        for required_step in self._PROJECT_INTAKE_STEP_ORDER[:-1]:
+            allowed = {
+                token
+                for token, _ in self._PROJECT_INTAKE_CHOICES.get(required_step, ())
+                if token not in {"back", "cancel"}
+            }
+            if answers.get(required_step) not in allowed:
+                return required_step
+        return None
+
+    async def send_project_intake_prompt(
+        self,
+        chat_id: str,
+        title: str,
+        state: Dict[str, Any],
+        session_key: str,
+        on_intake_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send Telegram inline buttons for the fixed project-intake flow."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        flow_id = self._new_project_intake_flow_id()
+        intake_state: Dict[str, Any] = {
+            "session_key": session_key,
+            "chat_id": str(chat_id),
+            "title": str(title or "Project intake").strip() or "Project intake",
+            "description": str((state or {}).get("description") or title or "").strip(),
+            "step": "kind",
+            "answers": {},
+            "metadata": dict(metadata or {}),
+            "on_intake_selected": on_intake_selected,
+        }
+
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=self._project_intake_step_text(intake_state, "kind"),
+                reply_markup=self._build_project_intake_keyboard(flow_id, "kind", {}),
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            intake_state["prompt_message_id"] = str(msg.message_id)
+            self._project_intake_state[flow_id] = intake_state
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_project_intake_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _edit_project_intake_message(
+        self,
+        query,
+        *,
+        text: str,
+        reply_markup=None,
+    ) -> None:
+        try:
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+        except Exception:
+            logger.debug("[%s] project-intake message edit failed", self.name, exc_info=True)
+
+    async def _handle_project_intake_callback(
+        self,
+        query,
+        data: str,
+        *,
+        chat_id: Optional[Any] = None,
+        chat_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        message_id: Optional[Any] = None,
+        user_name: Optional[str] = None,
+    ) -> None:
+        parts = data.split(":", 3)
+        if len(parts) != 4:
+            await query.answer(text="Invalid project intake data.")
+            return
+        _, flow_id, step, choice = parts
+        state = self._project_intake_state.get(flow_id)
+        if not state:
+            await query.answer(text="Project intake expired — use /project again.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            user_name=user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to answer this intake prompt.")
+            return
+
+        if not self._project_intake_context_matches(state, chat_id=chat_id, thread_id=thread_id):
+            await query.answer(text="Project intake belongs to a different chat/thread.")
+            return
+        if not self._project_intake_prompt_matches(state, message_id=message_id):
+            await query.answer(text="Project intake belongs to a different prompt.")
+            return
+
+        if step not in self._PROJECT_INTAKE_STEP_ORDER:
+            await query.answer(text="Invalid project intake step.")
+            return
+        if step != state.get("step"):
+            await query.answer(text="Project intake moved on — use the latest buttons.")
+            return
+        if choice not in {token for token, _ in self._PROJECT_INTAKE_CHOICES.get(step, ())}:
+            await query.answer(text="Invalid project intake choice.")
+            return
+
+        if choice == "cancel":
+            self._project_intake_state.pop(flow_id, None)
+            await self._edit_project_intake_message(
+                query,
+                text="Project intake cancelled.",
+                reply_markup=None,
+            )
+            await query.answer(text="Cancelled")
+            return
+
+        if choice == "back":
+            idx = max(self._PROJECT_INTAKE_STEP_ORDER.index(step) - 1, 0)
+            previous = self._PROJECT_INTAKE_STEP_ORDER[idx]
+            state["answers"].pop(previous, None)
+            state["step"] = previous
+            await self._edit_project_intake_message(
+                query,
+                text=self._project_intake_step_text(state, previous),
+                reply_markup=self._build_project_intake_keyboard(flow_id, previous, state.get("answers")),
+            )
+            await query.answer()
+            return
+
+        if step == "confirm":
+            missing_step = self._project_intake_missing_required_step(state)
+            if missing_step:
+                state["step"] = missing_step
+                await self._edit_project_intake_message(
+                    query,
+                    text=self._project_intake_step_text(state, missing_step),
+                    reply_markup=self._build_project_intake_keyboard(flow_id, missing_step, state.get("answers")),
+                )
+                await query.answer(text="Project intake is incomplete — choose missing answers first.")
+                return
+            if choice == "preview":
+                self._project_intake_state.pop(flow_id, None)
+                await self._edit_project_intake_message(
+                    query,
+                    text=self._project_intake_preview_text(state),
+                    reply_markup=None,
+                )
+                await query.answer(text="Preview ready")
+                return
+            if choice == "create":
+                callback = state.get("on_intake_selected")
+                payload = self._project_intake_payload(state)
+                result_text = "Project intake submitted."
+                self._project_intake_state.pop(flow_id, None)
+                if callable(callback):
+                    result = callback(payload)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    if result:
+                        result_text = str(result)
+                await self._edit_project_intake_message(
+                    query,
+                    text=result_text,
+                    reply_markup=None,
+                )
+                await query.answer(text="Submitted")
+                return
+
+        answers = state.setdefault("answers", {})
+        answers[step] = choice
+        next_idx = min(self._PROJECT_INTAKE_STEP_ORDER.index(step) + 1, len(self._PROJECT_INTAKE_STEP_ORDER) - 1)
+        next_step = self._PROJECT_INTAKE_STEP_ORDER[next_idx]
+        state["step"] = next_step
+        await self._edit_project_intake_message(
+            query,
+            text=self._project_intake_step_text(state, next_step),
+            reply_markup=self._build_project_intake_keyboard(flow_id, next_step, answers),
+        )
+        await query.answer()
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -2531,7 +2895,21 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat = getattr(query_message, "chat", None)
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_message_id = getattr(query_message, "message_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Project intake callbacks (pi:flow:step:choice) ---
+        if data.startswith("pi:"):
+            await self._handle_project_intake_callback(
+                query,
+                data,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                message_id=query_message_id,
+                user_name=query_user_name,
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):

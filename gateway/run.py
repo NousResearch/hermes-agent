@@ -6405,6 +6405,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "project":
+            return await self._handle_project_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -8414,6 +8417,54 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_project_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /project — render the gateway-owned project-intake prompt when supported."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source is not None else None
+        prompt = getattr(adapter, "send_project_intake_prompt", None) if adapter else None
+
+        raw_title = (event.get_command_args() or "").strip()
+        title = " ".join(raw_title.split()) or "Project intake"
+        description = title
+        metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        ) if source is not None else None
+        session_key = self._session_key_for_source(source) if source is not None else ""
+
+        async def _preview_only_project_intake(payload: Dict[str, Any]) -> str:
+            payload_title = str(payload.get("title") or title).strip() or "Project intake"
+            return (
+                f"Project intake preview saved for: {payload_title}\n\n"
+                "Card creation is not enabled from this button yet. "
+                "Reply with /kanban create when you are ready to create a board card."
+            )
+
+        fallback = (
+            "Project intake buttons are unavailable on this platform. "
+            "Please reply with /project <title or short description> from Telegram to use the mobile intake buttons."
+        )
+
+        if not callable(prompt) or source is None:
+            return fallback
+
+        try:
+            result = await prompt(
+                chat_id=str(source.chat_id),
+                title=title,
+                state={"description": description},
+                session_key=session_key,
+                on_intake_selected=_preview_only_project_intake,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.debug("send_project_intake_prompt failed for /project: %s", exc)
+            return fallback
+
+        if result and getattr(result, "success", False):
+            return None
+        return fallback
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

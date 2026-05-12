@@ -105,6 +105,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("project", "Start a Telegram project-intake questionnaire", "Session",
+               gateway_only=True, args_hint="[title or short description]"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

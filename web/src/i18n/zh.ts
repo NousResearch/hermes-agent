@@ -46,6 +46,7 @@ export const zh: Translations = {
     pluginLoadFailed:
       "无法加载此插件的脚本。请检查网络请求（dashboard-plugins/…）以及服务器上的插件路径。",
     pluginNotRegistered: "插件脚本未调用 register()，或执行出错。请打开浏览器控制台查看详情。",
+    listPlaceholder: "逗号分隔的值",
   },
 
   app: {
@@ -93,6 +94,36 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
+  },
+
+  chatSidebar: {
+    model: "模型",
+    switchModel: "切换模型",
+    reconnect: "重新连接",
+    tools: "工具",
+    noToolCalls: "暂无工具调用",
+    eventsDisconnected: "事件推送已断开 — 工具调用可能无法显示",
+    eventsRejected: "事件推送被拒绝 ({code}) — 请刷新页面",
+  },
+
+  modelPicker: {
+    title: "切换模型",
+    close: "关闭",
+    filterPlaceholder: "筛选提供商和模型…",
+    currentTag: "当前",
+    cancel: "取消",
+    switch_: "切换",
+    noMatches: "无匹配",
+    noAuthProviders: "无已认证的提供商",
+    loading: "加载中…",
+    pickProvider: "选择一个提供商 →",
+    noModelsMatch: "没有匹配筛选的模型",
+    noModelsListed: "此提供商未列出模型",
+    persistGlobal: "全局持久化（否则仅本次会话）",
+    savesToConfig: "保存到 config.yaml — 适用于新会话。",
+    modelsCount: "{count} 个模型",
+    unknownModel: "（未知）",
+    currentModelLabel: "当前：{model}",
   },
 
   status: {
@@ -340,6 +371,7 @@ export const zh: Translations = {
     failedToLoadRaw: "加载原始配置失败",
     configImported: "配置已导入 — 请检查后保存",
     invalidJson: "无效的 JSON 文件",
+    yaml: "YAML",
     categories: {
       general: "通用",
       agent: "代理",

@@ -62,6 +62,7 @@ export interface Translations {
     messaging: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
+    listPlaceholder: string;
   };
 
   // ── App shell ──
@@ -110,6 +111,38 @@ export interface Translations {
     copyLastResponseTitle: string;
     copyLastResponseAria: string;
     copied: string;
+  };
+
+  // ── Chat sidebar ──
+  chatSidebar: {
+    model: string;
+    switchModel: string;
+    reconnect: string;
+    tools: string;
+    noToolCalls: string;
+    eventsDisconnected: string;
+    eventsRejected: string;
+  };
+
+  // ── Model picker dialog ──
+  modelPicker: {
+    title: string;
+    close: string;
+    filterPlaceholder: string;
+    currentTag: string;
+    cancel: string;
+    switch_: string;
+    noMatches: string;
+    noAuthProviders: string;
+    loading: string;
+    pickProvider: string;
+    noModelsMatch: string;
+    noModelsListed: string;
+    persistGlobal: string;
+    savesToConfig: string;
+    modelsCount: string;
+    unknownModel: string;
+    currentModelLabel: string;
   };
 
   // ── Status page ──
@@ -364,6 +397,7 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    yaml: string;
     categories: {
       general: string;
       agent: string;

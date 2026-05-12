@@ -43,7 +43,7 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const enLabel = rawLabel
     .replace(/_/g, " ")
@@ -74,7 +74,7 @@ export function AutoField({
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || "(none)"}
+              {opt || t.common.none}
             </SelectOption>
           ))}
         </Select>
@@ -135,7 +135,7 @@ export function AutoField({
                 .filter(Boolean),
             )
           }
-          placeholder="comma-separated values"
+          placeholder={t.common.listPlaceholder}
         />
       </div>
     );

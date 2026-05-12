@@ -205,6 +205,14 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "google-gemini-cli":
         api_mode = "chat_completions"
         base_url = base_url or "cloudcode-pa://google"
+    elif provider == "minimax-oauth":
+        # MiniMax OAuth tokens are valid only against the Anthropic Messages
+        # compatible endpoint. Do not honor stale model.api_mode values from a
+        # prior OpenAI-compatible provider, or the client will hit
+        # /chat/completions under /anthropic and receive a bare nginx 404.
+        api_mode = "anthropic_messages"
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        base_url = base_url or (pconfig.inference_base_url if pconfig else "")
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

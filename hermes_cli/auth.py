@@ -4046,6 +4046,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "google-gemini-cli":
         return get_gemini_oauth_auth_status()
+    if target == "minimax-oauth":
+        return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     # API-key providers
@@ -4757,6 +4759,20 @@ def _minimax_request_user_code(
     return payload
 
 
+def _minimax_expired_in_looks_like_unix_ms(expired_in: int, *, now_ms: int) -> bool:
+    """True if ``expired_in`` is plausibly a unix-ms absolute time (vs TTL seconds)."""
+    return int(expired_in) > (now_ms // 2)
+
+
+def _minimax_resolve_token_expiry_unix(expired_in: int, *, now: datetime) -> float:
+    """Return access-token expiry as unix seconds (MiniMax uses ms epoch or TTL seconds)."""
+    raw = int(expired_in)
+    now_ms = int(now.timestamp() * 1000)
+    if _minimax_expired_in_looks_like_unix_ms(raw, now_ms=now_ms):
+        return raw / 1000.0
+    return now.timestamp() + max(1, raw)
+
+
 def _minimax_poll_token(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
@@ -4765,12 +4781,11 @@ def _minimax_poll_token(
     # Defensive parsing: if it's small enough to be a duration, treat as seconds.
     import time as _time
     now_ms = int(_time.time() * 1000)
-    if expired_in > now_ms // 2:
-        # Looks like a unix-ms timestamp.
-        deadline = expired_in / 1000.0
+    raw = int(expired_in)
+    if _minimax_expired_in_looks_like_unix_ms(raw, now_ms=now_ms):
+        deadline = raw / 1000.0
     else:
-        # Treat as duration in seconds from now.
-        deadline = _time.time() + max(1, expired_in)
+        deadline = _time.time() + max(1, raw)
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while _time.time() < deadline:
@@ -4884,8 +4899,10 @@ def _minimax_oauth_login(
         )
 
     now = datetime.now(timezone.utc)
-    expires_in_s = int(token_data["expired_in"])
-    expires_at = now.timestamp() + expires_in_s
+    expires_at_unix = _minimax_resolve_token_expiry_unix(
+        int(token_data["expired_in"]), now=now,
+    )
+    expires_in_s = max(0, int(expires_at_unix - now.timestamp()))
 
     auth_state = {
         "provider": "minimax-oauth",
@@ -4899,7 +4916,7 @@ def _minimax_oauth_login(
         "refresh_token": token_data["refresh_token"],
         "resource_url": token_data.get("resource_url"),
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
         "expires_in": expires_in_s,
     }
 
@@ -4960,14 +4977,16 @@ def _refresh_minimax_oauth_state(
             relogin_required=True,
         )
     now_dt = datetime.now(timezone.utc)
-    expires_in_s = int(payload["expired_in"])
+    expires_at_unix = _minimax_resolve_token_expiry_unix(
+        int(payload["expired_in"]), now=now_dt,
+    )
+    expires_in_s = max(0, int(expires_at_unix - now_dt.timestamp()))
     new_state = dict(state)
     new_state.update({
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         "obtained_at": now_dt.isoformat(),
-        "expires_at": datetime.fromtimestamp(now_dt.timestamp() + expires_in_s,
-                                             tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
         "expires_in": expires_in_s,
     })
     _minimax_save_auth_state(new_state)

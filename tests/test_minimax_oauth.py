@@ -32,9 +32,11 @@ from hermes_cli.auth import (
     _minimax_pkce_pair,
     _minimax_request_user_code,
     _minimax_poll_token,
+    _minimax_resolve_token_expiry_unix,
     _refresh_minimax_oauth_state,
     resolve_minimax_oauth_runtime_credentials,
     get_minimax_oauth_auth_status,
+    get_auth_status,
     get_provider_auth_state,
 )
 
@@ -65,6 +67,23 @@ def _future_iso(seconds_from_now: int = 3600) -> str:
 def _past_iso(seconds_ago: int = 3600) -> str:
     ts = time.time() - seconds_ago
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# 0. test_resolve_token_expiry_unix_ttl_vs_absolute_ms
+# ---------------------------------------------------------------------------
+
+def test_resolve_token_expiry_unix_ttl_seconds():
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    got = _minimax_resolve_token_expiry_unix(3600, now=now)
+    assert abs(got - (now.timestamp() + 3600)) < 0.01
+
+
+def test_resolve_token_expiry_unix_absolute_ms():
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    abs_ms = int((now.timestamp() + 7200) * 1000)
+    got = _minimax_resolve_token_expiry_unix(abs_ms, now=now)
+    assert abs(got - (now.timestamp() + 7200)) < 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +381,46 @@ def test_refresh_updates_access_token():
     assert result["expires_in"] == 7200
 
 
+def test_refresh_updates_access_token_absolute_ms_expired_in():
+    """Refresh payload may use unix-ms absolute ``expired_in`` (same as device-code)."""
+    now0 = datetime.now(timezone.utc)
+    abs_ms = int((now0.timestamp() + 1800) * 1000)
+
+    state = {
+        "access_token": "old-access",
+        "refresh_token": "my-refresh",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(MINIMAX_OAUTH_REFRESH_SKEW_SECONDS - 1),
+    }
+
+    new_token_body = {
+        "status": "success",
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expired_in": abs_ms,
+    }
+
+    mock_resp = _make_httpx_response(200, new_token_body)
+
+    with patch("httpx.Client") as mock_client_class:
+        mock_client_instance = MagicMock()
+        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = MagicMock(return_value=False)
+        mock_client_instance.post.return_value = mock_resp
+        mock_client_class.return_value = mock_client_instance
+
+        with patch("hermes_cli.auth._minimax_save_auth_state"):
+            result = _refresh_minimax_oauth_state(state)
+
+    assert result["access_token"] == "new-access"
+    assert 1790 <= result["expires_in"] <= 1810
+    exp = datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00"))
+    skew = exp.timestamp() - datetime.now(timezone.utc).timestamp()
+    assert 1790 <= skew <= 1810
+
+
 # ---------------------------------------------------------------------------
 # 10. test_refresh_reuse_triggers_relogin_required
 # ---------------------------------------------------------------------------
@@ -463,4 +522,19 @@ def test_get_minimax_oauth_auth_status_logged_in():
         status = get_minimax_oauth_auth_status()
 
     assert status["logged_in"] is True
+    assert status["region"] == "global"
+
+
+def test_generic_auth_status_dispatches_minimax_oauth():
+    state = {
+        "access_token": "tok",
+        "expires_at": _future_iso(3600),
+        "region": "global",
+    }
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+        status = get_auth_status("minimax-oauth")
+
+    assert status["logged_in"] is True
+    assert status["provider"] == "minimax-oauth"
     assert status["region"] == "global"

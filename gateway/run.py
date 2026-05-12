@@ -16908,6 +16908,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             headers["Authorization"] = f"Bearer {proxy_key}"
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
+        # Forward SessionSource identity so the remote api_server can
+        # reconstruct per-user peer scoping (matches the headers added to
+        # api_server in the same PR).  Each forwarded only when set on
+        # the source — partial SessionSource is better than no identity.
+        if getattr(source, "user_id", None):
+            headers["X-Hermes-User-Id"] = str(source.user_id)
+        if getattr(source, "user_name", None):
+            headers["X-Hermes-User-Name"] = str(source.user_name)
+        if getattr(source, "chat_id", None):
+            headers["X-Hermes-Chat-Id"] = str(source.chat_id)
+        if getattr(source, "chat_name", None):
+            headers["X-Hermes-Chat-Name"] = str(source.chat_name)
+        if getattr(source, "chat_type", None):
+            headers["X-Hermes-Chat-Type"] = str(source.chat_type)
+        if getattr(source, "thread_id", None):
+            headers["X-Hermes-Thread-Id"] = str(source.thread_id)
 
         body = {
             "model": "hermes-agent",

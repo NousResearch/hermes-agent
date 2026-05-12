@@ -845,6 +845,114 @@ class TestSlackThreadedDelivery:
         assert send_mock.await_args.args[3] == "Plain Slack report."
         assert send_mock.await_args.kwargs["thread_id"] is None
 
+    def test_slack_thread_ignores_configured_home_thread_for_anchor(self, monkeypatch):
+        Platform, mock_cfg = self._mock_slack_config()
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123456789")
+        monkeypatch.setenv("SLACK_HOME_CHANNEL_THREAD_ID", "configured-thread")
+
+        send_mock = AsyncMock(
+            side_effect=[
+                {"success": True, "message_id": "ts-anchor"},
+                {"success": True, "message_id": "ts-reply"},
+            ]
+        )
+
+        job = {
+            "id": "thread-home",
+            "name": "thread-home-report",
+            "deliver": "slack",
+            "delivery_mode": "slack_thread",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "Report body.")
+
+        assert result is None
+        assert send_mock.await_count == 2
+        anchor_call, reply_call = send_mock.await_args_list
+        assert anchor_call.kwargs["thread_id"] is None
+        assert reply_call.kwargs["thread_id"] == "ts-anchor"
+
+    def test_live_adapter_body_failure_falls_back_without_duplicate_anchor(self, monkeypatch):
+        from concurrent.futures import Future
+
+        Platform, mock_cfg = self._mock_slack_config()
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123456789")
+
+        adapter = AsyncMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        send_results = [
+            MagicMock(success=True, message_id="live-anchor-ts"),
+            MagicMock(success=False, error="body failed"),
+        ]
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(send_results.pop(0))
+            coro.close()
+            return future
+
+        standalone_send = AsyncMock(return_value={"success": True, "message_id": "fallback-reply"})
+        job = {
+            "id": "live-fallback",
+            "name": "live-fallback-report",
+            "deliver": "slack",
+            "delivery_mode": "slack_thread",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Live body.",
+                adapters={Platform.SLACK: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        assert adapter.send.call_count == 2
+        anchor_call, body_call = adapter.send.call_args_list
+        assert anchor_call.args == ("C123456789", "live-fallback-report (job_id: live-fallback)")
+        assert body_call.args == ("C123456789", "Live body.")
+        assert body_call.kwargs["metadata"] == {"thread_id": "live-anchor-ts"}
+
+        standalone_send.assert_awaited_once()
+        assert standalone_send.await_args.args[3] == "Live body."
+        assert standalone_send.await_args.kwargs["thread_id"] == "live-anchor-ts"
+
+    def test_threaded_delivery_mode_alias_uses_slack_thread_behavior(self, monkeypatch):
+        Platform, mock_cfg = self._mock_slack_config()
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123456789")
+
+        send_mock = AsyncMock(
+            side_effect=[
+                {"success": True, "message_id": "ts-anchor"},
+                {"success": True, "message_id": "ts-reply"},
+            ]
+        )
+
+        job = {
+            "id": "alias-job",
+            "name": "alias-report",
+            "deliver": "slack",
+            "delivery_mode": "threaded",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "Alias body.")
+
+        assert result is None
+        assert send_mock.await_count == 2
+        assert send_mock.await_args_list[0].kwargs["thread_id"] is None
+        assert send_mock.await_args_list[1].kwargs["thread_id"] == "ts-anchor"
+
 
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""

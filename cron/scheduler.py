@@ -426,7 +426,10 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
 
 def _cron_delivery_mode(job: dict) -> str:
-    return str(job.get("delivery_mode") or "").strip().lower()
+    mode = str(job.get("delivery_mode") or "").strip().lower()
+    if mode == "threaded":
+        return "slack_thread"
+    return mode
 
 
 def _render_thread_title(job: dict) -> str:
@@ -576,7 +579,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         threaded_mode = (
             _cron_delivery_mode(job) == "slack_thread"
             and platform_name.lower() == "slack"
-            and not thread_id
         )
         target_content = (
             _threaded_body_content(job, content, wrap_response)
@@ -622,8 +624,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        threaded_anchor_id = None
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = None if threaded_mode else ({"thread_id": thread_id} if thread_id else None)
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -655,7 +658,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             )
                             adapter_ok = False
                         else:
-                            send_metadata = {"thread_id": anchor_id}
+                            threaded_anchor_id = anchor_id
+                            send_metadata = {"thread_id": threaded_anchor_id}
 
                 if adapter_ok and text_to_send:
                     future = asyncio.run_coroutine_threadsafe(
@@ -731,19 +735,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
             try:
                 if threaded_mode:
-                    anchor_result = run_standalone_send(_render_thread_title(job), send_thread_id=None)
-                    if anchor_result and anchor_result.get("error"):
-                        result = anchor_result
+                    if threaded_anchor_id:
+                        result = run_standalone_send(
+                            cleaned_delivery_content,
+                            send_thread_id=threaded_anchor_id,
+                            send_media_files=media_files,
+                        )
                     else:
-                        anchor_id = _message_id_from_send_result(anchor_result)
-                        if not anchor_id:
-                            result = {"error": "Slack thread anchor did not return message_id"}
+                        anchor_result = run_standalone_send(_render_thread_title(job), send_thread_id=None)
+                        if anchor_result and anchor_result.get("error"):
+                            result = anchor_result
                         else:
-                            result = run_standalone_send(
-                                cleaned_delivery_content,
-                                send_thread_id=anchor_id,
-                                send_media_files=media_files,
-                            )
+                            anchor_id = _message_id_from_send_result(anchor_result)
+                            if not anchor_id:
+                                result = {"error": "Slack thread anchor did not return message_id"}
+                            else:
+                                result = run_standalone_send(
+                                    cleaned_delivery_content,
+                                    send_thread_id=anchor_id,
+                                    send_media_files=media_files,
+                                )
                 else:
                     result = run_standalone_send(
                         cleaned_delivery_content,

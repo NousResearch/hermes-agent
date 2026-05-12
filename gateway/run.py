@@ -5914,6 +5914,20 @@ class GatewayRunner:
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
+            if event.message_type == MessageType.TEXT and not event.get_command():
+                try:
+                    from gateway.standing_command_router import (
+                        render_confirmation as _render_standing_confirmation_busy,
+                        resolve_standing_command as _resolve_standing_command_busy,
+                    )
+                    _busy_standing_route = _resolve_standing_command_busy(event.text or "")
+                    if _busy_standing_route is not None:
+                        if _busy_standing_route.mode == "confirm":
+                            return _render_standing_confirmation_busy(_busy_standing_route)
+                        if _busy_standing_route.name == "status":
+                            return await self._handle_status_command(event)
+                except Exception as _standing_exc:
+                    logger.debug("Standing-command router busy-path failed (non-fatal): %s", _standing_exc)
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
@@ -6612,6 +6626,31 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # Plain-text standing-command router. Slash commands keep precedence;
+        # exact read-only triggers may bypass the LLM, adjacent phrases get a
+        # confirmation picker, and agent-backed exact triggers are rewritten
+        # into deterministic prompts before claiming the session.
+        if not command and event.message_type == MessageType.TEXT:
+            try:
+                from gateway.standing_command_router import (
+                    build_agent_instruction as _build_standing_instruction,
+                    render_confirmation as _render_standing_confirmation,
+                    resolve_standing_command as _resolve_standing_command,
+                )
+                _standing_route = _resolve_standing_command(event.text or "")
+                if _standing_route is not None:
+                    if _standing_route.mode == "confirm":
+                        return _render_standing_confirmation(_standing_route)
+                    if _standing_route.name == "status":
+                        return await self._handle_status_command(event)
+                    if _standing_route.mode == "exact":
+                        event = dataclasses.replace(
+                            event,
+                            text=_build_standing_instruction(_standing_route, event.text or ""),
+                        )
+            except Exception as _standing_exc:
+                logger.debug("Standing-command router failed (non-fatal): %s", _standing_exc)
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about

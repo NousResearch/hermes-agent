@@ -307,8 +307,26 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - `@botusername` mentions
   - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+
+### Multiple Hermes bots in one group
+
+If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and start one gateway per profile. Do not reuse the same bot token in multiple running gateways; Telegram will reject concurrent polling for the same token.
+
+Recommended group config:
+
+```yaml
+telegram:
+  require_mention: true
+  exclusive_bot_mentions: true
+  mention_patterns: []
+```
+
+With this setup, a group message like `@research_bot @ops_bot summarize this` is processed by `research_bot` and `ops_bot` only. Other Hermes bots in the group stay silent, even if the message is a reply to one of their earlier messages or would otherwise match a shared wake word.
+
+Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
 
 ### Troubleshooting: works in DMs but not groups
 
@@ -327,6 +345,9 @@ gates in order:
 4. **Mention filters:** if `telegram.require_mention: true` is set, normal
    group chatter is ignored unless the message is a slash command, reply to the
    bot, `@botusername` mention, or configured `mention_patterns` match.
+5. **Multi-bot routing:** if a group contains several bots, make sure each
+   Hermes profile uses a unique bot token and keep `exclusive_bot_mentions`
+   enabled unless you intentionally want legacy shared-trigger behavior.
 
 Negative chat IDs are normal for Telegram groups and supergroups. If you use
 chat-scoped authorization, put those IDs in `TELEGRAM_GROUP_ALLOWED_CHATS`, not
@@ -339,6 +360,7 @@ Add this to `~/.hermes/config.yaml`:
 ```yaml
 telegram:
   require_mention: true
+  exclusive_bot_mentions: true
   mention_patterns:
     - "^\\s*chompy\\b"
   ignored_threads:

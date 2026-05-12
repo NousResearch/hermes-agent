@@ -179,7 +179,7 @@ class ToolContext:
 
         # Ensure parent directory exists in the sandbox
         parent = str(_Path(remote_path).parent)
-        if parent not in (".", "/"):
+        if parent not in {".", "/"}:
             self.terminal(f"mkdir -p {parent}", timeout=10)
 
         # For small files, single command is fine

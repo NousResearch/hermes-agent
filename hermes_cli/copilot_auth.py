@@ -128,7 +128,7 @@ def _try_gh_cli_token() -> Optional[str]:
 
     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
     clean_env = {k: v for k, v in os.environ.items()
-                 if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+                 if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
 
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token"]

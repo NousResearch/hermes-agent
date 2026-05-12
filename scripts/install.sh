@@ -28,6 +28,10 @@ if [ -n "${PYTHONHOME:-}" ]; then
     unset PYTHONHOME
 fi
 
+# Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
+# wrong user's home directory when running under sudo -u <user>.  See #21269.
+export UV_NO_CONFIG=1
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -615,6 +619,41 @@ install_node() {
     HAS_NODE=true
 }
 
+check_network_prerequisites() {
+    log_info "Checking internet connectivity for package install and web tools..."
+
+    local url
+    local failed=false
+    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_warn "curl not found; skipping connectivity probes"
+        return 0
+    fi
+
+    for url in "${checks[@]}"; do
+        if ! curl -fsSI --max-time 8 "$url" >/dev/null 2>&1; then
+            failed=true
+            log_warn "Could not reach $url"
+        fi
+    done
+
+    if [ "$failed" = false ]; then
+        log_success "Internet connectivity looks good"
+        return 0
+    fi
+
+    if [ "$DISTRO" = "termux" ]; then
+        log_warn "Termux network prerequisites may be incomplete."
+        log_info "Try: pkg install -y ca-certificates curl && pkg update"
+        log_info "If mirrors are stale: termux-change-repo"
+        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://duckduckgo.com/"
+    else
+        log_warn "Network checks failed. Hermes install may complete, but web search and dependency downloads can fail."
+        log_info "Verify internet/DNS and retry if pip install fails."
+    fi
+}
+
 install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
@@ -642,7 +681,7 @@ install_system_packages() {
     # Termux always needs the Android build toolchain for the tested pip path,
     # even when ripgrep/ffmpeg are already present.
     if [ "$DISTRO" = "termux" ]; then
-        local termux_pkgs=(clang rust make pkg-config libffi openssl)
+        local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)
         if [ "$need_ripgrep" = true ]; then
             termux_pkgs+=("ripgrep")
         fi
@@ -945,17 +984,37 @@ install_deps() {
         fi
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
-            log_warn "Termux feature install (.[termux]) failed, trying base install..."
-            if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
-                log_error "Package installation failed on Termux."
-                log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl"
-                log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
-                exit 1
+
+        # On Android, psutil's setup.py rejects sys.platform == 'android' before
+        # it ever invokes the C build, so the next pip install would fail at
+        # "platform android is not supported".  Prebuild psutil from the official
+        # sdist with a one-line marker patch (Linux source path is fine on
+        # Android).  Stopgap until psutil#2762 ships upstream.
+        if "$PIP_PYTHON" -c 'import sys; raise SystemExit(0 if sys.platform == "android" else 1)' 2>/dev/null; then
+            log_info "Android Python detected: prebuilding psutil compatibility shim..."
+            if ! "$PIP_PYTHON" "$INSTALL_DIR/scripts/install_psutil_android.py" --pip "$PIP_PYTHON -m pip"; then
+                log_warn "psutil Android prebuild failed — package install will likely fail next."
+                log_info "Workaround: manually rerun 'python scripts/install_psutil_android.py' once your toolchain is set up."
+            fi
+        fi
+
+        # Try the broad Termux profile first (best-effort "install all" for Android),
+        # then fall back to the conservative Termux baseline, then base package.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+                log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                    log_error "Package installation failed on Termux."
+                    log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    exit 1
+                fi
             fi
         fi
 
         log_success "Main package installed"
+        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
@@ -1001,20 +1060,124 @@ install_deps() {
     fi
 
     # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
-    ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
-        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
-        rm -f "$ALL_INSTALL_LOG"
-        if ! $UV_CMD pip install -e "."; then
-            log_error "Package installation failed."
-            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
-            exit 1
+    #
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive, so a compromised transitive (different hash than what
+    # we shipped) is REJECTED by the resolver. This is the *only* path
+    # that protects against the "direct dep is fine, but the dep's dep
+    # got worm-poisoned overnight" failure mode. All `uv pip install`
+    # tiers below re-resolve transitives fresh from PyPI without any
+    # hash verification — they exist to keep installs working when the
+    # lockfile is stale, missing, or out-of-sync with the current
+    # extras spec, NOT because they're equivalent in posture.
+    if [ -f "uv.lock" ]; then
+        log_info "Trying tier: hash-verified (uv.lock) ..."
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$(mktemp)"; then
+            log_success "Main package installed (hash-verified via uv.lock)"
+            log_success "All dependencies installed"
+            return 0
         fi
+        log_warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
     else
-        rm -f "$ALL_INSTALL_LOG"
+        log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+    fi
+
+    # Multi-tier fallback. The point of the tiers is that ONE compromised
+    # PyPI package (a worm-poisoned release that gets quarantined, like
+    # mistralai 2.4.6 in May 2026) shouldn't be able to silently demote a
+    # fresh install all the way down to "core only" — the user should keep
+    # everything else they signed up for.
+    #
+    # Tier 1: [all] — everything, including RL git+https deps (best case).
+    # Tier 2: [all] minus the currently-broken extras list. Edit
+    #         _BROKEN_EXTRAS below when something on PyPI breaks; this lets
+    #         users keep voice/honcho/google/slack/matrix/etc. even when
+    #         one transitive is unavailable. List the extras here as bare
+    #         names from pyproject.toml [project.optional-dependencies] —
+    #         the script translates them to `[a,b,c]` form below.
+    # Tier 3: PyPI-only extras (no git deps) — drops [rl] / [yc-bench]
+    #         which are git+https and may fail in restricted networks.
+    # Tier 4: dashboard + core platforms — minimum viable interactive set.
+    # Tier 5: bare `.` — last-resort so at least the core CLI launches.
+    #
+    # Each tier's stderr is captured to a tempfile so we can show the user
+    # WHY the higher tier failed instead of silently dropping support.
+    local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+    local _ALL_EXTRAS=(
+        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
+        bedrock web youtube
+    )
+    # Tier 2: all extras minus _BROKEN_EXTRAS
+    local _SAFE_EXTRAS=()
+    local _e _b _skip
+    for _e in "${_ALL_EXTRAS[@]}"; do
+        _skip=false
+        for _b in "${_BROKEN_EXTRAS[@]}"; do
+            if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+        done
+        if [ "$_skip" = false ]; then _SAFE_EXTRAS+=("$_e"); fi
+    done
+    local _SAFE_SPEC
+    _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    # Tier 3: PyPI-only extras (no git deps), still skipping broken ones.
+    # Mirrors the install.ps1 list but excludes [rl] / [yc-bench] / [matrix]
+    # (matrix needs python-olm which fails to build on some hosts).
+    local _PYPI_EXTRAS=(
+        web mcp cron cli voice messaging slack dev acp pty homeassistant sms
+        tts-premium honcho google bedrock dingtalk feishu modal daytona vercel
+        youtube
+    )
+    local _PYPI_SAFE=()
+    for _e in "${_PYPI_EXTRAS[@]}"; do
+        _skip=false
+        for _b in "${_BROKEN_EXTRAS[@]}"; do
+            if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+        done
+        if [ "$_skip" = false ]; then _PYPI_SAFE+=("$_e"); fi
+    done
+    local _PYPI_SPEC
+    _PYPI_SPEC=".[$(IFS=,; echo "${_PYPI_SAFE[*]}")]"
+    local _TIER4_SPEC=".[web,mcp,cron,cli,messaging,dev]"
+
+    ALL_INSTALL_LOG=$(mktemp)
+    local _installed=false
+    local _tier_name=""
+
+    install_tier() {
+        local name="$1"; local spec="$2"
+        log_info "Trying tier: $name ..."
+        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+            log_success "Main package installed ($name)"
+            _installed=true
+            _tier_name="$name"
+            return 0
+        fi
+        log_warn "Tier '$name' failed. Top of pip output:"
+        head -5 "$ALL_INSTALL_LOG" | sed 's/^/    /' >&2
+        return 1
+    }
+
+    install_tier "all (with RL/matrix extras)" ".[all]" \
+        || install_tier "all minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
+        || install_tier "PyPI-only extras (no git deps)" "$_PYPI_SPEC" \
+        || install_tier "dashboard + core platforms" "$_TIER4_SPEC" \
+        || install_tier "core only (no extras)" "."
+
+    rm -f "$ALL_INSTALL_LOG"
+
+    if [ "$_installed" = false ]; then
+        log_error "Package installation failed even with no extras."
+        log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
+        log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+        exit 1
+    fi
+
+    if [ "$_tier_name" != "all (with RL/matrix extras)" ]; then
+        log_warn "Note: installed via fallback tier ($_tier_name)."
+        log_info "Some optional features may be missing. After resolving any"
+        log_info "PyPI/network issue, re-run: $UV_CMD pip install -e '.[all]'"
     fi
 
     log_success "Main package installed"
@@ -1047,7 +1210,7 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi
@@ -1570,6 +1733,7 @@ main() {
     check_python
     check_git
     check_node
+    check_network_prerequisites
     install_system_packages
 
     clone_repo

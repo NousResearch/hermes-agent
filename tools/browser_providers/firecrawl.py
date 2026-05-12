@@ -79,7 +79,7 @@ class FirecrawlProvider(CloudBrowserProvider):
                 headers=self._headers(),
                 timeout=10,
             )
-            if response.status_code in (200, 201, 204):
+            if response.status_code in {200, 201, 204}:
                 logger.debug("Successfully closed Firecrawl session %s", session_id)
                 return True
             else:

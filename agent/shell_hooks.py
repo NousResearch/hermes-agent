@@ -312,7 +312,7 @@ def _parse_single_entry(
         )
         matcher = None
 
-    if matcher is not None and event not in ("pre_tool_call", "post_tool_call"):
+    if matcher is not None and event not in {"pre_tool_call", "post_tool_call"}:
         logger.warning(
             "hooks.%s[%d].matcher=%r will be ignored at runtime — the "
             "matcher field is only honored for pre_tool_call / "
@@ -423,7 +423,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
         # Matcher gate — only meaningful for tool-scoped events.
-        if spec.event in ("pre_tool_call", "post_tool_call"):
+        if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
                 return None
 
@@ -617,7 +617,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             save_allowlist(data)
         return
 
-    with open(lock_path, "a+") as lock_fh:
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
             data = load_allowlist()
@@ -658,7 +658,7 @@ def _prompt_and_record(
         print()  # keep the terminal tidy after ^C
         return False
 
-    if answer in ("y", "yes"):
+    if answer in {"y", "yes"}:
         _record_approval(event, command)
         return True
 
@@ -752,13 +752,13 @@ def _resolve_effective_accept(
     if accept_hooks_arg:
         return True
     env = os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower()
-    if env in ("1", "true", "yes", "on"):
+    if env in {"1", "true", "yes", "on"}:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     if isinstance(cfg_val, bool):
         return cfg_val
     if isinstance(cfg_val, str):
-        return cfg_val.strip().lower() in ("1", "true", "yes", "on")
+        return cfg_val.strip().lower() in {"1", "true", "yes", "on"}
     return False
 
 

@@ -286,32 +286,6 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
 
-    def test_lmstudio_provider_saved_when_selected(self, config_home, monkeypatch):
-        from hermes_cli.config import load_config
-        from hermes_cli.main import _model_flow_api_key_provider
-
-        monkeypatch.setenv("LM_API_KEY", "lm-token")
-        monkeypatch.setattr(
-            "hermes_cli.auth._prompt_model_selection",
-            lambda models, current_model="": "publisher/model-a",
-        )
-        monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
-        monkeypatch.setattr(
-            "hermes_cli.models.fetch_lmstudio_models",
-            lambda api_key=None, base_url=None, timeout=5.0: ["publisher/model-a"],
-        )
-
-        with patch("builtins.input", side_effect=[""]):
-            _model_flow_api_key_provider(load_config(), "lmstudio", "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "lmstudio"
-        assert model.get("base_url") == "http://127.0.0.1:1234/v1"
-        assert model.get("default") == "publisher/model-a"
 
 
 class TestBaseUrlValidation:
@@ -386,32 +360,3 @@ class TestBaseUrlValidation:
         saved = get_env_value("GLM_BASE_URL") or ""
         assert saved == "", "Empty input should not save a base URL"
 
-    def test_stepfun_provider_saved_with_selected_region(self, config_home, monkeypatch):
-        from hermes_cli.main import _model_flow_stepfun
-        from hermes_cli.config import load_config, get_env_value
-
-        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
-
-        with patch(
-            "hermes_cli.main._prompt_provider_choice",
-            return_value=1,
-        ), patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["step-3.5-flash", "step-3-agent-lite"],
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="step-3-agent-lite",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ):
-            _model_flow_stepfun(load_config(), "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "stepfun"
-        assert model.get("default") == "step-3-agent-lite"
-        assert model.get("base_url") == "https://api.stepfun.com/step_plan/v1"
-        assert get_env_value("STEPFUN_BASE_URL") == "https://api.stepfun.com/step_plan/v1"

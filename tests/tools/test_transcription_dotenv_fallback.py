@@ -69,6 +69,12 @@ class TestProviderSelectionGate:
             assert tt._get_provider({"enabled": True, "provider": "groq"}) == "groq"
 
     def test_explicit_mistral_sees_dotenv(self):
+        """Mistral STT is intentionally disabled (PyPI quarantine 2026-05-12).
+
+        Even with the dotenv key visible, explicit `provider: mistral` must
+        return "none" with a warning. Restore the previous behavior once
+        `mistralai` is un-quarantined on PyPI.
+        """
         from tools import transcription_tools as tt
 
         with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
@@ -76,7 +82,7 @@ class TestProviderSelectionGate:
              patch.object(tt, "_has_local_command", return_value=False), \
              patch("hermes_cli.config.load_env",
                    return_value={"MISTRAL_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "mistral"
+            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "none"
 
     def test_explicit_xai_sees_dotenv(self):
         from tools import transcription_tools as tt

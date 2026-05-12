@@ -9,7 +9,7 @@ if _src_root and _src_root not in sys.path:
     sys.path.insert(0, _src_root)
 # Strip '' and '.' — both resolve to CWD at import time and can let a local
 # directory shadow installed packages.
-sys.path = [p for p in sys.path if p not in ("", ".")]
+sys.path = [p for p in sys.path if p not in {"", "."}]
 
 import json
 import signal
@@ -81,11 +81,14 @@ def _log_signal(signum: int, frame) -> None:
     thread, and fall back to ``os._exit(0)`` so a wedged write/flush
     can never strand the process.
     """
-    name = {
-        signal.SIGPIPE: "SIGPIPE",
-        signal.SIGTERM: "SIGTERM",
-        signal.SIGHUP: "SIGHUP",
-    }.get(signum, f"signal {signum}")
+    # SIGPIPE and SIGHUP don't exist on Windows — build the lookup
+    # dict from attributes that actually exist on the current platform.
+    _signal_names: dict[int, str] = {}
+    for _attr in ("SIGPIPE", "SIGTERM", "SIGHUP", "SIGINT", "SIGBREAK"):
+        _sig = getattr(signal, _attr, None)
+        if _sig is not None:
+            _signal_names[int(_sig)] = _attr
+    name = _signal_names.get(signum, f"signal {signum}")
     try:
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
@@ -140,10 +143,23 @@ def _log_signal(signum: int, frame) -> None:
 # sys.exit(0) + _log_exit), which keeps the gateway alive as long as
 # the main command pipe is still readable.  Terminal signals still
 # route through _log_signal so kills and hangups are diagnosable.
-signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-signal.signal(signal.SIGTERM, _log_signal)
-signal.signal(signal.SIGHUP, _log_signal)
-signal.signal(signal.SIGINT, signal.SIG_IGN)
+#
+# SIGPIPE and SIGHUP don't exist on Windows; guard each installation
+# with hasattr so ``python -m tui_gateway.entry`` (spawned by
+# ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
+# is installed when available as a weaker equivalent of SIGHUP.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+if hasattr(signal, "SIGTERM"):
+    signal.signal(signal.SIGTERM, _log_signal)
+if hasattr(signal, "SIGHUP"):
+    signal.signal(signal.SIGHUP, _log_signal)
+elif hasattr(signal, "SIGBREAK"):
+    # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
+    # Route it through the same handler so kills are diagnosable.
+    signal.signal(signal.SIGBREAK, _log_signal)
+if hasattr(signal, "SIGINT"):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def _log_exit(reason: str) -> None:

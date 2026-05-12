@@ -5,6 +5,7 @@ description: |
   Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence
   collection, hypothesis formation/validation, and structured forensic reporting.
   Inspired by RAPTOR's 1800+ line OSS Forensics system.
+platforms: [linux, macos, windows]
 category: security
 triggers:
   - "investigate this repository"

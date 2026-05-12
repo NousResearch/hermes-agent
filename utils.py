@@ -188,6 +188,70 @@ def atomic_yaml_write(
         raise
 
 
+def atomic_roundtrip_yaml_update(
+    path: Union[str, Path],
+    key_path: str,
+    value: Any,
+) -> None:
+    """Update one dotted YAML key while preserving comments and readable text.
+
+    This is intentionally narrower than :func:`atomic_yaml_write`: it is for
+    user-edited config files where comments, ordering, quoting, and Unicode
+    should survive a single setting mutation.  Writes still use the same temp
+    file + fsync + atomic replace pattern.
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            config = yaml_rt.load(f) or CommentedMap()
+    else:
+        config = CommentedMap()
+
+    if not isinstance(config, CommentedMap):
+        config = CommentedMap(config)
+
+    current = config
+    keys = key_path.split(".")
+    for key in keys[:-1]:
+        next_value = current.get(key)
+        if not isinstance(next_value, CommentedMap):
+            next_value = CommentedMap()
+            current[key] = next_value
+        current = next_value
+    current[keys[-1]] = value
+
+    original_mode = _preserve_file_mode(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(config, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        _restore_file_mode(real_path, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
 
 

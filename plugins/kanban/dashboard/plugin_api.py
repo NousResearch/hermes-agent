@@ -13,15 +13,24 @@ reads run alongside the dispatcher's IMMEDIATE write transactions).
 
 Security note
 -------------
-The dashboard's HTTP auth middleware (``web_server.auth_middleware``)
-explicitly skips ``/api/plugins/`` — plugin routes are unauthenticated by
-design because the dashboard binds to localhost by default. For the
-WebSocket we still require the session token as a ``?token=`` query
-parameter (browsers cannot set the ``Authorization`` header on an upgrade
-request), matching the established pattern used by the in-browser PTY
-bridge in ``hermes_cli/web_server.py``. If you run the dashboard with
-``--host 0.0.0.0``, every plugin route — kanban included — becomes
-reachable from the network. Don't do that on a shared host.
+Plugin HTTP routes go through the dashboard's session-token auth middleware
+(``web_server.auth_middleware``) just like core API routes — every
+``/api/plugins/...`` request must present the session bearer token (or the
+session cookie set when you load the dashboard HTML). The token is the
+random per-process ``_SESSION_TOKEN`` printed at startup; the dashboard's
+own pages inject it via ``window.__HERMES_SESSION_TOKEN__`` so logged-in
+browsers don't have to handle it manually.
+
+For the ``/events`` WebSocket we still require the session token as a
+``?token=`` query parameter (browsers cannot set the ``Authorization``
+header on an upgrade request), matching the established pattern used by
+the in-browser PTY bridge in ``hermes_cli/web_server.py``.
+
+This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
+plugin routes are no longer an unauthenticated exception. The auth still
+isn't multi-user — anyone who can read the printed URL+token gets full
+dashboard access — but they can't ride along just because they can reach
+the port.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -135,7 +145,10 @@ def _task_dict(
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
-    d["age"] = kanban_db.task_age(task)
+    try:
+        d["age"] = kanban_db.task_age(task)
+    except Exception:
+        d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
@@ -810,6 +823,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    reclaim_first: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -864,9 +878,16 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         entry.update(ok=False, error=f"transition to {s!r} refused")
                 if payload.assignee is not None:
                     try:
-                        if not kanban_db.assign_task(
-                            conn, tid, payload.assignee or None,
-                        ):
+                        if payload.reclaim_first:
+                            ok = kanban_db.reassign_task(
+                                conn, tid, payload.assignee or None,
+                                reclaim_first=True,
+                            )
+                        else:
+                            ok = kanban_db.assign_task(
+                                conn, tid, payload.assignee or None,
+                            )
+                        if not ok:
                             entry.update(ok=False, error="assign refused")
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
@@ -1009,6 +1030,61 @@ def reclaim_task_endpoint(
         return {"ok": True, "task_id": task_id}
     finally:
         conn.close()
+
+
+class SpecifyBody(BaseModel):
+    """Optional author override. Nothing else is configurable from the
+    dashboard — model + prompt come from ``auxiliary.triage_specifier``
+    in config.yaml, same as the CLI."""
+
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/specify")
+def specify_task_endpoint(
+    task_id: str,
+    payload: SpecifyBody,
+    board: Optional[str] = Query(None),
+):
+    """Flesh out a triage-column task via the auxiliary LLM and promote
+    it to ``todo``. Maps 1:1 to ``hermes kanban specify <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    new_title}``. A non-OK outcome is NOT an HTTP error — the UI renders
+    the reason inline (e.g. "no auxiliary client configured") so the
+    operator knows what to fix, and retries without a page reload.
+
+    This endpoint runs in FastAPI's threadpool (sync ``def``) because
+    the underlying LLM call can take tens of seconds to minutes on
+    reasoning models, which would block the event loop if we used
+    ``async def`` without an explicit ``run_in_executor``.
+    """
+    board = _resolve_board(board)
+    # Pin the board for the duration of this call so the specifier module
+    # (which calls ``kb.connect()`` with no args) hits the right DB.
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        # Import lazily so a missing auxiliary client at import time
+        # doesn't break plugin load.
+        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+
+        outcome = kanban_specify.specify_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "new_title": outcome.new_title,
+    }
 
 
 class ReassignBody(BaseModel):

@@ -113,7 +113,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text().split()[21])
+        return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         return None
 
@@ -197,7 +197,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        raw = path.read_text().strip()
+        raw = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if not raw:
@@ -218,7 +218,11 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
     if not pid_path.exists():
         return None
 
-    raw = pid_path.read_text().strip()
+    try:
+        raw = pid_path.read_text().strip()
+    except OSError:
+        # File was deleted between exists() and read_text(), or permission flipped.
+        return None
     if not raw:
         return None
 
@@ -297,6 +301,81 @@ def _try_acquire_file_lock(handle) -> bool:
         return True
     except (BlockingIOError, OSError):
         return False
+
+
+def _pid_exists(pid: int) -> bool:
+    """Cross-platform "is this PID alive" check that does NOT kill the target.
+
+    CRITICAL on Windows: Python's ``os.kill(pid, 0)`` is NOT a no-op like it
+    is on POSIX. CPython's Windows implementation
+    (``Modules/posixmodule.c::os_kill_impl``) treats ``sig=0`` as
+    ``CTRL_C_EVENT`` because the two values collide at the C level, and
+    routes it through ``GenerateConsoleCtrlEvent(0, pid)`` — which sends
+    a Ctrl+C to the entire console process group containing the target
+    PID, not just the PID itself. Any caller that wanted to "check if
+    this PID is alive" via ``os.kill(pid, 0)`` on Windows was silently
+    killing that process (and often unrelated processes in the same
+    console group). Long-standing Python quirk; see bpo-14484.
+
+    Implementation: prefer :mod:`psutil` (hard dependency — the canonical
+    cross-platform answer, maintained by Giampaolo Rodolà, uses
+    ``OpenProcess + GetExitCodeProcess`` on Windows internally). Fall back
+    to a hand-rolled ctypes ``OpenProcess`` / ``WaitForSingleObject`` pair
+    on Windows + ``os.kill(pid, 0)`` on POSIX if psutil is somehow
+    unavailable — e.g. stripped-down install or import error during the
+    scaffold phase before ``psutil`` is pip-installed.
+    """
+    try:
+        import psutil  # type: ignore
+        return bool(psutil.pid_exists(int(pid)))
+    except ImportError:
+        pass  # Fall through to stdlib fallback.
+
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # Pin return types — default ctypes restype is c_int (signed),
+            # which mangles WAIT_* DWORD return codes into negative numbers.
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.restype = ctypes.c_uint
+            kernel32.GetLastError.restype = ctypes.c_uint
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x100000  # required for WaitForSingleObject
+            WAIT_TIMEOUT = 0x00000102
+            ERROR_INVALID_PARAMETER = 87
+            ERROR_ACCESS_DENIED = 5
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
+            )
+            if not handle:
+                err = kernel32.GetLastError()
+                if err == ERROR_INVALID_PARAMETER:
+                    return False  # PID definitely gone
+                if err == ERROR_ACCESS_DENIED:
+                    return True   # Exists but owned by another user/session
+                return False      # Conservative default for unknown errors
+            try:
+                wait_result = kernel32.WaitForSingleObject(handle, 0)
+                # WAIT_TIMEOUT = still running; anything else (WAIT_OBJECT_0
+                # via exit, WAIT_FAILED via handle issue) = treat as gone.
+                return wait_result == WAIT_TIMEOUT
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, AttributeError):
+            return False
+    else:
+        try:
+            os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Process exists but we can't signal it — still alive.
+            return True
+        except OSError:
+            return False
+
 
 
 def _release_file_lock(handle) -> None:
@@ -407,10 +486,12 @@ def write_runtime_status(
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
+    current_record = _build_pid_record()
     payload.setdefault("platforms", {})
-    payload.setdefault("kind", _GATEWAY_KIND)
-    payload["pid"] = os.getpid()
-    payload["start_time"] = _get_process_start_time(os.getpid())
+    payload["kind"] = current_record["kind"]
+    payload["pid"] = current_record["pid"]
+    payload["argv"] = current_record["argv"]
+    payload["start_time"] = current_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
@@ -503,10 +584,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
         stale = existing_pid is None
         if not stale:
-            try:
-                os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
-                # Windows raises OSError with WinError 87 for invalid pid check
+            if not _pid_exists(existing_pid):
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -517,16 +595,16 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 ):
                     stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still respond to os.kill(pid, 0) but are not
+                # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.
                 if not stale:
                     try:
                         _proc_status = Path(f"/proc/{existing_pid}/status")
                         if _proc_status.exists():
-                            for _line in _proc_status.read_text().splitlines():
+                            for _line in _proc_status.read_text(encoding="utf-8").splitlines():
                                 if _line.startswith("State:"):
                                     _state = _line.split()[1]
-                                    if _state in ("T", "t"):  # stopped or tracing stop
+                                    if _state in {"T", "t"}:  # stopped or tracing stop
                                         stale = True
                                     break
                     except (OSError, PermissionError):
@@ -824,20 +902,7 @@ def get_running_pid(
         if pid is None:
             continue
 
-        try:
-            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            # The process exists but belongs to another user/service scope.
-            # With the runtime lock still held, prefer keeping it visible
-            # rather than deleting the PID file as "stale".
-            if _record_looks_like_gateway(record):
-                return pid
-            continue
-        except OSError:
-            # Windows raises OSError with WinError 87 for an invalid pid
-            # (process is definitely gone). Treat as "process doesn't exist".
+        if not _pid_exists(pid):
             continue
 
         recorded_start = record.get("start_time")

@@ -659,7 +659,7 @@ def _load_cfg() -> dict:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         else:
             data = {}
@@ -678,7 +678,7 @@ def _save_cfg(cfg: dict):
     import yaml
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
@@ -1279,6 +1279,7 @@ def _get_usage(agent) -> dict:
         "output": g("session_output_tokens", "session_completion_tokens"),
         "cache_read": g("session_cache_read_tokens"),
         "cache_write": g("session_cache_write_tokens"),
+        "reasoning": g("session_reasoning_tokens"),
         "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
@@ -1622,27 +1623,27 @@ def _on_tool_progress(
 
 
 def _agent_cbs(sid: str) -> dict:
-    return dict(
-        tool_start_callback=lambda tc_id, name, args: _on_tool_start(
+    return {
+        "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
-        tool_complete_callback=lambda tc_id, name, args, result: _on_tool_complete(
+        "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
             sid, tc_id, name, args, result
         ),
-        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
+        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs
         ),
-        tool_gen_callback=lambda name: _tool_progress_enabled(sid)
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-        status_callback=lambda kind, text=None: _status_update(
+        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        clarify_callback=lambda q, c: _block(
+        "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
-    )
+    }
 
 
 def _wire_callbacks(sid: str):
@@ -1704,7 +1705,7 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     raw = str(value or "").strip()
     name = raw.lower()
-    if not name or name in ("none", "default", "neutral"):
+    if not name or name in {"none", "default", "neutral"}:
         return "", ""
 
     personalities = _available_personalities(cfg)
@@ -1724,21 +1725,46 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str
 ) -> tuple[bool, dict | None]:
+    """Apply a personality change to an existing session without resetting history.
+
+    Updates the agent's ephemeral system prompt in-place so the new personality
+    takes effect on the next turn.  The cached base system prompt is left intact
+    (ephemeral_system_prompt is appended at API-call time, not baked into the
+    cache), which preserves prompt-cache hits.
+
+    Also injects a system-role marker into the conversation history so the model
+    knows to pivot its style from this point forward (without this, LLMs tend to
+    continue the tone established by earlier messages in the transcript).
+
+    Returns (history_reset, info) — history_reset is always False since we
+    preserve the conversation.
+    """
     if not session:
         return False, None
 
-    try:
-        info = _reset_session_agent(sid, session)
-        return True, info
-    except Exception:
-        if session.get("agent"):
-            agent = session["agent"]
-            agent.ephemeral_system_prompt = new_prompt or None
-            agent._cached_system_prompt = None
-            info = _session_info(agent)
-            _emit("session.info", sid, info)
-            return False, info
-        return False, None
+    agent = session.get("agent")
+    if agent:
+        agent.ephemeral_system_prompt = new_prompt or None
+        # Inject a pivot marker into history so the model sees the change point.
+        # This prevents it from pattern-matching its prior style.
+        if new_prompt:
+            marker = (
+                "[System: The user has changed the assistant's personality. "
+                "From this point forward, adopt the following persona and respond "
+                f"accordingly: {new_prompt}]"
+            )
+        else:
+            marker = (
+                "[System: The user has cleared the personality overlay. "
+                "From this point forward, respond in your normal default style.]"
+            )
+        with session["history_lock"]:
+            session["history"].append({"role": "user", "content": marker})
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(agent)
+        _emit("session.info", sid, info)
+        return False, info
+    return False, None
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
@@ -1790,6 +1816,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
@@ -2025,7 +2052,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        if role not in ("user", "assistant", "tool", "system"):
+        if role not in {"user", "assistant", "tool", "system"}:
             continue
         content_text = _content_display_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
@@ -2468,7 +2495,7 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        while history and history[-1].get("role") in ("assistant", "tool"):
+        while history and history[-1].get("role") in {"assistant", "tool"}:
             history.pop()
             removed += 1
         if history and history[-1].get("role") == "user":
@@ -2586,7 +2613,7 @@ def _(rid, params: dict) -> dict:
         f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
     )
     try:
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "model": getattr(session["agent"], "model", ""),
@@ -3640,7 +3667,7 @@ def _(rid, params: dict) -> dict:
                 {"key": key, "value": "fast" if current_fast else "normal"},
             )
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "normal" if current_fast else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
@@ -3688,7 +3715,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "busy":
         raw = str(value or "").strip().lower()
-        if raw in ("", "status"):
+        if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
@@ -3753,7 +3780,7 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
-            if arg in ("show", "on"):
+            if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3771,7 +3798,7 @@ def _(rid, params: dict) -> dict:
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
-            if arg in ("hide", "off"):
+            if arg in {"hide", "off"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3866,7 +3893,7 @@ def _(rid, params: dict) -> dict:
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         cur_b = bool(d0.get("tui_compact", False))
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv_b = not cur_b
         elif raw == "on":
             nv_b = True
@@ -3883,7 +3910,7 @@ def _(rid, params: dict) -> dict:
         d0 = display if isinstance(display, dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "top" if current == "off" else "off"
         elif raw == "on":
             nv = "top"
@@ -3901,7 +3928,7 @@ def _(rid, params: dict) -> dict:
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = not current
         elif raw == "on":
             nv = True
@@ -3927,7 +3954,7 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 
-    if key in ("prompt", "personality", "skin"):
+    if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg()
             if key == "prompt":
@@ -4488,7 +4515,7 @@ def _(rid, params: dict) -> dict:
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
 
-    if name in ("queue", "q"):
+    if name in {"queue", "q"}:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
@@ -4587,7 +4614,7 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
-        if lower in ("clear", "stop", "done"):
+        if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
             return _ok(
@@ -4618,7 +4645,7 @@ def _(rid, params: dict) -> dict:
             {"type": "send", "notice": notice, "message": state.goal},
         )
 
-    if name in ("snapshot", "snap"):
+    if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
         if subcommand in {"restore", "rewind"}:
             return _ok(
@@ -4863,7 +4890,7 @@ def _(rid, params: dict) -> dict:
         # Accept both `@folder:path` and the bare `@folder` form so the user
         # sees directory listings as soon as they finish typing the keyword,
         # without first accepting the static `@folder:` hint.
-        if is_context and query in ("file", "folder"):
+        if is_context and query in {"file", "folder"}:
             prefix_tag, path_part = query, ""
         elif is_context and query.startswith(("file:", "folder:")):
             prefix_tag, _, tail = query.partition(":")
@@ -5607,7 +5634,7 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, payload)
 
-    if action in ("on", "off"):
+    if action in {"on", "off"}:
         enabled = action == "on"
         # Runtime-only flag (CLI parity) — no _write_config_key, so the
         # next TUI launch starts with voice OFF instead of auto-REC from a
@@ -5840,7 +5867,7 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    while history and history[-1].get("role") in ("assistant", "tool"):
+                    while history and history[-1].get("role") in {"assistant", "tool"}:
                         history.pop()
                         removed += 1
                     if history and history[-1].get("role") == "user":
@@ -6398,7 +6425,7 @@ def _(rid, params: dict) -> dict:
                     )
                 ),
             )
-        if action in ("remove", "pause", "resume"):
+        if action in {"remove", "pause", "resume"}:
             return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:

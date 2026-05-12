@@ -53,11 +53,6 @@ from gateway.session import SessionSource
 from gateway.config import PlatformConfig, Platform
 
 
-def _ensure_imports():
-    """No-op — kept for backward compatibility with any call sites."""
-    pass
-
-
 # ---------------------------------------------------------------------------
 # IRC protocol helpers
 # ---------------------------------------------------------------------------
@@ -704,8 +699,233 @@ def _env_enablement() -> dict | None:
     return seed
 
 
+def _strip_irc_control_chars(text: str) -> str:
+    """Strip IRC line terminators and the NUL byte from ``text``.
+
+    IRC commands are CRLF-delimited; a bare ``\\r`` or ``\\n`` in user
+    content lets an attacker inject arbitrary IRC commands (CTCP, JOIN,
+    KICK).  ``\\x00`` is a protocol-illegal byte.  Everything else is
+    valid in PRIVMSG payloads.
+    """
+    return text.replace("\r", " ").replace("\n", " ").replace("\x00", "")
+
+
+def _is_irc_channel(target: str) -> bool:
+    return bool(target) and target[0] in "#&+!"
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Open an ephemeral IRC connection, send a PRIVMSG, and quit.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (e.g. ``hermes cron`` running as a
+    separate process from ``hermes gateway``).  Without this hook,
+    ``deliver=irc`` cron jobs fail with ``No live adapter for platform``.
+
+    The standalone client uses a distinct nick suffix (``-cron``) so it
+    does not collide with the long-running gateway adapter that may already
+    be holding the configured nickname on the same network.  When the
+    target is a channel, the client JOINs it before sending PRIVMSG so
+    networks with the default ``+n`` (no external messages) channel mode
+    accept the delivery.
+
+    ``thread_id`` and ``media_files`` are accepted for signature parity but
+    are not meaningful on IRC: IRC has no native thread or attachment
+    primitive.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    server = os.getenv("IRC_SERVER") or extra.get("server", "")
+    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
+    if not server or not channel:
+        return {"error": "IRC standalone send: IRC_SERVER and IRC_CHANNEL must be configured"}
+
+    port_value = os.getenv("IRC_PORT") or extra.get("port", 6697)
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        return {"error": f"IRC standalone send: invalid port {port_value!r}"}
+
+    nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
+    use_tls_env = os.getenv("IRC_USE_TLS")
+    if use_tls_env is not None:
+        use_tls = use_tls_env.lower() in ("1", "true", "yes")
+    else:
+        use_tls = bool(extra.get("use_tls", True))
+
+    server_password = os.getenv("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
+    nickserv_password = os.getenv("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+
+    # Reject control characters in chat_id to block IRC command injection.
+    raw_target = chat_id or channel
+    if any(ch in raw_target for ch in ("\r", "\n", "\x00", " ")):
+        return {"error": "IRC standalone send: chat_id contains illegal IRC characters"}
+    target = raw_target
+
+    # Distinct nick prevents NICK collision with a live gateway adapter
+    # that may already be holding the configured nickname.  Cap to 24 chars
+    # so subsequent collision retries do not overflow the 30-char NICKLEN
+    # most networks enforce.
+    nick_base = nickname.rstrip("_0123456789-")[:24] or "hermes-bot"
+    standalone_nick = f"{nick_base}-cron"[:30]
+    plain = IRCAdapter._strip_markdown(message)
+
+    ssl_ctx = ssl.create_default_context() if use_tls else None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(server, port, ssl=ssl_ctx),
+            timeout=15.0,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"IRC standalone connect failed: {e}"}
+
+    async def _raw(line: str) -> None:
+        writer.write((line + "\r\n").encode("utf-8"))
+        await writer.drain()
+
+    nick_attempts = 0
+    max_nick_attempts = 5
+    try:
+        if server_password:
+            await _raw(f"PASS {_strip_irc_control_chars(server_password)}")
+        await _raw(f"NICK {standalone_nick}")
+        await _raw(f"USER {standalone_nick} 0 * :Hermes Agent (cron)")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 15.0
+        registered = False
+        while not registered:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return {"error": "IRC standalone send: registration timeout (no RPL_WELCOME)"}
+            try:
+                raw_line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=remaining)
+            except asyncio.TimeoutError:
+                return {"error": "IRC standalone send: registration timeout (no RPL_WELCOME)"}
+            except asyncio.IncompleteReadError:
+                return {"error": "IRC standalone send: server closed connection during registration"}
+            decoded = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            msg = _parse_irc_message(decoded)
+            cmd = msg["command"]
+            if cmd == "PING":
+                payload = msg["params"][0] if msg["params"] else ""
+                await _raw(f"PONG :{payload}")
+            elif cmd == "001":
+                registered = True
+            elif cmd in ("432", "433"):
+                nick_attempts += 1
+                if nick_attempts > max_nick_attempts:
+                    return {"error": "IRC standalone send: too many nick collisions"}
+                # Build the next nick from the stable base, not the
+                # mutated value, so the suffix stays bounded.
+                standalone_nick = f"{nick_base}-cron-{nick_attempts}"[:30]
+                await _raw(f"NICK {standalone_nick}")
+            elif cmd in ("464", "465"):
+                return {"error": f"IRC standalone send: server rejected client ({cmd})"}
+
+        if nickserv_password:
+            await _raw(f"PRIVMSG NickServ :IDENTIFY {_strip_irc_control_chars(nickserv_password)}")
+            await asyncio.sleep(2)
+
+        # JOIN before PRIVMSG.  IRC channels with the default ``+n`` mode
+        # (no external messages: Libera, OFTC, EFnet, IRCNet, undernet)
+        # silently drop PRIVMSG from non-members.  Do not JOIN bare nicks
+        # (DM target) or server queries.
+        if _is_irc_channel(target):
+            await _raw(f"JOIN {target}")
+            join_deadline = loop.time() + 5.0
+            joined = False
+            while not joined:
+                remaining = join_deadline - loop.time()
+                if remaining <= 0:
+                    # Timed out waiting for a JOIN ack: proceed anyway, the
+                    # server may still deliver the PRIVMSG depending on mode.
+                    break
+                try:
+                    raw_line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=remaining)
+                except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+                    break
+                decoded = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                jmsg = _parse_irc_message(decoded)
+                jcmd = jmsg["command"]
+                if jcmd == "PING":
+                    payload = jmsg["params"][0] if jmsg["params"] else ""
+                    await _raw(f"PONG :{payload}")
+                elif jcmd in ("366", "JOIN"):
+                    joined = True
+                elif jcmd in ("403", "405", "471", "473", "474", "475"):
+                    return {"error": f"IRC standalone send: JOIN {target} rejected ({jcmd})"}
+
+        # Bytes-aware per-line splitting so multi-line plain text never
+        # exceeds the IRC 510-byte protocol limit.  Reuses the same
+        # algorithm as IRCAdapter._split_message, with control-character
+        # stripping per line to block CRLF injection from message content.
+        overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2
+        max_bytes = 510 - overhead
+        sent_any = False
+        for paragraph in plain.split("\n"):
+            paragraph = _strip_irc_control_chars(paragraph).rstrip()
+            if not paragraph:
+                continue
+            while paragraph:
+                encoded = paragraph.encode("utf-8")
+                if len(encoded) <= max_bytes:
+                    await _raw(f"PRIVMSG {target} :{paragraph}")
+                    await asyncio.sleep(0.3)
+                    sent_any = True
+                    break
+                # Binary search for largest prefix that fits within max_bytes
+                low, high, best = 1, len(paragraph), 0
+                while low <= high:
+                    mid = (low + high) // 2
+                    if len(paragraph[:mid].encode("utf-8")) <= max_bytes:
+                        best = mid
+                        low = mid + 1
+                    else:
+                        high = mid - 1
+                split_at = best
+                space = paragraph.rfind(" ", 0, split_at)
+                if space > split_at // 3:
+                    split_at = space
+                await _raw(f"PRIVMSG {target} :{paragraph[:split_at].rstrip()}")
+                await asyncio.sleep(0.3)
+                sent_any = True
+                paragraph = paragraph[split_at:].lstrip()
+
+        if not sent_any:
+            return {"error": "IRC standalone send: empty message after stripping"}
+
+        await _raw("QUIT :delivered")
+        try:
+            await asyncio.wait_for(reader.read(1024), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+        return {"success": True, "message_id": str(int(time.time() * 1000))}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("IRC standalone send raised", exc_info=True)
+        return {"error": f"IRC standalone send failed: {e}"}
+    finally:
+        try:
+            writer.close()
+            await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+
 def register(ctx):
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
         name="irc",
         label="IRC",
@@ -716,7 +936,7 @@ def register(ctx):
         required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
-        # Env-driven auto-configuration — seeds PlatformConfig.extra with
+        # Env-driven auto-configuration: seeds PlatformConfig.extra with
         # server/channel/port/tls + home_channel so env-only setups show
         # up in gateway status without instantiating the adapter.
         env_enablement_fn=_env_enablement,
@@ -724,6 +944,10 @@ def register(ctx):
         # IRC_CHANNEL (see _env_enablement), so cron jobs with
         # deliver=irc route to the joined channel by default.
         cron_deliver_env_var="IRC_HOME_CHANNEL",
+        # Out-of-process cron delivery.  Without this hook, deliver=irc
+        # cron jobs fail with "No live adapter" when cron runs separately
+        # from the gateway.
+        standalone_sender_fn=_standalone_send,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="IRC_ALLOWED_USERS",
         allow_all_env="IRC_ALLOW_ALL_USERS",

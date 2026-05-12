@@ -14579,25 +14579,29 @@ class AIAgent:
                     else:
                         self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
-                # Notify progress callback of model's thinking (used by subagent
-                # delegation to relay the child's reasoning to the parent display).
-                if (assistant_message.content and self.tool_progress_callback):
-                    _think_text = assistant_message.content.strip()
-                    # Strip reasoning XML tags that shouldn't leak to parent display
-                    _think_text = re.sub(
-                        r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
-                    ).strip()
-                    # For subagents: relay first line to parent display (existing behaviour).
-                    # For all agents with a structured callback: emit reasoning.available event.
-                    first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-                    if first_line and getattr(self, '_delegate_depth', 0) > 0:
+                # Notify progress callback of model's thinking.
+                if self.tool_progress_callback:
+                    # Subagent delegation: relay first line of visible content to
+                    # parent display so the parent shows child progress.
+                    if assistant_message.content and getattr(self, '_delegate_depth', 0) > 0:
+                        _think_text = assistant_message.content.strip()
+                        _think_text = re.sub(
+                            r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                        ).strip()
+                        first_line = _think_text.split('\n')[0][:80] if _think_text else ""
+                        if first_line:
+                            try:
+                                self.tool_progress_callback("_thinking", first_line)
+                            except Exception:
+                                pass
+                    # reasoning.available: fire only from reasoning_content (the
+                    # actual model reasoning block), never from content (the visible
+                    # reply).  For models without a separate reasoning_content the
+                    # event is simply not emitted.
+                    _reasoning_text = (getattr(assistant_message, "reasoning_content", None) or "").strip()
+                    if _reasoning_text:
                         try:
-                            self.tool_progress_callback("_thinking", first_line)
-                        except Exception:
-                            pass
-                    elif _think_text:
-                        try:
-                            self.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
+                            self.tool_progress_callback("reasoning.available", "_thinking", _reasoning_text[:500], None)
                         except Exception:
                             pass
                 

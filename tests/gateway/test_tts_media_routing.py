@@ -1,3 +1,4 @@
+from unittest.mock import MagicMock
 """
 Tests for cross-platform audio/voice media routing.
 
@@ -121,7 +122,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        MagicMock(_thread_metadata_for_source=MagicMock(return_value={"thread_id": "topic-1"})),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -150,7 +151,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        MagicMock(_thread_metadata_for_source=MagicMock(return_value={"thread_id": "topic-1"})),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -181,7 +182,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        MagicMock(_thread_metadata_for_source=MagicMock(return_value={"thread_id": "topic-1"})),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,

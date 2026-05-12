@@ -296,6 +296,57 @@ class TestGlobalAllowPrivateUrls:
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
         assert _global_allow_private_urls() is True
 
+    def test_concurrent_callers_never_see_stale_value(self, monkeypatch):
+        """Concurrent callers must observe the fully computed cache value.
+
+        Regression for TOCTOU: previously the lazy-init published
+        ``_allow_private_resolved = True`` *before* writing the computed
+        value, so a second thread on the fast path could read the stale
+        default (``False``) while the first thread was still reading
+        config. The lock + ordering should make every concurrent caller
+        return the same correct value.
+        """
+        import threading
+
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+
+        gate = threading.Event()
+        call_count = {"n": 0}
+
+        def slow_read_raw_config():
+            call_count["n"] += 1
+            # Hold the slow-path caller inside the function long enough
+            # for other threads to race the fast path.
+            gate.wait(timeout=2.0)
+            return {"security": {"allow_private_urls": True}}
+
+        results: list[bool] = []
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                results.append(_global_allow_private_urls())
+            except BaseException as exc:  # pragma: no cover — surfaced via assertion
+                errors.append(exc)
+
+        with patch("hermes_cli.config.read_raw_config", side_effect=slow_read_raw_config):
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            # Let all threads block on the fast/slow paths before releasing.
+            import time
+            time.sleep(0.1)
+            gate.set()
+            for t in threads:
+                t.join(timeout=5.0)
+
+        assert not errors, f"worker raised: {errors}"
+        assert len(results) == 8
+        # Every caller must see True — never the stale default False.
+        assert all(r is True for r in results), results
+        # Slow-path config read should happen exactly once thanks to the lock.
+        assert call_count["n"] == 1, call_count
+
 
 class TestAllowPrivateUrlsIntegration:
     """Integration tests: is_safe_url respects the global toggle."""

@@ -27,6 +27,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from urllib.parse import urlparse
 
 from utils import is_truthy_value
@@ -73,6 +74,9 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
 # Cached after first read so we don't hit the filesystem on every URL check.
+# The lock + ordering (compute value first, publish resolved flag last) makes
+# the lazy-init safe under concurrent callers from the gateway.
+_allow_private_lock = threading.Lock()
 _allow_private_resolved = False
 _cached_allow_private: bool = False
 
@@ -91,48 +95,54 @@ def _global_allow_private_urls() -> bool:
     if _allow_private_resolved:
         return _cached_allow_private
 
-    _allow_private_resolved = True
-    _cached_allow_private = False  # safe default
-
-    # 1. Env var override (highest priority)
-    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in {"true", "1", "yes"}:
-        _cached_allow_private = True
-        return _cached_allow_private
-    if env_val in {"false", "0", "no"}:
-        # Explicit false — don't fall through to config
-        return _cached_allow_private
-
-    # 2. Config file
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        # security.allow_private_urls (preferred)
-        sec = cfg.get("security", {})
-        if isinstance(sec, dict) and is_truthy_value(
-            sec.get("allow_private_urls"), default=False
-        ):
-            _cached_allow_private = True
+    with _allow_private_lock:
+        if _allow_private_resolved:
             return _cached_allow_private
-        # browser.allow_private_urls (legacy fallback)
-        browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and is_truthy_value(
-            browser.get("allow_private_urls"), default=False
-        ):
-            _cached_allow_private = True
-            return _cached_allow_private
-    except Exception:
-        # Config unavailable (e.g. tests, early import) — keep default
-        pass
 
-    return _cached_allow_private
+        result = False  # safe default
+
+        # 1. Env var override (highest priority)
+        env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+        if env_val in {"true", "1", "yes"}:
+            result = True
+        elif env_val in {"false", "0", "no"}:
+            # Explicit false — don't fall through to config
+            result = False
+        else:
+            # 2. Config file
+            try:
+                from hermes_cli.config import read_raw_config
+                cfg = read_raw_config()
+                # security.allow_private_urls (preferred)
+                sec = cfg.get("security", {})
+                if isinstance(sec, dict) and is_truthy_value(
+                    sec.get("allow_private_urls"), default=False
+                ):
+                    result = True
+                else:
+                    # browser.allow_private_urls (legacy fallback)
+                    browser = cfg.get("browser", {})
+                    if isinstance(browser, dict) and is_truthy_value(
+                        browser.get("allow_private_urls"), default=False
+                    ):
+                        result = True
+            except Exception:
+                # Config unavailable (e.g. tests, early import) — keep default
+                pass
+
+        # Publish value before flipping the resolved flag so concurrent
+        # readers on the fast path never see a stale cached value.
+        _cached_allow_private = result
+        _allow_private_resolved = True
+        return result
 
 
 def _reset_allow_private_cache() -> None:
     """Reset the cached toggle — only for tests."""
     global _allow_private_resolved, _cached_allow_private
-    _allow_private_resolved = False
-    _cached_allow_private = False
+    with _allow_private_lock:
+        _allow_private_resolved = False
+        _cached_allow_private = False
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

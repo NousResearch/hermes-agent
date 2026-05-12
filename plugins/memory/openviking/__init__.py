@@ -336,10 +336,17 @@ ADD_RESOURCE_SCHEMA = {
 
 def _zip_directory(dir_path: Path) -> Path:
     """Create a temporary zip file containing a directory tree."""
+    root = dir_path.resolve()
     zip_path = Path(tempfile.gettempdir()) / f"openviking_upload_{uuid.uuid4().hex}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file_path in dir_path.rglob("*"):
+            if file_path.is_symlink():
+                continue
             if file_path.is_file():
+                try:
+                    file_path.resolve().relative_to(root)
+                except ValueError:
+                    continue
                 arcname = str(file_path.relative_to(dir_path)).replace("\\", "/")
                 zipf.write(file_path, arcname=arcname)
     return zip_path

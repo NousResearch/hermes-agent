@@ -108,7 +108,8 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "User-Agent": "hermes-agent",
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
             }
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
@@ -154,6 +155,47 @@ class TestBuildAnthropicClient:
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
+
+
+class TestThirdPartyUserAgentOverride:
+    """Third-party endpoints must send User-Agent: hermes-agent (refs #24293).
+
+    The Anthropic Python SDK's default User-Agent ("Anthropic/Python X.Y.Z")
+    triggers Cloudflare WAF bot-detection on self-hosted/proxy endpoints,
+    returning 403.  We always override it to a neutral value for every URL
+    that passes _is_third_party_anthropic_endpoint().
+    """
+
+    def test_third_party_endpoint_sets_neutral_user_agent(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("any-key", base_url="https://my-proxy.example.com/v1")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["User-Agent"] == "hermes-agent"
+
+    def test_third_party_endpoint_user_agent_present_even_without_betas(self):
+        """User-Agent override must appear even when no common_betas are set."""
+        from agent.anthropic_adapter import _COMMON_BETAS
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            with patch("agent.anthropic_adapter._COMMON_BETAS", []):
+                build_anthropic_client("any-key", base_url="https://my-proxy.example.com/v1")
+                kwargs = mock_sdk.Anthropic.call_args[1]
+                assert kwargs["default_headers"]["User-Agent"] == "hermes-agent"
+                assert "anthropic-beta" not in kwargs["default_headers"]
+
+    def test_native_anthropic_endpoint_keeps_sdk_default_user_agent(self):
+        """Native Anthropic endpoints must NOT get the User-Agent override."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert "User-Agent" not in kwargs.get("default_headers", {})
+
+    def test_third_party_endpoint_keeps_beta_header_alongside_user_agent(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("any-key", base_url="https://selfhosted.corp/anthropic")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            headers = kwargs["default_headers"]
+            assert headers["User-Agent"] == "hermes-agent"
+            assert "anthropic-beta" in headers
 
 
 class TestReadClaudeCodeCredentials:

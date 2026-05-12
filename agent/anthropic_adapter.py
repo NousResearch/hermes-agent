@@ -594,13 +594,18 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
-        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
-        # own API keys with x-api-key auth. Skip OAuth detection — their keys
-        # don't follow Anthropic's sk-ant-* prefix convention and would be
+        # Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted, etc.)
+        # use their own API keys with x-api-key auth. Skip OAuth detection — their
+        # keys don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
+        # Always override the SDK's default User-Agent ("Anthropic/Python X.Y.Z")
+        # with a neutral value. Cloudflare and similar WAFs in front of third-party
+        # proxies block the SDK UA via bot-detection rules (refs #24293).
         kwargs["api_key"] = api_key
+        headers: dict = {"User-Agent": "hermes-agent"}
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            headers["anthropic-beta"] = ",".join(common_betas)
+        kwargs["default_headers"] = headers
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;

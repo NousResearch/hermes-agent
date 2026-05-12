@@ -919,47 +919,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _prefetch_query_tokens(query: str) -> list[str]:
-        text = OpenVikingMemoryProvider._prefetch_search_text(query)
-        low_signal = {
-            "ability",
-            "about",
-            "after",
-            "also",
-            "and",
-            "answer",
-            "based",
-            "before",
-            "best",
-            "could",
-            "does",
-            "from",
-            "has",
-            "have",
-            "had",
-            "inference",
-            "into",
-            "please",
-            "reasonable",
-            "that",
-            "the",
-            "their",
-            "there",
-            "these",
-            "this",
-            "use",
-            "using",
-            "what",
-            "when",
-            "where",
-            "which",
-            "while",
-            "would",
-            "your",
-        }
+        text = (query or "").strip()
         tokens = []
         for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_'-]{1,}", text):
             normalized = token.lower().strip("_'-")
-            if len(normalized) >= 3 and normalized not in low_signal and normalized not in tokens:
+            if len(normalized) >= 3 and normalized not in tokens:
                 tokens.append(normalized)
             if len(tokens) >= 12:
                 break
@@ -1077,23 +1041,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if _PROFILE_PEOPLE_SEGMENT in uri:
             return uri.replace(_PROFILE_PEOPLE_SEGMENT, _PROFILE_PERSON_SEGMENT, 1)
         return ""
-
-    @staticmethod
-    def _strip_leading_date_context(query: str) -> str:
-        return re.sub(
-            r"^\s*current\s+date\s*:\s*[^\n.]+(?:\.|\n|$)\s*",
-            "",
-            query or "",
-            count=1,
-            flags=re.I,
-        )
-
-    @classmethod
-    def _prefetch_search_text(cls, query: str) -> str:
-        text = cls._strip_leading_date_context(query).strip()
-        if ":" in text and re.search(r"\b(?:answer|respond|reply)\b", text.split(":", 1)[0], re.I):
-            text = text.rsplit(":", 1)[-1].strip()
-        return text or (query or "").strip()
 
     @staticmethod
     def _content_result_text(response: dict) -> str:
@@ -1342,7 +1289,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _search_prefetch(self, query: str) -> str:
         client = self._new_client()
-        search_query = self._prefetch_search_text(query)
+        search_query = (query or "").strip()
         try:
             resp = client.post("/api/v1/search/find", {
                 "query": search_query,

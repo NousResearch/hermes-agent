@@ -99,6 +99,8 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        self._known_threads: set[str] = set()
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -263,6 +265,10 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        thread_root = reply_to
+        if not thread_root and metadata:
+            thread_root = metadata.get("thread_id")
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
@@ -270,8 +276,10 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            if thread_root and self._reply_mode == "thread":
+                payload["root_id"] = thread_root
+                if hasattr(self, "_known_threads"):
+                    self._known_threads.add(thread_root)
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -747,12 +755,18 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            thread_id = post.get("root_id") or None
+            bot_involved = thread_id and hasattr(self, "_known_threads") and thread_id in self._known_threads
+
+            if require_mention and not is_free_channel and not has_mention and not bot_involved:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
                 )
                 return
+
+            if thread_id and hasattr(self, "_known_threads"):
+                self._known_threads.add(thread_id)
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:

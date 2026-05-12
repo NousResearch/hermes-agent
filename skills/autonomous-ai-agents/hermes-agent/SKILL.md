@@ -144,6 +144,11 @@ How the built-in MCP client connects servers (stdio/HTTP), auto-discovers
 their tools, and exposes them as first-class tools, plus catalog install
 (`hermes mcp install <name>`): `skill_view(name="hermes-agent", file_path="references/native-mcp.md")`.
 
+Codex strictness note:
+- If `openai-codex` fails at startup with `Invalid schema for function 'mcp_<server>_<tool>'` or `array schema missing items`, first update to a Hermes build whose `tools/schema_sanitizer.py` repairs array schemas by adding permissive `items: {}` for bare `"array"` nodes and dict nodes like `{"type": "array"}` that omit both `items` and `prefixItems`.
+- If you cannot patch/update Hermes immediately, exclude the offending server-native MCP tool under `mcp_servers.<name>.tools.exclude` so Hermes does not register it for that profile. Verify with `hermes -p <profile> mcp list` (`-N excluded`).
+
+
 ### Gateway (Messaging Platforms)
 
 ```

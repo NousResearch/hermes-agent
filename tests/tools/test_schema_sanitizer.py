@@ -67,6 +67,15 @@ def test_bare_string_primitive_value_replaced_with_schema_dict():
     assert out[0]["function"]["parameters"]["properties"]["name"] == {"type": "string"}
 
 
+def test_bare_string_array_value_gets_items_schema():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"bag": "array"},
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["bag"] == {"type": "array", "items": {}}
+
+
 def test_nullable_type_array_collapsed_to_single_string():
     tools = [_tool("t", {
         "type": "object",
@@ -265,6 +274,42 @@ def test_ref_description_preserved():
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
     assert payload["description"] == "The payload"
     assert payload["$ref"] == "#/$defs/Payload"
+
+
+def test_array_without_items_gets_permissive_items_schema():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "bag": {
+                "type": "array",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    bag = out[0]["function"]["parameters"]["properties"]["bag"]
+    assert bag["type"] == "array"
+    assert bag["items"] == {}
+
+
+def test_array_without_items_inside_allof_gets_items_schema():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "defaultFilter": {
+                "allOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "array"},
+                        },
+                    }
+                ]
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    node = out[0]["function"]["parameters"]["properties"]["defaultFilter"]["allOf"][0]["properties"]["type"]
+    assert node == {"type": "array", "items": {}}
 
 
 def test_empty_tools_list_returns_empty():

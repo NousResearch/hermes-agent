@@ -90,6 +90,10 @@ tools:
   exclude: [delete_customer]
 ```
 
+OpenAI Codex note:
+- Current Hermes builds sanitize MCP array schemas more aggressively, adding permissive `items: {}` when a schema node expresses `type: array` but omits both `items` and `prefixItems`. This fixes strict `openai-codex` startup failures like `array schema missing items` for some MCP/Pydantic/NocoBase tools.
+- On older Hermes builds, `tools.exclude` is still the fastest containment for one or two broken server-native MCP tools until Hermes or the upstream MCP schema is patched.
+
 ### Precedence
 
 If both are set, `include` wins.

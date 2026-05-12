@@ -157,7 +157,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             self._runner = None
         self._mark_disconnected()
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

@@ -177,7 +177,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # Outbound: proactive send via access-token API
     # ------------------------------------------------------------------
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

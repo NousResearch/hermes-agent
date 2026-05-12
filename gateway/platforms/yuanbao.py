@@ -4541,7 +4541,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         logger.info("[%s] Disconnected", self.name)
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

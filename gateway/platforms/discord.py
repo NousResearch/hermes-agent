@@ -1363,7 +1363,7 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

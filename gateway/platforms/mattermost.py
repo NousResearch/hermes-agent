@@ -249,7 +249,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

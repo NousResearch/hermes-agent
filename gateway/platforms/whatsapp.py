@@ -803,7 +803,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         return result
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

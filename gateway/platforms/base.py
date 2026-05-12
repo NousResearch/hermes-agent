@@ -21,6 +21,8 @@ from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
@@ -1543,7 +1545,6 @@ class BasePlatformAdapter(ABC):
         """Disconnect from the platform."""
         pass
     
-    @abstractmethod
     async def send(
         self,
         chat_id: str,
@@ -1557,6 +1558,30 @@ class BasePlatformAdapter(ABC):
         Args:
             chat_id: The chat/channel ID to send to
             content: Message content (may be markdown)
+            reply_to: Optional message ID to reply to
+            metadata: Additional platform-specific options
+        
+        Returns:
+            SendResult with success status and message ID
+        """
+        # Redact sensitive text from outbound messages before platform-specific formatting and delivery
+        redacted_content = redact_sensitive_text(content)
+        return await self._send(chat_id, redacted_content, reply_to, metadata)
+    
+    @abstractmethod
+    async def _send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """
+        Platform-specific message send implementation.
+        
+        Args:
+            chat_id: The chat/channel ID to send to
+            content: Message content (already redacted)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
         

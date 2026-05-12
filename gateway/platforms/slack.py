@@ -734,7 +734,7 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

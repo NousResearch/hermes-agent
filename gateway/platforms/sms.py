@@ -149,7 +149,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._running = False
         logger.info("[sms] Disconnected")
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

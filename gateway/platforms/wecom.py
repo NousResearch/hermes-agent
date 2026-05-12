@@ -1332,7 +1332,7 @@ class WeComAdapter(BasePlatformAdapter):
             },
         )
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

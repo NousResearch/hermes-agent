@@ -1665,7 +1665,7 @@ class WeixinAdapter(BasePlatformAdapter):
         assert last_error is not None
         raise last_error
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

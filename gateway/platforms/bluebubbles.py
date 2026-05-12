@@ -401,7 +401,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chunks = BasePlatformAdapter.truncate_message(content, max_length)
         return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

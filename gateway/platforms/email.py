@@ -500,7 +500,7 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

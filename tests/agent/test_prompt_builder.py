@@ -372,6 +372,72 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_compact_index_mode_drops_descriptions(self, monkeypatch, tmp_path):
+        """``skills.index_mode: compact`` ships ``- name`` per skill —
+        no per-skill description, no per-category description. The agent
+        loads the full description on demand via ``skill_view(name)``.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILLS_INDEX_MODE", "compact")
+
+        cat_dir = tmp_path / "skills" / "tools"
+        (cat_dir / "web-search").mkdir(parents=True)
+        (cat_dir / "web-search" / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web for facts\n---\n"
+        )
+        (cat_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: General tools\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        # Name still present
+        assert "web-search" in result
+        # Per-skill description stripped
+        assert "Search the web for facts" not in result
+        # Per-category description stripped
+        assert "General tools" not in result
+        # Sanity: still in the expected index format
+        assert "<available_skills>" in result
+        assert "- web-search" in result
+
+    def test_detailed_index_mode_is_default_and_keeps_descriptions(
+        self, monkeypatch, tmp_path
+    ):
+        """Default (and explicit ``detailed``) mode preserves the
+        per-skill description in the index — guards against regressions
+        that would silently strip descriptions for existing users."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # No HERMES_SKILLS_INDEX_MODE set → default behavior.
+        monkeypatch.delenv("HERMES_SKILLS_INDEX_MODE", raising=False)
+
+        skill_dir = tmp_path / "skills" / "tools" / "web-search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web for facts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        assert "web-search" in result
+        assert "Search the web for facts" in result
+
+    def test_invalid_index_mode_falls_back_to_detailed(self, monkeypatch, tmp_path):
+        """Unrecognized ``index_mode`` values fall back to ``detailed``
+        rather than producing an empty or malformed index."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILLS_INDEX_MODE", "ultra-mega-compact")
+
+        skill_dir = tmp_path / "skills" / "tools" / "web-search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web for facts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        # Same as detailed
+        assert "web-search" in result
+        assert "Search the web for facts" in result
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

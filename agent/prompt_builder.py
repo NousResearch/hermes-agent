@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_skills_index_mode,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_platform,
@@ -1019,6 +1020,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    index_mode = get_skills_index_mode()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1026,6 +1028,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        index_mode,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1162,10 +1165,16 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # ``compact`` mode drops per-skill descriptions and per-category
+        # descriptions from the index — the agent loads the full
+        # description (and body) on demand via ``skill_view(name)``. This
+        # trades a small amount of at-a-glance discoverability for a
+        # measurably smaller system prompt when a user has many skills.
+        compact = index_mode == "compact"
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
+            if cat_desc and not compact:
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
@@ -1175,7 +1184,7 @@ def build_skills_system_prompt(
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
+                if desc and not compact:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

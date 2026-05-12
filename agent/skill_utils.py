@@ -168,6 +168,48 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Skills index mode ────────────────────────────────────────────────────
+
+_VALID_SKILLS_INDEX_MODES = ("detailed", "compact")
+
+
+def get_skills_index_mode() -> str:
+    """Return the per-skill index verbosity mode for the system prompt.
+
+    - ``"detailed"`` (default): each skill listed as ``- name: description``
+      (description truncated to 60 chars). Matches historical behavior.
+    - ``"compact"``: each skill listed as ``- name`` only. Drops
+      per-skill descriptions and category descriptions from the index.
+      Useful when a user has many skills and wants to trade
+      discoverability detail for a smaller system prompt; the full
+      description is still available via ``skill_view(name)``.
+
+    Resolution order: env var ``HERMES_SKILLS_INDEX_MODE`` (handy for
+    tests / one-shot runs), then ``skills.index_mode`` in config.yaml.
+    Unrecognized values fall back to ``"detailed"``.
+    """
+    env_override = os.getenv("HERMES_SKILLS_INDEX_MODE")
+    if env_override:
+        mode = env_override.strip().lower()
+        return mode if mode in _VALID_SKILLS_INDEX_MODES else "detailed"
+
+    config_path = get_config_path()
+    if not config_path.exists():
+        return "detailed"
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "detailed"
+    if not isinstance(parsed, dict):
+        return "detailed"
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return "detailed"
+
+    mode = str(skills_cfg.get("index_mode") or "").strip().lower()
+    return mode if mode in _VALID_SKILLS_INDEX_MODES else "detailed"
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by

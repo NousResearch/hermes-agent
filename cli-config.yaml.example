@@ -526,6 +526,19 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # System-prompt index verbosity.
+  #   detailed (default) — each skill rendered as "- name: description"
+  #                        (description truncated to 60 chars). Maximizes
+  #                        at-a-glance discoverability.
+  #   compact            — each skill rendered as "- name" only. Drops the
+  #                        per-skill and per-category descriptions from the
+  #                        index. The agent loads the full description (and
+  #                        body) on demand via skill_view(name). Saves ~one
+  #                        line per skill in the prompt — meaningful with
+  #                        50+ skills, negligible with a handful.
+  # Override at runtime with HERMES_SKILLS_INDEX_MODE=compact for one-shots.
+  # index_mode: detailed
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

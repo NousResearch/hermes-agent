@@ -793,30 +793,87 @@ function Install-Dependencies {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
-    
+
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive dependency, so a compromised transitive (different hash
+    # than what we shipped) is REJECTED by the resolver. This is the
+    # *only* path that protects against the "direct dep is fine, but the
+    # dep's dep got worm-poisoned overnight" failure mode. The
+    # `uv pip install` tiers below re-resolve transitives fresh from PyPI
+    # without any hash verification — they exist to keep installs working
+    # when the lockfile is stale, missing, or out-of-sync with the
+    # current extras spec, NOT because they're equivalent in posture.
+    if (Test-Path "uv.lock") {
+        Write-Info "Trying tier: hash-verified (uv.lock) ..."
+        & $UvCmd sync --all-extras --locked
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Main package installed (hash-verified via uv.lock)"
+            $script:InstalledTier = "hash-verified (uv.lock)"
+            # Skip the rest of the tiered cascade — we already have a
+            # complete, hash-verified install.
+            $skipPipFallback = $true
+        } else {
+            Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+            $skipPipFallback = $false
+        }
+    } else {
+        Write-Info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+        $skipPipFallback = $false
+    }
+
     # Install main package.  Tiered fallback so a single flaky git+https dep
     # (atroposlib / tinker in the [rl] extra) doesn't silently drop
     # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
     # preserved — no Out-Null swallowing — so the user can see what failed.
     #
     # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [core-extras] synthesised locally — all PyPI-only extras we
-    #         ship (web, mcp, cron, cli, voice, messaging, slack, dev, acp,
-    #         pty, homeassistant, sms, tts-premium, honcho, google, mistral,
-    #         bedrock, dingtalk, feishu, modal, daytona, vercel).  Drops [rl]
-    #         and [matrix] (linux-only) which are the usual failure culprits.
-    # Tier 3: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
+    # Tier 2: [all] minus a small list of currently-broken extras. The
+    #         broken list is centralised in $brokenExtras below — when
+    #         a package gets quarantined / yanked / pulled, add it here
+    #         and the resolver no longer chokes on it. This is what saves
+    #         the user from silently losing 10+ unrelated extras every
+    #         time one upstream package breaks.
+    # Tier 3: [core-extras] synthesised locally — all PyPI-only extras we
+    #         ship, also minus $brokenExtras. Drops [rl] and [matrix]
+    #         (linux-only) which are the usual failure culprits.
+    # Tier 4: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
     #         believe a user expects `hermes dashboard` / slash commands /
     #         cron / messaging platforms to work out of the box.
-    # Tier 4: bare `.` — last-resort so at least the core CLI launches.
+    # Tier 5: bare `.` — last-resort so at least the core CLI launches.
+
+    # Currently-broken extras. Edit this list when an upstream package
+    # gets quarantined / yanked / breaks resolution. Empty means everything
+    # in [all] should be installable; populate with the names of extras
+    # whose deps are temporarily unavailable to keep installs working
+    # for users.
+    $brokenExtras = @()
+
+    $allExtras = @(
+        "modal","daytona","vercel","messaging","matrix","cron","cli","dev",
+        "tts-premium","slack","pty","honcho","mcp","homeassistant","sms",
+        "acp","voice","dingtalk","feishu","google","bedrock","web",
+        "youtube"
+    )
+    $pypiExtras = @(
+        "web","mcp","cron","cli","voice","messaging","slack","dev","acp",
+        "pty","homeassistant","sms","tts-premium","honcho","google",
+        "bedrock","dingtalk","feishu","modal","daytona","vercel","youtube"
+    )
+    $safeAll  = ($allExtras  | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    $safePypi = ($pypiExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    $brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
+
     $installTiers = @(
         @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
-        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[web,mcp,cron,cli,voice,messaging,slack,dev,acp,pty,homeassistant,sms,tts-premium,honcho,google,mistral,bedrock,dingtalk,feishu,modal,daytona,vercel]" },
+        @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
+        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[$safePypi]" },
         @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
         @{ Name = "core only (no extras)"; Spec = "." }
     )
-    $installed = $false
-    foreach ($tier in $installTiers) {
+    $installed = $skipPipFallback
+    if (-not $skipPipFallback) {
+        foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
         & $UvCmd pip install -e $tier.Spec
         if ($LASTEXITCODE -eq 0) {
@@ -826,6 +883,7 @@ function Install-Dependencies {
             break
         }
         Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+        }
     }
     if (-not $installed) {
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."

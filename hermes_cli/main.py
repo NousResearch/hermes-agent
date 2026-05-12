@@ -10086,6 +10086,16 @@ def main():
     doctor_parser.add_argument(
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
+    doctor_parser.add_argument(
+        "--ack",
+        metavar="ADVISORY_ID",
+        default=None,
+        help=(
+            "Acknowledge a security advisory by ID and exit. After ack, the "
+            "advisory will no longer trigger startup banners. Run `hermes "
+            "doctor` first to see active advisories and their IDs."
+        ),
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================

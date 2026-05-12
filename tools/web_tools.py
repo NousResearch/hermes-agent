@@ -64,6 +64,13 @@ def _load_firecrawl_cls() -> type:
     """Import and cache ``firecrawl.Firecrawl``."""
     global _FIRECRAWL_CLS_CACHE
     if _FIRECRAWL_CLS_CACHE is None:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("search.firecrawl", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
         from firecrawl import Firecrawl as _cls
         _FIRECRAWL_CLS_CACHE = _cls
     return _FIRECRAWL_CLS_CACHE
@@ -358,6 +365,13 @@ def _get_parallel_client():
 
     Requires PARALLEL_API_KEY environment variable.
     """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("search.parallel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     from parallel import Parallel
     global _parallel_client
     if _parallel_client is None:
@@ -376,6 +390,13 @@ def _get_async_parallel_client():
 
     Requires PARALLEL_API_KEY environment variable.
     """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("search.parallel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     from parallel import AsyncParallel
     global _async_parallel_client
     if _async_parallel_client is None:
@@ -990,6 +1011,13 @@ def _get_exa_client():
 
     Requires EXA_API_KEY environment variable.
     """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("search.exa", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     from exa_py import Exa
     global _exa_client
     if _exa_client is None:

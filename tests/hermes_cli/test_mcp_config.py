@@ -135,9 +135,23 @@ class TestMcpList:
     def test_redact_url_preserves_fragments(self):
         from hermes_cli.mcp_config import _redact_url
 
-        url = "https://example.test/mcp?access_token=supersecret#frag"
+        url = "https://example.test/mcp?access_token=abc123#frag"
 
         assert _redact_url(url) == "https://example.test/mcp?access_token=***#frag"
+
+    def test_redact_url_avoids_keyword_substring_false_positives(self):
+        from hermes_cli.mcp_config import _redact_url
+
+        url = (
+            "https://example.test/mcp?"
+            "monkey=banana&donkey=value&mistoken=plain&contesting=no&token=abc123"
+        )
+
+        assert (
+            _redact_url(url)
+            == "https://example.test/mcp?"
+            "monkey=banana&donkey=value&mistoken=plain&contesting=no&token=***"
+        )
 
     def test_list_handles_non_string_url_values(self, tmp_path, capsys):
         _seed_config(tmp_path, {

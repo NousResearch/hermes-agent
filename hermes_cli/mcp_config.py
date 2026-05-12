@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _SENSITIVE_QS_RE = re.compile(
-    r"(?i)([?&](?:[^&#=]*(?:key|token|secret|password|apikey|access_token)[^&#=]*)=)([^&#]+)"
+    r"(?i)([?&](?:[^&#=]*(?<![A-Za-z])(?:key|token|secret|password|apikey|access_token)(?![A-Za-z])[^&#=]*)=)([^&#]+)"
 )
 
 

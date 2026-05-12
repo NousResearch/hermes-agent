@@ -2,7 +2,7 @@
 
 Uses the local BlueBubbles macOS server for outbound REST sends and inbound
 webhooks.  Supports text messaging, media attachments (images, voice, video,
-documents), tapback reactions, typing indicators, and read receipts.
+documents), tapback reactions, and read receipts.
 
 Architecture based on PR #5869 (benjaminsehl) with inbound attachment
 downloading from PR #4588 (YuhangLin).
@@ -681,30 +681,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
-            return
-        try:
-            guid = await self._resolve_chat_guid(chat_id)
-            if guid:
-                encoded = quote(guid, safe="")
-                await self.client.post(
-                    self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
-                )
-        except Exception:
-            pass
+        """BlueBubbles typing APIs are disabled for Hermes.
 
-    async def stop_typing(self, chat_id: str) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
-            return
-        try:
-            guid = await self._resolve_chat_guid(chat_id)
-            if guid:
-                encoded = quote(guid, safe="")
-                await self.client.delete(
-                    self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
-                )
-        except Exception:
-            pass
+        The local BB private API helper has repeatedly crashed Messages.app on
+        `/typing` with `-[IMTypingChatItem index]: unrecognized selector`. A
+        typing indicator is cosmetic; keeping the transport alive is not.
+        """
+        del chat_id, metadata
+        return None
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        """Typing indicators are disabled; there is nothing to clear."""
+        del chat_id, metadata
+        return None
 
     # ------------------------------------------------------------------
     # Read receipts

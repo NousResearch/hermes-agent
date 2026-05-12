@@ -70,6 +70,32 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch)
         assert adapter.SUPPORTS_MESSAGE_EDITING is False
 
+    @pytest.mark.asyncio
+    async def test_typing_indicators_are_noop_to_avoid_private_api_crashes(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def post(self, *args, **kwargs):
+                self.calls.append(("post", args, kwargs))
+                raise AssertionError("typing POST should not be called")
+
+            async def delete(self, *args, **kwargs):
+                self.calls.append(("delete", args, kwargs))
+                raise AssertionError("typing DELETE should not be called")
+
+        fake_client = FakeClient()
+        adapter.client = fake_client
+
+        await adapter.send_typing("user@example.com")
+        await adapter.stop_typing("user@example.com")
+
+        assert fake_client.calls == []
+
     def test_truncate_message_omits_pagination_suffixes(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         chunks = adapter.truncate_message("abcdefghij", max_length=6)

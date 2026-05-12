@@ -140,7 +140,10 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy
     assert 'com.google.ai.edge.litertlm:litertlm-android:0.11.0' in gradle
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
-    assert 'speculativeDecodingDecision(context, modelPath)' in litert_proxy
+    assert 'SpeculativeDecodingMode' in litert_proxy
+    assert 'speculativeDecodingDecision(context, modelPath, speculativeDecodingMode)' in litert_proxy
+    assert 'decideSpeculativeDecoding(' in litert_proxy
+    assert 'runtime setting disabled Gemma 4 MTP' in litert_proxy
     assert 'memory guard for Gemma 4 MTP' in litert_proxy
     assert 'ExperimentalFlags.enableSpeculativeDecoding = false' in litert_proxy
     assert litert_proxy.index('ExperimentalFlags.enableSpeculativeDecoding = enableMtp') < litert_proxy.index('candidate = Engine(')

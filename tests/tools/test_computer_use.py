@@ -155,6 +155,56 @@ class TestDispatch:
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
 
+    def test_type_action_routes_to_type_text_backend(self, noop_backend):
+        """type action must call backend.type_text, not type_text_chars (issue #24170, bug 3)."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "type", "text": "hello"})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        call_names = [c[0] for c in noop_backend.calls]
+        assert "type" in call_names
+        type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
+        assert type_kw["text"] == "hello"
+
+    def test_drag_action_routes_to_backend_by_coordinate(self, noop_backend):
+        """drag action must dispatch to backend.drag with coordinates (issue #24170, bug 4)."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "drag",
+            "from_coordinate": [100, 200],
+            "to_coordinate": [400, 500],
+        })
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        call_names = [c[0] for c in noop_backend.calls]
+        assert "drag" in call_names
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_xy"] == (100, 200)
+        assert drag_kw["to_xy"] == (400, 500)
+
+    def test_drag_action_routes_to_backend_by_element(self, noop_backend):
+        """drag action must dispatch to backend.drag with element indices (issue #24170, bug 4)."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "drag",
+            "from_element": 1,
+            "to_element": 5,
+        })
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        call_names = [c[0] for c in noop_backend.calls]
+        assert "drag" in call_names
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_element"] == 1
+        assert drag_kw["to_element"] == 5
+
+    def test_drag_action_requires_coordinates_or_elements(self, noop_backend):
+        """drag without from/to must return an error."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "drag"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)

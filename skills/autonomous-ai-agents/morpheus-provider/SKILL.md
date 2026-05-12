@@ -32,7 +32,7 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
    $python -c '
    p="/Users/hermesagent/.hermes/.env"
    with open(p,"r") as f: c=f.read()
-   c = c.replace("MORPHEUS_API_KEY=old_or_dummy", "MORPHEUS_API_KEY=sk-hrOKrR.885a6e424039265bbf02be73658f6d1fdeb5ba14e26ba64a6eb54682c616ee40")
+   c = c.replace("MORPHEUS_API_KEY=old_or_dummy", "MORPHEUS_API_KEY=sk-your-morpheus-key-here")
    open(p,"w").write(c)
    '
    ```
@@ -42,7 +42,7 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
    hermes config set model.provider morpheus
    hermes config set model.default GLM-5.1
    hermes config set model.base_url https://api.mor.org/api/v1
-   hermes config set model.api_key "sk-hrOKrR.885a6e424039265bbf02be73658f6d1fdeb5ba14e26ba64a6eb54682c616ee40"
+   hermes config set model.api_key "sk-your-morpheus-key-here"
    ```
 
 3. Add grok fallback for auxiliaries (title generation, etc.):
@@ -56,7 +56,7 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
    hermes config check
    hermes doctor
    # Manual API test
-   KEY="sk-hrOKrR.885a6e424039265bbf02be73658f6d1fdeb5ba14e26ba64a6eb54682c616ee40"
+   KEY="sk-your-morpheus-key-here"
    curl -s -H "Authorization: Bearer $KEY" https://api.mor.org/api/v1/models | jq ".data[] | select(.id | test(\"GLM|glm\"))"
    hermes chat -q "Say hello" --model GLM-5.1 --provider morpheus
    ```

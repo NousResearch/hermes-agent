@@ -110,6 +110,9 @@ class AuthSessionStore(
             .put("state", request.state)
             .put("methodId", request.methodId)
             .put("startUrl", request.startUrl)
+            .put("authProvider", request.authProvider)
+            .put("codeVerifier", request.codeVerifier)
+            .put("codeChallengeMethod", request.codeChallengeMethod)
             .put("createdAtEpochMs", request.createdAtEpochMs)
         preferences.edit().putString(KEY_PENDING_REQUEST, json.toString()).apply()
     }
@@ -122,6 +125,9 @@ class AuthSessionStore(
                 state = json.optString("state"),
                 methodId = json.optString("methodId"),
                 startUrl = json.optString("startUrl"),
+                authProvider = json.optString("authProvider", "corr3xt"),
+                codeVerifier = json.optString("codeVerifier"),
+                codeChallengeMethod = json.optString("codeChallengeMethod"),
                 createdAtEpochMs = json.optLong("createdAtEpochMs", System.currentTimeMillis()),
             )
         }.getOrNull()

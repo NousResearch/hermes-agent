@@ -182,7 +182,9 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 
     provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
-    for provider in ["openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai"]:
+    openrouter_block = auth_models.split('id = "openrouter"', 1)[1].split("AuthOption(", 1)[0]
+    assert "browserSignInSupported = true" in openrouter_block
+    for provider in ["openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai"]:
         block = auth_models.split(f'id = "{provider}"', 1)[1].split("AuthOption(", 1)[0]
         assert "browserSignInSupported = false" in block
 
@@ -215,6 +217,17 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
     assert "HermesProviderSetupWebActivity.open" in auth_view_model
+    assert "OpenRouterOAuthClient.createStartRequest(state)" in auth_view_model
+    assert "Opened OpenRouter sign-in in your browser" in auth_view_model
+    openrouter_oauth = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/OpenRouterOAuthClient.kt").read_text(encoding="utf-8")
+    assert "https://openrouter.ai/auth" in openrouter_oauth
+    assert "https://openrouter.ai/api/v1/auth/keys" in openrouter_oauth
+    assert 'appendQueryParameter("callback_url", callbackUrl)' in openrouter_oauth
+    assert 'appendQueryParameter("code_challenge_method", CODE_CHALLENGE_METHOD)' in openrouter_oauth
+    assert 'methodId = "openrouter"' in openrouter_oauth
+    assert 'private const val AUTH_PROVIDER = "openrouter-oauth"' in openrouter_oauth
+    assert 'authProvider = AUTH_PROVIDER' in openrouter_oauth
+    assert 'status = "Signed in with OpenRouter OAuth and saved the API key securely."' in openrouter_oauth
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
     assert "ProviderPresets.setupClipboardText(option.runtimeProvider)" in auth_view_model
     assert 'ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText)' in auth_view_model

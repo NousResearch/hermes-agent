@@ -8,6 +8,21 @@ import org.junit.Test
 
 class ChatCommandRouterTest {
     @Test
+    fun signinOpenRouterStartsOAuthInAccounts() {
+        val host = RecordingCommandHost()
+
+        val result = ChatCommandRouter.execute("/signin openrouter", host.asHost())
+
+        assertTrue(result.handled)
+        assertEquals("openrouter", host.startedAuthMethods.single())
+        assertEquals(AppSection.Accounts, host.sections.single())
+        assertEquals(
+            "Opened OpenRouter OAuth in your browser. Approve Hermes to save a user-controlled API key, or paste an OpenRouter API key in Settings.",
+            result.feedback,
+        )
+    }
+
+    @Test
     fun signinRuntimeProvidersPrepareApiKeySetupInSettings() {
         val host = RecordingCommandHost()
 

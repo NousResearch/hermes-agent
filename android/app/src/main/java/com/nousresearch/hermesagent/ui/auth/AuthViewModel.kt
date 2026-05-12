@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
 import com.nousresearch.hermesagent.auth.Corr3xtAuthClient
+import com.nousresearch.hermesagent.auth.OpenRouterOAuthClient
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthCatalog
@@ -141,6 +142,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAuth(methodId: String): Boolean {
         val option = AuthCatalog.find(methodId) ?: return false
+        if (option.id == "openrouter") {
+            return startOpenRouterOAuth(option)
+        }
         if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider) {
             prepareApiKeySetup(methodId)
             openProviderSetupPage(methodId)
@@ -251,6 +255,41 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
                     )
                 }
+            }
+        }
+        return true
+    }
+
+    private fun startOpenRouterOAuth(option: AuthOption): Boolean {
+        val state = UUID.randomUUID().toString()
+        val startRequest = OpenRouterOAuthClient.createStartRequest(state)
+        authSessionStore.savePendingRequest(startRequest.pendingRequest)
+        val launch = HermesExternalBrowserLauncher.open(
+            context = getApplication(),
+            uri = startRequest.startUri,
+            title = "Open OpenRouter sign-in",
+        )
+        if (launch.success) {
+            _uiState.update {
+                it.copy(
+                    globalStatus = "Opened OpenRouter sign-in in your browser. Approve Hermes, then return here after the callback.",
+                    pendingMethodLabel = option.label,
+                    hasPendingRequest = true,
+                    pendingStartUrl = startRequest.pendingRequest.startUrl,
+                    apiKeyFallbackMethodId = "",
+                    apiKeyFallbackLabel = "",
+                )
+            }
+        } else {
+            authSessionStore.clearPendingRequest()
+            copyAuthStartUrl(startRequest.pendingRequest.startUrl, updateStatus = false)
+            _uiState.update {
+                it.copy(
+                    globalStatus = "Unable to open OpenRouter sign-in (${launch.errorName.ifBlank { "browser_error" }}); copied the sign-in URL. You can still paste an OpenRouter API key below.",
+                    pendingStartUrl = startRequest.pendingRequest.startUrl,
+                    apiKeyFallbackMethodId = option.id,
+                    apiKeyFallbackLabel = option.label,
+                )
             }
         }
         return true

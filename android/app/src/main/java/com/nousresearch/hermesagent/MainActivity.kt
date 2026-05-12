@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
+import com.nousresearch.hermesagent.auth.OpenRouterOAuthClient
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesLauncherShortcutBridge
@@ -40,7 +41,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleAuthCallback(intent: Intent?) {
-        val session = AuthSessionStore(applicationContext).consumeAuthCallback(intent?.data ?: return) ?: return
+        val callbackUri = intent?.data ?: return
+        val store = AuthSessionStore(applicationContext)
+        val pending = store.loadPendingRequest()
+        if (OpenRouterOAuthClient.isOpenRouterCallback(callbackUri, pending)) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val session = OpenRouterOAuthClient.exchangeCallbackForSession(callbackUri, requireNotNull(pending))
+                store.clearPendingRequest()
+                store.saveSession(session)
+                if (session.signedIn) {
+                    AuthRuntimeApplier.apply(applicationContext, session)
+                }
+                DeviceStateWriter.write(applicationContext)
+            }
+            return
+        }
+        val session = store.consumeAuthCallback(callbackUri) ?: return
         lifecycleScope.launch(Dispatchers.IO) {
             AuthRuntimeApplier.apply(applicationContext, session)
             DeviceStateWriter.write(applicationContext)

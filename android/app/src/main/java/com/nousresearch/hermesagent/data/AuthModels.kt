@@ -39,6 +39,9 @@ data class PendingAuthRequest(
     val state: String,
     val methodId: String,
     val startUrl: String,
+    val authProvider: String = "corr3xt",
+    val codeVerifier: String = "",
+    val codeChallengeMethod: String = "",
     val createdAtEpochMs: Long = System.currentTimeMillis(),
 )
 
@@ -70,7 +73,7 @@ object AuthCatalog {
             runtimeProvider = "openrouter",
             defaultBaseUrl = "https://openrouter.ai/api/v1",
             defaultModel = "anthropic/claude-sonnet-4",
-            browserSignInSupported = false,
+            browserSignInSupported = true,
         ),
         AuthOption(
             id = "openai",

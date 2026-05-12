@@ -200,6 +200,31 @@ class AuthSessionStoreTest {
     }
 
     @Test
+    fun pendingAuthRequestPersistsOpenRouterPkceMetadata() {
+        val context = cleanContext()
+        val store = AuthSessionStore(context, InMemoryAuthSessionSecretStore())
+        val pending = PendingAuthRequest(
+            state = "state-123",
+            methodId = "openrouter",
+            startUrl = "https://openrouter.ai/auth",
+            authProvider = "openrouter-oauth",
+            codeVerifier = "verifier-123",
+            codeChallengeMethod = "S256",
+            createdAtEpochMs = 123L,
+        )
+
+        store.savePendingRequest(pending)
+
+        val loaded = store.loadPendingRequest()
+        assertEquals("state-123", loaded?.state)
+        assertEquals("openrouter", loaded?.methodId)
+        assertEquals("openrouter-oauth", loaded?.authProvider)
+        assertEquals("verifier-123", loaded?.codeVerifier)
+        assertEquals("S256", loaded?.codeChallengeMethod)
+        assertEquals(123L, loaded?.createdAtEpochMs)
+    }
+
+    @Test
     fun loadSession_migratesLegacyPlaintextCredentialsIntoSecureStore() {
         val context = cleanContext()
         val secretStore = InMemoryAuthSessionSecretStore()

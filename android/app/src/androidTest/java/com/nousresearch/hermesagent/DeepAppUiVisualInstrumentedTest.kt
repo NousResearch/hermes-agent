@@ -24,6 +24,7 @@ import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
+import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
 import com.nousresearch.hermesagent.ui.boot.BootUiState
@@ -126,6 +127,74 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("HermesNavNousPortal").performClick()
         composeRule.onAllNodesWithText("Nous Portal")[0].assertIsDisplayed()
         capture("08-portal-spanish")
+    }
+
+    @Test
+    fun signinOpenRouterCommandOpensOpenRouterOAuthPage() {
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "signin-openrouter-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        val openRouterOAuthOpened = AtomicBoolean(false)
+        val openRouterOAuthIntent = object : TypeSafeMatcher<Intent>() {
+            override fun describeTo(description: Description) {
+                description.appendText("OpenRouter OAuth browser intent")
+            }
+
+            override fun matchesSafely(intent: Intent): Boolean {
+                val chooserTarget = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                val uri = intent.data ?: chooserTarget?.data ?: return false
+                val callbackUrl = Uri.parse(uri.getQueryParameter("callback_url").orEmpty())
+                val matches = intent.action in setOf(Intent.ACTION_VIEW, Intent.ACTION_CHOOSER) &&
+                    uri.scheme == "https" &&
+                    uri.host == "openrouter.ai" &&
+                    uri.path == "/auth" &&
+                    uri.getQueryParameter("code_challenge_method") == "S256" &&
+                    callbackUrl.scheme == "hermesagent" &&
+                    callbackUrl.host == "auth" &&
+                    callbackUrl.path == "/callback" &&
+                    callbackUrl.getQueryParameter("method") == "openrouter"
+                if (matches) {
+                    openRouterOAuthOpened.set(true)
+                }
+                return matches
+            }
+        }
+        Intents.init()
+        try {
+            intending(openRouterOAuthIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
+
+            composeRule.onNodeWithTag("HermesChatInput").performTextInput("/signin openrouter")
+            composeRule.onNodeWithText("Send").performClick()
+
+            composeRule.waitUntil(timeoutMillis = 10_000) { openRouterOAuthOpened.get() }
+            val pending = AuthSessionStore(app).loadPendingRequest()
+            assertEquals("openrouter", pending?.methodId)
+            assertEquals("openrouter-oauth", pending?.authProvider)
+            assertEquals("S256", pending?.codeChallengeMethod)
+            assertTrue(pending?.codeVerifier.orEmpty().isNotBlank())
+            assertTrue(pending?.startUrl.orEmpty().startsWith("https://openrouter.ai/auth"))
+        } finally {
+            Intents.release()
+        }
     }
 
     @Test

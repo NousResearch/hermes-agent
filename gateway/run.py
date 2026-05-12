@@ -1193,6 +1193,7 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _orchestration_status_queries_enabled: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1212,6 +1213,7 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._orchestration_status_queries_enabled = self._load_orchestration_status_queries_enabled()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2385,6 +2387,38 @@ class GatewayRunner:
         if mode == "steer":
             return "steer"
         return "interrupt"
+
+    @staticmethod
+    def _load_orchestration_status_queries_enabled() -> bool:
+        """Load the safe natural-language orchestration status-query gate.
+
+        This gateway wiring is intentionally off by default because it intercepts
+        ordinary user text before the main agent sees it.  Operators can enable
+        it with either config.yaml:
+
+            orchestration:
+              status_queries_enabled: true
+
+        or the environment variable HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES.
+        The handler is read-only: it formats the per-runner orchestration
+        runtime and never mutates tasks, dispatches workers, or routes follow-ups.
+        """
+        raw = os.getenv("HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "status_queries_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -5935,6 +5969,20 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Optional, read-only natural-language status queries.  This is the
+        # first production-facing bridge from the orchestration runtime to the
+        # gateway, so it is feature-gated and intentionally narrow: text only,
+        # no slash commands, no media, no mutation, no worker dispatch.  It runs
+        # after pending prompt/confirmation handling but before the busy/running
+        # guard so "지금 뭐 하고 있어?" can be a safe status check rather than an
+        # interrupt/queued follow-up.
+        orchestration_status_reply = self._maybe_handle_orchestration_status_query(
+            event,
+            session_key=_quick_key,
+        )
+        if orchestration_status_reply is not None:
+            return orchestration_status_reply
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -8487,6 +8535,99 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    def _maybe_handle_orchestration_status_query(
+        self,
+        event: MessageEvent,
+        *,
+        session_key: str,
+    ) -> Optional[str]:
+        """Return orchestration status text for safe natural-language queries.
+
+        This is deliberately a pure read-only gate.  It does not mutate the
+        task registry, attach follow-ups, start workers, cancel work, or call an
+        LLM.  It only intercepts obvious TEXT messages when the feature flag is
+        enabled; slash commands, media/documents, internal events, and ordinary
+        prose all fall through to the existing gateway path.
+        """
+        if not getattr(self, "_orchestration_status_queries_enabled", False):
+            return None
+        if bool(getattr(event, "internal", False)):
+            return None
+        if event.message_type != MessageType.TEXT:
+            return None
+        if event.get_command():
+            return None
+        try:
+            from agent.orchestration_status import looks_like_orchestration_status_query
+        except Exception:
+            return None
+        if not looks_like_orchestration_status_query(event.text):
+            return None
+        try:
+            return self._format_session_scoped_orchestration_overview(session_key)
+        except Exception as exc:
+            logger.warning("Failed to format orchestration status for %s: %s", session_key, exc)
+            return "Orchestration status is temporarily unavailable."
+
+    def _format_session_scoped_orchestration_overview(self, session_key: str) -> str:
+        """Format an orchestration overview without leaking cross-session workers.
+
+        Phase 6/7 status helpers can format a whole runtime.  A gateway runner,
+        however, serves multiple chats/sessions, and worker lines may include
+        goals/results/errors.  For a natural-language gateway status reply we
+        therefore scope tasks to the requesting session and include only workers
+        linked to those visible tasks (by task_id or by active_worker_id).
+        """
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+        from agent.orchestration_status import OrchestrationSnapshot, build_snapshot, format_overview
+
+        runtime = get_or_create_orchestration_runtime(self)
+        task_snapshot = build_snapshot(
+            runtime.task_registry,
+            None,
+            session_key=session_key,
+        )
+        visible_task_ids = {
+            t.get("task_id") for t in task_snapshot.tasks if t.get("task_id")
+        }
+        visible_worker_ids = {
+            t.get("worker_id") for t in task_snapshot.tasks if t.get("worker_id")
+        }
+        worker_snapshot = build_snapshot(None, runtime.worker_registry)
+        visible_workers = [
+            w for w in worker_snapshot.workers
+            if (
+                (w.get("task_id") and w.get("task_id") in visible_task_ids)
+                or (
+                    not w.get("task_id")
+                    and w.get("worker_id")
+                    and w.get("worker_id") in visible_worker_ids
+                )
+            )
+        ]
+        visible_worker_ids_after_filter = {
+            w.get("worker_id") for w in visible_workers if w.get("worker_id")
+        }
+        visible_tasks = []
+        for task in task_snapshot.tasks:
+            task_copy = dict(task)
+            if task_copy.get("worker_id") not in visible_worker_ids_after_filter:
+                task_copy["worker_id"] = None
+                task_copy["worker_kind"] = None
+            visible_tasks.append(task_copy)
+        scoped_snapshot = build_snapshot(visible_tasks, visible_workers)
+        # build_snapshot(list, list) is already JSON-safe, but wrapping as an
+        # explicit snapshot makes the privacy boundary obvious to future edits.
+        return format_overview(
+            OrchestrationSnapshot(
+                tasks=scoped_snapshot.tasks,
+                workers=scoped_snapshot.workers,
+                counts=scoped_snapshot.counts,
+                warnings=scoped_snapshot.warnings,
+            ),
+            compact=True,
+        )
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

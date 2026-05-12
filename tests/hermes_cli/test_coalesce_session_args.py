@@ -111,3 +111,45 @@ class TestCoalesceSessionNameArgs:
         assert _coalesce_session_name_args(
             ["-c", "my", "setup"]
         ) == ["-c", "my", "setup"]
+
+    def test_stops_at_kanban(self):
+        """hermes -c my session kanban → 'kanban' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "kanban"]
+        ) == ["-c", "my session", "kanban"]
+
+    def test_stops_at_hooks(self):
+        """hermes -c my session hooks → 'hooks' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "hooks"]
+        ) == ["-c", "my session", "hooks"]
+
+    def test_stops_at_checkpoints(self):
+        """hermes -c my session checkpoints → 'checkpoints' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "checkpoints"]
+        ) == ["-c", "my session", "checkpoints"]
+
+    def test_stops_at_curator(self):
+        """hermes -c my session curator → 'curator' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "curator"]
+        ) == ["-c", "my session", "curator"]
+
+    def test_stops_at_slack(self):
+        """hermes -c my session slack → 'slack' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "slack"]
+        ) == ["-c", "my session", "slack"]
+
+    def test_stops_at_computer_use(self):
+        """hermes -c my session computer-use → 'computer-use' is a stop word"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "computer-use"]
+        ) == ["-c", "my session", "computer-use"]
+
+    def test_stops_at_honcho(self):
+        """hermes -c my session honcho → 'honcho' is a stop word (plugin cmd)"""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "honcho"]
+        ) == ["-c", "my session", "honcho"]

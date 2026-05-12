@@ -8427,43 +8427,10 @@ def _coalesce_session_name_args(argv: list) -> list:
     Tokens are collected after the flag until we hit another flag (``-*``)
     or a known top-level subcommand.
     """
-    _SUBCOMMANDS = {
-        "chat",
-        "model",
-        "gateway",
-        "setup",
-        "whatsapp",
-        "login",
-        "logout",
-        "auth",
-        "status",
-        "cron",
-        "doctor",
-        "config",
-        "pairing",
-        "skills",
-        "tools",
-        "mcp",
-        "sessions",
-        "insights",
-        "version",
-        "update",
-        "uninstall",
-        "profile",
-        "dashboard",
-        "honcho",
-        "claw",
-        "plugins",
-        "acp",
-        "webhook",
-        "memory",
-        "dump",
-        "debug",
-        "backup",
-        "import",
-        "completion",
-        "logs",
-    }
+    # _BUILTIN_SUBCOMMANDS is defined later in this module; resolved at call
+    # time (after module load). "honcho" is a plugin top-level command not
+    # included there.
+    _stop_words = _BUILTIN_SUBCOMMANDS | {"honcho"}
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
     result = []
@@ -8478,7 +8445,7 @@ def _coalesce_session_name_args(argv: list) -> list:
             while (
                 i < len(argv)
                 and not argv[i].startswith("-")
-                and argv[i] not in _SUBCOMMANDS
+                and argv[i] not in _stop_words
             ):
                 parts.append(argv[i])
                 i += 1

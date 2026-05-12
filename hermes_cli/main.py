@@ -70,6 +70,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from rich.cells import cell_len
+
 
 def _add_accept_hooks_flag(parser) -> None:
     """Attach the ``--accept-hooks`` flag.  Shared across every agent
@@ -284,6 +286,23 @@ def _relative_time(ts) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+def _pad_display(s: str, width: int) -> str:
+    """Pad/truncate *s* to exactly *width* terminal columns, respecting
+    full-width (CJK, emoji) characters that occupy 2 columns.
+
+    Uses ``rich.cells.cell_len`` which accounts for Unicode East Asian
+    Width.  Truncates from the right if the string is wider than *width*.
+    """
+    cur = cell_len(s)
+    if cur == width:
+        return s
+    if cur > width:
+        while s and cell_len(s) > width:
+            s = s[:-1]
+        cur = cell_len(s)
+    return s + " " * (width - cur)
+
+
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
@@ -429,13 +448,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             name_width = max(20, max_x - fixed_cols)
 
             if title:
-                name = title[:name_width]
+                name = title
             elif preview:
-                name = preview[:name_width]
+                name = preview
             else:
                 name = sid
 
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            return f"{_pad_display(name, name_width)}  {_pad_display(last_active, 10)}  {_pad_display(source, 5)} {sid}"
 
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
@@ -11062,18 +11081,22 @@ Examples:
                 print("─" * 95)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
-                preview = (
-                    s.get("preview", "")[:38]
-                    if has_titles
-                    else s.get("preview", "")[:48]
-                )
+                sid = s["id"]
                 if has_titles:
-                    title = (s.get("title") or "—")[:30]
-                    sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    title = s.get("title") or "—"
+                    preview = s.get("preview", "")
+                    print(
+                        f"{_pad_display(title, 32)} "
+                        f"{_pad_display(preview, 40)} "
+                        f"{_pad_display(last_active, 13)} {sid}"
+                    )
                 else:
-                    sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    preview = s.get("preview", "")
+                    print(
+                        f"{_pad_display(preview, 50)} "
+                        f"{_pad_display(last_active, 13)} "
+                        f"{_pad_display(s['source'], 6)} {sid}"
+                    )
 
         elif action == "export":
             if args.session_id:

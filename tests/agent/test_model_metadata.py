@@ -649,6 +649,59 @@ class TestGetModelContextLength:
 
         assert result == 200000
 
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=None)
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_nous_kimi_32k_guard_falls_through_to_default(
+        self, mock_fetch, _mock_cache, _mock_ollama
+    ):
+        """Regression for #24000.
+
+        OpenRouter reports 32768 for moonshotai/kimi-k2.6 even though the
+        model supports 262144. When provider='nous', the suffix-match path
+        in ``_resolve_nous_context_length`` used to return that 32k value
+        directly, tripping the 64k minimum-context guard at run_agent.py
+        and blocking boot. The Kimi guard in step 6 didn't help because
+        nous is a known provider and step 6 is gated on
+        ``not effective_provider``.
+
+        Expectation: the resolver rejects the stale 32k value and falls
+        through to ``DEFAULT_CONTEXT_LENGTHS['kimi'] == 262144``.
+        """
+        mock_fetch.return_value = {
+            "moonshotai/kimi-k2.6": {"context_length": 32768},
+        }
+
+        result = get_model_context_length(
+            "moonshotai/kimi-k2.6",
+            base_url="https://inference-api.nousresearch.com/v1",
+            provider="nous",
+        )
+
+        assert result == 262144
+
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=None)
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_nous_non_kimi_32k_is_preserved(
+        self, mock_fetch, _mock_cache, _mock_ollama
+    ):
+        """The Kimi guard is narrow: a real 32k Nous-routed non-Kimi model
+        should still resolve to 32k via the OpenRouter suffix-match. Only
+        the Kimi-family 32768-vs-262144 underreport is filtered out.
+        """
+        mock_fetch.return_value = {
+            "example/legit-32k-model": {"context_length": 32768},
+        }
+
+        result = get_model_context_length(
+            "example/legit-32k-model",
+            base_url="https://inference-api.nousresearch.com/v1",
+            provider="nous",
+        )
+
+        assert result == 32768
+
 
 # =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe

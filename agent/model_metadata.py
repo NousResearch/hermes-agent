@@ -1338,16 +1338,31 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     with version normalization (dot↔dash).
     """
     metadata = fetch_model_metadata()  # OpenRouter cache
+
+    def _accept(ctx: Optional[int]) -> Optional[int]:
+        # Mirror the Kimi-32k guard applied to the step-6 OpenRouter fallback
+        # in ``get_model_context_length``. OpenRouter reports 32768 for
+        # moonshotai/kimi-k2.6 even though the model supports 262144; without
+        # this filter, Nous-routed Kimi models return 32k here and trip the
+        # 64k minimum-context guard before reaching DEFAULT_CONTEXT_LENGTHS.
+        if ctx == 32768 and _model_name_suggests_kimi(model):
+            return None
+        return ctx
+
     # Exact match first
     if model in metadata:
-        return metadata[model].get("context_length")
+        ctx = _accept(metadata[model].get("context_length"))
+        if ctx is not None:
+            return ctx
 
     normalized = _normalize_model_version(model).lower()
 
     for or_id, entry in metadata.items():
         bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
         if bare.lower() == model.lower() or _normalize_model_version(bare).lower() == normalized:
-            return entry.get("context_length")
+            ctx = _accept(entry.get("context_length"))
+            if ctx is not None:
+                return ctx
 
     # Partial prefix match for cases like gemini-3-flash → gemini-3-flash-preview
     # Require match to be at a word boundary (followed by -, :, or end of string)
@@ -1358,7 +1373,9 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
             if candidate.startswith(query) and (
                 len(candidate) == len(query) or candidate[len(query)] in "-:."
             ):
-                return entry.get("context_length")
+                ctx = _accept(entry.get("context_length"))
+                if ctx is not None:
+                    return ctx
 
     return None
 

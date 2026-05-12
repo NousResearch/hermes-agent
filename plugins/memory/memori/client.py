@@ -93,12 +93,12 @@ class MemoriAgentClient:
         try:
             return self.memori.agent_recall(
                 query=params.get("query"),
-                date_start=params.get("dateStart") or params.get("date_start"),
-                date_end=params.get("dateEnd") or params.get("date_end"),
-                project_id=params.get("projectId")
-                or params.get("project_id")
+                date_start=params.get("date_start") or params.get("dateStart"),
+                date_end=params.get("date_end") or params.get("dateEnd"),
+                project_id=params.get("project_id")
+                or params.get("projectId")
                 or self.project_id,
-                session_id=params.get("sessionId") or params.get("session_id"),
+                session_id=params.get("session_id") or params.get("sessionId"),
                 signal=params.get("signal"),
                 source=params.get("source"),
             )
@@ -108,12 +108,12 @@ class MemoriAgentClient:
     def agent_recall_summary(self, params: dict[str, Any]) -> dict[str, Any]:
         try:
             return self.memori.agent_recall_summary(
-                date_start=params.get("dateStart") or params.get("date_start"),
-                date_end=params.get("dateEnd") or params.get("date_end"),
-                project_id=params.get("projectId")
-                or params.get("project_id")
+                date_start=params.get("date_start") or params.get("dateStart"),
+                date_end=params.get("date_end") or params.get("dateEnd"),
+                project_id=params.get("project_id")
+                or params.get("projectId")
                 or self.project_id,
-                session_id=params.get("sessionId") or params.get("session_id"),
+                session_id=params.get("session_id") or params.get("sessionId"),
             )
         except Exception as exc:  # noqa: BLE001
             raise MemoriApiError(str(exc)) from exc

@@ -349,8 +349,8 @@ echo "MEMORI_ENTITY_ID=your-user-or-workspace-id" >> ~/.hermes/.env
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `entityId` | -- | Stable end-user or workspace identifier |
-| `projectId` | Agent scope | Optional project scope for recall and summaries |
+| `entity_id` | -- | Stable end-user or workspace identifier |
+| `project_id` | Agent scope | Optional project scope for recall and summaries |
 
 Memori receives the completed user message, final assistant response, and full raw tool trace after Hermes processing. That trace can include tool arguments and final tool result content, so enable Memori only for workspaces where sending those outputs to Memori Cloud is acceptable.
 

@@ -71,15 +71,28 @@ def _read_file_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
 def _load_config(hermes_home: str | Path | None = None) -> MemoriConfig | None:
     file_config = _read_file_config(hermes_home)
 
-    api_key = _env("MEMORI_API_KEY") or str(file_config.get("apiKey") or "")
-    entity_id = _env("MEMORI_ENTITY_ID") or str(file_config.get("entityId") or "")
+    api_key = _env("MEMORI_API_KEY") or str(
+        file_config.get("api_key") or file_config.get("apiKey") or ""
+    )
+    entity_id = _env("MEMORI_ENTITY_ID") or str(
+        file_config.get("entity_id") or file_config.get("entityId") or ""
+    )
     project_id = (
         _env("MEMORI_PROJECT_ID")
+        or str(file_config.get("project_id") or "")
         or str(file_config.get("projectId") or "")
         or None
     )
-    process_id = _env("MEMORI_PROCESS_ID") or file_config.get("processId")
-    base_url = _env("MEMORI_API_URL_BASE") or file_config.get("baseUrl")
+    process_id = (
+        _env("MEMORI_PROCESS_ID")
+        or file_config.get("process_id")
+        or file_config.get("processId")
+    )
+    base_url = (
+        _env("MEMORI_API_URL_BASE")
+        or file_config.get("base_url")
+        or file_config.get("baseUrl")
+    )
 
     if not api_key or not entity_id:
         return None
@@ -157,7 +170,7 @@ constraints, current project state, open work, or anything that may depend on
 history. Do not use Memori for simple self-contained requests.
 
 Prefer targeted recall. Start with the configured project scope, use natural
-language queries, and add `dateStart`, `dateEnd`, `sessionId`, `source`, or
+language queries, and add `date_start`, `date_end`, `session_id`, `source`, or
 `signal` only when they help narrow the result. Use `memori_recall_summary` for
 daily briefs, status updates, project overviews, and state awareness; use
 `memori_recall` for precise facts, decisions, constraints, and prior outcomes.
@@ -308,11 +321,11 @@ was not provided."""
 
         entity_id = values.get("entity_id") or values.get("entityId")
         if entity_id:
-            config["entityId"] = entity_id
+            config["entity_id"] = entity_id
 
         project_id = values.get("project_id") or values.get("projectId")
         if project_id:
-            config["projectId"] = project_id
+            config["project_id"] = project_id
 
         path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
@@ -335,16 +348,21 @@ was not provided."""
         params = {k: v for k, v in args.items() if v not in (None, "")}
         if (
             self._project_id
-            and not params.get("projectId")
             and not params.get("project_id")
+            and not params.get("projectId")
         ):
-            params["projectId"] = self._project_id
+            params["project_id"] = self._project_id
         return params
 
 
 def register(ctx: Any) -> None:
     """Hermes plugin entry point."""
     ctx.register_memory_provider(MemoriMemoryProvider())
+    ctx.register_skill(
+        "memory",
+        Path(__file__).with_name("SKILL.md"),
+        "Use Memori recall, summaries, quota, signup, and feedback tools.",
+    )
 
 
 __all__ = ["MemoriMemoryProvider", "register"]

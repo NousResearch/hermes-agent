@@ -38,21 +38,21 @@ MEMORI_RECALL_SCHEMA = {
                 "type": "string",
                 "description": "Natural language search query. Use real words, not regex.",
             },
-            "dateStart": {
+            "date_start": {
                 "type": "string",
                 "description": "UTC ISO 8601 lower bound for memory creation time.",
             },
-            "dateEnd": {
+            "date_end": {
                 "type": "string",
                 "description": "UTC ISO 8601 upper bound for memory creation time.",
             },
-            "projectId": {
+            "project_id": {
                 "type": "string",
                 "description": "Override the configured Memori project only when requested.",
             },
-            "sessionId": {
+            "session_id": {
                 "type": "string",
-                "description": "Filter to a specific session. Requires projectId.",
+                "description": "Filter to a specific session. Requires project_id.",
             },
             "signal": {
                 "type": "string",
@@ -78,21 +78,21 @@ MEMORI_RECALL_SUMMARY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "dateStart": {
+            "date_start": {
                 "type": "string",
                 "description": "UTC ISO 8601 lower bound for summaries.",
             },
-            "dateEnd": {
+            "date_end": {
                 "type": "string",
                 "description": "UTC ISO 8601 upper bound for summaries.",
             },
-            "projectId": {
+            "project_id": {
                 "type": "string",
                 "description": "Override the configured Memori project only when requested.",
             },
-            "sessionId": {
+            "session_id": {
                 "type": "string",
-                "description": "Filter to a specific session. Requires projectId.",
+                "description": "Filter to a specific session. Requires project_id.",
             },
         },
     },

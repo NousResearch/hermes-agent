@@ -103,7 +103,8 @@ The recall algorithm takes into account factors such as:
 
 This allows agents to retrieve the most relevant facts, decisions, constraints, patterns, and prior outcomes without stuffing irrelevant history into the prompt.
 
-**Supported parameters:** `entity_id`, `project_id`, `session_id`, `date_start`, `date_end`, `source`, `signal`
+**Supported recall parameters:** `query`, `project_id`, `session_id`,
+`date_start`, `date_end`, `source`, `signal`
 
 **Memory classification schema**
 
@@ -151,6 +152,10 @@ Available tools:
 - **`memori_quota`** - check Memori quota and limits
 - **`memori_signup`** - request a Memori API key
 - **`memori_feedback`** - report memory quality issues or wins
+
+The plugin also ships an explicit-load skill, **`memori:memory`**, with agent
+guidance for recall, summaries, quota checks, signup, feedback, and
+trace-backed memory behavior.
 
 ---
 
@@ -239,9 +244,9 @@ both conversation and agent execution.
 
 Memory is scoped to prevent noise and keep recall relevant:
 
-- `entity_id` - user, workspace, agent, tenant, or system context
-- `project_id` - project or workspace scope
-- `process_id` - Hermes agent identity or workflow identity
+- `MEMORI_ENTITY_ID` / `entity_id` - user, workspace, agent, tenant, or system context
+- `MEMORI_PROJECT_ID` / `project_id` - project or workspace scope
+- `MEMORI_PROCESS_ID` / `process_id` - Hermes agent identity or workflow identity
 - `session_id` - specific Hermes session
 - `date_start` / `date_end` - time-bounded recall
 - `source` - type of memory, for recall filtering

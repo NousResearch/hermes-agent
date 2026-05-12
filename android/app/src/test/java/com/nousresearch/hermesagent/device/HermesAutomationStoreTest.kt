@@ -727,6 +727,40 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun overlaySceneLayoutHandlesPercentPixelAndNarrowScreens() {
+        val context = RuntimeEnvironment.getApplication()
+
+        val percentPayload = HermesOverlaySceneBridge.payloadFromArguments(
+            org.json.JSONObject()
+                .put("scene_title", "Screen fit")
+                .put("scene_text", "Use most of the safe area without exceeding the phone width.")
+                .put("width", "96%"),
+        )
+        assertEquals("fraction", percentPayload.getString("width_mode"))
+        assertEquals("0.96", percentPayload.getString("width_fraction"))
+
+        val percentLayout = HermesOverlaySceneBridge.resolvedLayoutMetrics(context, percentPayload)
+        assertTrue(percentLayout.toString(), percentLayout.resolvedWidthPx <= percentLayout.availableWidthPx)
+        assertTrue(percentLayout.toString(), percentLayout.usableWidthPx <= percentLayout.screenWidthPx)
+        assertTrue(percentLayout.toString(), percentLayout.maxHeightPx > percentLayout.textMaxHeightPx)
+        assertTrue(percentLayout.toString(), percentLayout.textMaxLines in 6..12)
+        assertTrue(percentLayout.toJson().toString(), percentLayout.toJson().getDouble("screen_aspect_ratio") >= 1.0)
+
+        val pixelPayload = HermesOverlaySceneBridge.payloadFromArguments(
+            org.json.JSONObject()
+                .put("scene_title", "Pixel fit")
+                .put("scene_text", "The agent may pass physical pixels from a screenshot.")
+                .put("scene_width_px", 50000),
+        )
+        assertEquals("px", pixelPayload.getString("width_mode"))
+        assertEquals(50000, pixelPayload.getInt("width_px"))
+
+        val pixelLayout = HermesOverlaySceneBridge.resolvedLayoutMetrics(context, pixelPayload)
+        assertTrue(pixelLayout.toString(), pixelLayout.resolvedWidthPx <= pixelLayout.availableWidthPx)
+        assertTrue(pixelLayout.toString(), pixelLayout.resolvedWidthPx >= 160)
+    }
+
+    @Test
     fun bridgeCreatesPhoneStateTriggerRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

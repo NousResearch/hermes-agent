@@ -12,11 +12,14 @@ import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -69,11 +72,11 @@ object HermesOverlaySceneBridge {
         return runOnMainThread {
             val manager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             removeCurrentView(manager)
-            val view = buildSceneView(appContext, payload)
-            manager.addView(view, layoutParams(appContext, payload))
+            val layoutMetrics = resolvedLayoutMetrics(appContext, payload)
+            val view = buildSceneView(appContext, payload, layoutMetrics)
+            manager.addView(view, layoutParams(appContext, payload, layoutMetrics))
             currentView = view
             currentSceneId = payload.optString("scene_id").ifBlank { DEFAULT_SCENE_ID }
-            val layoutMetrics = resolvedLayoutMetrics(appContext, payload)
             val sceneToken = currentSceneToken + 1L
             currentSceneToken = sceneToken
             val hideAfterMs = payload.optLong("hide_after_ms", 0L)
@@ -145,9 +148,7 @@ object HermesOverlaySceneBridge {
                 .orEmpty()
                 .ifBlank { "center" },
         )
-        val widthDp = intArgument(arguments, "scene_width_dp", "width_dp", "width")
-            ?.coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP)
-            ?: DEFAULT_WIDTH_DP
+        val widthRequest = widthRequestFromArguments(arguments)
         val hideAfterMs = longArgument(arguments, "scene_hide_after_ms", "hide_after_ms", "timeout_ms", "duration_ms")
             ?.coerceIn(MIN_HIDE_AFTER_MS, MAX_HIDE_AFTER_MS)
             ?: 0L
@@ -158,11 +159,14 @@ object HermesOverlaySceneBridge {
             .put("text", text.take(MAX_TEXT_CHARS))
             .put("button_text", buttonText)
             .put("position", position)
-            .put("width_dp", widthDp)
+            .put("width_dp", widthRequest.widthDp)
+            .put("width_mode", widthRequest.mode)
+            .put("width_fraction", widthRequest.widthFraction ?: JSONObject.NULL)
+            .put("width_px", widthRequest.widthPx ?: JSONObject.NULL)
             .put("hide_after_ms", hideAfterMs)
     }
 
-    private fun buildSceneView(context: Context, payload: JSONObject): View {
+    private fun buildSceneView(context: Context, payload: JSONObject, layoutMetrics: OverlayLayoutMetrics): View {
         val density = context.resources.displayMetrics.density
         val padding = (18 * density).toInt()
         val container = LinearLayout(context).apply {
@@ -188,7 +192,8 @@ object HermesOverlaySceneBridge {
             setTextColor(Color.rgb(224, 226, 238))
             textSize = 15f
             setSingleLine(false)
-            maxLines = 12
+            maxLines = layoutMetrics.textMaxLines
+            maxHeight = layoutMetrics.textMaxHeightPx
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, (10 * density).toInt(), 0, (14 * density).toInt())
         })
@@ -198,6 +203,8 @@ object HermesOverlaySceneBridge {
             textSize = 14f
             gravity = Gravity.CENTER
             typeface = Typeface.DEFAULT_BOLD
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             setPadding((18 * density).toInt(), (10 * density).toInt(), (18 * density).toInt(), (10 * density).toInt())
             background = GradientDrawable().apply {
                 setColor(Color.rgb(132, 113, 246))
@@ -208,8 +215,7 @@ object HermesOverlaySceneBridge {
         return container
     }
 
-    private fun layoutParams(context: Context, payload: JSONObject): WindowManager.LayoutParams {
-        val layoutMetrics = resolvedLayoutMetrics(context, payload)
+    private fun layoutParams(context: Context, payload: JSONObject, layoutMetrics: OverlayLayoutMetrics): WindowManager.LayoutParams {
         return WindowManager.LayoutParams(
             layoutMetrics.resolvedWidthPx,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -237,15 +243,27 @@ object HermesOverlaySceneBridge {
         val resourcesMetrics = context.resources.displayMetrics
         var screenWidthPx = resourcesMetrics.widthPixels
         var screenHeightPx = resourcesMetrics.heightPixels
+        var safeInsetLeftPx = 0
+        var safeInsetTopPx = 0
+        var safeInsetRightPx = 0
+        var safeInsetBottomPx = 0
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             runCatching {
                 val manager = context.applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                val bounds = manager.currentWindowMetrics.bounds
+                val windowMetrics = manager.currentWindowMetrics
+                val bounds = windowMetrics.bounds
                 if (bounds.width() > 0 && bounds.height() > 0) {
                     screenWidthPx = bounds.width()
                     screenHeightPx = bounds.height()
                 }
+                val insets = windowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                safeInsetLeftPx = insets.left.coerceAtLeast(0)
+                safeInsetTopPx = insets.top.coerceAtLeast(0)
+                safeInsetRightPx = insets.right.coerceAtLeast(0)
+                safeInsetBottomPx = insets.bottom.coerceAtLeast(0)
             }
         }
 
@@ -256,25 +274,83 @@ object HermesOverlaySceneBridge {
             screenHeightPx = (640 * density).roundToInt()
         }
 
+        val usableWidthPx = (screenWidthPx - safeInsetLeftPx - safeInsetRightPx)
+            .coerceAtLeast((160 * density).roundToInt())
+        val usableHeightPx = (screenHeightPx - safeInsetTopPx - safeInsetBottomPx)
+            .coerceAtLeast((240 * density).roundToInt())
+        val shortEdgePx = min(usableWidthPx, usableHeightPx)
+        val longEdgePx = max(usableWidthPx, usableHeightPx)
+        val shortEdgeDp = shortEdgePx / density
+        val usableHeightDp = usableHeightPx / density
+        val orientation = if (usableWidthPx >= usableHeightPx) "landscape" else "portrait"
+
         val requestedWidthDp = payload.optInt("width_dp", DEFAULT_WIDTH_DP)
             .coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP)
-        val requestedWidthPx = (requestedWidthDp * density).roundToInt()
-        val edgeMarginPx = (OVERLAY_EDGE_MARGIN_DP * density).roundToInt().coerceAtLeast(1)
-        val availableWidthPx = (screenWidthPx - (edgeMarginPx * 2)).coerceAtLeast((160 * density).roundToInt())
+        val widthMode = payload.optString("width_mode").ifBlank { WIDTH_MODE_DP }
+        val requestedWidthPx = when (widthMode) {
+            WIDTH_MODE_FRACTION -> {
+                val fraction = payload.optString("width_fraction")
+                    .toDoubleOrNull()
+                    ?.coerceIn(MIN_WIDTH_FRACTION, MAX_WIDTH_FRACTION)
+                    ?: DEFAULT_WIDTH_FRACTION
+                (usableWidthPx * fraction).roundToInt()
+            }
+            WIDTH_MODE_PX -> payload.optInt("width_px", 0)
+                .takeIf { it > 0 }
+                ?: (requestedWidthDp * density).roundToInt()
+            else -> (requestedWidthDp * density).roundToInt()
+        }
+        val edgeMarginDp = when {
+            shortEdgeDp < 360f -> 8
+            shortEdgeDp < 600f -> 12
+            else -> OVERLAY_EDGE_MARGIN_DP
+        }
+        val edgeMarginPx = (edgeMarginDp * density).roundToInt().coerceAtLeast(1)
+        val maxWidthFraction = when {
+            shortEdgeDp < 360f -> 0.96f
+            orientation == "landscape" -> 0.72f
+            else -> 0.92f
+        }
+        val availableWidthPx = min(
+            usableWidthPx - (edgeMarginPx * 2),
+            (usableWidthPx * maxWidthFraction).roundToInt(),
+        ).coerceAtLeast((160 * density).roundToInt())
         val minWidthPx = (MIN_WIDTH_DP * density).roundToInt().coerceAtMost(availableWidthPx)
         val resolvedWidthPx = requestedWidthPx.coerceIn(minWidthPx, availableWidthPx)
-        val verticalInsetPx = ((screenHeightPx * 0.08f).roundToInt())
-            .coerceIn((24 * density).roundToInt(), (72 * density).roundToInt())
+        val verticalInsetPx = ((usableHeightPx * 0.08f).roundToInt())
+            .coerceIn((20 * density).roundToInt(), (72 * density).roundToInt())
+        val maxHeightPx = (usableHeightPx - (verticalInsetPx * 2))
+            .coerceAtLeast((160 * density).roundToInt())
+        val textMaxLines = when {
+            shortEdgeDp < 360f || usableHeightDp < 520f -> 6
+            orientation == "landscape" -> 8
+            else -> 12
+        }
+        val textMaxHeightPx = (maxHeightPx - (112 * density).roundToInt())
+            .coerceAtLeast((96 * density).roundToInt())
         return OverlayLayoutMetrics(
             screenWidthPx = screenWidthPx,
             screenHeightPx = screenHeightPx,
+            usableWidthPx = usableWidthPx,
+            usableHeightPx = usableHeightPx,
+            safeInsetLeftPx = safeInsetLeftPx,
+            safeInsetTopPx = safeInsetTopPx,
+            safeInsetRightPx = safeInsetRightPx,
+            safeInsetBottomPx = safeInsetBottomPx,
             density = density,
+            orientation = orientation,
+            shortEdgePx = shortEdgePx,
+            longEdgePx = longEdgePx,
+            widthMode = widthMode,
             requestedWidthDp = requestedWidthDp,
             requestedWidthPx = requestedWidthPx,
             availableWidthPx = availableWidthPx,
             resolvedWidthPx = resolvedWidthPx,
             edgeMarginPx = edgeMarginPx,
             verticalInsetPx = verticalInsetPx,
+            maxHeightPx = maxHeightPx,
+            textMaxHeightPx = textMaxHeightPx,
+            textMaxLines = textMaxLines,
         )
     }
 
@@ -328,6 +404,84 @@ object HermesOverlaySceneBridge {
         }
     }
 
+    private fun widthRequestFromArguments(arguments: JSONObject): OverlayWidthRequest {
+        explicitFractionArgument(arguments, "scene_width_fraction", "width_fraction", "scene_width_percent", "width_percent")?.let { fraction ->
+            return OverlayWidthRequest(
+                mode = WIDTH_MODE_FRACTION,
+                widthDp = DEFAULT_WIDTH_DP,
+                widthFraction = fraction.coerceIn(MIN_WIDTH_FRACTION, MAX_WIDTH_FRACTION),
+            )
+        }
+        intArgument(arguments, "scene_width_px", "width_px")?.let { widthPx ->
+            return OverlayWidthRequest(
+                mode = WIDTH_MODE_PX,
+                widthDp = DEFAULT_WIDTH_DP,
+                widthPx = widthPx.coerceAtLeast(1),
+            )
+        }
+        rawArgument(arguments, "scene_width", "width")?.let { raw ->
+            parseWidthToken(raw)?.let { return it }
+        }
+        val widthDp = intArgument(arguments, "scene_width_dp", "width_dp", "width")
+            ?.coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP)
+            ?: DEFAULT_WIDTH_DP
+        return OverlayWidthRequest(mode = WIDTH_MODE_DP, widthDp = widthDp)
+    }
+
+    private fun parseWidthToken(raw: Any): OverlayWidthRequest? {
+        return when (raw) {
+            is Number -> {
+                val value = raw.toDouble()
+                if (value > 0.0 && value <= 1.0) {
+                    OverlayWidthRequest(
+                        mode = WIDTH_MODE_FRACTION,
+                        widthDp = DEFAULT_WIDTH_DP,
+                        widthFraction = value.coerceIn(MIN_WIDTH_FRACTION, MAX_WIDTH_FRACTION),
+                    )
+                } else {
+                    val intValue = value.roundToInt()
+                    if (intValue > 0) {
+                        OverlayWidthRequest(
+                            mode = WIDTH_MODE_DP,
+                            widthDp = intValue.coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP),
+                        )
+                    } else {
+                        null
+                    }
+                }
+            }
+            is String -> {
+                val trimmed = raw.trim().lowercase(Locale.US)
+                when {
+                    trimmed.endsWith("%") -> trimmed.dropLast(1).trim().toDoubleOrNull()?.let { percent ->
+                        OverlayWidthRequest(
+                            mode = WIDTH_MODE_FRACTION,
+                            widthDp = DEFAULT_WIDTH_DP,
+                            widthFraction = (percent / 100.0).coerceIn(MIN_WIDTH_FRACTION, MAX_WIDTH_FRACTION),
+                        )
+                    }
+                    trimmed.endsWith("px") -> trimmed.dropLast(2).trim().toIntOrNull()?.takeIf { it > 0 }?.let { widthPx ->
+                        OverlayWidthRequest(
+                            mode = WIDTH_MODE_PX,
+                            widthDp = DEFAULT_WIDTH_DP,
+                            widthPx = widthPx,
+                        )
+                    }
+                    trimmed.endsWith("dp") -> trimmed.dropLast(2).trim().toIntOrNull()?.takeIf { it > 0 }?.let { widthDp ->
+                        OverlayWidthRequest(
+                            mode = WIDTH_MODE_DP,
+                            widthDp = widthDp.coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP),
+                        )
+                    }
+                    else -> trimmed.toDoubleOrNull()?.let { value ->
+                        parseWidthToken(value)
+                    }
+                }
+            }
+            else -> null
+        }
+    }
+
     private fun stringArgument(arguments: JSONObject, vararg names: String, allowEmpty: Boolean = false): String? {
         names.forEach { name ->
             if (arguments.has(name) && !arguments.isNull(name)) {
@@ -335,6 +489,15 @@ object HermesOverlaySceneBridge {
                 if (allowEmpty || value.isNotBlank()) {
                     return value
                 }
+            }
+        }
+        return null
+    }
+
+    private fun rawArgument(arguments: JSONObject, vararg names: String): Any? {
+        names.forEach { name ->
+            if (arguments.has(name) && !arguments.isNull(name)) {
+                return arguments.opt(name)
             }
         }
         return null
@@ -349,6 +512,25 @@ object HermesOverlaySceneBridge {
                 }
                 if (value != null) {
                     return value
+                }
+            }
+        }
+        return null
+    }
+
+    private fun explicitFractionArgument(arguments: JSONObject, vararg names: String): Double? {
+        names.forEach { name ->
+            if (arguments.has(name) && !arguments.isNull(name)) {
+                val raw = arguments.opt(name)
+                val value = when (raw) {
+                    is Number -> raw.toDouble()
+                    is String -> raw.trim().removeSuffix("%").toDoubleOrNull()?.let {
+                        if (raw.trim().endsWith("%")) it / 100.0 else it
+                    }
+                    else -> null
+                }
+                if (value != null && value > 0.0) {
+                    return if (value > 1.0) value / 100.0 else value
                 }
             }
         }
@@ -410,32 +592,72 @@ object HermesOverlaySceneBridge {
     private const val DEFAULT_WIDTH_DP = 360
     private const val MIN_WIDTH_DP = 220
     private const val MAX_WIDTH_DP = 560
+    private const val DEFAULT_WIDTH_FRACTION = 0.92
+    private const val MIN_WIDTH_FRACTION = 0.35
+    private const val MAX_WIDTH_FRACTION = 0.98
+    private const val WIDTH_MODE_DP = "dp"
+    private const val WIDTH_MODE_PX = "px"
+    private const val WIDTH_MODE_FRACTION = "fraction"
     private const val OVERLAY_EDGE_MARGIN_DP = 16
     private const val MIN_HIDE_AFTER_MS = 1000L
     private const val MAX_HIDE_AFTER_MS = 600_000L
 }
 
+private data class OverlayWidthRequest(
+    val mode: String,
+    val widthDp: Int,
+    val widthPx: Int? = null,
+    val widthFraction: Double? = null,
+)
+
 internal data class OverlayLayoutMetrics(
     val screenWidthPx: Int,
     val screenHeightPx: Int,
+    val usableWidthPx: Int,
+    val usableHeightPx: Int,
+    val safeInsetLeftPx: Int,
+    val safeInsetTopPx: Int,
+    val safeInsetRightPx: Int,
+    val safeInsetBottomPx: Int,
     val density: Float,
+    val orientation: String,
+    val shortEdgePx: Int,
+    val longEdgePx: Int,
+    val widthMode: String,
     val requestedWidthDp: Int,
     val requestedWidthPx: Int,
     val availableWidthPx: Int,
     val resolvedWidthPx: Int,
     val edgeMarginPx: Int,
     val verticalInsetPx: Int,
+    val maxHeightPx: Int,
+    val textMaxHeightPx: Int,
+    val textMaxLines: Int,
 ) {
     fun toJson(): JSONObject {
         return JSONObject()
             .put("screen_width_px", screenWidthPx)
             .put("screen_height_px", screenHeightPx)
+            .put("usable_width_px", usableWidthPx)
+            .put("usable_height_px", usableHeightPx)
+            .put("safe_inset_left_px", safeInsetLeftPx)
+            .put("safe_inset_top_px", safeInsetTopPx)
+            .put("safe_inset_right_px", safeInsetRightPx)
+            .put("safe_inset_bottom_px", safeInsetBottomPx)
             .put("density", density.toDouble())
+            .put("orientation", orientation)
+            .put("screen_aspect_ratio", if (shortEdgePx > 0) longEdgePx.toDouble() / shortEdgePx.toDouble() else 1.0)
+            .put("short_edge_px", shortEdgePx)
+            .put("long_edge_px", longEdgePx)
+            .put("width_mode", widthMode)
             .put("requested_width_dp", requestedWidthDp)
             .put("requested_width_px", requestedWidthPx)
             .put("available_width_px", availableWidthPx)
             .put("resolved_width_px", resolvedWidthPx)
             .put("edge_margin_px", edgeMarginPx)
             .put("vertical_inset_px", verticalInsetPx)
+            .put("max_height_px", maxHeightPx)
+            .put("text_max_height_px", textMaxHeightPx)
+            .put("text_max_lines", textMaxLines)
     }
 }

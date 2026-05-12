@@ -16,6 +16,7 @@ import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.HermesLogcatEvent
 import com.nousresearch.hermesagent.device.HermesLogcatWatcherBridge
 import com.nousresearch.hermesagent.device.HermesNotificationActionBridge
+import com.nousresearch.hermesagent.device.HermesOverlaySceneBridge
 import com.nousresearch.hermesagent.device.HermesQuickSettingsTileBridge
 import org.json.JSONArray
 import org.json.JSONObject
@@ -97,6 +98,26 @@ class HermesAutomationInstrumentedTest {
 
         val deleted = JSONObject(HermesAutomationBridge.performActionJson(app, "delete", JSONObject().put("id", id)))
         assertTrue(deleted.toString(), deleted.getBoolean("success"))
+    }
+
+    @Test
+    fun overlaySceneLayoutUsesDeviceSafeAreaAndPercentWidth() {
+        val payload = HermesOverlaySceneBridge.payloadFromArguments(
+            JSONObject()
+                .put("scene_title", "Hermes overlay")
+                .put("scene_text", "Screen-ratio smoke for narrow, landscape, and modern Android displays.")
+                .put("width", "94%"),
+        )
+
+        val layout = HermesOverlaySceneBridge.resolvedLayoutMetrics(app, payload)
+        assertEquals("fraction", layout.widthMode)
+        assertTrue(layout.toString(), layout.screenWidthPx > 0)
+        assertTrue(layout.toString(), layout.screenHeightPx > 0)
+        assertTrue(layout.toString(), layout.usableWidthPx <= layout.screenWidthPx)
+        assertTrue(layout.toString(), layout.usableHeightPx <= layout.screenHeightPx)
+        assertTrue(layout.toString(), layout.resolvedWidthPx <= layout.availableWidthPx)
+        assertTrue(layout.toString(), layout.textMaxHeightPx > 0)
+        assertTrue(layout.toJson().toString(), layout.toJson().has("screen_aspect_ratio"))
     }
 
     @Test

@@ -243,16 +243,24 @@ def test_overlay_scene_uses_screen_aware_window_bounds():
         REPO_ROOT / "android/app/src/test/java/com/nousresearch/hermesagent/device/HermesAutomationStoreTest.kt"
     ).read_text(encoding="utf-8")
 
-    assert "resolvedLayoutMetrics(context, payload)" in overlay
-    assert "currentWindowMetrics.bounds" in overlay
+    assert "val layoutMetrics = resolvedLayoutMetrics(appContext, payload)" in overlay
+    assert "currentWindowMetrics" in overlay
+    assert "windowInsets.getInsetsIgnoringVisibility" in overlay
+    assert "safeInsetLeftPx" in overlay
+    assert "usableWidthPx" in overlay
+    assert "screen_aspect_ratio" in overlay
+    assert "width_mode" in overlay
+    assert "WIDTH_MODE_FRACTION" in overlay
     assert "availableWidthPx" in overlay
     assert "resolvedWidthPx" in overlay
     assert "OVERLAY_EDGE_MARGIN_DP" in overlay
     assert "FLAG_LAYOUT_NO_LIMITS" not in overlay
-    assert "maxLines = 12" in overlay
+    assert "maxLines = layoutMetrics.textMaxLines" in overlay
+    assert "maxHeight = layoutMetrics.textMaxHeightPx" in overlay
     assert "TextUtils.TruncateAt.END" in overlay
     assert "layoutMetrics.toJson()" in overlay
     assert "layout.resolvedWidthPx <= layout.availableWidthPx" in automation_test
+    assert "overlaySceneLayoutHandlesPercentPixelAndNarrowScreens" in automation_test
 
 
 def test_device_backend_exposes_deeper_radio_control_actions_and_status():

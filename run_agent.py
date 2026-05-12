@@ -14581,6 +14581,8 @@ class AIAgent:
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).
+                raw_reasoning = getattr(assistant_message, 'reasoning_content', None) or getattr(assistant_message, 'reasoning', None)
+                _think_text = ""
                 if (assistant_message.content and self.tool_progress_callback):
                     _think_text = assistant_message.content.strip()
                     # Strip reasoning XML tags that shouldn't leak to parent display
@@ -14588,18 +14590,28 @@ class AIAgent:
                         r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
                     ).strip()
                     # For subagents: relay first line to parent display (existing behaviour).
-                    # For all agents with a structured callback: emit reasoning.available event.
                     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
                     if first_line and getattr(self, '_delegate_depth', 0) > 0:
                         try:
                             self.tool_progress_callback("_thinking", first_line)
                         except Exception:
                             pass
-                    elif _think_text:
-                        try:
-                            self.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-                        except Exception:
-                            pass
+                # Emit reasoning.available with actual reasoning content when the
+                # model provides it (reasoning_content or reasoning field). Falls
+                # back to stripped content for models without a dedicated reasoning
+                # field. Previously this always read from .content, which caused
+                # reasoning.available to carry the final response text instead of
+                # the model's reasoning.
+                if raw_reasoning:
+                    try:
+                        self.tool_progress_callback("reasoning.available", "_thinking", raw_reasoning[:500], None)
+                    except Exception:
+                        pass
+                elif _think_text:
+                    try:
+                        self.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
+                    except Exception:
+                        pass
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times

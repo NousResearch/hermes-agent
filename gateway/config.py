@@ -265,6 +265,13 @@ class PlatformConfig:
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
     
+    # Explicit env-var indirection for secrets (Fix 105).
+    # When set, _apply_env_overrides() resolves the token/api_key from this
+    # named env var rather than the generic platform-wide fallback.
+    # Declare in config.yaml as: bot_token_env: MY_PROFILE_BOT_TOKEN
+    bot_token_env: Optional[str] = None
+    api_key_env: Optional[str] = None
+    
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
     
@@ -294,6 +301,8 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
+            bot_token_env=data.get("bot_token_env") or None,
+            api_key_env=data.get("api_key_env") or None,
             extra=data.get("extra", {}),
         )
 
@@ -648,6 +657,38 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
+            # Fix 85: load-time guard — refuse boot if any config value
+            # contains an unexpanded ${VAR} literal (regex: strict braces +
+            # uppercase/underscore name only; does NOT match ${VAR:-default}
+            # or bare $VAR).  Keys ending in `_env` are EXEMPT (they are
+            # intended to name env vars, not contain their values).
+            import re as _re
+            _UNEXPANDED_RE = _re.compile(r"\${[A-Z_][A-Z0-9_]*}")
+
+            def _check_unexpanded(obj, key_path="", parent_key=""):
+                """Walk config dict/list and raise on unexpanded ${VAR} literals."""
+                if isinstance(obj, str):
+                    # Exempt: key ends with _env (the indirection mechanism)
+                    if not parent_key.endswith("_env") and _UNEXPANDED_RE.search(obj):
+                        _match = _UNEXPANDED_RE.search(obj)
+                        _profile_name = _home.name
+                        raise RuntimeError(
+                            f"Unexpanded env-var literal `{_match.group(0)}` in profile "
+                            f"'{_profile_name}' at key path `{key_path}`. "
+                            f"Use a literal value or `<key>_env: VAR_NAME` indirection. "
+                            f"Never leave `${{VAR}}` in config.yaml."
+                        )
+                elif isinstance(obj, dict):
+                    for k, v in obj.items():
+                        child_path = f"{key_path}.{k}" if key_path else k
+                        _check_unexpanded(v, child_path, parent_key=k)
+                elif isinstance(obj, list):
+                    for i, item in enumerate(obj):
+                        _check_unexpanded(item, f"{key_path}[{i}]", parent_key=parent_key)
+
+            _check_unexpanded(yaml_cfg)
+
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
@@ -713,6 +754,134 @@ def load_gateway_config() -> GatewayConfig:
                     if merged_extra:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
+
+                    # MU-2 (2026-05-11): map `platforms.telegram.allowed_user_ids`
+                    # to TELEGRAM_ALLOWED_USERS env var (the canonical key the gateway
+                    # reads is `allow_from`; `allowed_user_ids` was previously silently
+                    # ignored).  We handle it here so it applies even when the user only
+                    # writes under `platforms:` and not the legacy top-level `telegram:`.
+                    if plat_name == Platform.TELEGRAM.value:
+                        _tg_ids = plat_block.get("allowed_user_ids")
+                        if _tg_ids is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
+                            if isinstance(_tg_ids, list):
+                                _tg_ids_csv = ",".join(str(u) for u in _tg_ids if u)
+                            else:
+                                _tg_ids_csv = str(_tg_ids)
+                            os.environ["TELEGRAM_ALLOWED_USERS"] = _tg_ids_csv
+
+                        # tenant-aware cross-profile guard (Refactor #2)
+                        # Raise on UID overlap only if EITHER profile is `tenant: client`.
+                        # Both profiles `tenant: operator` (Henry's own surfaces) may share UIDs.
+                        # Missing `tenant:` field is treated as `client` (fail-safe) and a
+                        # WARNING is logged. If `tenant` is missing AND an overlap exists,
+                        # the boot is aborted with a schema-validation error (crash early).
+                        #
+                        # Classification rule: Henry-only surface = operator; third-party-shared = client.
+                        _self_tenant_raw = yaml_cfg.get("tenant")
+                        _self_tenant = (str(_self_tenant_raw).strip().lower()
+                                         if _self_tenant_raw is not None else None)
+                        _self_tenant_missing = _self_tenant is None
+                        if _self_tenant not in (None, "operator", "client"):
+                            logger.warning(
+                                "[CONFIG GUARD] Profile tenant=%r is not 'operator'|'client'; "
+                                "treating as 'client' (fail-safe).", _self_tenant_raw,
+                            )
+                            _self_tenant = "client"
+                        _ids_to_check = set()
+                        _raw = plat_block.get("allowed_user_ids") or plat_block.get("allow_from")
+                        if isinstance(_raw, list):
+                            _ids_to_check = {str(u) for u in _raw if u}
+                        elif isinstance(_raw, str) and _raw:
+                            _ids_to_check = {_raw}
+                        if _ids_to_check:
+                            try:
+                                import yaml as _yaml_guard
+                                _g_home = get_hermes_home()
+                                _g_profiles_root = _g_home.parent
+                                _g_current = _g_home.name
+                                if _g_profiles_root.name == "profiles":
+                                    for _g_pdir in _g_profiles_root.iterdir():
+                                        if not _g_pdir.is_dir() or _g_pdir.name == _g_current:
+                                            continue
+                                        _g_cfg_path = _g_pdir / "config.yaml"
+                                        if not _g_cfg_path.exists():
+                                            continue
+                                        try:
+                                            with open(_g_cfg_path, encoding="utf-8") as _g_f:
+                                                _g_peer = _yaml_guard.safe_load(_g_f) or {}
+                                            _g_tg = _g_peer.get("platforms", {}).get("telegram", {})
+                                            _g_peer_raw = _g_tg.get("allowed_user_ids") or _g_tg.get("allow_from")
+                                            _g_peer_ids: set = set()
+                                            if isinstance(_g_peer_raw, list):
+                                                _g_peer_ids = {str(u) for u in _g_peer_raw if u}
+                                            elif isinstance(_g_peer_raw, str) and _g_peer_raw:
+                                                _g_peer_ids = {_g_peer_raw}
+                                            _g_overlap = _ids_to_check & _g_peer_ids
+                                            if not _g_overlap:
+                                                continue
+                                            # Resolve peer tenant
+                                            _peer_tenant_raw = _g_peer.get("tenant")
+                                            _peer_tenant = (str(_peer_tenant_raw).strip().lower()
+                                                             if _peer_tenant_raw is not None else None)
+                                            _peer_tenant_missing = _peer_tenant is None
+                                            if _peer_tenant not in (None, "operator", "client"):
+                                                _peer_tenant = "client"
+                                            # Schema-validation hook: missing tenant + overlap = abort.
+                                            if (_self_tenant_missing or _peer_tenant_missing) and _g_overlap:
+                                                _missing_on = []
+                                                if _self_tenant_missing:
+                                                    _missing_on.append(_g_current)
+                                                if _peer_tenant_missing:
+                                                    _missing_on.append(_g_pdir.name)
+                                                logger.error(
+                                                    "[CONFIG GUARD] Missing `tenant:` field on profile(s) %s "
+                                                    "AND allowed_user_ids overlap %s with peer '%s'. "
+                                                    "Schema-validation: refuse to boot. Add `tenant: operator` "
+                                                    "or `tenant: client` to each profile's config.yaml.",
+                                                    _missing_on, _g_overlap, _g_pdir.name,
+                                                )
+                                                raise RuntimeError(
+                                                    f"schema: missing `tenant:` field on profile(s) "
+                                                    f"{_missing_on} with UID overlap {_g_overlap} "
+                                                    f"vs profile '{_g_pdir.name}'. Add tenant: operator|client."
+                                                )
+                                            # Effective tenant (fail-safe = client when missing — though
+                                            # the schema hook above will already have raised in that case).
+                                            _eff_self = _self_tenant or "client"
+                                            _eff_peer = _peer_tenant or "client"
+                                            if _eff_self == "operator" and _eff_peer == "operator":
+                                                logger.info(
+                                                    "[CONFIG GUARD] Profile '%s' shares allowed_user_ids %s "
+                                                    "with operator peer '%s' — ALLOWED (both tenant=operator).",
+                                                    _g_current, _g_overlap, _g_pdir.name,
+                                                )
+                                                continue
+                                            logger.error(
+                                                "[CONFIG GUARD] Profile '%s' (tenant=%s) telegram "
+                                                "allowed_user_ids %s overlap with profile '%s' (tenant=%s). "
+                                                "Tenant identity leak risk. Gateway startup ABORTED.",
+                                                _g_current, _eff_self, _g_overlap, _g_pdir.name, _eff_peer,
+                                            )
+                                            raise RuntimeError(
+                                                f"allowed_user_ids overlap between profiles "
+                                                f"'{_g_current}' (tenant={_eff_self}) and "
+                                                f"'{_g_pdir.name}' (tenant={_eff_peer}): {_g_overlap}. "
+                                                f"Fix platforms.telegram.allowed_user_ids or re-classify tenant."
+                                            )
+                                        except RuntimeError:
+                                            raise
+                                        except Exception as _g_read_err:
+                                            logger.debug(
+                                                "Cross-profile guard: could not read %s: %s",
+                                                _g_cfg_path, _g_read_err,
+                                            )
+                            except RuntimeError:
+                                raise
+                            except Exception as _g_exc:
+                                logger.debug(
+                                    "Cross-profile guard skipped (non-fatal): %s", _g_exc
+                                )
+
                 gw_data["platforms"] = platforms_data
             for plat in Platform:
                 if plat == Platform.LOCAL:
@@ -860,6 +1029,14 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+                # MU-2 (2026-05-11): support `allowed_user_ids` as an alias for
+                # `allow_from` at the top-level `telegram:` config key.  The guard
+                # and env-var mapping for the `platforms.telegram` path is handled
+                # above in the platforms deep-merge loop.
+                allowed_user_ids_cfg = telegram_cfg.get("allowed_user_ids")
+                if allowed_user_ids_cfg is not None and "allow_from" not in telegram_cfg:
+                    telegram_cfg["allow_from"] = allowed_user_ids_cfg
+
                 allowed_users = telegram_cfg.get("allow_from")
                 if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
                     if isinstance(allowed_users, list):
@@ -951,6 +1128,10 @@ def load_gateway_config() -> GatewayConfig:
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
 
+    except RuntimeError:
+        # MU-2: RuntimeError is raised by startup guards (e.g. cross-profile
+        # allowed_user_ids overlap) — these are intentional hard failures.
+        raise
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
@@ -1043,12 +1224,46 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if telegram_token:
-        if Platform.TELEGRAM not in config.platforms:
-            config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
-        config.platforms[Platform.TELEGRAM].token = telegram_token
+    # Fix 105: respect per-profile bot_token_env indirection before generic fallback.
+    _tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    _tg_indirection = _tg_cfg.bot_token_env if _tg_cfg is not None else None
+    if _tg_indirection:
+        # Profile explicitly declares which env var holds its token.
+        _tg_token_from_indirection = os.getenv(_tg_indirection)
+        if _tg_token_from_indirection:
+            if Platform.TELEGRAM not in config.platforms:
+                config.platforms[Platform.TELEGRAM] = PlatformConfig()
+            config.platforms[Platform.TELEGRAM].enabled = True
+            config.platforms[Platform.TELEGRAM].token = _tg_token_from_indirection
+            logger.info(
+                "profile=%s applied override key=bot_token from=%s (indirection)",
+                getattr(config, "profile_name", "unknown"), _tg_indirection,
+            )
+        else:
+            # bot_token_env declared but var is unset — fail-safe: keep yaml literal, do NOT fall through to generic.
+            logger.warning(
+                "profile=%s bot_token_env=%s is declared but env var is unset; "
+                "keeping yaml literal token (fail-safe, not falling through to generic TELEGRAM_BOT_TOKEN).",
+                getattr(config, "profile_name", "unknown"), _tg_indirection,
+            )
+    else:
+        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if telegram_token:
+            if Platform.TELEGRAM not in config.platforms:
+                config.platforms[Platform.TELEGRAM] = PlatformConfig()
+            config.platforms[Platform.TELEGRAM].enabled = True
+            config.platforms[Platform.TELEGRAM].token = telegram_token
+            if _tg_cfg is not None and _tg_cfg.token and _tg_cfg.token != telegram_token:
+                logger.warning(
+                    "profile=%s generic env override applied to bot_token (TELEGRAM_BOT_TOKEN wins over yaml literal); "
+                    "consider declaring bot_token_env for explicit binding.",
+                    getattr(config, "profile_name", "unknown"),
+                )
+            else:
+                logger.info(
+                    "profile=%s applied override key=bot_token from=TELEGRAM_BOT_TOKEN (generic-fallback)",
+                    getattr(config, "profile_name", "unknown"),
+                )
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()

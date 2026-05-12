@@ -201,6 +201,63 @@ class TestRuntimeProvider:
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
 
+    def test_bedrock_claude_with_bearer_token_uses_converse(self, monkeypatch):
+        """When AWS_BEARER_TOKEN_BEDROCK is the auth source, Claude models must
+        route through the Converse API (boto3) rather than the AnthropicBedrock
+        SDK.  The AnthropicBedrock SDK only supports SigV4 and cannot send the
+        ``Authorization: Bearer <token>`` header Bedrock API Keys require —
+        routing Claude through it with a bearer token fails with
+        ``could not resolve credentials from session``.
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        # Clear SigV4 credentials so bearer token is the only auth source
+        for var in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"]:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKTestBearerTokenValue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        model_cfg = {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-opus-4-7",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value=model_cfg):
+            result = resolve_runtime_provider(requested="bedrock")
+
+        assert result["provider"] == "bedrock"
+        # Claude + bearer → Converse (not anthropic_messages)
+        assert result["api_mode"] == "bedrock_converse"
+        # The bedrock_anthropic signal must NOT be set (that triggers the
+        # AnthropicBedrock client which can't speak bearer auth).
+        assert not result.get("bedrock_anthropic")
+        assert result["source"] == "AWS_BEARER_TOKEN_BEDROCK"
+
+    def test_bedrock_claude_with_sigv4_still_uses_anthropic_sdk(self, monkeypatch):
+        """Regression guard: Claude models with SigV4 credentials must continue
+        to route through AnthropicBedrock SDK for prompt caching / thinking
+        budgets.  The bearer-token fallback must not affect the SigV4 path.
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        model_cfg = {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-opus-4-7",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value=model_cfg):
+            result = resolve_runtime_provider(requested="bedrock")
+
+        assert result["provider"] == "bedrock"
+        assert result["api_mode"] == "anthropic_messages"
+        assert result.get("bedrock_anthropic") is True
+        assert result["source"] == "AWS_ACCESS_KEY_ID"
+
 
 # ---------------------------------------------------------------------------
 # providers.py integration

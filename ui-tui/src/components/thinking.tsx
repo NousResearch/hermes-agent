@@ -294,7 +294,7 @@ function SubagentAccordion({
   rails?: TreeRails
   t: Theme
 }) {
-  const { t: ti } = useI18n()
+  const { t: ti, tStatus } = useI18n()
   const [open, setOpen] = useState(expanded)
   const [deep, setDeep] = useState(expanded)
   const [openThinking, setOpenThinking] = useState(expanded)
@@ -338,7 +338,7 @@ function SubagentAccordion({
 
   // Suffix packs branch rollup: status · elapsed · per-branch tool/agent/token/cost.
   // Emphasises the numbers the user can't easily eyeball from a flat list.
-  const statusLabel = item.status === 'queued' ? 'queued' : item.status === 'running' ? 'running' : String(item.status)
+  const statusLabel = item.status === 'queued' ? tStatus('queued') : item.status === 'running' ? tStatus('running') : String(item.status)
 
   const rollupBits: string[] = [statusLabel]
 

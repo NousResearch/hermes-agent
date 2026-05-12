@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users } from "lucide-react";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
@@ -20,6 +20,8 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export default function ProfilesPage() {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [activeProfile, setActiveProfile] = useState("default");
+  const [showAllProfiles, setShowAllProfiles] = useState(false);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
@@ -44,10 +46,31 @@ export default function ProfilesPage() {
   const load = useCallback(() => {
     api
       .getProfiles()
-      .then((res) => setProfiles(res.profiles))
+      .then((res) => {
+        setProfiles(res.profiles);
+        setActiveProfile(res.active_profile || "default");
+      })
       .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.status.error]);
+
+  const relatedRoot = useMemo(() => {
+    if (!activeProfile || activeProfile === "default") return activeProfile || "default";
+    return activeProfile.split(/[-_]/)[0] || activeProfile;
+  }, [activeProfile]);
+
+  const filteredProfiles = useMemo(() => {
+    if (showAllProfiles) return profiles;
+    if (!activeProfile || activeProfile === "default") {
+      return profiles.filter((p) => p.name === "default" || p.is_default);
+    }
+    return profiles.filter((p) => {
+      if (p.name === activeProfile) return true;
+      if (p.is_default) return false;
+      const root = p.name.split(/[-_]/)[0] || p.name;
+      return root === relatedRoot;
+    });
+  }, [activeProfile, profiles, relatedRoot, showAllProfiles]);
 
   useEffect(() => {
     load();
@@ -251,10 +274,20 @@ export default function ProfilesPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Users className="h-4 w-4" />
-          {t.profiles.allProfiles} ({profiles.length})
+          {showAllProfiles ? t.profiles.allProfiles : t.profiles.relatedProfiles} ({filteredProfiles.length})
         </H2>
 
-        {profiles.length === 0 && (
+        <div>
+          <Button
+            size="sm"
+            ghost
+            onClick={() => setShowAllProfiles((v) => !v)}
+          >
+            {showAllProfiles ? t.profiles.showRelatedOnly : t.profiles.showAll}
+          </Button>
+        </div>
+
+        {filteredProfiles.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
               {t.profiles.noProfiles}
@@ -262,7 +295,7 @@ export default function ProfilesPage() {
           </Card>
         )}
 
-        {profiles.map((p) => {
+        {filteredProfiles.map((p) => {
           const isRenaming = renamingFrom === p.name;
           const isEditingSoul = editingSoulFor === p.name;
           return (

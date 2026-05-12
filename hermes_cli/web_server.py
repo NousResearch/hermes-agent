@@ -2731,10 +2731,16 @@ def _profile_setup_command(name: str) -> str:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        return {
+            "profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()],
+            "active_profile": profiles_mod.get_active_profile_name(),
+        }
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        return {
+            "profiles": _fallback_profile_dicts(profiles_mod),
+            "active_profile": profiles_mod.get_active_profile_name(),
+        }
 
 
 @app.post("/api/profiles")

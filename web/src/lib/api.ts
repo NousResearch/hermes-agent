@@ -156,7 +156,7 @@ export const api = {
 
   // Profiles (minimal)
   getProfiles: () =>
-    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+    fetchJSON<{ profiles: ProfileInfo[]; active_profile: string }>("/api/profiles"),
   createProfile: (body: { name: string; clone_from_default: boolean }) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",

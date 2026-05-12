@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Memori, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins —  Memori, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, memori, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or memori, honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -559,10 +559,10 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **Memori** | Cloud | Free/Paid | 5 | `memori` | Agent trace memory + intelligent recall |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
-| **Memori** | Cloud | Paid | 5 | `memori` | Structured agent recall + summaries |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |

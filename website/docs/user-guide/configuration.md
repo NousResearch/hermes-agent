@@ -672,6 +672,8 @@ The context engine controls how conversations are managed when approaching the m
 ```yaml
 context:
   engine: "compressor"    # default — built-in lossy summarization
+  soul_char_limit: 20000  # max chars for SOUL.md before truncation (default: 20000)
+  agents_char_limit: 20000  # max chars for AGENTS.md before truncation (default: 20000)
 ```
 
 To use a plugin engine (e.g., LCM for lossless context management):

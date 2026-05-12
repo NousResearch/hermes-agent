@@ -468,6 +468,17 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Context Files
+# =============================================================================
+# Maximum character limits for context files before truncation.
+# When a file exceeds its limit, the head and tail are kept with a truncation
+# marker in the middle.
+#
+# context:
+#   soul_char_limit: 20000       # SOUL.md max chars (default: 20000)
+#   agents_char_limit: 20000    # AGENTS.md max chars (default: 20000)
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are

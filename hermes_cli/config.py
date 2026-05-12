@@ -1054,6 +1054,8 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        "soul_char_limit": 20000,      # max chars for SOUL.md before truncation
+        "agents_char_limit": 20000,    # max chars for AGENTS.md before truncation
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

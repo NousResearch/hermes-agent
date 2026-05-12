@@ -139,6 +139,62 @@ class TestTruncateContent:
         result = _truncate_content(content, "exact.md")
         assert result == content
 
+    def test_custom_max_chars(self):
+        """Custom max_chars overrides the default CONTEXT_FILE_MAX_CHARS."""
+        content = "x" * 500
+        # With default limit, this should pass through
+        result_default = _truncate_content(content, "test.md")
+        assert result_default == content
+
+        # With a custom limit smaller than content, it should truncate
+        result_small = _truncate_content(content, "test.md", max_chars=100)
+        assert len(result_small) < len(content)
+        assert "truncated" in result_small.lower()
+
+
+class TestGetContextCharLimit:
+    """Tests for _get_context_char_limit reading from config."""
+
+    def test_returns_fallback_when_no_config(self, monkeypatch):
+        from agent.prompt_builder import _get_context_char_limit, CONTEXT_FILE_MAX_CHARS
+
+        # If load_config raises, fallback is used
+        monkeypatch.setattr(
+            "agent.prompt_builder._get_context_char_limit.__wrapped__",
+            None,
+            raising=False,
+        )
+        result = _get_context_char_limit("soul_char_limit", CONTEXT_FILE_MAX_CHARS)
+        assert result == CONTEXT_FILE_MAX_CHARS
+
+    def test_returns_config_value_when_set(self, monkeypatch):
+        from agent.prompt_builder import _get_context_char_limit
+
+        fake_config = {"context": {"soul_char_limit": 10000, "agents_char_limit": 15000}}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: fake_config
+        )
+        assert _get_context_char_limit("soul_char_limit", 20000) == 10000
+        assert _get_context_char_limit("agents_char_limit", 20000) == 15000
+
+    def test_returns_fallback_when_key_missing(self, monkeypatch):
+        from agent.prompt_builder import _get_context_char_limit
+
+        fake_config = {"context": {"engine": "compressor"}}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: fake_config
+        )
+        assert _get_context_char_limit("soul_char_limit", 20000) == 20000
+
+    def test_returns_fallback_when_context_missing(self, monkeypatch):
+        from agent.prompt_builder import _get_context_char_limit
+
+        fake_config = {}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: fake_config
+        )
+        assert _get_context_char_limit("soul_char_limit", 20000) == 20000
+
 
 # =========================================================================
 # _parse_skill_file — single-pass skill file reading

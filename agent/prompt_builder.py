@@ -826,6 +826,19 @@ CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
 
+def _get_context_char_limit(key: str, fallback: int) -> int:
+    """Read a per-file char limit from config, falling back to the module constant."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("context", {}).get(key)
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return fallback
+
+
 # =========================================================================
 # Skills prompt cache
 # =========================================================================
@@ -1322,7 +1335,7 @@ def load_soul_md() -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
+        content = _truncate_content(content, "SOUL.md", max_chars=_get_context_char_limit("soul_char_limit", CONTEXT_FILE_MAX_CHARS))
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
@@ -1362,7 +1375,7 @@ def _load_agents_md(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
+                    return _truncate_content(result, "AGENTS.md", max_chars=_get_context_char_limit("agents_char_limit", CONTEXT_FILE_MAX_CHARS))
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
@@ -1424,7 +1437,8 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
+    Each context source is capped at a configurable number of chars (see
+    ``context.soul_char_limit`` and ``context.agents_char_limit`` in config).
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).

@@ -38,7 +38,7 @@ except Exception:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from gateway.platforms.discord import VoiceReceiver
+from plugins.platforms.discord.adapter import VoiceReceiver
 
 
 # ---------------------------------------------------------------------------

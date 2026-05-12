@@ -3902,6 +3902,45 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _resolve_worker_skill_identifier(skill_name: str) -> Optional[str]:
+    """Return the child-safe ``--skills`` identifier for a task skill.
+
+    Kanban worker children usually run with their task workspace as CWD and
+    may be launched through an installed ``hermes`` shim rather than the source
+    checkout that hosts the dispatcher.  If the dispatcher can resolve a skill,
+    pass the absolute skill directory to the child so skill preloading does not
+    depend on the child's CWD/PYTHONPATH/profile-specific skill lookup.
+    """
+    try:
+        from agent.skill_commands import _load_skill_payload
+
+        loaded = _load_skill_payload(skill_name)
+        if not loaded:
+            return None
+        _loaded_skill, skill_dir, _display_name = loaded
+        return str(skill_dir) if skill_dir is not None else skill_name
+    except Exception:
+        return None
+
+
+def _filter_worker_extra_skills(skills: Optional[Iterable[Any]]) -> tuple[list[str], list[str]]:
+    """Split task-declared worker skills into (child-safe identifiers, missing)."""
+    valid: list[str] = []
+    missing: list[str] = []
+    seen = {"kanban-worker"}
+    for raw in skills or []:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        resolved = _resolve_worker_skill_identifier(name)
+        if resolved:
+            valid.append(resolved)
+        else:
+            missing.append(name)
+    return valid, missing
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3996,10 +4035,10 @@ def _default_spawn(
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+    extra_skills, missing_extra_skills = _filter_worker_extra_skills(task.skills)
+    if extra_skills:
+        for sk in extra_skills:
+            cmd.extend(["--skills", sk])
     cmd.extend([
         "chat",
         "-q", prompt,
@@ -4015,6 +4054,14 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    if missing_extra_skills:
+        warning = (
+            "Warning: skipped unknown kanban task skill(s): "
+            + ", ".join(missing_extra_skills)
+            + "\n"
+        )
+        log_f.write(warning.encode("utf-8", errors="replace"))
+        log_f.flush()
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

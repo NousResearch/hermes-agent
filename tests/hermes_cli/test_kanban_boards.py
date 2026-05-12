@@ -402,6 +402,54 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_BOARD"] == "default"
         assert env["HERMES_KANBAN_DB"] == str(fresh_home / "kanban.db")
 
+    def test_default_spawn_filters_missing_optional_task_skills(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 99
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            captured["stdout"] = kwargs.get("stdout")
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            kb,
+            "_resolve_worker_skill_identifier",
+            lambda name: "/abs/github-auth" if name == "github-auth" else None,
+        )
+        task = kb.Task(
+            id="t_skills",
+            title="",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            skills=["blueprint", "github-auth", "kanban-worker", "architect"],
+        )
+
+        kb._default_spawn(task, str(fresh_home / "ws"), board=None)
+
+        cmd = captured["cmd"]
+        assert cmd.count("--skills") == 2
+        assert "kanban-worker" in cmd
+        assert "/abs/github-auth" in cmd
+        assert "github-auth" not in cmd
+        assert "blueprint" not in cmd
+        assert "architect" not in cmd
+        log_path = fresh_home / "kanban" / "logs" / "t_skills.log"
+        assert "skipped unknown kanban task skill(s): blueprint, architect" in log_path.read_text()
+
 
 # ---------------------------------------------------------------------------
 # CLI surface

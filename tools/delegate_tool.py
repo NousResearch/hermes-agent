@@ -1035,9 +1035,8 @@ def _build_child_agent(
         effective_acp_command = None
         effective_acp_args = []
 
-    if override_acp_command:
-        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
-        # so run_agent.py initializes the CopilotACPClient.
+    if override_acp_command and effective_provider != "codex-app-server":
+        # Per-call ACP command override.
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
@@ -1087,38 +1086,66 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
-    child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
-        api_mode=effective_api_mode,
-        acp_command=effective_acp_command,
-        acp_args=effective_acp_args,
-        max_iterations=max_iterations,
-        max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=child_reasoning,
-        prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
-        enabled_toolsets=child_toolsets,
-        quiet_mode=True,
-        ephemeral_system_prompt=child_prompt,
-        log_prefix=f"[subagent-{task_index}]",
-        platform=parent_agent.platform,
-        skip_context_files=True,
-        skip_memory=True,
-        clarify_callback=None,
-        thinking_callback=child_thinking_cb,
-        session_db=getattr(parent_agent, "_session_db", None),
-        parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=child_providers_allowed,
-        providers_ignored=child_providers_ignored,
-        providers_order=child_providers_order,
-        provider_sort=child_provider_sort,
-        openrouter_min_coding_score=child_openrouter_min_coding_score,
-        tool_progress_callback=child_progress_cb,
-        iteration_budget=None,  # fresh budget per subagent
-    )
+    if effective_provider == "codex-app-server":
+        from agent.codex_app_server_client import CodexAppServerSubagent
+
+        codex_reasoning_effort = None
+        delegation_effort_value = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        if not delegation_effort_value:
+            codex_reasoning_effort = "low"
+        elif isinstance(child_reasoning, dict):
+            if child_reasoning.get("enabled") is False:
+                codex_reasoning_effort = "none"
+            else:
+                codex_reasoning_effort = child_reasoning.get("effort")
+        elif child_reasoning is not None:
+            codex_reasoning_effort = getattr(child_reasoning, "value", child_reasoning)
+
+        child = CodexAppServerSubagent(
+            model=effective_model,
+            cwd=workspace_hint or os.getcwd(),
+            context=child_prompt,
+            role=effective_role,
+            toolsets=child_toolsets,
+            max_iterations=max_iterations,
+            command=effective_acp_command,
+            args=effective_acp_args,
+            progress_callback=child_progress_cb,
+            reasoning_effort=codex_reasoning_effort,
+        )
+    else:
+        child = AIAgent(
+            base_url=effective_base_url,
+            api_key=effective_api_key,
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
+            acp_command=effective_acp_command,
+            acp_args=effective_acp_args,
+            max_iterations=max_iterations,
+            max_tokens=getattr(parent_agent, "max_tokens", None),
+            reasoning_config=child_reasoning,
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
+            fallback_model=parent_fallback,
+            enabled_toolsets=child_toolsets,
+            quiet_mode=True,
+            ephemeral_system_prompt=child_prompt,
+            log_prefix=f"[subagent-{task_index}]",
+            platform=parent_agent.platform,
+            skip_context_files=True,
+            skip_memory=True,
+            clarify_callback=None,
+            thinking_callback=child_thinking_cb,
+            session_db=getattr(parent_agent, "_session_db", None),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            providers_allowed=child_providers_allowed,
+            providers_ignored=child_providers_ignored,
+            providers_order=child_providers_order,
+            provider_sort=child_provider_sort,
+            openrouter_min_coding_score=child_openrouter_min_coding_score,
+            tool_progress_callback=child_progress_cb,
+            iteration_budget=None,  # fresh budget per subagent
+        )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
@@ -2389,6 +2416,28 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+        }
+
+    if configured_provider.lower() in {"codex-app-server", "codex-app", "codex-native", "openai-codex-app-server"}:
+        command = str(cfg.get("command") or "").strip() or None
+        raw_args = cfg.get("args")
+        if isinstance(raw_args, str):
+            import shlex as _shlex
+
+            args = _shlex.split(raw_args)
+        elif isinstance(raw_args, list):
+            args = [str(a) for a in raw_args]
+        else:
+            args = None
+        return {
+            "backend": "codex-app-server",
+            "model": configured_model or "gpt-5.5",
+            "provider": "codex-app-server",
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": command,
+            "args": args,
         }
 
     # Provider is configured — resolve full credentials

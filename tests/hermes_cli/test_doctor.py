@@ -13,7 +13,11 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor import (
+    _delegation_codex_app_server_command,
+    _delegation_uses_codex_app_server,
+    _has_provider_env_config,
+)
 
 
 class TestDoctorPlatformHints:
@@ -49,6 +53,18 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestDoctorCodexAppServerDetection:
+    def test_detects_codex_app_server_delegation_provider(self):
+        assert _delegation_uses_codex_app_server({"delegation": {"provider": "codex-app-server"}})
+
+    def test_ignores_other_delegation_providers(self):
+        assert not _delegation_uses_codex_app_server({"delegation": {"provider": "openrouter"}})
+
+    def test_reads_custom_codex_app_server_command(self):
+        config = {"delegation": {"provider": "codex-app-server", "command": "/opt/bin/codex"}}
+        assert _delegation_codex_app_server_command(config) == "/opt/bin/codex"
 
 
 class TestDoctorEnvFileEncoding:

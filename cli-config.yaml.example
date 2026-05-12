@@ -853,9 +853,20 @@ delegation:
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
+  # reasoning_effort: "medium"                # Override reasoning effort for subagents: none, minimal, low, medium, high, xhigh
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Set provider: "codex-app-server" to run delegated
+  #                                           # subagents inside Codex's native app-server harness
+  #                                           # instead of Hermes' child AIAgent/tool loop. If model
+  #                                           # or reasoning_effort is blank here, Codex app-server
+  #                                           # delegation defaults to model "gpt-5.5" and low reasoning.
+  #                                           # Requires Codex CLI: npm install -g @openai/codex
+  #                                           # Codex app-server reuses stock Hermes openai-codex OAuth
+  #                                           # by default; set CODEX_HOME only to force Codex CLI auth.
+  #                                           # Optional for Codex app-server: command: "codex",
+  #                                           # args: ["app-server", "--listen", "stdio://"]
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

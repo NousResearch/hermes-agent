@@ -2527,5 +2527,76 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestCodexAppServerDelegation(unittest.TestCase):
+    def test_resolve_delegation_credentials_codex_app_server_is_not_runtime_provider(self):
+        parent = _make_mock_parent()
+        cfg = {"provider": "codex-app-server", "model": "gpt-5.3-codex-spark"}
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as resolve_runtime:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        resolve_runtime.assert_not_called()
+        self.assertEqual(creds["provider"], "codex-app-server")
+        self.assertEqual(creds["model"], "gpt-5.3-codex-spark")
+        self.assertIsNone(creds["api_key"])
+        self.assertIsNone(creds["base_url"])
+
+    def test_resolve_delegation_credentials_codex_app_server_defaults_blank_model(self):
+        parent = _make_mock_parent()
+        creds = _resolve_delegation_credentials({"provider": "codex-app-server"}, parent)
+
+        self.assertEqual(creds["provider"], "codex-app-server")
+        self.assertEqual(creds["model"], "gpt-5.5")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_delegate_task_codex_app_server_builds_native_child_not_aiagent(self, mock_run):
+        parent = _make_mock_parent()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "codex native done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value={"provider": "codex-app-server", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            result = json.loads(delegate_task(goal="Use Codex native harness", parent_agent=parent))
+
+        MockAgent.assert_not_called()
+        self.assertEqual(result["results"][0]["summary"], "codex native done")
+        child = mock_run.call_args.kwargs.get("child") or mock_run.call_args.args[2]
+        from agent.codex_app_server_client import CodexAppServerSubagent
+
+        self.assertIsInstance(child, CodexAppServerSubagent)
+        self.assertEqual(child.model, "gpt-5.3-codex-spark")
+        self.assertEqual(child.reasoning_effort, "high")
+        self.assertEqual(child.role, "leaf")
+
+    def test_codex_app_server_command_override_stays_native_child(self):
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = _build_child_agent(
+                task_index=0,
+                goal="test codex app-server launch command",
+                context=None,
+                toolsets=None,
+                model="gpt-5.3-codex-spark",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="codex-app-server",
+                override_acp_command="codex",
+                override_acp_args=["app-server", "--listen", "stdio://"],
+            )
+
+        MockAgent.assert_not_called()
+        from agent.codex_app_server_client import CodexAppServerSubagent
+
+        self.assertIsInstance(child, CodexAppServerSubagent)
+        self.assertEqual(child.command, "codex")
+        self.assertEqual(child.args, ["app-server", "--listen", "stdio://"])
+        self.assertEqual(child.reasoning_effort, "low")
+
+
 if __name__ == "__main__":
     unittest.main()

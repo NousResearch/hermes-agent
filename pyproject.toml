@@ -136,25 +136,12 @@ termux = [
   "hermes-agent[acp]",
 ]
 termux-all = [
-  # Best-effort "install all" profile for Termux: include broad extras that
-  # are known to resolve on Android, while intentionally excluding extras that
-  # currently hard-fail from missing/broken Android wheels/toolchains.
-  #
-  # Excluded for now:
-  # - matrix (mautrix[encryption] -> python-olm build failures on Termux)
-  # - voice  (faster-whisper chain requires ctranslate2/av builds not packaged)
+  # Best-effort "install all" profile for Termux. Same policy as [all]:
+  # only includes extras that aren't covered by `tools/lazy_deps.py`.
+  # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
+  # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
-  "hermes-agent[messaging]",
-  "hermes-agent[slack]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[dingtalk]",
-  "hermes-agent[feishu]",
   "hermes-agent[google]",
-  # mistral: omitted from broad termux-all profile — `mistralai` PyPI package
-  # is currently quarantined (malicious 2.4.6 release). Users who explicitly
-  # want Voxtral STT/TTS can still `pip install hermes-agent[mistral]`
-  # directly once PyPI un-quarantines.
-  "hermes-agent[bedrock]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
@@ -188,41 +175,36 @@ rl = [
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git@bfb0c88062450f46341bd9a5298903fc2e952a5c ; python_version >= '3.12'"]
 all = [
-  "hermes-agent[anthropic]",
-  "hermes-agent[exa]",
-  "hermes-agent[firecrawl]",
-  "hermes-agent[parallel-web]",
-  "hermes-agent[fal]",
-  "hermes-agent[edge-tts]",
-  "hermes-agent[modal]",
-  "hermes-agent[daytona]",
-  "hermes-agent[vercel]",
-  "hermes-agent[messaging]",
-  # matrix: python-olm (required by matrix-nio[e2e]) is upstream-broken on
-  # modern macOS (archived libolm, C++ errors with Clang 21+).  On Linux the
-  # [matrix] extra's own marker pulls in the [e2e] variant automatically.
-  "hermes-agent[matrix]; sys_platform == 'linux'",
+  # Policy (2026-05-12): `[all]` includes only extras that genuinely
+  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
+  # session can use, things needed before the agent loop is alive
+  # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
+  # need in the wheel. Anything an opt-in backend (provider, search,
+  # TTS, image, memory, messaging platform, terminal sandbox) needs
+  # MUST live exclusively in `LAZY_DEPS` and resolve at first use —
+  # otherwise one quarantined PyPI release breaks every fresh install.
+  #
+  # Removed from [all] on 2026-05-12 (covered by lazy-install):
+  #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
+  #   modal, daytona, vercel, messaging (telegram/discord/slack),
+  #   matrix, slack, honcho, voice (faster-whisper),
+  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
+  #
+  # Why: the matrix extra in particular pulls `mautrix[encryption]`
+  # which depends on `python-olm`. python-olm has Linux-only wheels and
+  # no native build path on Windows or modern macOS. With matrix in
+  # [all], `uv sync --locked` on Windows tried to build it from sdist
+  # and failed on `make`. Lazy-install routes that build to first use,
+  # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[slack]",
   "hermes-agent[pty]",
-  "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[voice]",
-  "hermes-agent[dingtalk]",
-  "hermes-agent[feishu]",
   "hermes-agent[google]",
-  # mistral: omitted from [all] — `mistralai` PyPI package is currently
-  # quarantined (malicious 2.4.6 release on 2026-05-12). Pulling it from
-  # [all] would break every fresh install / AUR build / Docker build / CI
-  # run until PyPI un-quarantines. Users who explicitly want Voxtral STT/TTS
-  # can still `pip install hermes-agent[mistral]` once it's available again.
-  "hermes-agent[bedrock]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]

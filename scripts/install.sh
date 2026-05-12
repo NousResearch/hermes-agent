@@ -1100,22 +1100,30 @@ install_deps() {
     # extras spec, NOT because they're equivalent in posture.
     if [ -f "uv.lock" ]; then
         log_info "Trying tier: hash-verified (uv.lock) ..."
-        log_info "(this resolves + downloads ~50 packages — first run on a fresh"
-        log_info " venv can take 1-5 minutes; uv prints progress below)"
+        log_info "(this resolves + downloads the curated [all] set — first run on a"
+        log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
         # Stream uv's progress directly to the user instead of swallowing
         # it with `2>"$(mktemp)"`.  Two reasons:
-        #   1. `--all-extras --locked` against a fresh venv has to pull
-        #      every transitive (torch-class deps included) — silencing
-        #      stderr makes the install look frozen for minutes on slow
-        #      networks. Users see "Trying tier: hash-verified ..." and
-        #      assume it's hung.
+        #   1. `--extra all --locked` against a fresh venv has to pull
+        #      every transitive — silencing stderr makes the install
+        #      look frozen for minutes on slow networks. Users see
+        #      "Trying tier: hash-verified ..." and assume it's hung.
         #   2. The previous `2>"$(mktemp)"` substituted the path at
         #      command-build time but never saved it, so on failure the
         #      uv error message was unreachable — the user just got the
         #      generic "lockfile may be stale" warning.
+        #
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key.
+        #                  This bypasses the curated `[all]` extra
+        #                  entirely and pulls e.g. [matrix] (which
+        #                  needs python-olm + make on Windows) and
+        #                  [rl] (git+https deps that fail offline).
+        #   --extra all  = install just the `[all]` extra's contents.
+        #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked; then
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -1131,57 +1139,63 @@ install_deps() {
     # fresh install all the way down to "core only" — the user should keep
     # everything else they signed up for.
     #
-    # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [all] minus the currently-broken extras list. Edit
-    #         _BROKEN_EXTRAS below when something on PyPI breaks; this lets
-    #         users keep voice/honcho/google/slack/matrix/etc. even when
-    #         one transitive is unavailable. List the extras here as bare
-    #         names from pyproject.toml [project.optional-dependencies] —
-    #         the script translates them to `[a,b,c]` form below.
-    # Tier 3: PyPI-only extras (no git deps) — drops [rl] / [yc-bench]
-    #         which are git+https and may fail in restricted networks.
-    # Tier 4: dashboard + core platforms — minimum viable interactive set.
-    # Tier 5: bare `.` — last-resort so at least the core CLI launches.
-    #
-    # Each tier's stderr is captured to a tempfile so we can show the user
-    # WHY the higher tier failed instead of silently dropping support.
+    # Tier 1: [all] — the curated extra in pyproject.toml.
+    # Tier 2: [all] minus the currently-broken extras list (_BROKEN_EXTRAS).
+    #         Edit _BROKEN_EXTRAS below when something on PyPI breaks; this
+    #         lets users keep the rest of [all] when one transitive is
+    #         unavailable. The list of [all]'s contents is parsed from
+    #         pyproject.toml at runtime — there is NO hand-mirrored copy
+    #         to drift out of sync. If you want to change what [all]
+    #         contains, edit pyproject.toml only.
+    # Tier 3: bare `.` — last-resort so at least the core CLI launches.
+    #         Skipped tiers like "PyPI-only extras (no git deps)" used to
+    #         exist to dodge [rl] / [matrix] git+sdist deps; those are no
+    #         longer in [all] post-2026-05-12 lazy-install migration, so
+    #         a separate PyPI-only tier had no remaining content.
     local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
-    local _ALL_EXTRAS=(
-        modal daytona vercel messaging matrix cron cli dev tts-premium slack
-        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
-        bedrock web youtube
-    )
-    # Tier 2: all extras minus _BROKEN_EXTRAS
-    local _SAFE_EXTRAS=()
-    local _e _b _skip
-    for _e in "${_ALL_EXTRAS[@]}"; do
-        _skip=false
-        for _b in "${_BROKEN_EXTRAS[@]}"; do
-            if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+
+    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # tomllib is stdlib on Python 3.11+ which uv's bootstrap guarantees.
+    # Falls back to a hand list if parse fails — defensive only.
+    local _ALL_EXTRAS_CSV
+    _ALL_EXTRAS_CSV="$(
+        "$PYTHON_PATH" - <<'PY' 2>/dev/null
+import re, sys, tomllib
+try:
+    with open("pyproject.toml", "rb") as fh:
+        data = tomllib.load(fh)
+    specs = data["project"]["optional-dependencies"]["all"]
+    extras = []
+    for s in specs:
+        m = re.search(r"hermes-agent\[([\w-]+)\]", s)
+        if m:
+            extras.append(m.group(1))
+    print(",".join(extras))
+except Exception as e:
+    print("", file=sys.stderr)
+    sys.exit(1)
+PY
+    )"
+    if [ -z "$_ALL_EXTRAS_CSV" ]; then
+        log_warn "Could not parse [all] from pyproject.toml; falling back to .[all] only."
+        _ALL_EXTRAS_CSV=""
+    fi
+
+    # Build "[all] minus broken" spec by filtering the parsed list.
+    local _SAFE_SPEC=".[all]"
+    if [ -n "$_ALL_EXTRAS_CSV" ] && [ "${#_BROKEN_EXTRAS[@]}" -gt 0 ]; then
+        local _SAFE_EXTRAS=()
+        local _e _b _skip
+        IFS=',' read -ra _ALL_EXTRAS_ARR <<< "$_ALL_EXTRAS_CSV"
+        for _e in "${_ALL_EXTRAS_ARR[@]}"; do
+            _skip=false
+            for _b in "${_BROKEN_EXTRAS[@]}"; do
+                if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+            done
+            if [ "$_skip" = false ]; then _SAFE_EXTRAS+=("$_e"); fi
         done
-        if [ "$_skip" = false ]; then _SAFE_EXTRAS+=("$_e"); fi
-    done
-    local _SAFE_SPEC
-    _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
-    # Tier 3: PyPI-only extras (no git deps), still skipping broken ones.
-    # Mirrors the install.ps1 list but excludes [rl] / [yc-bench] / [matrix]
-    # (matrix needs python-olm which fails to build on some hosts).
-    local _PYPI_EXTRAS=(
-        web mcp cron cli voice messaging slack dev acp pty homeassistant sms
-        tts-premium honcho google bedrock dingtalk feishu modal daytona vercel
-        youtube
-    )
-    local _PYPI_SAFE=()
-    for _e in "${_PYPI_EXTRAS[@]}"; do
-        _skip=false
-        for _b in "${_BROKEN_EXTRAS[@]}"; do
-            if [ "$_e" = "$_b" ]; then _skip=true; break; fi
-        done
-        if [ "$_skip" = false ]; then _PYPI_SAFE+=("$_e"); fi
-    done
-    local _PYPI_SPEC
-    _PYPI_SPEC=".[$(IFS=,; echo "${_PYPI_SAFE[*]}")]"
-    local _TIER4_SPEC=".[web,mcp,cron,cli,messaging,dev]"
+        _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    fi
 
     ALL_INSTALL_LOG=$(mktemp)
     local _installed=false
@@ -1201,10 +1215,8 @@ install_deps() {
         return 1
     }
 
-    install_tier "all (with RL/matrix extras)" ".[all]" \
+    install_tier "all" ".[all]" \
         || install_tier "all minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
-        || install_tier "PyPI-only extras (no git deps)" "$_PYPI_SPEC" \
-        || install_tier "dashboard + core platforms" "$_TIER4_SPEC" \
         || install_tier "core only (no extras)" "."
 
     rm -f "$ALL_INSTALL_LOG"

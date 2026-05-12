@@ -241,15 +241,21 @@ else
         # (the direct deps in pyproject.toml are exact-pinned, but
         # `uv pip install` re-resolves transitives fresh from PyPI).
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-        _UV_SYNC_LOG=$(mktemp)
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$_UV_SYNC_LOG"; then
+        echo -e "${CYAN}→${NC} (first run on a fresh venv can take 1-5 minutes; uv prints progress below)"
+        # Critical flag choice: `--extra all`, NOT `--all-extras`. The
+        # latter installs every [project.optional-dependencies] key,
+        # bypassing the curated [all] extra and pulling backends like
+        # [matrix] (python-olm needs make on Windows) and [rl] (git+https
+        # deps that fail offline). See pyproject.toml's [all] for the
+        # curated set, and tools/lazy_deps.py for backends that install
+        # at first use.
+        # Also: stream stderr through directly so the user sees uv's
+        # progress UI instead of staring at a frozen prompt.
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
-            rm -f "$_UV_SYNC_LOG"
         else
-            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (lockfile may be stale)."
+            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
             echo -e "${YELLOW}⚠${NC} Falling back to PyPI resolve — transitives will NOT be hash-verified."
-            head -5 "$_UV_SYNC_LOG" | sed 's/^/    /'
-            rm -f "$_UV_SYNC_LOG"
             _try_install
             echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
         fi

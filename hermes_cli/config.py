@@ -1499,6 +1499,53 @@ DEFAULT_CONFIG = {
         "backup_keep": 5,
     },
 
+    # Language Server Protocol — semantic diagnostics from real
+    # language servers (pyright, gopls, rust-analyzer, etc.) wired
+    # into the post-write lint check used by ``write_file`` and
+    # ``patch``.
+    #
+    # LSP is gated on git-workspace detection: when the agent's
+    # cwd (or the file being edited) is inside a git worktree, LSP
+    # runs against that workspace.  When neither is in a git repo,
+    # LSP stays dormant and the in-process syntax check is the only
+    # tier — handy for Telegram/Discord chats where the cwd is the
+    # user's home directory.
+    "lsp": {
+        # Master toggle.  Setting this to false disables the entire
+        # subsystem — no servers spawn, no background event loop, no
+        # cost.
+        "enabled": True,
+
+        # Diagnostic-wait mode for the post-write check.
+        # ``"document"`` waits up to ``wait_timeout`` seconds for the
+        # current file's diagnostics; ``"full"`` additionally requests
+        # workspace-wide diagnostics (slower).
+        "wait_mode": "document",
+        "wait_timeout": 5.0,
+
+        # How to handle missing server binaries.
+        # ``"auto"`` — try to install via npm/go/pip into
+        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
+        # ``"manual"`` — only use binaries already on PATH.
+        # ``"off"`` — alias for ``manual``.
+        "install_strategy": "auto",
+
+        # Per-server overrides.  Each key is a server_id from the
+        # registry (``pyright``, ``typescript``, ``gopls``,
+        # ``rust-analyzer``, etc.) and accepts:
+        #   disabled: true
+        #     — skip this server even when its extensions match
+        #   command: ["full/path/to/server", "--stdio"]
+        #     — pin a custom binary path; bypasses auto-install
+        #   env: {"KEY": "value"}
+        #     — extra env vars passed to the spawned process
+        #   initialization_options: {...}
+        #     — merged into the LSP ``initializationOptions``
+        # Empty by default; the registry defaults work for typical
+        # setups.
+        "servers": {},
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }

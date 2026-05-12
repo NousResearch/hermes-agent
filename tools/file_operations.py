@@ -120,6 +120,13 @@ class WriteResult:
     bytes_written: int = 0
     dirs_created: bool = False
     lint: Optional[Dict[str, Any]] = None
+    # Semantic diagnostics from the LSP layer, when applicable.  Kept in
+    # its own field (not folded into ``lint``) so the model and any
+    # downstream parsers can read syntax errors and semantic errors as
+    # separate signals.  ``None`` when LSP is disabled, when the file
+    # isn't in a git workspace, or when no diagnostics were introduced
+    # by this edit.
+    lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
     warning: Optional[str] = None
 
@@ -136,6 +143,8 @@ class PatchResult:
     files_created: List[str] = field(default_factory=list)
     files_deleted: List[str] = field(default_factory=list)
     lint: Optional[Dict[str, Any]] = None
+    # See :class:`WriteResult.lsp_diagnostics`.
+    lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
     
     def to_dict(self) -> dict:
@@ -150,6 +159,8 @@ class PatchResult:
             result["files_deleted"] = self.files_deleted
         if self.lint:
             result["lint"] = self.lint
+        if self.lsp_diagnostics:
+            result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
             result["error"] = self.error
         return result
@@ -867,6 +878,13 @@ class ShellFileOperations(FileOperations):
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
 
+        # Snapshot LSP diagnostics for this file (best-effort) so the
+        # post-write LSP layer can return only diagnostics introduced
+        # by this specific edit.  Mirrors claude-code's
+        # ``beforeFileEdited`` pattern but wired to the local LSP
+        # rather than an external IDE.
+        self._snapshot_lsp_baseline(path)
+
         # Create parent directories
         parent = os.path.dirname(path)
         dirs_created = False
@@ -897,10 +915,21 @@ class ShellFileOperations(FileOperations):
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
 
+        # Semantic diagnostics from the LSP layer — separate channel.
+        # Only fired when the syntax tier reported clean (no point asking
+        # an LSP for a file that won't even parse).  Best-effort:
+        # ``""`` is returned for any failure path.
+        lsp_diagnostics: Optional[str] = None
+        if lint_result.success or lint_result.skipped:
+            block = self._maybe_lsp_diagnostics(path)
+            if block:
+                lsp_diagnostics = block
+
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
+            lsp_diagnostics=lsp_diagnostics,
         )
     
     # =========================================================================
@@ -996,7 +1025,14 @@ class ShellFileOperations(FileOperations):
             success=True,
             diff=diff,
             files_modified=[path],
-            lint=lint_result.to_dict() if lint_result else None
+            lint=lint_result.to_dict() if lint_result else None,
+            # Propagate the LSP diagnostics already captured by the
+            # internal ``write_file`` call.  Its baseline was the
+            # pre-patch content (taken at the start of write_file via
+            # ``_snapshot_lsp_baseline``) so the delta is correct for
+            # the patch as a whole.  Keep the field separate from the
+            # syntax-check ``lint`` so the agent can read both signals.
+            lsp_diagnostics=write_result.lsp_diagnostics,
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:
@@ -1089,21 +1125,25 @@ class ShellFileOperations(FileOperations):
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
                           post_content: Optional[str] = None) -> LintResult:
         """
-        Run post-write lint with pre-write baseline comparison.
+        Run post-write syntax lint with pre-write baseline comparison.
 
-        Strategy (post-first, pre-lazy):
-        1. Lint the post-write state.  If clean → return clean immediately.
-           This is the hot path and matches _check_lint() in cost.
-        2. If post-lint found errors AND we have pre-write content, lint
-           that too.  If the pre-write file was already broken, return only
-           the *new* errors introduced by this edit — errors that existed
-           before aren't the agent's problem to chase right now.
-        3. If pre_content is None (new file or unavailable), skip the delta
-           step and return all post-write errors.
+        Two-tier strategy:
 
-        This mirrors Cline's and OpenCode's post-edit LSP pattern: surface
-        only the errors this specific edit introduced, so the agent doesn't
-        get distracted by pre-existing problems.
+        1. **Syntax check** (in-process or shell-based, microseconds).
+           Catches the bug class that motivated this layer: corrupt
+           writes, mashed quotes, truncated output.  Hot path.
+
+        2. **Delta refinement against pre-write content** when the
+           syntax tier reports errors.  Filter out errors that already
+           existed pre-edit so the agent isn't distracted by inherited
+           state.
+
+        Semantic diagnostics from the LSP layer are fetched separately
+        via :meth:`_maybe_lsp_diagnostics` and surfaced in the
+        ``lsp_diagnostics`` field on :class:`WriteResult` /
+        :class:`PatchResult`.  Keeping the two channels separate lets
+        the agent (and any downstream parsers) read syntax errors and
+        semantic errors as independent signals.
 
         Args:
             path: File path (for linter selection).
@@ -1122,12 +1162,12 @@ class ShellFileOperations(FileOperations):
         """
         post = self._check_lint(path, content=post_content)
 
-        # Hot path: clean post-write, no pre-lint needed.
+        # Hot path: clean post-write syntactically.
         if post.success or post.skipped:
             return post
 
-        # Post-write has errors.  If we have pre-content, run the delta
-        # refinement to filter out pre-existing errors.
+        # Post-write has syntax errors.  If we have pre-content, run the
+        # delta refinement to filter out pre-existing errors.
         if pre_content is None:
             return post
 
@@ -1166,6 +1206,91 @@ class ShellFileOperations(FileOperations):
                 "(pre-existing errors filtered out):\n" + "\n".join(post_lines)
             )
         )
+
+    def _lsp_local_only(self) -> bool:
+        """Return True iff this FileOperations is wired to a local backend.
+
+        LSP servers run on the host process — they need access to the
+        files they're linting.  Remote/sandboxed backends (Docker,
+        Modal, SSH, Daytona) keep files inside the sandbox where the
+        host-side LSP server can't reach them, so we skip the LSP
+        path for those entirely.
+        """
+        env = getattr(self, "env", None)
+        if env is None:
+            # Defensive: some tests construct ShellFileOperations via
+            # ``__new__`` without going through ``__init__``, so
+            # ``self.env`` may be missing.  No env = no LSP path.
+            return False
+        try:
+            from tools.environments.local import LocalEnvironment
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(env, LocalEnvironment)
+
+    def _snapshot_lsp_baseline(self, path: str) -> None:
+        """Capture pre-edit LSP diagnostics so the post-write delta is correct.
+
+        Best-effort.  Silent on every failure path — LSP is an
+        enrichment layer and must never break a write.
+
+        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        etc.) — the server can't see files inside the sandbox.
+        """
+        if not self._lsp_local_only():
+            return
+        try:
+            from agent.lsp import get_service
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return
+        if svc is None:
+            return
+        try:
+            svc.snapshot_baseline(path)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _maybe_lsp_diagnostics(self, path: str) -> str:
+        """Best-effort LSP semantic diagnostics for ``path``.
+
+        Returns a formatted ``<diagnostics>`` block, or empty string
+        when LSP is unavailable / disabled / produced no errors.
+
+        Wraps everything in a try/except so a misbehaving LSP server
+        can't break a write.  This intentionally swallows all errors
+        — the calling tier already returned a clean syntax result, so
+        ``""`` here just means "no extra info to add".
+
+        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        etc.) — same reasoning as ``_snapshot_lsp_baseline``.
+        """
+        if not self._lsp_local_only():
+            return ""
+        try:
+            from agent.lsp import get_service
+        except Exception:  # noqa: BLE001
+            return ""
+        try:
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return ""
+        if svc is None or not svc.enabled_for(path):
+            return ""
+        try:
+            diagnostics = svc.get_diagnostics_sync(path, delta=True)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not diagnostics:
+            return ""
+        try:
+            from agent.lsp.reporter import report_for_file, truncate
+            block = report_for_file(path, diagnostics)
+            if not block:
+                return ""
+            return truncate("LSP diagnostics introduced by this edit:\n" + block)
+        except Exception:  # noqa: BLE001
+            return ""
     
     # =========================================================================
     # SEARCH Implementation

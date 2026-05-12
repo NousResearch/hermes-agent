@@ -144,6 +144,39 @@ def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int =
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
 
 
+_PROVIDER_ERROR_SUMMARY_PATTERNS = (
+    # Generic OpenAI-compatible provider "model not found" responses (e.g. the
+    # claude-bridge / Codex-via-bridge case where literal 'auto' propagated to
+    # the wire and the bridge politely refused).
+    "there's an issue with the selected model",
+    "there is an issue with the selected model",
+    "run --model to pick a different model",
+    "may not exist or you may not have access",
+    # OpenAI / Anthropic / OpenRouter refusal-by-content patterns. Conservative
+    # — these phrases would not occur naturally in a faithful conversation
+    # summary; if they appear in summary output it means the auxiliary LLM
+    # refused the prompt rather than producing one.
+    "i can't help with that",
+    "i cannot help with that",
+    "i'm sorry, but i can't",
+    "i'm sorry, but i cannot",
+    "i am sorry, but i can't",
+    "i am sorry, but i cannot",
+)
+
+
+def _looks_like_provider_error_summary(summary: str) -> bool:
+    """True when the auxiliary LLM returned an error / refusal string instead of a summary.
+
+    Used to reject 200-OK responses whose body is actually the provider's
+    control plane talking. See ``_PROVIDER_ERROR_SUMMARY_PATTERNS``.
+    """
+    if not summary or not isinstance(summary, str):
+        return False
+    needle = summary.lower()
+    return any(p in needle for p in _PROVIDER_ERROR_SUMMARY_PATTERNS)
+
+
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
 

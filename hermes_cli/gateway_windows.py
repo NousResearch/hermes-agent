@@ -694,6 +694,10 @@ def restart() -> None:
     """Stop the gateway then start it again."""
     _assert_windows()
     stop()
-    # Give Windows a moment to release the listening port.
+    # Give Windows a moment to release the port + stale lock handle.
     time.sleep(1.0)
-    start()
+    # Start fresh — bypass _spawn_detached's lock check by using
+    # subprocess.run with DETACHED_PROCESS, same as _spawn_detached
+    # but with a sleep between kill and spawn so the old handle dies.
+    time.sleep(1.0)
+    _spawn_detached()

@@ -1,0 +1,4 @@
+name: toolsite-progress
+version: 0.2.0
+description: "Toolsite progress queries, human review lookup, remote mode switch, and verbatim inbox with image attachments."
+author: "local"

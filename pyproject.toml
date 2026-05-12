@@ -152,12 +152,25 @@ termux = [
   "hermes-agent[acp]",
 ]
 termux-all = [
-  # Best-effort "install all" profile for Termux. Same policy as [all]:
-  # only includes extras that aren't covered by `tools/lazy_deps.py`.
-  # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
-  # first use, so they're no longer eager-installed here.
+  # Best-effort "install all" profile for Termux: include broad extras that
+  # are known to resolve on Android, while intentionally excluding extras that
+  # currently hard-fail from missing/broken Android wheels/toolchains.
+  #
+  # Excluded for now:
+  # - matrix (mautrix[encryption] -> python-olm build failures on Termux)
+  # - voice  (faster-whisper chain requires ctranslate2/av builds not packaged)
   "hermes-agent[termux]",
+  "hermes-agent[messaging]",
+  "hermes-agent[slack]",
+  "hermes-agent[tts-premium]",
+  "hermes-agent[dingtalk]",
+  "hermes-agent[feishu]",
   "hermes-agent[google]",
+  # mistral: omitted from broad termux-all profile — `mistralai` PyPI package
+  # is currently quarantined (malicious 2.4.6 release). Users who explicitly
+  # want Voxtral STT/TTS can still `pip install hermes-agent[mistral]`
+  # directly once PyPI un-quarantines.
+  "hermes-agent[bedrock]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
@@ -209,12 +222,24 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
+  "hermes-agent[tts-premium]",
+  "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
+  "hermes-agent[voice]",
+  "hermes-agent[dingtalk]",
+  "hermes-agent[feishu]",
   "hermes-agent[google]",
+  # mistral: omitted from [all] — `mistralai` PyPI package is currently
+  # quarantined (malicious 2.4.6 release on 2026-05-12). Pulling it from
+  # [all] would break every fresh install / AUR build / Docker build / CI
+  # run until PyPI un-quarantines. Users who explicitly want Voxtral STT/TTS
+  # can still `pip install hermes-agent[mistral]` once it's available again.
+  "hermes-agent[bedrock]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
@@ -287,3 +312,16 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[dependency-groups]
+dev = [
+    "fastapi>=0.133.1",
+    "faster-whisper>=1.2.1",
+    "mcp>=1.26.0",
+    "pytest-asyncio>=1.3.0",
+    "starlette>=0.52.1",
+    "uvicorn>=0.41.0",
+]

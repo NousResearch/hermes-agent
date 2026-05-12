@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 FACT_STORE_SCHEMA = {
-    "name": "fact_store",
+    "name": "holographic_store",
     "description": (
         "Deep structured memory with algebraic reasoning. "
         "Use alongside the memory tool — memory for always-on context, "
-        "fact_store for deep recall and compositional queries.\n\n"
+        "holographic_store for deep recall and compositional queries.\n\n"
         "ACTIONS (simple → powerful):\n"
         "• add — Store a fact the user would expect you to remember.\n"
         "• search — Keyword lookup ('editor config', 'deploy process').\n"
@@ -74,7 +74,7 @@ FACT_STORE_SCHEMA = {
 }
 
 FACT_FEEDBACK_SCHEMA = {
-    "name": "fact_feedback",
+    "name": "holographic_feedback",
     "description": (
         "Rate a fact after using it. Mark 'helpful' if accurate, 'unhelpful' if outdated. "
         "This trains the memory — good facts rise, bad facts sink."
@@ -193,14 +193,14 @@ class HolographicMemoryProvider(MemoryProvider):
             return (
                 "# Holographic Memory\n"
                 "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
-                "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
-                "Use fact_feedback to rate facts after using them (trains trust scores)."
+                "Use holographic_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
+                "Use holographic_feedback to rate facts after using them (trains trust scores)."
             )
         return (
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
-            f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
-            f"Use fact_feedback to rate facts after using them (trains trust scores)."
+            f"Use holographic_store to search, probe entities, reason across entities, or add facts.\n"
+            f"Use holographic_feedback to rate facts after using them (trains trust scores)."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -228,9 +228,15 @@ class HolographicMemoryProvider(MemoryProvider):
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        if tool_name == "fact_store":
+        # Backward-compat: resolve legacy fact_* names to holographic_*
+        _TOOL_ALIASES = {
+            "fact_store": "holographic_store",
+            "fact_feedback": "holographic_feedback",
+        }
+        tool_name = _TOOL_ALIASES.get(tool_name, tool_name)
+        if tool_name == "holographic_store":
             return self._handle_fact_store(args)
-        elif tool_name == "fact_feedback":
+        elif tool_name == "holographic_feedback":
             return self._handle_fact_feedback(args)
         return tool_error(f"Unknown tool: {tool_name}")
 

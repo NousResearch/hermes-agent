@@ -5801,6 +5801,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         "orphan_dashboard_plugins": orphan_dashboard,
         "providers": {
             "memory_provider": _get_current_memory_provider() or "",
+            "memory_providers_list": [p.strip() for p in (_get_current_memory_provider() or "").split(",") if p.strip()],
             "memory_options": memory_providers,
             "context_engine": _get_current_context_engine(),
             "context_options": context_engines,
@@ -5900,6 +5901,7 @@ async def delete_agent_plugin(request: Request, name: str):
 
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None
+    memory_providers: Optional[list] = None
     context_engine: Optional[str] = None
 
 
@@ -5914,9 +5916,25 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
 
     if body.memory_provider is not None:
         _save_memory_provider(body.memory_provider)
+    if body.memory_providers is not None:
+        from hermes_cli.memory_setup import _set_configured_providers
+        config = load_config()
+        _set_configured_providers(config, body.memory_providers)
+        save_config(config)
     if body.context_engine is not None:
         _save_context_engine(body.context_engine)
     return {"ok": True}
+
+
+@app.delete("/api/dashboard/plugin-providers/{name}")
+async def delete_memory_provider(request: Request, name: str):
+    """Remove a specific memory provider from the active list."""
+    _require_token(request)
+    _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import _remove_memory_provider
+
+    removed = _remove_memory_provider(name)
+    return {"ok": True, "removed": removed}
 
 
 class _PluginVisibilityBody(BaseModel):

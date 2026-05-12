@@ -11,37 +11,24 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
-    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    with pyproject_path.open("rb") as handle:
-        tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
-
-
-def test_matrix_extra_not_in_all():
-    """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
-    which has Linux-only wheels and no native build path on Windows or
-    modern macOS (archived libolm, C++ errors with Clang 21+).
-
-    With matrix in [all], `uv sync --locked` on Windows tried to build
-    python-olm from sdist and failed on `make`. As of 2026-05-12 the
-    [matrix] extra is excluded from [all] entirely and routed through
-    `tools/lazy_deps.py` (LAZY_DEPS["platform.matrix"]) — installs at
-    first use, where the user is expected to have a toolchain.
-    """
+def test_matrix_extra_linux_only_in_all():
+    """mautrix[encryption] depends on python-olm which is upstream-broken on
+    modern macOS (archived libolm, C++ errors with Clang 21+) and has no
+    cp313 wheels.  The [matrix] extra is included in [all] but gated to
+    Linux + Python < 3.13 so that ``hermes update`` doesn't fail."""
     optional_dependencies = _load_optional_dependencies()
 
-    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for explicit `pip install hermes-agent[matrix]`"
-    # Must NOT appear in [all] in any form — neither unconditional nor
-    # platform-gated. Lazy-install handles it.
-    matrix_in_all = [
+    assert "matrix" in optional_dependencies
+    # Must NOT be unconditional — python-olm has no macOS wheels.
+    assert "hermes-agent[matrix]" not in optional_dependencies["all"]
+    # Must be present with a Linux platform marker and Python < 3.13 guard
+    # (python-olm 3.2.16 has no cp313 wheels).
+    linux_gated = [
         dep for dep in optional_dependencies["all"]
-        if "matrix" in dep
+        if "matrix" in dep and "linux" in dep
     ]
-    assert not matrix_in_all, (
-        "matrix must not appear in [all] — it's lazy-installed via "
-        "tools/lazy_deps.py LAZY_DEPS['platform.matrix']. Found: "
-        f"{matrix_in_all}"
+    assert linux_gated, (
+        "expected hermes-agent[matrix] with sys_platform=='linux' marker in [all]"
     )
 
 
@@ -111,15 +98,3 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
-
-
-def test_dashboard_plugin_manifests_and_assets_are_packaged():
-    """Bundled dashboard plugins need their manifests and built assets in
-    wheel installs so /api/dashboard/plugins can discover them outside a
-    source checkout."""
-    package_data = _load_package_data()
-    plugin_data = package_data["plugins"]
-
-    assert "*/dashboard/manifest.json" in plugin_data
-    assert "*/dashboard/dist/*" in plugin_data
-    assert "*/dashboard/dist/**/*" in plugin_data

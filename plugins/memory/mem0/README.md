@@ -36,3 +36,6 @@ Config file: `$HERMES_HOME/mem0.json`
 | `mem0_profile` | All stored memories about the user |
 | `mem0_search` | Semantic search with optional reranking |
 | `mem0_conclude` | Store a fact verbatim (no LLM extraction) |
+| `mem0_delete` | Delete a single memory by ID |
+| `mem0_batch_delete` | Delete multiple memories by ID (max 50) |
+| `mem0_delete_all` | Delete all memories for the user+agent (requires `confirm=True`) |

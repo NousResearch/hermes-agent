@@ -1,11 +1,10 @@
-"""Tests for /loop CLI command — LoopManager-based same-session continuation.
+"""Tests for /loop CLI command.
 
-Verifies that the CLI handler correctly dispatches subcommands,
-parses interval prefixes, and integrates with LoopManager.
+Verifies that the CLI handler correctly parses schedules, prompts, and
+subcommands, and calls the cronjob tool with the right parameters.
 """
 
-from __future__ import annotations
-
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -16,37 +15,20 @@ import pytest
 # ------------------------------------------------------------------
 
 def _make_cli():
-    """Build a minimal HermesCLI stub with loop handler support."""
+    """Build a minimal HermesCLI stub with just the loop handler."""
     from cli import HermesCLI
     cli = object.__new__(HermesCLI)
     cli._busy_command = lambda self, ctx: ctx
     cli._slow_command_status = lambda self, cmd: None
-    cli._pending_input = MagicMock()
-    cli._pending_input.empty.return_value = True
-    cli.conversation_history = []
-    cli._last_turn_interrupted = False
-    # Patch _cprint to plain print() so capsys captures output and
-    # prompt_toolkit does not try to flush to a closed stdout.
-    import cli as _cli_mod
-    _cli_mod._cprint = print
     return cli
 
 
-@pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so SessionDB.state_meta writes don't clobber the real one."""
-    from pathlib import Path
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    from hermes_cli import loop
-
-    loop._DB_CACHE.clear()
-    yield home
-    loop._DB_CACHE.clear()
+def _mock_cron_api(success=True, **extra):
+    """Return a mock cronjob_tool that returns JSON with given fields."""
+    def _cron_tool(**kwargs):
+        result = {"success": success, **extra}
+        return json.dumps(result)
+    return _cron_tool
 
 
 # ------------------------------------------------------------------
@@ -62,217 +44,216 @@ class TestLoopCommandCLI:
         assert cmd_def is not None
         assert cmd_def.name == "loop"
 
-    def test_no_args_shows_status_when_none(self, capsys, hermes_home):
-        """/loop with no args shows 'No active loop' when none set."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-1"
+    def test_alias_repeat_resolves(self):
+        """The 'repeat' alias resolves to the loop command."""
+        from hermes_cli.commands import resolve_command
+        cmd_def = resolve_command("/repeat")
+        assert cmd_def is not None
+        assert cmd_def.name == "loop"
 
-        cli._handle_loop_command("/loop")
+    def test_no_args_shows_usage(self, capsys):
+        """/loop with no args prints usage banner and lists jobs."""
+        from cli import HermesCLI
+        cli = object.__new__(HermesCLI)
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api(jobs=[])):
+            cli._handle_loop_command("/loop")
 
         captured = capsys.readouterr()
-        assert "No active loop" in captured.out
+        assert "(^_^) /loop" in captured.out
+        assert "Usage:" in captured.out
+        assert "No loop jobs" in captured.out
 
-    def test_set_prompt(self, capsys, hermes_home):
-        """/loop <prompt> creates a loop and kicks off immediately with [Loop check] prefix."""
+    def test_create_parses_schedule_and_prompt(self, capsys):
+        """/loop 5m check deployment creates a job with schedule=5m prompt=check deployment."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-2"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop check deployment")
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({
+                "success": True,
+                "job_id": "loop_abc123",
+                "schedule": "5m",
+                "next_run_at": "2026-05-09T17:00:00Z",
+            })
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command("/loop 5m check deployment")
 
         captured = capsys.readouterr()
-        assert "Loop set" in captured.out
-        assert "check deployment" in captured.out
-        assert "300s" in captured.out
-        cli._pending_input.put.assert_called_once_with("[Loop check] check deployment")
+        assert len(calls) == 1
+        assert calls[0]["action"] == "create"
+        assert calls[0]["schedule"] == "5m"
+        assert calls[0]["prompt"] == "check deployment"
+        assert calls[0]["name"].startswith("loop:")
+        assert calls[0]["deliver"] == "origin"
+        assert "Loop job created" in captured.out
 
-    def test_set_with_interval(self, capsys, hermes_home):
-        """/loop 5m check deployment parses interval prefix."""
+    def test_create_every_syntax(self, capsys):
+        """/loop every 30m summarize news passes schedule through."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-3"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop 5m check deployment")
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "job_id": "loop_def456", "schedule": "every 30m", "next_run_at": "2026-05-09T17:30:00Z"})
 
-        captured = capsys.readouterr()
-        assert "Loop set" in captured.out
-        assert "300s" in captured.out
-        assert "check deployment" in captured.out
-        cli._pending_input.put.assert_called_once_with("[Loop check] check deployment")
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command('/loop every 30m "summarize news"')
 
-    def test_set_every_syntax(self, capsys, hermes_home):
-        """/loop every 30m summarize news parses 'every' prefix."""
+        assert len(calls) == 1
+        assert calls[0]["schedule"] == "every 30m"
+        assert calls[0]["prompt"] == "summarize news"
+
+    def test_create_empty_prompt_error(self, capsys):
+        """/loop 5m with no prompt shows usage error."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-4"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop every 30m summarize news")
-
-        captured = capsys.readouterr()
-        assert "Loop set" in captured.out
-        assert "1800s" in captured.out
-        assert "summarize news" in captured.out
-
-    def test_set_empty_prompt_error(self, capsys, hermes_home):
-        """/loop 5m with no prompt shows usage."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-5"
-
-        cli._handle_loop_command("/loop 5m")
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api()):
+            cli._handle_loop_command("/loop 5m")
 
         captured = capsys.readouterr()
         assert "Usage:" in captured.out
+        assert "Example" in captured.out
 
-    def test_status_shows_active_loop(self, capsys, hermes_home):
-        """/loop status shows active loop details."""
+    def test_list_subcommand(self, capsys):
+        """/loop list filters jobs by name prefix loop:."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-6"
-        cli._handle_loop_command("/loop check deployment")
+        cli = object.__new__(HermesCLI)
 
-        cli._pending_input.reset_mock()
-        cli._handle_loop_command("/loop status")
+        jobs = [
+            {"job_id": "j1", "name": "loop: check deployment", "schedule": "5m", "state": "active", "prompt_preview": "check deployment", "next_run_at": "2026-05-09T17:00:00Z"},
+            {"job_id": "j2", "name": "regular job", "schedule": "1h", "state": "active"},
+        ]
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api(jobs=jobs)):
+            cli._handle_loop_command("/loop list")
 
         captured = capsys.readouterr()
-        assert "active" in captured.out.lower()
-        assert "check deployment" in captured.out
+        assert "Loop Jobs:" in captured.out
+        assert "j1" in captured.out
+        assert "regular job" not in captured.out  # filtered out
 
-    def test_pause_subcommand(self, capsys, hermes_home):
-        """/loop pause pauses the active loop."""
+    def test_list_no_jobs(self, capsys):
+        """/loop list with no loop jobs prints friendly message."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-7"
-        cli._handle_loop_command("/loop check deployment")
+        cli = object.__new__(HermesCLI)
 
-        cli._pending_input.reset_mock()
-        cli._handle_loop_command("/loop pause")
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api(jobs=[])):
+            cli._handle_loop_command("/loop list")
 
         captured = capsys.readouterr()
-        assert "Loop paused" in captured.out
-        assert "check deployment" in captured.out
+        assert "No loop jobs found" in captured.out
 
-    def test_resume_subcommand(self, capsys, hermes_home):
-        """/loop resume resumes a paused loop."""
+    def test_pause_subcommand(self, capsys):
+        """/loop pause <id> calls cronjob action=pause."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-8"
-        cli._handle_loop_command("/loop check deployment")
-        cli._handle_loop_command("/loop pause")
+        cli = object.__new__(HermesCLI)
 
-        cli._pending_input.reset_mock()
-        cli._handle_loop_command("/loop resume")
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "job": {"name": "loop: test", "job_id": "abc"}})
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command("/loop pause abc123")
 
         captured = capsys.readouterr()
-        assert "Loop resumed" in captured.out
-        assert "check deployment" in captured.out
+        assert len(calls) == 1
+        assert calls[0]["action"] == "pause"
+        assert calls[0]["job_id"] == "abc123"
+        assert calls[0]["reason"] == "paused from /loop"
+        assert "Paused loop job" in captured.out
 
-    def test_clear_subcommand(self, capsys, hermes_home):
-        """/loop clear clears the active loop."""
+    def test_pause_missing_id(self, capsys):
+        """/loop pause without id prints usage."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-9"
-        cli._handle_loop_command("/loop check deployment")
+        cli = object.__new__(HermesCLI)
 
-        cli._pending_input.reset_mock()
-        cli._handle_loop_command("/loop clear")
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api()):
+            cli._handle_loop_command("/loop pause")
 
         captured = capsys.readouterr()
-        assert "Loop cleared" in captured.out
+        assert "Usage: /loop pause" in captured.out
 
-    def test_clear_when_no_loop(self, capsys, hermes_home):
-        """/loop clear when no loop shows friendly message."""
+    def test_resume_subcommand(self, capsys):
+        """/loop resume <id> calls cronjob action=resume."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-10"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop clear")
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "job": {"name": "loop: test", "next_run_at": "2026-05-09T18:00:00Z"}})
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command("/loop resume abc123")
 
         captured = capsys.readouterr()
-        assert "No active loop" in captured.out
+        assert len(calls) == 1
+        assert calls[0]["action"] == "resume"
+        assert calls[0]["job_id"] == "abc123"
+        assert "Resumed loop job" in captured.out
 
-    def test_pause_when_no_loop(self, capsys, hermes_home):
-        """/loop pause when no loop shows friendly message."""
+    def test_remove_subcommand(self, capsys):
+        """/loop remove <id> calls cronjob action=remove."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-11"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop pause")
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "removed_job": {"name": "loop: test"}})
+
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command("/loop remove abc123")
 
         captured = capsys.readouterr()
-        assert "No loop set" in captured.out
+        assert len(calls) == 1
+        assert calls[0]["action"] == "remove"
+        assert calls[0]["job_id"] == "abc123"
+        assert "Removed loop job" in captured.out
 
-    def test_resume_when_no_loop(self, capsys, hermes_home):
-        """/loop resume when no loop shows friendly message."""
+    def test_remove_missing_id(self, capsys):
+        """/loop remove without id prints usage."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "test-sid-12"
+        cli = object.__new__(HermesCLI)
 
-        cli._handle_loop_command("/loop resume")
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api()):
+            cli._handle_loop_command("/loop remove")
 
         captured = capsys.readouterr()
-        assert "No loop to resume" in captured.out
+        assert "Usage: /loop remove" in captured.out
 
-
-# ------------------------------------------------------------------
-# _maybe_continue_loop_after_turn hook tests
-# ------------------------------------------------------------------
-class TestLoopContinuationHook:
-    """_maybe_continue_loop_after_turn is now a no-op — loop is driven by
-    the LoopScheduler background daemon thread, not a post-turn hook."""
-
-    def test_no_op_does_not_error(self, hermes_home):
-        """No-op hook doesn't raise on any state."""
+    def test_create_failure(self, capsys):
+        """Failed create prints error message."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-1"
-        cli._maybe_continue_loop_after_turn()
+        cli = object.__new__(HermesCLI)
 
-    def test_no_op_never_enqueues(self, hermes_home):
-        """No-op hook never calls _pending_input.put."""
+        with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api(success=False, error="Invalid schedule")):
+            cli._handle_loop_command("/loop bad check deployment")
+
+        captured = capsys.readouterr()
+        assert "Failed to create loop" in captured.out
+        assert "Invalid schedule" in captured.out
+
+    def test_prompt_truncated_in_name(self, capsys):
+        """Very long prompt is truncated in job name but full prompt is passed."""
         from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-2"
+        cli = object.__new__(HermesCLI)
 
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-2")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-        cli.conversation_history = [{"role": "assistant", "content": "all good"}]
+        calls = []
+        def _capture_cronjob(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "job_id": "loop_xyz", "schedule": "1h", "next_run_at": "2026-05-09T18:00:00Z"})
 
-        cli._maybe_continue_loop_after_turn()
-        cli._pending_input.put.assert_not_called()
+        long_prompt = "a" * 100
+        with patch("tools.cronjob_tools.cronjob", side_effect=_capture_cronjob):
+            cli._handle_loop_command(f"/loop 1h {long_prompt}")
 
-    def test_no_op_never_pauses(self, hermes_home):
-        """No-op hook does not pause loop on interrupt."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-3"
-        cli._last_turn_interrupted = True
-
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-3")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-
-        cli._maybe_continue_loop_after_turn()
-        assert loop_mgr.state.status == "active"
-
-    def test_no_op_with_goal_active(self, hermes_home):
-        """No-op hook doesn't error even with active goal."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-4"
-
-        from hermes_cli.goals import GoalManager
-        goal_mgr = GoalManager(session_id="hook-sid-4")
-        goal_mgr.set("do the thing")
-        cli._goal_manager = goal_mgr
-
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-4")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-
-        cli._maybe_continue_loop_after_turn()
+        assert calls[0]["prompt"] == long_prompt
+        assert calls[0]["name"] == f"loop: {'a' * 50}..."

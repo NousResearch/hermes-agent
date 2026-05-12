@@ -1,12 +1,14 @@
 """Abstract base class for pluggable memory providers.
 
-Memory providers give the agent persistent recall across sessions.
-The MemoryManager enforces a one-external-provider limit to prevent
-tool schema bloat and conflicting memory backends.
+Memory providers give the agent persistent recall across sessions. One or
+more external providers can be active simultaneously alongside the always-on
+built-in memory (MEMORY.md / USER.md). The ``memory.providers`` list in
+config.yaml controls which external providers are loaded.
 
-External providers (Honcho, Hindsight, Mem0, etc.) are registered
-and managed via MemoryManager. Only one external provider runs at a
-time.
+Built-in memory is always active as the first provider and cannot be removed.
+External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never
+disable the built-in store.  Multiple external providers can run
+simultaneously via the ``memory.providers`` list in config.yaml.
 
 Registration:
   Plugins ship in plugins/memory/<name>/ and are activated via

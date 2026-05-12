@@ -35,6 +35,7 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
     return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
 
 
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
@@ -50,6 +51,31 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # ---------------------------------------------------------------------------
 # Provider discovery
 # ---------------------------------------------------------------------------
+
+def _get_configured_providers(config: dict) -> list[str]:
+    """Return list of active provider names from config.
+
+    Supports both old format (memory.provider: 'honcho') and
+    new format (memory.providers: ['honcho', 'mem0']).
+    New format takes precedence when non-empty.
+    """
+    mem = config.get("memory", {})
+    providers = mem.get("providers", [])
+    if providers:
+        return [p for p in providers if p]
+    single = mem.get("provider", "")
+    return [single] if single else []
+
+
+def _set_configured_providers(config: dict, provider_names: list[str]) -> None:
+    """Write provider list to config using the new providers list format."""
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
+    # Write to new list format
+    config["memory"]["providers"] = list(provider_names)
+    # Also set legacy single-provider for backwards compat (first provider)
+    config["memory"]["provider"] = provider_names[0] if provider_names else ""
+
 
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
@@ -205,17 +231,39 @@ def cmd_setup_provider(provider_name: str) -> None:
     if hasattr(provider, "post_setup"):
         hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
+        # After post_setup, ask add vs replace, then save
+        active = _get_configured_providers(config)
+        if name not in active:
+            print(f"\n  Currently active: {', '.join(active)}")
+            choice_items = [
+                (f"Add {name} alongside", f"Keep {', '.join(active)} and add {name}"),
+                ("Replace all", f"Use {name} only"),
+            ]
+            choice_idx = _curses_select("  Active providers already configured", choice_items, default=0)
+            if choice_idx == 1:
+                _set_configured_providers(config, [name])
+                active = [name]
+            else:
+                active.append(name)
+                _set_configured_providers(config, active)
+            save_config(config)
+        print(f"\n  Active providers: {', '.join(active)}")
+        print(f"  Start a new session to activate.\n")
         return
 
-    # Fallback: generic schema-based setup (same as cmd_setup)
-    config["memory"]["provider"] = name
+    # Generic schema-based setup: append to providers list
+    active = _get_configured_providers(config)
+    if name not in active:
+        active.append(name)
+    _set_configured_providers(config, active)
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print(f"  Added to providers list in config.yaml")
+    print(f"  Active providers: {', '.join(active)}\n")
 
 
 def cmd_setup(args) -> None:
-    """Interactive memory provider setup wizard."""
+    """Interactive memory provider setup wizard (multi-provider)."""
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
@@ -225,22 +273,95 @@ def cmd_setup(args) -> None:
         print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
         return
 
-    # Build picker items
-    items = []
-    for name, desc, _ in providers:
-        items.append((name, f"— {desc}"))
-    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
-
-    builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
-
     config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
+    # Show currently active providers
+    active = _get_configured_providers(config)
+    if active:
+        print(f"\n  Currently active: {', '.join(active)}")
+        print(f"  You can add more providers or change your selection.\n")
+
+    # Build picker items (all available providers)
+    items = []
+    provider_names = []
+
+    # Add "Remove a provider..." option when providers are active
+    remove_idx = -1
+    if active:
+        items.append(("Remove a provider...", "— deactivate an active provider"))
+        remove_idx = 0
+
+    for name, desc, _ in providers:
+        items.append((name, f"— {desc}"))
+        provider_names.append(name)
+    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
+
+    # Pre-select currently active providers
+    pre_selected = set()
+    for i, name in enumerate(provider_names):
+        if name in active:
+            pre_selected.add(i)
+
+    builtin_idx = len(items) - 1
+
+    # If no current selection, default to built-in only
+    if not pre_selected:
+        pre_selected = {builtin_idx}
+
+    if remove_idx >= 0:
+        # Default to first active provider if any, otherwise 0 (the remove entry)
+        if pre_selected:
+            default_idx = min(pre_selected) + 1  # +1 for the remove entry offset
+        else:
+            default_idx = 0
+        selected = _curses_select("Memory provider setup", items, default=default_idx)
+    else:
+        selected = _curses_select("Memory provider setup", items, default=pre_selected.pop() if len(pre_selected) == 1 else 0)
+
+    # Handle "Remove a provider..." selection
+    if selected == remove_idx and remove_idx >= 0:
+        from hermes_cli.curses_ui import curses_checklist
+        from hermes_cli.plugins_cmd import _remove_memory_provider
+
+        remove_items = list(active)
+        if not remove_items:
+            print("\n  No active providers to remove.\n")
+            return
+
+        # All are pre-selected; user unchecks the ones to remove
+        remove_selected = curses_checklist(
+            title="Providers to KEEP (uncheck to remove)",
+            items=remove_items,
+            selected=set(range(len(remove_items))),
+        )
+
+        to_remove = [remove_items[i] for i in range(len(remove_items)) if i not in remove_selected]
+        if not to_remove:
+            print("\n  No changes made.\n")
+            return
+
+        for prov in to_remove:
+            _remove_memory_provider(prov)
+
+        remaining = _get_configured_providers(config)
+        if remaining:
+            print(f"\n  ✓ Removed: {', '.join(to_remove)}")
+            print(f"  Active providers: {', '.join(remaining)}")
+        else:
+            print(f"\n  ✓ Removed: {', '.join(to_remove)}")
+            print("  Active providers: (none — built-in only)")
+        print("  Start a new session to activate.\n")
+        return
+
+    # Adjust for the "Remove" entry offset
+    if remove_idx >= 0:
+        selected -= 1  # shift back since we prepended one entry
+
     # Built-in only
     if selected >= len(providers) or selected < 0:
-        config["memory"]["provider"] = ""
+        _set_configured_providers(config, [])
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
@@ -248,14 +369,37 @@ def cmd_setup(args) -> None:
 
     name, _, provider = providers[selected]
 
+    # If there are already active providers not including this one,
+    # ask whether to add alongside or replace entirely.
+    replace_existing = False
+    if active and name not in active:
+        print(f"\n  Currently active: {', '.join(active)}")
+        choice_items = [
+            (f"Add {name} alongside", f"Keep {', '.join(active)} and add {name}"),
+            ("Replace all", f"Use {name} only"),
+        ]
+        choice_idx = _curses_select("  Active providers already configured", choice_items, default=0)
+        replace_existing = (choice_idx == 1)
+
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
 
     # If the provider has a post_setup hook, delegate entirely to it.
-    # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
         hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
+        # After post_setup, add to providers list (or replace)
+        if replace_existing:
+            _set_configured_providers(config, [name])
+            active = [name]
+        else:
+            active = _get_configured_providers(config)
+            if name not in active:
+                active.append(name)
+            _set_configured_providers(config, active)
+        save_config(config)
+        print(f"\n  Active providers: {', '.join(active)}")
+        print(f"\n  Start a new session to activate.\n")
         return
 
     schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
@@ -326,8 +470,15 @@ def cmd_setup(args) -> None:
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
 
-    # Write activation key to config.yaml
-    config["memory"]["provider"] = name
+    # Add to providers list (add alongside or replace based on user choice)
+    if replace_existing:
+        _set_configured_providers(config, [name])
+        active = [name]
+    else:
+        active = _get_configured_providers(config)
+        if name not in active:
+            active.append(name)
+        _set_configured_providers(config, active)
     save_config(config)
 
     # Write non-secret config to provider's native location
@@ -343,11 +494,13 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print(f"  Active providers: {', '.join(active)}")
+    print(f"  Saved to config.yaml")
     if provider_config:
         print(f"  Provider config saved")
     if env_writes:
         print(f"  API keys saved to .env")
+
     print(f"\n  Start a new session to activate.\n")
 
 
@@ -392,54 +545,58 @@ def cmd_status(args) -> None:
 
     config = load_config()
     mem_config = config.get("memory", {})
-    provider_name = mem_config.get("provider", "")
+    active = _get_configured_providers(config)
 
     print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
-    print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+    print(f"  Built-in:   always active")
+    if active:
+        print(f"  Providers:  {', '.join(active)}")
+    else:
+        print(f"  Providers:  (none — built-in only)")
 
-    if provider_name:
-        provider_config = mem_config.get(provider_name, {})
-        if provider_config:
-            print(f"\n  {provider_name} config:")
-            for key, val in provider_config.items():
-                print(f"    {key}: {val}")
+    if active:
+        for provider_name in active:
+            print(f"\n  ── {provider_name} ──")
+            provider_config = mem_config.get(provider_name, {})
+            if provider_config:
+                print(f"  Config:")
+                for key, val in provider_config.items():
+                    print(f"    {key}: {val}")
 
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
-        if found:
-            print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
-                        if required_fields:
-                            print(f"  Missing:")
-                            for f in required_fields:
-                                env_var = f.get("env_var", "")
-                                url = f.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
-        else:
-            print(f"\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            providers = _get_available_providers()
+            found = any(name == provider_name for name, _, _ in providers)
+            if found:
+                print(f"  Plugin:     installed ✓")
+                for pname, _, p in providers:
+                    if pname == provider_name:
+                        if p.is_available():
+                            print(f"  Status:     available ✓")
+                        else:
+                            print(f"  Status:     not available ✗")
+                            schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
+                            required_fields = [f for f in schema if f.get("env_var")]
+                            if required_fields:
+                                print(f"  Missing:")
+                                for f in required_fields:
+                                    env_var = f.get("env_var", "")
+                                    url = f.get("url", "")
+                                    is_set = bool(os.environ.get(env_var))
+                                    mark = "✓" if is_set else "✗"
+                                    line = f"    {mark} {env_var}"
+                                    if url and not is_set:
+                                        line += f"  → {url}"
+                                    print(line)
+                        break
+            else:
+                print(f"  Plugin:     NOT installed ✗")
+                print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     providers = _get_available_providers()
     if providers:
         print(f"\n  Installed plugins:")
         for pname, desc, _ in providers:
-            active = " ← active" if pname == provider_name else ""
-            print(f"    • {pname}  ({desc}){active}")
+            active_marker = " ← active" if pname in active else ""
+            print(f"    • {pname}  ({desc}){active_marker}")
 
     print()
 

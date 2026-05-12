@@ -1,6 +1,8 @@
 import base64
 
 import pytest
+
+pytest.importorskip("acp")
 from acp.schema import (
     BlobResourceContents,
     EmbeddedResourceContentBlock,

@@ -6,6 +6,7 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 import json
 import os
 import stat
+import time
 
 import pytest
 
@@ -32,6 +33,18 @@ class FakeClientV2:
 
     def add(self, messages, **kwargs):
         self.captured_add.append({"messages": messages, **kwargs})
+
+    def delete(self, **kwargs):
+        self.captured_delete = kwargs
+        return {"message": "Memory deleted successfully."}
+
+    def delete_all(self, **kwargs):
+        self.captured_delete_all = kwargs
+        return {"message": "All memories deleted successfully."}
+
+    def batch_delete(self, **kwargs):
+        self.captured_batch_delete = kwargs
+        return {"message": "Memories deleted successfully."}
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +252,180 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+# ---------------------------------------------------------------------------
+# Delete tools: filters, safety, and response handling
+# ---------------------------------------------------------------------------
+
+
+class TestMem0DeleteFiltersV2:
+    """Delete API calls must use correct filters and capture kwargs."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_delete_uses_memory_id(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete", {"memory_id": "mem-abc"}))
+
+        assert client.captured_delete["memory_id"] == "mem-abc"
+        assert result["result"] == "Memory deleted."
+        assert result["memory_id"] == "mem-abc"
+
+    def test_delete_all_uses_write_filters(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {"confirm": True}))
+
+        assert client.captured_delete_all["user_id"] == "u123"
+        assert client.captured_delete_all["agent_id"] == "hermes"
+        assert result["result"] == "All memories deleted successfully."
+
+    def test_batch_delete_uses_memory_ids(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_batch_delete", {"memory_ids": ["m1", "m2", "m3"]}))
+
+        assert len(client.captured_batch_delete["memories"]) == 3
+        assert client.captured_batch_delete["memories"][0] == {"memory_id": "m1"}
+        assert result["result"] == "Memories deleted successfully."
+        assert result["count"] == 3
+
+
+class TestMem0DeleteSafety:
+    """Safety guardrails for destructive operations."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_delete_missing_memory_id(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete", {}))
+
+        assert "error" in result
+        assert "memory_id" in result["error"].lower()
+
+    def test_delete_all_without_confirm(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {}))
+
+        assert "error" in result
+        assert "confirm" in result["error"].lower()
+        # Should NOT have called the SDK
+        assert not hasattr(client, "captured_delete_all")
+
+    def test_delete_all_with_confirm_false(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {"confirm": False}))
+
+        assert "error" in result
+        assert "confirm" in result["error"].lower()
+        assert not hasattr(client, "captured_delete_all")
+
+    def test_delete_all_with_confirm_string_true(self, monkeypatch):
+        """String 'true' must be rejected — strict bool check."""
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {"confirm": "true"}))
+
+        assert "error" in result
+        assert not hasattr(client, "captured_delete_all")
+
+    def test_batch_delete_empty_list(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_batch_delete", {"memory_ids": []}))
+
+        assert "error" in result
+        assert "memory_ids" in result["error"].lower()
+
+    def test_batch_delete_over_limit(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_batch_delete", {"memory_ids": ["m"] * 51}))
+
+        assert "error" in result
+        assert "limit" in result["error"].lower()
+
+
+class TestMem0DeleteResponses:
+    """Response unwrapping and error handling for delete operations."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_delete_api_error(self, monkeypatch):
+        class BrokenClient:
+            def delete(self, **kwargs):
+                raise RuntimeError("API down")
+
+        provider = self._make_provider(monkeypatch, BrokenClient())
+        result = json.loads(provider.handle_tool_call("mem0_delete", {"memory_id": "m1"}))
+
+        assert "error" in result
+        assert "API down" in result["error"]
+
+    def test_delete_all_api_error(self, monkeypatch):
+        class BrokenClient:
+            def delete_all(self, **kwargs):
+                raise RuntimeError("service unavailable")
+
+        provider = self._make_provider(monkeypatch, BrokenClient())
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {"confirm": True}))
+
+        assert "error" in result
+        assert "service unavailable" in result["error"]
+
+    def test_batch_delete_api_error(self, monkeypatch):
+        class BrokenClient:
+            def batch_delete(self, **kwargs):
+                raise RuntimeError("batch failed")
+
+        provider = self._make_provider(monkeypatch, BrokenClient())
+        result = json.loads(provider.handle_tool_call("mem0_batch_delete", {"memory_ids": ["m1", "m2"]}))
+
+        assert "error" in result
+        assert "batch failed" in result["error"]
+
+    def test_circuit_breaker_blocks_delete(self, monkeypatch):
+        """When breaker is open, all delete tools return the breaker message."""
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._consecutive_failures = 999
+        provider._breaker_open_until = time.monotonic() + 9999
+
+        result = json.loads(provider.handle_tool_call("mem0_delete", {"memory_id": "m1"}))
+        assert "unavailable" in result["error"].lower()
+
+        result = json.loads(provider.handle_tool_call("mem0_delete_all", {"confirm": True}))
+        assert "unavailable" in result["error"].lower()
+
+        result = json.loads(provider.handle_tool_call("mem0_batch_delete", {"memory_ids": ["m1"]}))
+        assert "unavailable" in result["error"].lower()

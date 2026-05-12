@@ -213,7 +213,7 @@ class FakeHAServer:
         })
 
         # Step 6: push events from queue until closed
-        try:
+        async def _push_events() -> None:
             while not ws.closed:
                 try:
                     event_data = await asyncio.wait_for(
@@ -226,9 +226,24 @@ class FakeHAServer:
                     })
                 except asyncio.TimeoutError:
                     continue
-        except (ConnectionResetError, asyncio.CancelledError):
-            pass
+                except (ConnectionResetError, asyncio.CancelledError):
+                    break
 
+        async def _read_close() -> None:
+            while not ws.closed:
+                try:
+                    msg = await ws.receive()
+                except (ConnectionResetError, asyncio.CancelledError):
+                    break
+                if msg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    break
+
+        await asyncio.gather(_push_events(), _read_close())
         return ws
 
     # -- REST handlers ---------------------------------------------------------

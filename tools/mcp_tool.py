@@ -220,6 +220,24 @@ try:
         _MCP_SAMPLING_TYPES = True
     except ImportError:
         logger.debug("MCP sampling types not available -- sampling disabled")
+        # Provide fallback compat types for tests and downstream consumers
+        # when the MCP SDK is too old to export these names.
+        class _CompatType:
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+        class _ErrorDataType(Exception):
+            def __init__(self, code=None, message="", **kwargs):
+                self.code = code
+                self.message = message
+                super().__init__(message)
+        CreateMessageResult = _CompatType
+        CreateMessageResultWithTools = _CompatType
+        ErrorData = _ErrorDataType
+        SamplingCapability = _CompatType
+        SamplingToolsCapability = _CompatType
+        TextContent = _CompatType
+        ToolUseContent = _CompatType
     # Notification types for dynamic tool discovery (tools/list_changed)
     try:
         from mcp.types import (
@@ -233,6 +251,24 @@ try:
         logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
+    # Provide fallback compat types for tests and downstream consumers
+    # when the MCP SDK is not installed at all.
+    class _CompatType:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+    class _ErrorDataType(Exception):
+        def __init__(self, code=None, message="", **kwargs):
+            self.code = code
+            self.message = message
+            super().__init__(message)
+    CreateMessageResult = _CompatType
+    CreateMessageResultWithTools = _CompatType
+    ErrorData = _ErrorDataType
+    SamplingCapability = _CompatType
+    SamplingToolsCapability = _CompatType
+    TextContent = _CompatType
+    ToolUseContent = _CompatType
 
 
 def _check_message_handler_support() -> bool:

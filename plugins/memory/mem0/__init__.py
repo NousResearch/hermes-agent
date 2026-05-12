@@ -111,6 +111,45 @@ CONCLUDE_SCHEMA = {
     },
 }
 
+DELETE_SCHEMA = {
+    "name": "mem0_delete",
+    "description": "Delete a single memory by its ID.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "The ID of the memory to delete."},
+        },
+        "required": ["memory_id"],
+    },
+}
+
+DELETE_ALL_SCHEMA = {
+    "name": "mem0_delete_all",
+    "description": (
+        "Delete ALL memories for the current user and agent. "
+        "Requires confirm=True as a safety guardrail."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "confirm": {"type": "boolean", "description": "Must be set to true to confirm deletion of all memories."},
+        },
+        "required": ["confirm"],
+    },
+}
+
+BATCH_DELETE_SCHEMA = {
+    "name": "mem0_batch_delete",
+    "description": "Delete multiple memories by their IDs in a single call.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "List of memory IDs to delete. Max 50."},
+        },
+        "required": ["memory_ids"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -232,7 +271,9 @@ class Mem0MemoryProvider(MemoryProvider):
             "# Mem0 Memory\n"
             f"Active. User: {self._user_id}.\n"
             "Use mem0_search to find memories, mem0_conclude to store facts, "
-            "mem0_profile for a full overview."
+            "mem0_profile for a full overview, mem0_delete to remove a memory, "
+            "mem0_batch_delete for multiple deletions, and mem0_delete_all "
+            "(requires confirm=True) to clear everything."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -296,7 +337,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, DELETE_SCHEMA, DELETE_ALL_SCHEMA, BATCH_DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -358,6 +399,49 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to store: {e}")
+
+        elif tool_name == "mem0_delete":
+            memory_id = args.get("memory_id", "")
+            if not memory_id:
+                return tool_error("Missing required parameter: memory_id")
+            try:
+                client.delete(memory_id=memory_id)
+                self._record_success()
+                return json.dumps({"result": "Memory deleted.", "memory_id": memory_id})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to delete memory: {e}")
+
+        elif tool_name == "mem0_delete_all":
+            confirm = args.get("confirm", False)
+            if confirm is not True:
+                return json.dumps({
+                    "error": "delete_all refused: confirm must be explicitly set to true. This is a safety guardrail to prevent accidental deletion of all memories."
+                })
+            try:
+                result = client.delete_all(**self._write_filters())
+                self._record_success()
+                message = result.get("message", "All memories deleted.")
+                return json.dumps({"result": message})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to delete all memories: {e}")
+
+        elif tool_name == "mem0_batch_delete":
+            memory_ids = args.get("memory_ids", [])
+            if not memory_ids:
+                return tool_error("Missing required parameter: memory_ids")
+            if len(memory_ids) > 50:
+                return tool_error("Batch delete limit exceeded: max 50 memory_ids per call.")
+            try:
+                memories = [{"memory_id": mid} for mid in memory_ids]
+                result = client.batch_delete(memories=memories)
+                self._record_success()
+                message = result.get("message", "Memories deleted.")
+                return json.dumps({"result": message, "count": len(memory_ids)})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to batch delete memories: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

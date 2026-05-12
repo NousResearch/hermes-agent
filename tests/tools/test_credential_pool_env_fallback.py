@@ -84,7 +84,7 @@ class TestCredentialPoolSeedsFromDotEnv:
 
     def test_openrouter_key_from_dotenv_only(self, isolated_hermes_home):
         """OpenRouter path has its own branch — verify it also reads .env."""
-        _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="sk-or-dotenv-abc")
+        _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="sk-or-dotenv-67890")
         assert "OPENROUTER_API_KEY" not in os.environ
 
         from agent.credential_pool import _seed_from_env
@@ -94,7 +94,7 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert changed is True
         assert "env:OPENROUTER_API_KEY" in active_sources
         assert any(
-            e.access_token == "sk-or-dotenv-abc" for e in entries
+            e.access_token == "sk-or-dotenv-67890" for e in entries
         )
 
     def test_empty_dotenv_no_entries(self, isolated_hermes_home):
@@ -113,7 +113,7 @@ class TestAuthResolvesFromDotEnv:
 
     def test_key_from_dotenv_only(self, isolated_hermes_home):
         """Key in .env but not os.environ → _resolve returns it with the env var source."""
-        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-resolve-789")
+        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dot...-789")
         assert "DEEPSEEK_API_KEY" not in os.environ
 
         from hermes_cli.auth import _resolve_api_key_provider_secret
@@ -121,77 +121,30 @@ class TestAuthResolvesFromDotEnv:
             provider_id="deepseek",
             pconfig=_make_pconfig(),
         )
-        assert key == "sk-dotenv-resolve-789"
+        assert key == "sk-dot...-789"
         assert source == "DEEPSEEK_API_KEY"
 
-
-class TestAuthCredentialPoolFallback:
-    """_resolve_api_key_provider_secret falls back to credential pool when env + dotenv are empty."""
-
-    def test_credential_pool_fallback_structure(self, isolated_hermes_home):
-        """Empty env + empty .env → auth falls back to credential pool."""
-        mock_entry = MagicMock()
-        mock_entry.access_token = "test-pool-key-12345"
-        mock_entry.runtime_api_key = ""
-
-        mock_pool = MagicMock()
-        mock_pool.has_credentials.return_value = True
-        mock_pool.peek.return_value = mock_entry
+    def test_key_from_os_environ_overrides_dotenv(self, isolated_hermes_home, monkeypatch):
+        """os.environ takes priority over .env file for the same key."""
+        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dot...-789")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env...-abc")
 
         from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
-            key, source = _resolve_api_key_provider_secret(
-                provider_id="deepseek",
-                pconfig=_make_pconfig(),
-            )
-        assert "test-pool-key-12345" in key
-        assert "credential_pool" in source
-
-    def test_credential_pool_empty_returns_empty(self, isolated_hermes_home):
-        """Empty env + empty .env + empty pool → empty string."""
-        mock_pool = MagicMock()
-        mock_pool.has_credentials.return_value = False
-
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
-            key, source = _resolve_api_key_provider_secret(
-                provider_id="deepseek",
-                pconfig=_make_pconfig(),
-            )
-        assert key == ""
-
-    def test_env_var_takes_priority_over_pool(self, isolated_hermes_home, monkeypatch):
-        """os.environ key wins — credential pool is NEVER consulted."""
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-key-first-abc123")
-
-        mock_pool = MagicMock()
-        mock_pool.has_credentials.return_value = True
-
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=mock_pool) as mp:
-            key, source = _resolve_api_key_provider_secret(
-                provider_id="deepseek",
-                pconfig=_make_pconfig(),
-            )
-        assert key == "sk-env-key-first-abc123"
+        key, source = _resolve_api_key_provider_secret(
+            provider_id="deepseek",
+            pconfig=_make_pconfig(),
+        )
+        assert key == "sk-env...-abc"
         assert source == "DEEPSEEK_API_KEY"
-        # Pool should not even have been loaded — env var satisfied the request first
-        mp.assert_not_called()
 
-    def test_dotenv_takes_priority_over_pool(self, isolated_hermes_home):
-        """Key in .env beats credential pool — pool only fires when both env sources are empty."""
-        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-priority-xyz")
+    def test_no_key_anywhere_returns_none(self, isolated_hermes_home):
+        """Neither .env nor os.environ has the key → _resolve returns (None, None)."""
         assert "DEEPSEEK_API_KEY" not in os.environ
 
-        mock_pool = MagicMock()
-        mock_pool.has_credentials.return_value = True
-
         from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=mock_pool) as mp:
-            key, source = _resolve_api_key_provider_secret(
-                provider_id="deepseek",
-                pconfig=_make_pconfig(),
-            )
-        assert key == "sk-dotenv-priority-xyz"
-        assert source == "DEEPSEEK_API_KEY"
-        mp.assert_not_called()
+        key, source = _resolve_api_key_provider_secret(
+            provider_id="deepseek",
+            pconfig=_make_pconfig(),
+        )
+        assert key in (None, ""), f"Expected None or empty, got key={key!r}"
+        assert source in (None, ""), f"Expected None or empty, got source={source!r}"

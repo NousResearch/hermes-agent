@@ -681,14 +681,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
              "(used by /kanban subscribe in the gateway adapter)",
     )
     p_nsub.add_argument("task_id")
-    p_nsub.add_argument("--platform", required=True)
-    p_nsub.add_argument("--chat-id", required=True)
+    p_nsub.add_argument("--platform", required=False)
+    p_nsub.add_argument("--chat-id", required=False)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
+    p_nsub.add_argument("--cli", action="store_true", default=False,
+                        help="Auto-set platform=cli and chat_id=cli-<pid>")
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -696,6 +698,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_nlist.add_argument("task_id", nargs="?", default=None)
     p_nlist.add_argument("--json", action="store_true")
+    p_nlist.add_argument("--cli-only", action="store_true", default=False,
+                         help="Only show cli platform subscriptions")
 
     p_nrm = sub.add_parser(
         "notify-unsubscribe",
@@ -1361,6 +1365,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        # Auto-subscribe the current CLI session so the user gets
+        # terminal-state notifications (completed/blocked/crashed/etc.)
+        # when this task finishes. Uses a per-session PID-based chat_id
+        # so multiple concurrent CLI sessions don't stomp each other.
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="cli",
+            chat_id=f"cli-{os.getpid()}",
+        )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
@@ -2430,17 +2444,25 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    _platform = args.platform
+    _chat_id = args.chat_id
+    if args.cli:
+        _platform = "cli"
+        _chat_id = f"cli-{os.getpid()}"
+    if not _platform or not _chat_id:
+        print("kanban notify-subscribe: --platform and --chat-id are required (or use --cli)", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             print(f"no such task: {args.task_id}", file=sys.stderr)
             return 1
         kb.add_notify_sub(
             conn, task_id=args.task_id,
-            platform=args.platform, chat_id=args.chat_id,
+            platform=_platform, chat_id=_chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}"
+    print(f"Subscribed {_platform}:{_chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")
     return 0
@@ -2449,6 +2471,8 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
 def _cmd_notify_list(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         subs = kb.list_notify_subs(conn, args.task_id)
+    if getattr(args, "cli_only", False):
+        subs = [s for s in subs if s.get("platform") == "cli"]
     if getattr(args, "json", False):
         print(json.dumps(subs, indent=2, ensure_ascii=False))
         return 0

@@ -429,6 +429,21 @@ def _capture_response(cap: CaptureResult) -> Any:
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax":
+        # Decide whether to hand the screenshot to the auxiliary.vision
+        # pipeline (text-only result) or keep the multimodal envelope (main
+        # model handles vision natively). Issue #24015: previously the
+        # multimodal envelope was returned unconditionally, so non-vision
+        # main models tripped HTTP 404 / 400 at the provider boundary even
+        # when auxiliary.vision was explicitly configured to handle this.
+        if _should_route_through_aux_vision():
+            routed = _route_capture_through_aux_vision(cap, summary)
+            if routed is not None:
+                return routed
+            # Aux routing was requested but failed (no vision client, aux
+            # call raised, etc.). Fall through to the multimodal envelope —
+            # better to surface a tool-result error from the main model
+            # than to silently drop the screenshot entirely.
+
         # Detect actual image format from base64 magic bytes so the MIME type
         # matches what the data contains (cua-driver may return JPEG or PNG).
         # JPEG: base64 starts with /9j/   PNG: starts with iVBOR
@@ -454,6 +469,140 @@ def _capture_response(cap: CaptureResult) -> Any:
         "window_title": cap.window_title,
         "elements": [_element_to_dict(e) for e in cap.elements],
         "summary": summary,
+    })
+
+
+# ---------------------------------------------------------------------------
+# auxiliary.vision routing for captured screenshots (#24015)
+# ---------------------------------------------------------------------------
+
+def _should_route_through_aux_vision() -> bool:
+    """Return True when ``_capture_response`` should hand the PNG to aux vision.
+
+    Reads the active main provider/model and the loaded config and asks the
+    routing helper. Any failure (config import, runtime override missing,
+    etc.) returns False so the existing multimodal envelope continues to be
+    returned — fail open on the routing decision so a broken config can
+    never silently drop the screenshot for vision-capable main models.
+    """
+    try:
+        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_cli.config import load_config
+        from tools.computer_use.vision_routing import (
+            should_route_capture_to_aux_vision,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: aux-vision routing import failed: %s", exc)
+        return False
+    try:
+        provider = _read_main_provider()
+        model = _read_main_model()
+        cfg = load_config()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: aux-vision routing config read failed: %s", exc)
+        return False
+    try:
+        return bool(should_route_capture_to_aux_vision(provider, model, cfg))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: aux-vision routing decision failed: %s", exc)
+        return False
+
+
+def _route_capture_through_aux_vision(
+    cap: CaptureResult,
+    summary: str,
+) -> Optional[str]:
+    """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
+
+    The captured base64 PNG is materialised to ``$HERMES_HOME/cache/vision/``
+    and handed to ``vision_analyze_tool`` with a generic describe prompt.
+    The resulting text description is merged into the existing AX/SOM
+    summary so the main model receives a single text payload that mentions
+    every interactable element AND a description of what the screenshot
+    looked like.
+
+    Returns:
+      A JSON-encoded text response on success.
+      ``None`` on failure (caller falls back to the multimodal envelope).
+    """
+    if not cap.png_b64:
+        return None
+    try:
+        import base64 as _base64
+        import os as _os
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+        from model_tools import _run_async
+        from tools.vision_tools import vision_analyze_tool
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: aux-vision import failed: %s", exc)
+        return None
+
+    temp_image_path = None
+    try:
+        try:
+            raw = _base64.b64decode(cap.png_b64, validate=False)
+        except Exception as exc:
+            logger.debug("computer_use: failed to decode capture base64: %s", exc)
+            return None
+
+        # Pick an extension that matches the on-disk bytes so vision_analyze's
+        # MIME sniffing returns the right content-type.
+        ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
+        cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        temp_image_path.write_bytes(raw)
+
+        prompt = (
+            "Describe what is visible in this macOS application screenshot in "
+            "concise but specific terms. Mention the app name and window "
+            "title if visible, the overall layout, any labelled buttons, "
+            "menus or text fields, and any prominent text content the user "
+            "would need to know about. Do not invent details that are not "
+            "actually visible.\n\n"
+            f"AX/SOM index for cross-reference:\n{summary}"
+        )
+
+        result_json = _run_async(
+            vision_analyze_tool(str(temp_image_path), prompt)
+        )
+    except Exception as exc:
+        logger.warning(
+            "computer_use: auxiliary.vision pre-analysis failed (%s); "
+            "falling back to native multimodal envelope",
+            exc,
+        )
+        return None
+    finally:
+        if temp_image_path is not None:
+            try:
+                _os.unlink(str(temp_image_path))
+            except Exception:
+                pass
+
+    analysis_text = ""
+    if isinstance(result_json, str):
+        try:
+            parsed = json.loads(result_json)
+            if isinstance(parsed, dict):
+                analysis_text = str(parsed.get("analysis") or "").strip()
+        except (TypeError, json.JSONDecodeError):
+            analysis_text = result_json.strip()
+
+    if not analysis_text:
+        return None
+
+    return json.dumps({
+        "mode": cap.mode,
+        "width": cap.width,
+        "height": cap.height,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "elements": [_element_to_dict(e) for e in cap.elements],
+        "summary": summary,
+        "vision_analysis": analysis_text,
+        "vision_analysis_routed_via": "auxiliary.vision",
     })
 
 

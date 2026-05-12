@@ -375,10 +375,12 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "minimax-oauth":
-        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
-        creds = resolve_minimax_oauth_runtime_credentials()
+        creds = auth_mod._minimax_oauth_login(
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+        )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["api_key"],
+            creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
         entry = PooledCredential(
@@ -388,8 +390,9 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=f"{SOURCE_MANUAL}:minimax_oauth",
-            access_token=creds["api_key"],
-            base_url=creds.get("base_url"),
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            base_url=creds.get("inference_base_url"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')

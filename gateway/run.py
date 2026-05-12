@@ -3275,6 +3275,30 @@ class GatewayRunner:
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+
+        # Log any active supply-chain security advisories. Operators see this
+        # in gateway.log and `hermes status` surfaces it; we do NOT block
+        # startup or surface it inline to user messages, since the gateway
+        # operator is the one who can act on it (uninstall the package,
+        # rotate credentials).  See hermes_cli/security_advisories.py.
+        try:
+            from hermes_cli.security_advisories import (
+                detect_compromised,
+                gateway_log_message,
+            )
+            _adv_hits = detect_compromised()
+            _adv_msg = gateway_log_message(_adv_hits)
+            if _adv_msg:
+                logger.warning("%s", _adv_msg)
+                logger.warning(
+                    "Run `hermes doctor` on the gateway host for full "
+                    "remediation steps."
+                )
+        except Exception:
+            logger.debug(
+                "security advisory check failed at gateway startup",
+                exc_info=True,
+            )
         
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (

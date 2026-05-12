@@ -468,6 +468,9 @@ class TestScopedLocks:
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        # On macOS ``ps`` is available, so _read_process_cmdline returns the
+        # unrelated process's name.  This confirms the PID was reused.
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
@@ -475,6 +478,37 @@ class TestScopedLocks:
         payload = json.loads(lock_path.read_text())
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
+
+    def test_acquire_scoped_lock_keeps_lock_when_cmdline_unreadable_but_record_is_gateway(self, tmp_path, monkeypatch):
+        """Windows regression: ps unavailable so cmdline cannot be read.
+
+        When start_time is None on both sides and _looks_like_gateway_process
+        returns False because ps is missing (not because the PID belongs to an
+        unrelated process), the stale check must not delete a valid gateway
+        lock.  Fall back to the lock record's own argv — written by the
+        gateway at startup — before declaring the lock stale.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": None,
+            "kind": "hermes-gateway",
+            "argv": ["hermes_cli/main.py", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # Windows: ps not available, so _read_process_cmdline returns None
+        # and _looks_like_gateway_process returns False for every process.
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing["pid"] == 99999
 
     def test_acquire_scoped_lock_keeps_lock_when_pid_reused_by_gateway(self, tmp_path, monkeypatch):
         """When start_time is None but the live PID still looks like a gateway, keep the lock."""

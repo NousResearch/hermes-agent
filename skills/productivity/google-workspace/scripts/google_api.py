@@ -98,14 +98,19 @@ def _assert_no_parent_symlinks(path: Path, cwd: Path) -> None:
     symlink substitution attacks on newly-created parent directories.
     """
     current = path.parent
-    while True:
+    visited: set[Path] = set()
+    while current not in visited:
+        visited.add(current)
         if current.is_symlink():
             raise ValueError(
                 f"Drive download path component is a symlink: {current}; refusing to write"
             )
-        if current == cwd or current == current.parent:
+        if current == cwd:
             break
-        current = current.parent
+        parent = current.parent
+        if parent == current:  # filesystem root — stop regardless of cwd
+            break
+        current = parent
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",

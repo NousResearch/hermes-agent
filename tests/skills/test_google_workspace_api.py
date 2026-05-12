@@ -380,7 +380,7 @@ def test_drive_download_rejects_symlink_parent_after_mkdir(api_module, tmp_path,
     # have been returned before the symlink was created).
     spoofed_out_path = safe_root / "linkdir" / "payload.bin"
     monkeypatch.setattr(
-        api_module, "_safe_drive_download_path", lambda *_a, **_kw: spoofed_out_path
+        api_module, "_safe_drive_download_path", lambda *args, **kwargs: spoofed_out_path
     )
 
     class FakeFiles:

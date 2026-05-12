@@ -2528,7 +2528,7 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=self._user_id,
                 parent_session_id=self._parent_session_id,
             )
             self._session_db_created = True

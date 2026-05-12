@@ -144,6 +144,7 @@ AUTHOR_MAP = {
     "16263913+zccyman@users.noreply.github.com": "zccyman",
     "ahmetosrak@Ahmet-MacBook-Air.local": "Osraka",
     "98612432+Osraka@users.noreply.github.com": "Osraka",
+    "112634774+ryptotalent@users.noreply.github.com": "ryptotalent",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",

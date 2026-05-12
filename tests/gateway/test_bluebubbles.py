@@ -158,6 +158,36 @@ class TestBlueBubblesHelpers:
         assert attempts[1]["message"] == "hello"
 
     @pytest.mark.asyncio
+    async def test_send_treats_already_queued_after_reply_timeout_as_success(self, monkeypatch):
+        import httpx
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            request = httpx.Request("POST", "http://localhost:1234/api/v1/message/text")
+            if "selectedMessageGuid" in payload:
+                raise httpx.ReadTimeout("reply target did not resolve")
+            response = httpx.Response(
+                400,
+                request=request,
+                text='{"error":{"message":"Message is already queued to be sent! (Temp GUID: temp-123)"}}',
+            )
+            raise httpx.HTTPStatusError("already queued", request=request, response=response)
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello", reply_to="MISSING-GUID")
+
+        assert result.success is True
+        assert result.message_id.startswith("temp-")
+
+    @pytest.mark.asyncio
     async def test_send_failure_reports_status_and_body(self, monkeypatch):
         import httpx
 

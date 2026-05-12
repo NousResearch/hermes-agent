@@ -87,6 +87,15 @@ def _describe_http_error(exc: Exception) -> str:
     return _redact(f"{type(exc).__name__}: {exc}")
 
 
+def _is_already_queued_error(exc: Exception) -> bool:
+    """BlueBubbles reports duplicate tempGuid as a 400 even after queueing send."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    response = exc.response
+    body = response.text if response is not None else ""
+    return "Message is already queued to be sent" in body
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -495,6 +504,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     try:
                         res = await self._api_post("/api/v1/message/text", payload)
                     except Exception as retry_exc:
+                        if _is_already_queued_error(retry_exc):
+                            temp_guid = str(payload.get("tempGuid") or "queued")
+                            logger.info(
+                                "[bluebubbles] send already queued after reply timeout: target=%s guid=%s tempGuid=%s",
+                                _redact(chat_id),
+                                _redact(guid),
+                                _redact(temp_guid),
+                            )
+                            return SendResult(success=True, message_id=temp_guid)
                         error = _describe_http_error(retry_exc)
                         logger.warning(
                             "[bluebubbles] text send failed after reply fallback: target=%s guid=%s error=%s",

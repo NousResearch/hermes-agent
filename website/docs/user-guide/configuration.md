@@ -1507,6 +1507,14 @@ browser:
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chrome (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
+  # Opt-in auto-attach to a local Chrome started with
+  # --remote-debugging-port=9222 (#24288).  When true and cdp_url is empty,
+  # Hermes probes http://127.0.0.1:9222/json/version on the first browser
+  # tool call and routes through that endpoint if reachable — the
+  # zero-friction equivalent of running /browser connect every session.
+  # Default off because attaching to your real browser means the agent's
+  # clicks affect your real tabs.
+  auto_attach_local_chrome: false
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
   # are handled when a CDP backend is attached (Browserbase, local Chrome via
   # /browser connect). Ignored on Camofox and default local agent-browser mode.

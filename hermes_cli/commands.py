@@ -79,6 +79,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
+    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
+               args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session",
@@ -103,6 +105,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
@@ -808,7 +811,7 @@ def discord_skill_commands_by_category(
     # names are marked with a sentinel so the warning distinguishes
     # "skill collided with a reserved command" from "two skills collided
     # on the 32-char clamp" — the latter is the rename-worthy case.
-    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
+    _names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
 
     try:

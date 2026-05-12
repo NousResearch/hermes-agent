@@ -175,7 +175,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         # Resolve to the user's actual main provider so named custom providers
         # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
         main_prov = (_read_main_provider() or "").strip().lower()
-        if main_prov and main_prov not in ("auto", "main", ""):
+        if main_prov and main_prov not in {"auto", "main", ""}:
             normalized = main_prov
         else:
             return "custom"
@@ -490,6 +490,29 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
         return True, None
 
 
+def _peek_pool_entry(provider: str) -> Optional[Any]:
+    """Best-effort current/next pool entry without mutating selection order."""
+    try:
+        pool = load_pool(provider)
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not load pool for %s (peek): %s", provider, exc)
+        return None
+    if not pool or not pool.has_credentials():
+        return None
+    try:
+        current_fn = getattr(pool, "current", None)
+        if callable(current_fn):
+            current = current_fn()
+            if current is not None:
+                return current
+        peek_fn = getattr(pool, "peek", None)
+        if callable(peek_fn):
+            return peek_fn()
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
+    return None
+
+
 def _pool_runtime_api_key(entry: Any) -> str:
     if entry is None:
         return ""
@@ -555,7 +578,7 @@ def _convert_content_for_responses(content: Any) -> Any:
             if detail:
                 entry["detail"] = detail
             converted.append(entry)
-        elif ptype in ("input_text", "input_image"):
+        elif ptype in {"input_text", "input_image"}:
             # Already in Responses format — pass through
             converted.append(part)
         else:
@@ -683,6 +706,16 @@ class _CodexCompletionsAdapter:
                     close()
                 except Exception:
                     logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
+            # The cached auxiliary client wraps this same ``self._client``
+            # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
+            # this instance).  After we close the httpx transport above, the
+            # cache must drop that entry — otherwise the next auxiliary call
+            # (compression retry, memory flush, etc.) reuses the dead client
+            # and fails fast with a connection error.  See issue #23432.
+            try:
+                _evict_cached_client_instance(self._client)
+            except Exception:
+                logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
@@ -765,7 +798,7 @@ class _CodexCompletionsAdapter:
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
                         ptype = _item_get(part, "type")
-                        if ptype in ("output_text", "text"):
+                        if ptype in {"output_text", "text"}:
                             text_parts.append(_item_get(part, "text", ""))
                 elif item_type == "function_call":
                     tool_calls_raw.append(SimpleNamespace(
@@ -867,6 +900,14 @@ class AsyncCodexAuxiliaryClient:
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # Mirror the sync wrapper's _real_client so cache eviction by leaf
+        # OpenAI client (e.g. _close_client_on_timeout in #23482) drops
+        # this async entry too. Without this, sync and async cache entries
+        # diverge on poisoning: the sync entry is evicted but the async
+        # entry keeps reusing the closed transport, failing every
+        # subsequent async aux call with 'Connection error' until the
+        # gateway restarts.
+        self._real_client = sync_wrapper._real_client
 
 
 class _AnthropicCompletionsAdapter:
@@ -1002,6 +1043,9 @@ class AsyncAnthropicAuxiliaryClient:
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
+        # eviction on a poisoned underlying client also drops this entry.
+        self._real_client = sync_wrapper._real_client
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
@@ -1440,7 +1484,16 @@ def _read_main_model() -> str:
 
     config.yaml model.default is the single source of truth for the active
     model. Environment variables are no longer consulted.
+
+    Runtime override: when an AIAgent is active with a CLI/gateway-provided
+    model that differs from config.yaml, ``set_runtime_main()`` records the
+    override in a process-local global. This is consulted FIRST so tools
+    that gate on "the active main model" (e.g. ``vision_analyze``'s native
+    fast path) see the live runtime, not the persisted config default.
     """
+    override = _RUNTIME_MAIN_MODEL
+    if isinstance(override, str) and override.strip():
+        return override.strip()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1461,7 +1514,13 @@ def _read_main_provider() -> str:
 
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
+
+    Runtime override: see ``_read_main_model`` — same mechanism for the
+    provider half of the runtime tuple.
     """
+    override = _RUNTIME_MAIN_PROVIDER
+    if isinstance(override, str) and override.strip():
+        return override.strip().lower()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1473,6 +1532,32 @@ def _read_main_provider() -> str:
     except Exception:
         pass
     return ""
+
+
+# Process-local override set by AIAgent at session/turn start. Single-threaded
+# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
+_RUNTIME_MAIN_PROVIDER: str = ""
+_RUNTIME_MAIN_MODEL: str = ""
+
+
+def set_runtime_main(provider: str, model: str) -> None:
+    """Record the live runtime provider/model for the current AIAgent.
+
+    Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
+    equivalent setter) at the top of each turn so that
+    ``_read_main_provider`` / ``_read_main_model`` reflect CLI/gateway
+    overrides instead of the stale config.yaml default.
+    """
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
+    _RUNTIME_MAIN_MODEL = (model or "").strip()
+
+
+def clear_runtime_main() -> None:
+    """Clear the runtime override (e.g. on session end)."""
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    _RUNTIME_MAIN_PROVIDER = ""
+    _RUNTIME_MAIN_MODEL = ""
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1756,6 +1841,113 @@ def _get_provider_chain() -> List[tuple]:
     ]
 
 
+# ── Auxiliary "recently 402'd" unhealthy-provider cache ────────────────────
+#
+# When an auxiliary provider returns HTTP 402 (Payment Required / credit
+# exhaustion), retrying it on every subsequent aux call is wasteful — the
+# provider stays depleted for hours or days, but the chain re-tries it as
+# the FIRST entry on every compression/title-gen/session-search call,
+# burns ~1 RTT, gets 402 again, then falls back. On a long Discord/LCM
+# session that adds up to dozens of doomed 402s.
+#
+# Solution: when ANY caller observes a payment error against a provider,
+# mark it unhealthy for ``_AUX_UNHEALTHY_TTL_SECONDS``. ``_resolve_auto``
+# Step-2 and ``_try_payment_fallback`` both consult this cache and skip
+# unhealthy entries (logging once per skip-reason so the user sees what
+# happened). Entries auto-expire so a topped-up account recovers without
+# manual intervention.
+#
+# Failure isolation: the cache is in-process only. A second hermes
+# process won't inherit the unhealthy mark — that's intentional, since
+# the user might be running two profiles with different OpenRouter keys.
+
+_AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
+_aux_unhealthy_until: Dict[str, float] = {}
+_aux_unhealthy_logged_at: Dict[str, float] = {}
+
+# Map provider names that show up in resolved_provider / explicit-config
+# back to the chain labels used by _get_provider_chain(). Keep in sync
+# with the alias map in _try_payment_fallback below.
+_AUX_UNHEALTHY_LABEL_ALIASES = {
+    "openrouter": "openrouter",
+    "nous": "nous",
+    "custom": "local/custom",
+    "local/custom": "local/custom",
+    "openai-codex": "openai-codex",
+    "codex": "openai-codex",
+}
+
+
+def _normalize_chain_label(provider: str) -> str:
+    """Normalize a resolved_provider value to a chain label used by
+    ``_get_provider_chain()``. Falls back to the lowercased input for
+    direct API-key providers (deepseek, alibaba, minimax, etc.) which
+    each report their own provider name from the api-key chain.
+    """
+    if not provider:
+        return ""
+    p = str(provider).strip().lower()
+    return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
+
+
+def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
+    """Mark ``provider`` as recently-402'd, hidden from chain iteration
+    until the TTL expires. Called from the payment-fallback branches in
+    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+    """
+    label = _normalize_chain_label(provider)
+    if not label:
+        return
+    expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
+    _aux_unhealthy_until[label] = expires_at
+    logger.warning(
+        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Subsequent auxiliary calls will skip it until %s.",
+        label,
+        int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        time.strftime("%H:%M:%S", time.localtime(expires_at)),
+    )
+
+
+def _is_provider_unhealthy(label: str) -> bool:
+    """True iff ``label`` is in the unhealthy cache and the TTL hasn't expired.
+    Lazily evicts expired entries so the cache stays small.
+    """
+    if not label:
+        return False
+    expires_at = _aux_unhealthy_until.get(label)
+    if expires_at is None:
+        return False
+    if time.time() >= expires_at:
+        _aux_unhealthy_until.pop(label, None)
+        _aux_unhealthy_logged_at.pop(label, None)
+        return False
+    return True
+
+
+def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
+    """Emit a single info-level log per minute when we skip an unhealthy
+    provider. Avoids spamming the log on bursty sessions while still
+    giving the user a trail.
+    """
+    now = time.time()
+    last = _aux_unhealthy_logged_at.get(label, 0.0)
+    if now - last >= 60:
+        _aux_unhealthy_logged_at[label] = now
+        expires_at = _aux_unhealthy_until.get(label, now)
+        logger.info(
+            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
+            task or "call", label, max(0, int(expires_at - now)),
+        )
+
+
+def _reset_aux_unhealthy_cache() -> None:
+    """Clear the unhealthy cache. Used by tests and by a future explicit
+    user trigger (e.g. ``hermes config aux reset``)."""
+    _aux_unhealthy_until.clear()
+    _aux_unhealthy_logged_at.clear()
+
+
 def _is_payment_error(exc: Exception) -> bool:
     """Detect payment/credit/quota exhaustion errors.
 
@@ -1768,7 +1960,7 @@ def _is_payment_error(exc: Exception) -> bool:
     err_lower = str(exc).lower()
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
-    if status in (402, 429, None):
+    if status in {402, 429, None}:
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
                                            "payment required")):
@@ -1817,10 +2009,12 @@ def _is_connection_error(exc: Exception) -> bool:
     distinct from API errors (4xx/5xx) which indicate the provider IS
     reachable but returned an error.
     """
-    from openai import APIConnectionError, APITimeoutError
-
-    if isinstance(exc, (APIConnectionError, APITimeoutError)):
-        return True
+    try:
+        from openai import APIConnectionError, APITimeoutError
+        if isinstance(exc, (APIConnectionError, APITimeoutError)):
+            return True
+    except ImportError:
+        pass
     # urllib3 / httpx / httpcore connection errors
     err_type = type(exc).__name__
     if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):
@@ -1830,6 +2024,16 @@ def _is_connection_error(exc: Exception) -> bool:
         "connection refused", "name or service not known",
         "no route to host", "network is unreachable",
         "timed out", "connection reset",
+        # httpcore / httpx streaming premature-close errors.  These surface
+        # when a proxy or provider drops the connection mid-stream and are
+        # transient by nature — the request should be retried or rerouted.
+        # See issue #18458.
+        "incomplete chunked read",
+        "peer closed connection",
+        "response ended prematurely",
+        "unexpected eof",
+        "remoteprotocolerror",
+        "localprotocolerror",
     )):
         return True
     return False
@@ -1908,6 +2112,246 @@ def _evict_cached_clients(provider: str) -> None:
             _client_cache.pop(key, None)
 
 
+def _evict_cached_client_instance(target: Any) -> bool:
+    """Drop the cache entry whose stored client is *target*.
+
+    Used when a specific cached client has been poisoned (closed httpx
+    transport after a timeout, broken streaming session, etc.) so the next
+    auxiliary call rebuilds rather than reusing the dead instance.
+
+    Walks both sync and async wrappers (``CodexAuxiliaryClient``,
+    ``AnthropicAuxiliaryClient``, ``AsyncCodexAuxiliaryClient``, etc.) via
+    their ``_real_client`` attribute so a timeout that closes the underlying
+    ``OpenAI`` (or native provider) client evicts every cached shim that
+    exposed it. Async wrappers must mirror their sync sibling's
+    ``_real_client`` for this to work — otherwise the sync entry is evicted
+    but the async entry survives and keeps reusing the dead transport.
+
+    Returns True when at least one entry was evicted.
+    """
+    if target is None:
+        return False
+    evicted = False
+    with _client_cache_lock:
+        for key in list(_client_cache.keys()):
+            entry = _client_cache.get(key)
+            if entry is None:
+                continue
+            cached = entry[0]
+            if cached is None:
+                continue
+            real = getattr(cached, "_real_client", None)
+            if cached is target or real is target:
+                del _client_cache[key]
+                evicted = True
+    return evicted
+
+
+def _pool_cache_hint(
+    provider: str,
+    *,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return a stable cache discriminator for pooled providers."""
+    normalized = _normalize_aux_provider(provider)
+    if normalized == "auto":
+        runtime = _normalize_main_runtime(main_runtime)
+        normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
+    if normalized in {"", "auto", "custom"}:
+        return ""
+    entry = _peek_pool_entry(normalized)
+    if entry is None:
+        return ""
+    entry_id = str(getattr(entry, "id", "") or "").strip()
+    if not entry_id:
+        return ""
+    return f"{normalized}:{entry_id}"
+
+
+def _pool_error_context(exc: Exception) -> Dict[str, Any]:
+    status = getattr(exc, "status_code", None)
+    payload: Dict[str, Any] = {"message": str(exc)}
+    if status is not None:
+        payload["status_code"] = status
+    return payload
+
+
+def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[str]:
+    """Infer which provider pool can recover the current auxiliary client."""
+    normalized = _normalize_aux_provider(resolved_provider)
+    if normalized not in {"", "auto", "custom"}:
+        return normalized
+    base = str(getattr(client, "base_url", "") or "")
+    if base_url_host_matches(base, "chatgpt.com"):
+        return "openai-codex"
+    if base_url_host_matches(base, "openrouter.ai"):
+        return "openrouter"
+    if base_url_host_matches(base, "inference-api.nousresearch.com"):
+        return "nous"
+    if base_url_host_matches(base, "api.anthropic.com"):
+        return "anthropic"
+    if base_url_host_matches(base, "api.githubcopilot.com"):
+        return "copilot"
+    if base_url_host_matches(base, "api.kimi.com"):
+        return "kimi-coding"
+    return None
+
+
+def _recover_provider_pool(provider: str, exc: Exception) -> bool:
+    """Try same-provider credential-pool recovery for auxiliary calls."""
+    normalized = _normalize_aux_provider(provider)
+    try:
+        pool = load_pool(normalized)
+    except Exception as load_exc:
+        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
+        return False
+    if not pool or not pool.has_credentials():
+        return False
+
+    status_code = getattr(exc, "status_code", None)
+    error_context = _pool_error_context(exc)
+
+    if _is_auth_error(exc):
+        refreshed = pool.try_refresh_current()
+        if refreshed is not None:
+            _evict_cached_clients(normalized)
+            return True
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=status_code if status_code is not None else 401,
+            error_context=error_context,
+        )
+        if next_entry is not None:
+            _evict_cached_clients(normalized)
+            return True
+        return False
+
+    if _is_payment_error(exc) or _is_rate_limit_error(exc):
+        fallback_status = 402 if _is_payment_error(exc) else 429
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=status_code if status_code is not None else fallback_status,
+            error_context=error_context,
+        )
+        if next_entry is not None:
+            _evict_cached_clients(normalized)
+            return True
+    return False
+
+
+def _retry_same_provider_sync(
+    *,
+    task: Optional[str],
+    resolved_provider: str,
+    resolved_model: Optional[str],
+    resolved_base_url: Optional[str],
+    resolved_api_key: Optional[str],
+    resolved_api_mode: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
+    final_model: Optional[str],
+    messages: list,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    effective_timeout: float,
+    effective_extra_body: dict,
+) -> Any:
+    if task == "vision":
+        _, retry_client, retry_model = resolve_vision_provider_client(
+            provider=resolved_provider,
+            model=final_model,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            async_mode=False,
+        )
+    else:
+        retry_client, retry_model = _get_cached_client(
+            resolved_provider,
+            resolved_model,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
+        )
+    if retry_client is None:
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
+        )
+
+    retry_base = str(getattr(retry_client, "base_url", "") or "")
+    retry_kwargs = _build_call_kwargs(
+        resolved_provider,
+        retry_model or final_model,
+        messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        timeout=effective_timeout,
+        extra_body=effective_extra_body,
+        base_url=retry_base or resolved_base_url,
+    )
+    if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
+        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    return _validate_llm_response(
+        retry_client.chat.completions.create(**retry_kwargs), task,
+    )
+
+
+async def _retry_same_provider_async(
+    *,
+    task: Optional[str],
+    resolved_provider: str,
+    resolved_model: Optional[str],
+    resolved_base_url: Optional[str],
+    resolved_api_key: Optional[str],
+    resolved_api_mode: Optional[str],
+    final_model: Optional[str],
+    messages: list,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    effective_timeout: float,
+    effective_extra_body: dict,
+) -> Any:
+    if task == "vision":
+        _, retry_client, retry_model = resolve_vision_provider_client(
+            provider=resolved_provider,
+            model=final_model,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            async_mode=True,
+        )
+    else:
+        retry_client, retry_model = _get_cached_client(
+            resolved_provider,
+            resolved_model,
+            async_mode=True,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
+        )
+    if retry_client is None:
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
+        )
+
+    retry_base = str(getattr(retry_client, "base_url", "") or "")
+    retry_kwargs = _build_call_kwargs(
+        resolved_provider,
+        retry_model or final_model,
+        messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        timeout=effective_timeout,
+        extra_body=effective_extra_body,
+        base_url=retry_base or resolved_base_url,
+    )
+    if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
+        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    return _validate_llm_response(
+        await retry_client.chat.completions.create(**retry_kwargs), task,
+    )
+
+
 def _refresh_provider_credentials(provider: str) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
@@ -1980,6 +2424,10 @@ def _try_payment_fallback(
     for label, try_fn in _get_provider_chain():
         if label in skip_chain_labels:
             continue
+        if _is_provider_unhealthy(label):
+            _log_skip_unhealthy(label, task)
+            tried.append(f"{label} (unhealthy)")
+            continue
         client, model = try_fn()
         if client is not None:
             logger.info(
@@ -2048,7 +2496,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
-            and main_provider not in ("auto", "")):
+            and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
@@ -2056,21 +2504,34 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
-        client, resolved = resolve_provider_client(
-            resolved_provider,
-            main_model,
-            explicit_base_url=explicit_base_url,
-            explicit_api_key=explicit_api_key,
-            api_mode=runtime_api_mode or None,
-        )
-        if client is not None:
-            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
+        # Skip Step-1 if the main provider was recently 402'd. The unhealthy
+        # cache TTL bounds how long we bypass it, so a topped-up account
+        # recovers automatically. If we tried Step-1 anyway, every aux call
+        # on a depleted main provider would pay one doomed 402 RTT before
+        # falling to Step-2.
+        main_chain_label = _normalize_chain_label(resolved_provider)
+        if main_chain_label and _is_provider_unhealthy(main_chain_label):
+            _log_skip_unhealthy(main_chain_label)
+        else:
+            client, resolved = resolve_provider_client(
+                resolved_provider,
+                main_model,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=runtime_api_mode or None,
+            )
+            if client is not None:
+                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                            main_provider, resolved or main_model)
+                return client, resolved or main_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():
+        if _is_provider_unhealthy(label):
+            _log_skip_unhealthy(label)
+            tried.append(f"{label} (unhealthy)")
+            continue
         client, model = try_fn()
         if client is not None:
             if tried:
@@ -2696,7 +3157,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -2805,7 +3266,7 @@ def get_available_vision_backends() -> List[str]:
     available: List[str] = []
     # 1. Active provider — if the user configured a provider, try it first.
     main_provider = _read_main_provider()
-    if main_provider and main_provider not in ("auto", ""):
+    if main_provider and main_provider not in {"auto", ""}:
         if main_provider in _VISION_AUTO_PROVIDER_ORDER:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
@@ -2851,7 +3312,7 @@ def resolve_vision_provider_client(
 
     if resolved_base_url:
         provider_for_base_override = (
-            requested if requested and requested not in ("", "auto") else "custom"
+            requested if requested and requested not in {"", "auto"} else "custom"
         )
         client, final_model = resolve_provider_client(
             provider_for_base_override,
@@ -2879,7 +3340,7 @@ def resolve_vision_provider_client(
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
-        if main_provider and main_provider not in ("auto", ""):
+        if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
@@ -3033,7 +3494,8 @@ def _client_cache_key(
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision)
+    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -3684,7 +4146,7 @@ def call_llm(
             # credentials were found, fail fast instead of silently routing
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
@@ -3814,46 +4276,63 @@ def call_llm(
 
         # ── Auth refresh retry ───────────────────────────────────────
         if (_is_auth_error(first_err)
-                and resolved_provider not in ("auto", "", None)
+                and resolved_provider not in {"auto", "", None}
                 and not client_is_nous):
             if _refresh_provider_credentials(resolved_provider):
                 logger.info(
                     "Auxiliary %s: refreshed %s credentials after auth error, retrying",
                     task or "call", resolved_provider,
                 )
-                retry_client, retry_model = (
-                    resolve_vision_provider_client(
-                        provider=resolved_provider,
-                        model=final_model,
-                        async_mode=False,
-                    )[1:]
-                    if task == "vision"
-                    else _get_cached_client(
-                        resolved_provider,
-                        resolved_model,
-                        base_url=resolved_base_url,
-                        api_key=resolved_api_key,
-                        api_mode=resolved_api_mode,
-                        main_runtime=main_runtime,
-                    )
+                return _retry_same_provider_sync(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
                 )
-                if retry_client is not None:
-                    retry_kwargs = _build_call_kwargs(
-                        resolved_provider,
-                        retry_model or final_model,
-                        messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        timeout=effective_timeout,
-                        extra_body=effective_extra_body,
-                        base_url=resolved_base_url,
-                    )
-                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
-                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
-                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+
+        # ── Same-provider credential-pool recovery ─────────────────────
+        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+            recovery_err = first_err
+            if _is_rate_limit_error(first_err):
+                try:
                     return _validate_llm_response(
-                        retry_client.chat.completions.create(**retry_kwargs), task)
+                        client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                        raise
+                    recovery_err = retry_err
+            if _recover_provider_pool(pool_provider, recovery_err):
+                logger.info(
+                    "Auxiliary %s: recovered %s via credential-pool rotation after %s",
+                    task or "call", pool_provider, type(recovery_err).__name__,
+                )
+                return _retry_same_provider_sync(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                )
 
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
@@ -3880,10 +4359,17 @@ def call_llm(
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
+                # Resolve the actual provider label (resolved_provider may be
+                # "auto"; the client's base_url tells us which backend got the
+                # 402). Mark THAT label unhealthy so subsequent aux calls
+                # skip it instead of paying another doomed RTT.
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
@@ -3901,6 +4387,17 @@ def call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+        # Connection/timeout errors leave the cached client poisoned (closed
+        # httpx transport, half-read stream, dead async loop).  Drop it from
+        # the cache regardless of whether we found a fallback above so the
+        # next auxiliary call rebuilds a fresh client instead of reusing the
+        # dead one.  See issue #23432.
+        if _is_connection_error(first_err):
+            try:
+                _evict_cached_client_instance(client)
+            except Exception:
+                logger.debug("Auxiliary: cache eviction after connection error failed",
+                             exc_info=True)
         raise
 
 
@@ -4018,7 +4515,7 @@ async def async_call_llm(
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
@@ -4129,45 +4626,61 @@ async def async_call_llm(
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         if (_is_auth_error(first_err)
-                and resolved_provider not in ("auto", "", None)
+                and resolved_provider not in {"auto", "", None}
                 and not client_is_nous):
             if _refresh_provider_credentials(resolved_provider):
                 logger.info(
                     "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
                     task or "call", resolved_provider,
                 )
-                if task == "vision":
-                    _, retry_client, retry_model = resolve_vision_provider_client(
-                        provider=resolved_provider,
-                        model=final_model,
-                        async_mode=True,
-                    )
-                else:
-                    retry_client, retry_model = _get_cached_client(
-                        resolved_provider,
-                        resolved_model,
-                        async_mode=True,
-                        base_url=resolved_base_url,
-                        api_key=resolved_api_key,
-                        api_mode=resolved_api_mode,
-                    )
-                if retry_client is not None:
-                    retry_kwargs = _build_call_kwargs(
-                        resolved_provider,
-                        retry_model or final_model,
-                        messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        timeout=effective_timeout,
-                        extra_body=effective_extra_body,
-                        base_url=resolved_base_url,
-                    )
-                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
-                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
-                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                return await _retry_same_provider_async(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                )
+
+        # ── Same-provider credential-pool recovery (mirrors sync) ─────
+        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+            recovery_err = first_err
+            if _is_rate_limit_error(first_err):
+                try:
                     return _validate_llm_response(
-                        await retry_client.chat.completions.create(**retry_kwargs), task)
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                        raise
+                    recovery_err = retry_err
+            if _recover_provider_pool(pool_provider, recovery_err):
+                logger.info(
+                    "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
+                    task or "call", pool_provider, type(recovery_err).__name__,
+                )
+                return await _retry_same_provider_async(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                )
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
         should_fallback = (
@@ -4175,10 +4688,13 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
@@ -4202,4 +4718,12 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+        # Mirror the sync path: drop poisoned clients on connection/timeout
+        # so the next aux call rebuilds.  See issue #23432.
+        if _is_connection_error(first_err):
+            try:
+                _evict_cached_client_instance(client)
+            except Exception:
+                logger.debug("Auxiliary (async): cache eviction after connection error failed",
+                             exc_info=True)
         raise

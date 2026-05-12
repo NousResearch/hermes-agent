@@ -218,7 +218,11 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
     if not pid_path.exists():
         return None
 
-    raw = pid_path.read_text().strip()
+    try:
+        raw = pid_path.read_text().strip()
+    except OSError:
+        # File was deleted between exists() and read_text(), or permission flipped.
+        return None
     if not raw:
         return None
 
@@ -482,10 +486,12 @@ def write_runtime_status(
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
+    current_record = _build_pid_record()
     payload.setdefault("platforms", {})
-    payload.setdefault("kind", _GATEWAY_KIND)
-    payload["pid"] = os.getpid()
-    payload["start_time"] = _get_process_start_time(os.getpid())
+    payload["kind"] = current_record["kind"]
+    payload["pid"] = current_record["pid"]
+    payload["argv"] = current_record["argv"]
+    payload["start_time"] = current_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
@@ -598,7 +604,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                             for _line in _proc_status.read_text(encoding="utf-8").splitlines():
                                 if _line.startswith("State:"):
                                     _state = _line.split()[1]
-                                    if _state in ("T", "t"):  # stopped or tracing stop
+                                    if _state in {"T", "t"}:  # stopped or tracing stop
                                         stale = True
                                     break
                     except (OSError, PermissionError):

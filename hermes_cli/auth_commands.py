@@ -266,7 +266,7 @@ def auth_add_command(args) -> None:
                 do_import = input("Import these credentials? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "y"
-            if do_import in ("", "y", "yes"):
+            if do_import in {"", "y", "yes"}:
                 print("Rehydrating Nous session from shared credentials...")
                 rehydrated = auth_mod._try_import_shared_nous_state(
                     timeout_seconds=getattr(args, "timeout", None) or 15.0,

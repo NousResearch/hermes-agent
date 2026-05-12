@@ -93,7 +93,7 @@ def poll_registration(device_code: str) -> dict:
     """
     data = _api_post("/app/registration/poll", {"device_code": device_code})
     status_raw = str(data.get("status", "")).strip().upper()
-    if status_raw not in ("WAITING", "SUCCESS", "FAIL", "EXPIRED"):
+    if status_raw not in {"WAITING", "SUCCESS", "FAIL", "EXPIRED"}:
         status_raw = "UNKNOWN"
     return {
         "status": status_raw,

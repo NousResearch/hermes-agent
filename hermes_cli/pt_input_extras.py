@@ -49,3 +49,35 @@ def install_shift_enter_alias() -> int:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
     return changed
+
+
+def install_ctrl_enter_alias() -> int:
+    """Map Ctrl+Enter byte sequences to the (Escape, ControlM) key tuple
+    that Alt+Enter produces, so the existing Alt+Enter newline handler
+    fires for terminals that emit a distinct Ctrl+Enter.
+
+    Sequences mapped:
+      - "\\x1b[13;5u"     — Kitty keyboard protocol / CSI-u, modifier=5 (Ctrl)
+      - "\\x1b[27;5;13~"  — xterm modifyOtherKeys=2, modifier=5 (Ctrl)
+      - "\\x1b[27;5;13u"  — alternate ordering some emitters use
+
+    Stock prompt_toolkit doesn't map any of these. Without this alias,
+    Kitty/mintty/xterm-with-modifyOtherKeys users over SSH never get a
+    Ctrl+Enter newline — the keystroke arrives as a raw CSI sequence that
+    falls through to the default character-insert handler. See #22379.
+
+    Returns the number of sequences whose mapping was changed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    alt_enter = (Keys.Escape, Keys.ControlM)
+    changed = 0
+    for seq in ("\x1b[13;5u", "\x1b[27;5;13~", "\x1b[27;5;13u"):
+        if ANSI_SEQUENCES.get(seq) != alt_enter:
+            ANSI_SEQUENCES[seq] = alt_enter
+            changed += 1
+    return changed

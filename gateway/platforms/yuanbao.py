@@ -2284,7 +2284,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                 resp.raise_for_status()
                 payload = resp.json()
                 code = payload.get("code")
-                if code not in (None, 0):
+                if code not in {None, 0}:
                     raise RuntimeError(
                         f"resource/v1/download failed: code={code}, msg={payload.get('msg', '')}"
                     )
@@ -3109,10 +3109,10 @@ class ConnectionManager:
 
         # Fire-and-forget heartbeat ACKs — server always responds but callers don't
         # wait on these; silently discard to avoid "Unmatched Response" noise.
-        if cmd_type == CMD_TYPE["Response"] and cmd in (
+        if cmd_type == CMD_TYPE["Response"] and cmd in {
             "send_group_heartbeat",
             "send_private_heartbeat",
-        ):
+        }:
             logger.debug("[%s] Heartbeat ACK received: cmd=%s msg_id=%s", adapter.name, cmd, msg_id)
             return
 
@@ -3485,7 +3485,7 @@ class MediaSendHandler(ABC):
                 # Remove keys already passed explicitly to avoid "multiple values" TypeError
                 fwd_kwargs = {
                     k: v for k, v in kwargs.items()
-                    if k not in ("file_uuid", "filename", "content_type")
+                    if k not in {"file_uuid", "filename", "content_type"}
                 }
                 msg_body = self.build_msg_body(
                     upload_result,

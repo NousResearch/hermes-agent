@@ -513,7 +513,7 @@ class QQAdapter(BasePlatformAdapter):
                 self._fail_pending("Connection closed")
 
                 # Stop reconnecting for fatal codes
-                if code in (4914, 4915):
+                if code in {4914, 4915}:
                     desc = "offline/sandbox-only" if code == 4914 else "banned"
                     logger.error(
                         "[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc
@@ -550,7 +550,7 @@ class QQAdapter(BasePlatformAdapter):
                     self._token_expires_at = 0.0
 
                 # Session invalid → clear session, will re-identify on next Hello
-                if code in (
+                if code in {
                         4006,
                         4007,
                         4009,
@@ -568,7 +568,7 @@ class QQAdapter(BasePlatformAdapter):
                         4911,
                         4912,
                         4913,
-                ):
+                }:
                     logger.info(
                         "[%s] Session error (%d), clearing session for re-identify",
                         self._log_tag,
@@ -637,12 +637,12 @@ class QQAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.PING,):
+            elif msg.type in {aiohttp.WSMsgType.PING,}:
                 # aiohttp auto-replies with PONG
                 pass
             elif msg.type == aiohttp.WSMsgType.CLOSE:
                 raise QQCloseError(msg.data, msg.extra)
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -783,13 +783,13 @@ class QQAdapter(BasePlatformAdapter):
                 self._handle_ready(d)
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
-            elif t in (
+            elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
-            ):
+            }:
                 asyncio.create_task(self._on_message(t, d))
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
@@ -859,9 +859,9 @@ class QQAdapter(BasePlatformAdapter):
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in ("GROUP_AT_MESSAGE_CREATE",):
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
             await self._handle_group_message(d, msg_id, content, author, timestamp)
-        elif event_type in ("GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"):
+        elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
             await self._handle_dm_message(d, msg_id, content, author, timestamp)
@@ -1864,7 +1864,7 @@ class QQAdapter(BasePlatformAdapter):
             return ".wav"
         if data[:4] == b"fLaC":
             return ".flac"
-        if data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        if data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
             return ".mp3"
         if data[:4] == b"\x30\x26\xb2\x75" or data[:4] == b"\x4f\x67\x67\x53":
             return ".ogg"
@@ -2033,7 +2033,7 @@ class QQAdapter(BasePlatformAdapter):
                         "base_url": base_url,
                         "api_key": api_key,
                         "model": model
-                                 or ("glm-asr" if provider in ("zai", "glm") else "whisper-1"),
+                                 or ("glm-asr" if provider in {"zai", "glm"} else "whisper-1"),
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
@@ -2115,7 +2115,7 @@ class QQAdapter(BasePlatformAdapter):
             if urlparse(source_url).path
             else ""
         )
-        if not ext or ext not in (
+        if not ext or ext not in {
                 ".silk",
                 ".amr",
                 ".mp3",
@@ -2124,7 +2124,7 @@ class QQAdapter(BasePlatformAdapter):
                 ".m4a",
                 ".aac",
                 ".flac",
-        ):
+        }:
             ext = self._guess_ext_from_data(audio_data)
 
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_src:
@@ -2870,7 +2870,7 @@ class QQAdapter(BasePlatformAdapter):
             raise ValueError("Media source is required")
 
         parsed = urlparse(source)
-        if parsed.scheme in ("http", "https"):
+        if parsed.scheme in {"http", "https"}:
             # For URLs, pass through directly to the upload API
             content_type = mimetypes.guess_type(source)[0] or "application/octet-stream"
             resolved_name = file_name or Path(parsed.path).name or "media"
@@ -2966,7 +2966,7 @@ class QQAdapter(BasePlatformAdapter):
         chat_type = self._guess_chat_type(chat_id)
         return {
             "name": chat_id,
-            "type": "group" if chat_type in ("group", "guild") else "dm",
+            "type": "group" if chat_type in {"group", "guild"} else "dm",
         }
 
     # ------------------------------------------------------------------
@@ -2975,7 +2975,7 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_url(source: str) -> bool:
-        return urlparse(str(source)).scheme in ("http", "https")
+        return urlparse(str(source)).scheme in {"http", "https"}
 
     def _guess_chat_type(self, chat_id: str) -> str:
         """Determine chat type from stored inbound metadata, fallback to 'c2c'."""

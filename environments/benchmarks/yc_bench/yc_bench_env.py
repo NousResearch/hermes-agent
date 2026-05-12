@@ -759,7 +759,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             eval_metrics[f"eval/survival_rate_{key}"] = ps / pt if pt else 0
             eval_metrics[f"eval/avg_score_{key}"] = pa
 
-        self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
+        self.eval_metrics = list(eval_metrics.items())
 
         # --- Print summary ---
         print(f"\n{'='*60}")

@@ -560,7 +560,7 @@ def _looks_like_image(data: bytes) -> bool:
         return True
     if data[:3] == b"\xff\xd8\xff":
         return True
-    if data[:6] in (b"GIF87a", b"GIF89a"):
+    if data[:6] in {b"GIF87a", b"GIF89a"}:
         return True
     if data[:2] == b"BM":
         return True
@@ -859,7 +859,7 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     # Sanitize: strip directory components, null bytes, and control characters
     safe_name = Path(filename).name if filename else "document"
     safe_name = safe_name.replace("\x00", "").strip()
-    if not safe_name or safe_name in (".", ".."):
+    if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
     cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     filepath = cache_dir / cached_name
@@ -1035,6 +1035,13 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # When the adapter had to split an oversized payload across multiple
+    # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
+    # ``message_id`` is the LAST visible message id (so subsequent edits target
+    # the most recent chunk) and these are the additional message ids that
+    # made up the full payload, in send order.  Empty tuple for the common
+    # single-message case.
+    continuation_message_ids: tuple = ()
 
 
 class EphemeralReply(str):
@@ -1312,6 +1319,61 @@ class BasePlatformAdapter(ABC):
         self._typing_paused: set = set()
 
     @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        """Return the length function for measuring message size on this platform.
+
+        Override in adapters whose platform counts characters differently from
+        Python ``len`` (e.g. Telegram counts UTF-16 code units).
+        """
+        return len
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether this adapter supports native streaming-draft updates.
+
+        Telegram Bot API 9.5 introduced ``sendMessageDraft``, which renders an
+        animated streaming preview as the bot calls it repeatedly with the
+        same ``draft_id`` and growing text.  Adapters that implement
+        ``send_draft`` should return True here for the chat types where the
+        platform supports it (Telegram restricts drafts to private DMs).
+
+        Default implementation returns False.  Stream consumers fall back to
+        the edit-based path (``send`` + ``edit_message``) when this returns
+        False or when ``send_draft`` raises.
+        """
+        return False
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send or update an animated streaming-draft preview.
+
+        Reuse the same ``draft_id`` (any non-zero int) across consecutive
+        calls within a single response so the platform animates the preview
+        rather than re-creating it.  Different responses must use different
+        ``draft_id`` values within the same chat to avoid animating over a
+        prior bubble.
+
+        Drafts have no message_id and cannot be edited, replied to, or
+        deleted via normal message APIs.  When the response finishes, the
+        caller delivers the final answer as a regular ``send`` and the
+        draft preview clears naturally on the client.
+
+        Default implementation raises NotImplementedError; adapters that
+        also return True from :meth:`supports_draft_streaming` must override.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement send_draft"
+        )
+
+    @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None
 
@@ -1510,6 +1572,33 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a fresh thread under ``parent_chat_id`` for a session handoff.
+
+        Used by the gateway's handoff watcher when transferring a CLI
+        session to a thread-capable platform — the new thread isolates the
+        handed-off conversation from any pre-existing chat in the home
+        channel and gives users a clean per-handoff scrollback.
+
+        Returns the new thread/topic id (as a string) on success, or
+        ``None`` if the platform doesn't support threading or the
+        attempt failed (permissions, topics-mode off, etc.). When ``None``
+        is returned the watcher falls back to using ``parent_chat_id``
+        directly.
+
+        Default implementation returns ``None`` — adapters that support
+        threads override this. See:
+          - Telegram: forum topics in groups, DM topics with bot API 9.4+
+          - Discord:  text-channel threads (1440-min auto-archive)
+          - Slack:    seed-message thread anchoring
+        """
+        return None
+
 
     async def edit_message(
         self,
@@ -2704,7 +2793,7 @@ class BasePlatformAdapter(ABC):
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
-                if cmd in ("stop", "new", "reset"):
+                if cmd in {"stop", "new", "reset"}:
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)
                     except Exception as e:
@@ -2950,6 +3039,18 @@ class BasePlatformAdapter(ABC):
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
+                    # Mark final response messages for notification delivery.
+                    # Platform adapters that support per-message notification
+                    # control (e.g. Telegram's disable_notification) use this
+                    # flag to override silent-mode and ensure the final
+                    # response triggers a push notification.
+                    # Clone to avoid mutating the metadata shared with the
+                    # typing-indicator task (which must remain unmarked).
+                    if _thread_metadata is not None:
+                        _thread_metadata = dict(_thread_metadata)
+                        _thread_metadata["notify"] = True
+                    else:
+                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

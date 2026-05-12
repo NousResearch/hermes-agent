@@ -39,20 +39,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es", "fr", "tr", "uk")
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "af", "ko", "it", "ga", "pt", "ru", "hu",
+)
 DEFAULT_LANGUAGE = "en"
 
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "english": "en", "en-us": "en", "en-gb": "en",
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-tw": "zh", "zh-hans": "zh", "zh-hant": "zh",
+    # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
+    # also default to Simplified since that's the larger user base.
+    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
+    # Traditional Chinese — distinct catalog.  Cover Taiwan / Hong Kong / Macau
+    # locale tags plus the common "traditional" alias.
+    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
+    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es",
+    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
+    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
     "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
     "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
     "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
+    # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
+    "afrikaans": "af", "af-za": "af",
+    # Korean
+    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
+    # Italian
+    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
+    # Irish (Gaeilge) — ga is the BCP-47 code
+    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
+    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
+    # is in the same family but rendered identically here (no separate br catalog).
+    "portuguese": "pt", "português": "pt", "portugues": "pt",
+    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
+    # Russian
+    "russian": "ru", "русский": "ru", "ru-ru": "ru",
+    # Hungarian
+    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

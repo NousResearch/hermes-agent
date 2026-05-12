@@ -449,7 +449,7 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
-        if request.method in ("POST", "PUT", "PATCH"):
+        if request.method in {"POST", "PUT", "PATCH"}:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
@@ -646,7 +646,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
-            if profile and profile not in ("default", "custom"):
+            if profile and profile not in {"default", "custom"}:
                 return profile
         except Exception:
             pass
@@ -1003,7 +1003,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     system_prompt = content
                 else:
                     system_prompt = system_prompt + "\n" + content
-            elif role in ("user", "assistant"):
+            elif role in {"user", "assistant"}:
                 try:
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
@@ -1206,10 +1206,49 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
-        final_response = result.get("final_response", "")
-        if not final_response:
-            final_response = result.get("error", "(No response generated)")
+        final_response = result.get("final_response") or ""
+        is_partial = bool(result.get("partial"))
+        is_failed = bool(result.get("failed"))
+        completed = bool(result.get("completed", True))
+        err_msg = result.get("error")
 
+        # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
+        # for normal completion, and downstream SDKs accept "error" / custom
+        # codes. See issue #22496.
+        if is_partial and err_msg and "truncat" in err_msg.lower():
+            finish_reason = "length"
+        elif is_failed or (not completed and err_msg):
+            finish_reason = "error"
+        else:
+            finish_reason = "stop"
+
+        response_headers = {
+            "X-Hermes-Session-Id": result.get("session_id", session_id),
+        }
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+
+        # Hard-fail path: no usable assistant text AND a real failure → 5xx
+        # with OpenAI-style error envelope so SDK clients raise instead of
+        # silently rendering the internal failure string as message.content.
+        if not final_response and (is_failed or is_partial):
+            err_body = _openai_error(
+                err_msg or "Agent run did not produce a response.",
+                err_type="server_error",
+                code="agent_incomplete",
+            )
+            err_body["error"]["hermes"] = {
+                "completed": completed,
+                "partial": is_partial,
+                "failed": is_failed,
+            }
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            return web.json_response(err_body, status=502, headers=response_headers)
+
+        # Soft-partial path: we have *some* text but the run did not complete
+        # (e.g. truncation with partial buffered output). Still 200 but signal
+        # truncation via finish_reason="length" + Hermes-specific extras.
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1222,7 +1261,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "role": "assistant",
                         "content": final_response,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
@@ -1231,12 +1270,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        if is_partial or is_failed or not completed:
+            response_data["hermes"] = {
+                "completed": completed,
+                "partial": is_partial,
+                "failed": is_failed,
+                "error": err_msg,
+                "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
+            }
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if err_msg:
+                response_headers["X-Hermes-Error"] = err_msg[:200]
 
-        response_headers = {
-            "X-Hermes-Session-Id": result.get("session_id", session_id),
-        }
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
 
     async def _write_sse_chat_completion(
@@ -2335,7 +2381,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if cron_err:
             return cron_err
         try:
-            include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
+            include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:

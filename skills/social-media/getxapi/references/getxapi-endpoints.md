@@ -13,7 +13,7 @@ Check credits, email, request count.
 curl -s -H "Authorization: Bearer <your-api-key>" "https://api.getxapi.com/account/me"
 ```
 
-Response fields: `email`, `credits` (string, e.g. "$7.53"), `requests` (integer).
+Response fields: `email`, `credits` (string, e.g. `"$X.XX"`), `requests` (integer).
 
 ---
 
@@ -99,7 +99,7 @@ Fetch user's timeline.
 
 | Param | Required | Notes |
 |-------|----------|-------|
-| `userName` | Yes* | Username (e.g. `kextcache`) |
+| `userName` | Yes* | Username (e.g. `someuser`) |
 | `userId` | Yes* | User ID alternative to userName |
 | `count` | No | Results per page |
 
@@ -107,7 +107,7 @@ Fetch user's timeline.
 
 ```bash
 curl -s -H "Authorization: Bearer <your-api-key>" \
-  "https://api.getxapi.com/twitter/user/tweets?userName=kextcache&count=20"
+  "https://api.getxapi.com/twitter/user/tweets?userName=someuser&count=20"
 ```
 
 Response: `{"userName": "...", "userId": "...", "tweet_count": N, "has_more": bool, "next_cursor": "...", "tweets": [...]}`
@@ -125,7 +125,7 @@ Get single tweet by ID.
 
 ```bash
 curl -s -H "Authorization: Bearer <your-api-key>" \
-  "https://api.getxapi.com/twitter/tweet/detail?id=2054014418455839156"
+  "https://api.getxapi.com/twitter/tweet/detail?id=1234567890123456789"
 ```
 
 Response: `{"data": {"type": "tweet", "id": "...", "text": "...", "author": {...}, "inReplyToId": "...", "createdAt": "...", "media": [...], ...}}`

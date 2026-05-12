@@ -72,7 +72,7 @@ curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \
 
 # User timeline
 curl -s -H "Authorization: Bearer <your-api-key>" \
-  "https://api.getxapi.com/twitter/user/tweets?userName=kextcache&count=10"
+  "https://api.getxapi.com/twitter/user/tweets?userName=someuser&count=10"
 
 # Single tweet detail
 curl -s -H "Authorization: Bearer <your-api-key>" \

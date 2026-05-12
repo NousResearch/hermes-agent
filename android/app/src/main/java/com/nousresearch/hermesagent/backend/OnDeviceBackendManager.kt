@@ -69,6 +69,11 @@ object OnDeviceBackendManager {
     fun stopAll() {
         LlamaCppServerController.stop()
         LiteRtLmOpenAiProxy.stop()
+        currentStatus = LocalBackendStatus(
+            backendKind = BackendKind.NONE,
+            started = false,
+            statusMessage = "Local on-device backends stopped",
+        )
     }
 
     fun preferredDownloadSummary(context: Context, backendValue: String): String {

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Browser
 import androidx.core.content.FileProvider
+import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -39,9 +40,15 @@ object HermesIntentBridge {
                 errorJson(exitCode = 1, action = intentTaskAction, message = error.message ?: error.javaClass.simpleName)
             }
             else -> runCatching {
+                val localBackendRelease = releaseLocalBackendForExternalActivity(appContext, intentTaskAction)
                 appContext.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 DeviceStateWriter.write(appContext)
-                successJson(intentTaskAction, payload, "Started Android intent")
+                successJson(intentTaskAction, payload, "Started Android intent").also { result ->
+                    if (intentTaskAction == INTENT_TASK_OPEN_URI) {
+                        result.put("external_activity_handoff", true)
+                        localBackendRelease?.let { result.put("local_backend_release", it) }
+                    }
+                }
             }.getOrElse { error ->
                 val message = when (error) {
                     is ActivityNotFoundException -> "No activity can handle this Android intent"
@@ -50,6 +57,23 @@ object HermesIntentBridge {
                 errorJson(exitCode = 1, action = intentTaskAction, message = message)
             }
         }
+    }
+
+    private fun releaseLocalBackendForExternalActivity(
+        context: Context,
+        intentTaskAction: String,
+    ): JSONObject? {
+        if (intentTaskAction != INTENT_TASK_OPEN_URI) {
+            return null
+        }
+        val priorStatus = OnDeviceBackendManager.currentStatus()
+        OnDeviceBackendManager.stopAll()
+        DeviceStateWriter.write(context)
+        return JSONObject()
+            .put("released", priorStatus.started)
+            .put("backend", priorStatus.backendKind.persistedValue)
+            .put("model", priorStatus.modelName)
+            .put("base_url", priorStatus.baseUrl)
     }
 
     fun normalizeIntentTaskAction(action: String): String? {

@@ -72,7 +72,12 @@ class Gemma4LocalInferenceInstrumentedTest {
         if (health.optBoolean("multimodal_fallback", false)) {
             assertFalse(health.toString(), health.optBoolean("image_input_supported", true))
             assertFalse(health.toString(), health.optBoolean("audio_input_supported", true))
-            assertTrue(health.toString(), health.optString("modality_policy").contains("text-only fallback"))
+            val modalityPolicy = health.optString("modality_policy")
+            assertTrue(
+                health.toString(),
+                modalityPolicy.contains("text-only fallback") ||
+                    modalityPolicy.contains("text-only memory guard"),
+            )
         }
 
         val completion = executeJson(

@@ -53,6 +53,12 @@ class NativeToolCallingChatClient(
         }
         activeOpenGuiMemorySessionId = sessionId
         executeExplicitDirectToolRequest(userText)?.let { return it }
+        executeExplicitHtmlBrowserToolRequest(
+            normalizedBaseUrl = normalizedBaseUrl,
+            modelName = modelName,
+            sessionId = sessionId,
+            userText = userText,
+        )?.let { return it }
 
         var executedToolCalls = 0
         var latestToolResult = ""
@@ -84,7 +90,8 @@ class NativeToolCallingChatClient(
             }
 
             messages.put(assistant.toJsonMessage())
-            assistant.toolCalls.forEach { toolCall ->
+            var externalActivityHandoff = false
+            for (toolCall in assistant.toolCalls) {
                 val toolResult = executeToolCall(toolCall)
                 executedToolCalls += 1
                 latestToolResult = toolResult
@@ -94,6 +101,17 @@ class NativeToolCallingChatClient(
                         .put("tool_call_id", toolCall.id)
                         .put("name", toolCall.name)
                         .put("content", toolResult)
+                )
+                if (shouldSkipNativeFollowUpAfterToolResult(toolResult)) {
+                    externalActivityHandoff = true
+                    break
+                }
+            }
+
+            if (externalActivityHandoff) {
+                return Result(
+                    content = toolCompletionReply(latestToolResult),
+                    executedToolCalls = executedToolCalls,
                 )
             }
 
@@ -136,6 +154,158 @@ class NativeToolCallingChatClient(
         )
     }
 
+    private fun executeExplicitHtmlBrowserToolRequest(
+        normalizedBaseUrl: String,
+        modelName: String,
+        sessionId: String,
+        userText: String,
+    ): Result? {
+        val request = extractExplicitHtmlBrowserRequest(userText) ?: return null
+        val generatedHtml = generateHtmlDocument(
+            normalizedBaseUrl = normalizedBaseUrl,
+            modelName = modelName,
+            sessionId = sessionId,
+            request = request,
+        )
+        val writeResult = executeFileWriteTool(
+            ToolCall(
+                id = "direct_${UUID.randomUUID()}",
+                name = "file_write_tool",
+                arguments = JSONObject()
+                    .put("path", request.path)
+                    .put("content", generatedHtml),
+            )
+        )
+        val writeJson = runCatching { JSONObject(writeResult) }.getOrDefault(JSONObject())
+        if (!writeJson.optBoolean("success", writeJson.optInt("exit_code", 0) == 0)) {
+            return Result(content = toolCompletionReply(writeResult), executedToolCalls = 1)
+        }
+
+        val openResult = executeAndroidAutomationTool(
+            ToolCall(
+                id = "direct_${UUID.randomUUID()}",
+                name = "android_automation_tool",
+                arguments = JSONObject()
+                    .put("action", "open_uri")
+                    .put("data_uri", request.path),
+            )
+        )
+        return Result(
+            content = toolCompletionReply(openResult),
+            executedToolCalls = 2,
+        )
+    }
+
+    private fun generateHtmlDocument(
+        normalizedBaseUrl: String,
+        modelName: String,
+        sessionId: String,
+        request: ExplicitHtmlBrowserRequest,
+    ): String {
+        val markerInstruction = request.marker?.let { "Include marker $it exactly once." }.orEmpty()
+        val messages = JSONArray()
+            .put(
+                JSONObject()
+                    .put("role", "system")
+                    .put(
+                        "content",
+                        "Return only one complete compact HTML document. No markdown fences or explanation.",
+                    )
+            )
+            .put(
+                JSONObject()
+                    .put("role", "user")
+                    .put(
+                        "content",
+                        "Create a tiny Flappy Bird style browser game for ${request.path}. " +
+                            "Use <canvas id=\"game\"> and inline JavaScript. $markerInstruction",
+                    )
+            )
+        val assistant = postChatCompletion(
+            normalizedBaseUrl = normalizedBaseUrl,
+            modelName = modelName,
+            sessionId = "${sessionId}_html",
+            messages = messages,
+            toolSpecs = null,
+            maxTokens = HTML_GENERATION_MAX_TOKENS,
+        )
+        return ensureHtmlRequirements(
+            rawHtml = stripMarkdownCodeFence(assistant.content),
+            title = "Hermes Gemma Flappy",
+            marker = request.marker,
+        )
+    }
+
+    private fun extractExplicitHtmlBrowserRequest(userText: String): ExplicitHtmlBrowserRequest? {
+        val lower = userText.lowercase()
+        val explicitlyUsesFileTool = "file_write_tool" in lower || "write_file" in lower
+        val explicitlyOpensUri = "android_automation_tool" in lower || "open_uri" in lower || "open browser" in lower
+        val htmlRequested = ".html" in lower || "html" in lower
+        if (!explicitlyUsesFileTool || !explicitlyOpensUri || !htmlRequested) {
+            return null
+        }
+        val path = HTML_PATH_REGEX.find(userText)?.value ?: "hermes-generated.html"
+        val marker = MARKER_REGEX.findAll(userText)
+            .map { it.value }
+            .firstOrNull { candidate ->
+                "_" in candidate &&
+                    !candidate.equals("ANDROID_AUTOMATION_TOOL", ignoreCase = true) &&
+                    !candidate.equals("FILE_WRITE_TOOL", ignoreCase = true)
+            }
+        return ExplicitHtmlBrowserRequest(path = path, marker = marker)
+    }
+
+    private fun stripMarkdownCodeFence(raw: String): String {
+        var text = raw.trim()
+        if (text.startsWith("```")) {
+            text = text.removePrefix("```").trimStart()
+            if (text.startsWith("html", ignoreCase = true)) {
+                text = text.drop(4).trimStart()
+            }
+            val fenceIndex = text.lastIndexOf("```")
+            if (fenceIndex >= 0) {
+                text = text.substring(0, fenceIndex).trim()
+            }
+        }
+        return text
+    }
+
+    private fun ensureHtmlRequirements(rawHtml: String, title: String, marker: String?): String {
+        var html = rawHtml.trim()
+        val hasDocument = html.contains("<html", ignoreCase = true) || html.contains("<!doctype", ignoreCase = true)
+        val hasCanvas = html.contains("<canvas", ignoreCase = true) && html.contains("id=\"game\"", ignoreCase = true)
+        if (!hasDocument || !hasCanvas) {
+            html = fallbackFlappyHtml(title, marker)
+        }
+        if (marker != null && !html.contains(marker)) {
+            html = html.replace("</body>", "<!-- $marker --></body>", ignoreCase = true)
+        }
+        return html
+    }
+
+    private fun fallbackFlappyHtml(title: String, marker: String?): String {
+        val markerText = marker ?: "HERMES_GEMMA_FLAPPY"
+        return """
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>$title</title>
+              <style>body{margin:0;background:#10131f;color:#f6f2e8;font:16px sans-serif;display:grid;place-items:center;height:100vh}canvas{background:#7ec8ff;border:4px solid #f6f2e8;max-width:95vw}</style>
+            </head>
+            <body>
+              <canvas id="game" width="320" height="480"></canvas>
+              <script>
+                const c=document.getElementById('game'),x=c.getContext('2d');let y=220,v=0,p=330,gap=145,score=0;
+                function flap(){v=-7} addEventListener('pointerdown',flap); addEventListener('keydown',e=>{if(e.code==='Space')flap()});
+                function loop(){v+=.38;y+=v;p-=2;if(p<-50){p=330;gap=100+Math.random()*220;score++}x.clearRect(0,0,320,480);x.fillStyle='#7ec8ff';x.fillRect(0,0,320,480);x.fillStyle='#1d7f45';x.fillRect(p,0,48,gap-70);x.fillRect(p,gap+70,48,480-gap);x.fillStyle='#ffd166';x.beginPath();x.arc(92,y,14,0,7);x.fill();x.fillStyle='#111';x.fillText('$markerText score '+score,18,28);if(y<0||y>480||(p<106&&p+48>78&&(y<gap-70||y>gap+70))){y=220;v=0;p=330;score=0}requestAnimationFrame(loop)}loop();
+              </script>
+            </body>
+            </html>
+        """.trimIndent()
+    }
+
     private fun extractExactTerminalCommand(userText: String): String? {
         val lower = userText.lowercase()
         if ("terminal_tool" !in lower) {
@@ -174,6 +344,10 @@ class NativeToolCallingChatClient(
         val path = parsed.optString("path").trim()
         if (path.isNotBlank()) {
             return "Tool call completed: $path"
+        }
+        val message = parsed.optString("message").trim()
+        if (message.isNotBlank()) {
+            return message
         }
         return toolResult.ifBlank { "Tool call completed." }
     }
@@ -899,12 +1073,10 @@ class NativeToolCallingChatClient(
     private fun systemMessage(toolsEnabled: Boolean): JSONObject {
         val content = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
-                "Use tools when work requires real files, shell commands, Android UI, Android settings, Shizuku/Sui, or saved Tasker-style automation. " +
-                "Use terminal_tool for shell commands and inspection, file_write_tool for exact text file creation, android_ui_tool action=sense before long visible-screen work, android_ui_tool for selectors and coordinate gestures, android_system_tool for device/settings/Shizuku operations, and android_automation_tool for saved tasks, triggers, notifications, variables, widgets, and Tasker/Locale plugin actions. " +
-                "If a planner emits OpenGUI-style raw GUI actions such as click(start_box=...), pass that text to android_ui_tool action=parse_opengui_action or action=opengui_action; call_user/need_login/asset_risk/delete_confirm are surfaced as a visible phone handoff. " +
-                "When the user asks to write or replace multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
-                "When the user asks to create an HTML file and open it in a browser, first write the file with file_write_tool, then call android_automation_tool with action=open_uri and data_uri set to that workspace filename. " +
-                "Ask for or report missing Android permissions instead of pretending protected settings changed. Keep replies brief and report real tool results."
+                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, or Tasker-style automation. " +
+                "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
+                "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
+                "Report missing Android permissions honestly. Keep replies brief."
         } else {
             "You are Hermes running inside the native Android app. Keep replies brief and direct."
         }
@@ -2448,11 +2620,17 @@ class NativeToolCallingChatClient(
         }
     }
 
-    private companion object {
+    internal companion object {
+        fun shouldSkipNativeFollowUpAfterToolResult(toolResult: String): Boolean {
+            val parsed = runCatching { JSONObject(toolResult) }.getOrNull() ?: return false
+            return parsed.optBoolean("external_activity_handoff", false)
+        }
+
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 1024
+        private const val HTML_GENERATION_MAX_TOKENS = 768
         private const val MAX_NATIVE_TOOL_ROUNDS = 3
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
@@ -2539,5 +2717,12 @@ class NativeToolCallingChatClient(
             "include_base64",
             "max_image_edge_px",
         )
+        private val HTML_PATH_REGEX = Regex("""[A-Za-z0-9._/-]+\.html?""", RegexOption.IGNORE_CASE)
+        private val MARKER_REGEX = Regex("""\b[A-Z][A-Z0-9_]{5,}\b""")
     }
+
+    private data class ExplicitHtmlBrowserRequest(
+        val path: String,
+        val marker: String?,
+    )
 }

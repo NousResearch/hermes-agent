@@ -169,6 +169,7 @@ class TestEphemeralMaxOutputTokens:
         agent.reasoning_config = None
         agent._is_anthropic_oauth = False
         agent._ephemeral_max_output_tokens = None
+        agent._use_long_lived_prefix_cache = False
 
         compressor = MagicMock()
         compressor.context_length = 200_000

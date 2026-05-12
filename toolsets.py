@@ -158,6 +158,12 @@ TOOLSETS = {
         "tools": ["send_message"],
         "includes": []
     },
+
+    "google_messages": {
+        "description": "Read-only Google Messages for Web status and conversation-list previews",
+        "tools": ["google_messages_status", "google_messages_conversations"],
+        "includes": []
+    },
     
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",

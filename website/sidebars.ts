@@ -128,6 +128,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/signal',
         'user-guide/messaging/email',
         'user-guide/messaging/sms',
+        'user-guide/messaging/google-messages',
         'user-guide/messaging/homeassistant',
         'user-guide/messaging/mattermost',
         'user-guide/messaging/matrix',

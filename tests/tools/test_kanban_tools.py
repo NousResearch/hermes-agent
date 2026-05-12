@@ -698,6 +698,77 @@ def test_create_subscription_failure_does_not_break_task(worker_env, monkeypatch
     assert d.get("notify_subscribed") is None
 
 
+def test_resolve_notifier_profile_prefers_env_var(monkeypatch):
+    """When dispatcher spawns a worker it exports HERMES_PROFILE; that
+    must take precedence so worker-created child tasks are owned by the
+    worker's profile (not the default gateway's profile)."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_PROFILE", "writer-cat")
+    assert kt._resolve_notifier_profile() == "writer-cat"
+
+
+def test_resolve_notifier_profile_falls_back_to_active_profile(monkeypatch):
+    """When HERMES_PROFILE isn't set (default profile gateway processes
+    don't export it), the resolver must derive the profile from
+    HERMES_HOME so the subscription is still owned by a real profile —
+    not None, which would let every connected gateway claim the event
+    and deliver duplicate notifications."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    # worker_env-style monkeypatching is not needed; we just stub the
+    # imported helper to avoid coupling to HERMES_HOME state.
+    import hermes_cli.profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    assert kt._resolve_notifier_profile() == "default"
+
+
+def test_resolve_notifier_profile_final_fallback(monkeypatch):
+    """If HERMES_PROFILE is unset AND get_active_profile_name raises (e.g.
+    hermes_cli.profiles unimportable in some test contexts), the resolver
+    must still return a non-None string. Returning None would silently
+    duplicate notifications across all connected gateway profiles."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    import hermes_cli.profiles as profiles_mod
+    def _boom():
+        raise RuntimeError("simulated import failure")
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", _boom)
+    assert kt._resolve_notifier_profile() == "default"
+
+
+def test_create_writes_resolved_notifier_profile_to_subscription(worker_env, monkeypatch):
+    """End-to-end: the subscription row written by kanban_create must
+    carry a non-None notifier_profile so the gateway's profile-ownership
+    filter routes events to exactly one gateway (avoiding duplicate
+    deliveries when multiple profile gateways are running concurrently)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(
+        kt,
+        "_capture_origin_from_session",
+        lambda: {
+            "platform": "feishu",
+            "chat_id": "oc_xxx",
+            "thread_id": None,
+            "user_id": "ou_xxx",
+        },
+    )
+    monkeypatch.setenv("HERMES_PROFILE", "writer-cat")
+
+    out = kt._handle_create({"title": "owned task", "assignee": "peer"})
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id=d["task_id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "writer-cat"
+
+
 def test_create_rejects_no_assignee(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"title": "t"})).get("error")

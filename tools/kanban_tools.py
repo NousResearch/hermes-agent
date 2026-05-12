@@ -551,6 +551,35 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _resolve_notifier_profile() -> Optional[str]:
+    """Resolve the profile name that should own this notify subscription,
+    matching the resolution order used by the gateway's ``/kanban create``
+    auto-subscribe path (``gateway/run.py``: ``self._active_profile_name()``).
+
+    Order:
+    1. ``HERMES_PROFILE`` env var (set by the dispatcher when spawning a
+       worker, so worker-created tasks are owned by the worker's profile).
+    2. ``hermes_cli.profiles.get_active_profile_name()`` (derives from
+       ``HERMES_HOME`` — handles the gateway-bound default profile, which
+       does not export ``HERMES_PROFILE``).
+    3. ``"default"`` as a final fallback.
+
+    Without this, default-profile gateways would write ``None`` as the
+    subscription owner, and the gateway notifier's profile-ownership
+    filter (``if owner_profile and owner_profile != notifier_profile``)
+    would let *every* connected gateway profile claim and deliver the
+    same event — duplicating notifications across N profiles.
+    """
+    env_profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if env_profile:
+        return env_profile
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _capture_origin_from_session() -> Optional[Dict[str, Any]]:
     """Capture the gateway source (platform/chat/thread/user) of the current
     LLM call, mirroring the pattern used by cronjob_tools._origin_from_env.
@@ -657,7 +686,7 @@ def _handle_create(args: dict, **kw) -> str:
                         chat_id=origin["chat_id"],
                         thread_id=origin["thread_id"],
                         user_id=origin["user_id"],
-                        notifier_profile=os.environ.get("HERMES_PROFILE") or None,
+                        notifier_profile=_resolve_notifier_profile(),
                     )
                     subscribed_to = origin["platform"]
                 except Exception as _sub_exc:

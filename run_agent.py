@@ -347,6 +347,10 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+# Tools that mutate files on disk.  Used by the per-turn verifier that
+# surfaces silently-failed file edits so the model can't over-claim success.
+_FILE_MUTATING_TOOLS = frozenset({"write_file", "patch"})
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -522,6 +526,68 @@ def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
         value["content"] = parts
     if isinstance(value.get("text_summary"), str):
         value["text_summary"] = value["text_summary"] + hint
+
+
+def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
+    """Return the file paths a ``write_file`` or ``patch`` call is targeting.
+
+    For ``write_file`` and ``patch`` in replace mode this is just ``args["path"]``.
+    For ``patch`` in V4A patch mode we parse the patch content for
+    ``*** Update File:`` / ``*** Add File:`` / ``*** Delete File:`` headers so
+    the verifier can track each file in a multi-file patch separately.
+    """
+    if tool_name not in _FILE_MUTATING_TOOLS:
+        return []
+    if tool_name == "write_file":
+        p = args.get("path")
+        return [str(p)] if p else []
+    # tool_name == "patch"
+    mode = args.get("mode") or "replace"
+    if mode == "replace":
+        p = args.get("path")
+        return [str(p)] if p else []
+    if mode == "patch":
+        body = args.get("patch") or ""
+        if not isinstance(body, str) or not body:
+            return []
+        import re as _re
+        paths: List[str] = []
+        for _m in _re.finditer(
+            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+            body,
+            _re.MULTILINE,
+        ):
+            p = _m.group(1).strip()
+            if p:
+                paths.append(p)
+        return paths
+    return []
+
+
+def _extract_error_preview(result: Any, max_len: int = 180) -> str:
+    """Pull a one-line error summary out of a tool result for footer display."""
+    text = _multimodal_text_summary(result) if result is not None else ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return ""
+    # Try to parse JSON and pull the ``error`` field — tool handlers return
+    # ``{"success": false, "error": "..."}``; raw string wins if parse fails.
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            import json as _json
+            data = _json.loads(stripped)
+            if isinstance(data, dict) and isinstance(data.get("error"), str):
+                text = data["error"]
+        except Exception:
+            pass
+    # Collapse whitespace, trim to max_len.
+    text = " ".join(text.split())
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
 
 
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -5345,6 +5411,103 @@ class AIAgent:
             text = self._pending_steer
             self._pending_steer = None
         return text
+
+    def _record_file_mutation_result(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        is_error: bool,
+    ) -> None:
+        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
+
+        On failure, store ``{path: {error_preview, tool}}`` entries.  On
+        success, remove any prior failure entries for the same paths (the
+        model recovered within the turn).  Silently no-ops if the per-turn
+        state dict hasn't been initialised yet (e.g. a tool dispatched
+        outside ``run_conversation``).
+        """
+        if tool_name not in _FILE_MUTATING_TOOLS:
+            return
+        state = getattr(self, "_turn_failed_file_mutations", None)
+        if state is None:
+            return
+        targets = _extract_file_mutation_targets(tool_name, args)
+        if not targets:
+            return
+        if is_error:
+            preview = _extract_error_preview(result)
+            for path in targets:
+                # Keep the FIRST error we saw for a given path unless we
+                # later see success.  A repeated failure with a different
+                # message shouldn't silently overwrite the original.
+                if path not in state:
+                    state[path] = {
+                        "tool": tool_name,
+                        "error_preview": preview,
+                    }
+        else:
+            for path in targets:
+                state.pop(path, None)
+
+    def _file_mutation_verifier_enabled(self) -> bool:
+        """Check whether the per-turn file-mutation verifier footer is on.
+
+        Config path: ``display.file_mutation_verifier`` (bool, default True).
+        ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
+        as a method so tests can patch a single seam without reaching into
+        the private ``_turn_failed_file_mutations`` state dict.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
+            if env is not None:
+                return env.strip().lower() not in ("0", "false", "no", "off")
+            # Read from the persisted config.yaml so gateway and CLI share
+            # the same setting.  Import lazily to avoid a startup-time cycle.
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "file_mutation_verifier" in _display:
+                return bool(_display.get("file_mutation_verifier"))
+        except Exception:
+            pass
+        return True  # safe default: verifier on
+
+    @staticmethod
+    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+        """Render the per-turn failed-mutation dict as a user-facing footer.
+
+        Displays up to 10 paths with their first error preview, then a
+        count of any additional failures.  Returns an empty string when
+        the dict is empty so callers can concatenate unconditionally.
+        """
+        if not failed:
+            return ""
+        lines = [
+            "⚠️ File-mutation verifier: "
+            f"{len(failed)} file(s) were NOT modified this turn despite any "
+            "wording above that may suggest otherwise. Run `git status` or "
+            "`read_file` to confirm."
+        ]
+        shown = 0
+        for path, info in failed.items():
+            if shown >= 10:
+                break
+            preview = (info.get("error_preview") or "").strip()
+            tool = info.get("tool") or "patch"
+            if preview:
+                lines.append(f"  • {path} — [{tool}] {preview}")
+            else:
+                lines.append(f"  • {path} — [{tool}] failed")
+            shown += 1
+        remaining = len(failed) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
+        return "\n".join(lines)
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Append any pending /steer text to the last tool result in this turn.
@@ -10872,6 +11035,17 @@ class AIAgent:
                     result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+                # Track file-mutation outcome for the turn-end verifier.
+                # `blocked` calls never actually ran — don't let a guardrail
+                # block count as either a failure or a success.
+                if not blocked:
+                    try:
+                        self._record_file_mutation_result(
+                            function_name, function_args, function_result, is_error,
+                        )
+                    except Exception as _ver_err:
+                        logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
                 if not blocked and self.tool_progress_callback:
                     try:
                         self.tool_progress_callback(
@@ -11297,6 +11471,18 @@ class AIAgent:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+
+            # Track file-mutation outcome for the turn-end verifier.  See
+            # the concurrent path for the rationale; both paths must feed
+            # the same state so the footer reflects every tool call in the
+            # turn, not just the parallel ones.
+            if not _execution_blocked:
+                try:
+                    self._record_file_mutation_result(
+                        function_name, function_args, function_result, _is_error_result,
+                    )
+                except Exception as _ver_err:
+                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if not _execution_blocked and self.tool_progress_callback:
                 try:
@@ -11995,6 +12181,14 @@ class AIAgent:
         truncated_response_prefix = ""
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+        # Per-turn file-mutation verifier state.  Keyed by resolved path;
+        # each failed ``write_file`` / ``patch`` call records the error
+        # preview.  Later successful writes to the same path remove the
+        # entry (the model recovered).  At end-of-turn, any entries still
+        # present are surfaced in an advisory footer so the model cannot
+        # over-claim success while the file is actually unchanged on disk.
+        self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -15309,6 +15503,31 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        # File-mutation verifier footer.
+        # If one or more ``write_file`` / ``patch`` calls failed during this
+        # turn and were never superseded by a successful write to the same
+        # path, append an advisory footer to the assistant response.  This
+        # catches the specific case — reported by Ben Eng (#15524-adjacent)
+        # — where a model issues a batch of parallel patches, half of them
+        # fail with "Could not find old_string", and the model summarises
+        # the turn claiming every file was edited.  The user then has to
+        # manually run ``git status`` to catch the lie.  With this footer
+        # the truth is surfaced on every turn, so over-claiming is
+        # structurally impossible past the model.
+        #
+        # Gate: only applied when a real text response exists for this
+        # turn and the user didn't interrupt.  Empty/interrupted turns
+        # already have other surface text that shouldn't be augmented.
+        if final_response and not interrupted:
+            try:
+                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+                if _failed and self._file_mutation_verifier_enabled():
+                    footer = self._format_file_mutation_failure_footer(_failed)
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
+            except Exception as _ver_err:
+                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
         # Plugin hook: transform_llm_output
         # Fired once per turn after the tool-calling loop completes.

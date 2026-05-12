@@ -47,6 +47,7 @@ export const hu: Translations = {
       "Nem sikerült betölteni a bővítmény szkriptjét. Ellenőrizze a Network fület (dashboard-plugins/…) és a kiszolgáló bővítmény-elérési útját.",
     pluginNotRegistered:
       "A bővítmény szkriptje nem hívta meg a register() függvényt, vagy hibára futott. A részletekért nyissa meg a böngésző konzolját.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const hu: Translations = {
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const hu: Translations = {
     failedToLoadRaw: "Nem sikerült betölteni a nyers konfigurációt",
     configImported: "Konfiguráció importálva — ellenőrizze és mentse",
     invalidJson: "Érvénytelen JSON-fájl",
+    yaml: "YAML",
     categories: {
       general: "Általános",
       agent: "Ügynök",

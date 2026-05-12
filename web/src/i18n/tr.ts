@@ -47,6 +47,7 @@ export const tr: Translations = {
       "Bu eklentinin betiği yüklenemedi. Ağ sekmesini (dashboard-plugins/…) ve sunucunun eklenti yolunu kontrol edin.",
     pluginNotRegistered:
       "Eklenti betiği register() çağırmadı veya betik hata verdi. Ayrıntılar için tarayıcı konsolunu açın.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const tr: Translations = {
     statusOverview: "Durum özeti",
     system: "Sistem",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const tr: Translations = {
     failedToLoadRaw: "Ham yapılandırma yüklenemedi",
     configImported: "Yapılandırma içe aktarıldı — gözden geçirip kaydedin",
     invalidJson: "Geçersiz JSON dosyası",
+    yaml: "YAML",
     categories: {
       general: "Genel",
       agent: "Agent",

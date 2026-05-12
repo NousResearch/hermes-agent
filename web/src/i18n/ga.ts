@@ -47,6 +47,7 @@ export const ga: Translations = {
       "Níorbh fhéidir script an plugin seo a luchtú. Seiceáil an cluaisín Network (dashboard-plugins/…) agus conair plugin an fhreastalaí.",
     pluginNotRegistered:
       "Níor ghlaoigh script an plugin ar register(), nó tharla earráid sa script. Oscail consól an bhrabhsálaí le haghaidh sonraí.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const ga: Translations = {
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const ga: Translations = {
     failedToLoadRaw: "Theip ar luchtú na cumraíochta amh",
     configImported: "Cumraíocht iompórtáilte — athbhreithnigh agus sábháil",
     invalidJson: "Comhad JSON neamhbhailí",
+    yaml: "YAML",
     categories: {
       general: "Ginearálta",
       agent: "Agent",

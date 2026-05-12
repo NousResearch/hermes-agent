@@ -47,6 +47,7 @@ export const de: Translations = {
       "Das Skript dieses Plugins konnte nicht geladen werden. Prüfe den Netzwerk-Tab (dashboard-plugins/…) und den Plugin-Pfad des Servers.",
     pluginNotRegistered:
       "Das Skript des Plugins hat register() nicht aufgerufen oder ist fehlgeschlagen. Öffne die Browser-Konsole für Details.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const de: Translations = {
     statusOverview: "Statusübersicht",
     system: "System",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const de: Translations = {
     failedToLoadRaw: "Rohe Konfiguration konnte nicht geladen werden",
     configImported: "Konfiguration importiert — überprüfen und speichern",
     invalidJson: "Ungültige JSON-Datei",
+    yaml: "YAML",
     categories: {
       general: "Allgemein",
       agent: "Agent",

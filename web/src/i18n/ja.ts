@@ -47,6 +47,7 @@ export const ja: Translations = {
       "このプラグインのスクリプトを読み込めませんでした。Network タブ（dashboard-plugins/…）とサーバーのプラグインパスをご確認ください。",
     pluginNotRegistered:
       "プラグインのスクリプトが register() を呼び出していないか、スクリプトでエラーが発生しました。詳細はブラウザのコンソールをご確認ください。",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const ja: Translations = {
     statusOverview: "ステータス概要",
     system: "システム",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const ja: Translations = {
     failedToLoadRaw: "生の設定の読み込みに失敗しました",
     configImported: "設定をインポートしました — 確認して保存してください",
     invalidJson: "無効な JSON ファイル",
+    yaml: "YAML",
     categories: {
       general: "一般",
       agent: "エージェント",

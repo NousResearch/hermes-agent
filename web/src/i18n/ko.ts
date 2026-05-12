@@ -47,6 +47,7 @@ export const ko: Translations = {
       "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
     pluginNotRegistered:
       "플러그인 스크립트가 register()를 호출하지 않았거나 스크립트에 오류가 발생했습니다. 자세한 내용은 브라우저 콘솔을 열어 확인하세요.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const ko: Translations = {
     statusOverview: "상태 개요",
     system: "시스템",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const ko: Translations = {
     failedToLoadRaw: "원본 설정 로드에 실패했습니다",
     configImported: "설정을 가져왔습니다 — 검토 후 저장하세요",
     invalidJson: "잘못된 JSON 파일입니다",
+    yaml: "YAML",
     categories: {
       general: "일반",
       agent: "에이전트",

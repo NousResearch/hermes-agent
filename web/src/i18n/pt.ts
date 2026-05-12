@@ -47,6 +47,7 @@ export const pt: Translations = {
       "Não foi possível carregar o script deste plugin. Verifique o separador Network (dashboard-plugins/…) e o caminho do plugin no servidor.",
     pluginNotRegistered:
       "O script do plugin não chamou register(), ou o script falhou. Abra a consola do browser para mais detalhes.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const pt: Translations = {
     statusOverview: "Visão geral do estado",
     system: "Sistema",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const pt: Translations = {
     failedToLoadRaw: "Falha ao carregar configuração em bruto",
     configImported: "Configuração importada — reveja e guarde",
     invalidJson: "Ficheiro JSON inválido",
+    yaml: "YAML",
     categories: {
       general: "Geral",
       agent: "Agente",

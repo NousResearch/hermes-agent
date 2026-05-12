@@ -47,6 +47,7 @@ export const it: Translations = {
       "Impossibile caricare lo script di questo plugin. Controlla la scheda Network (dashboard-plugins/…) e il percorso dei plugin del server.",
     pluginNotRegistered:
       "Lo script del plugin non ha chiamato register(), oppure ha generato un errore. Apri la console del browser per i dettagli.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const it: Translations = {
     statusOverview: "Panoramica dello stato",
     system: "Sistema",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const it: Translations = {
     failedToLoadRaw: "Caricamento configurazione grezza non riuscito",
     configImported: "Configurazione importata — controlla e salva",
     invalidJson: "File JSON non valido",
+    yaml: "YAML",
     categories: {
       general: "Generale",
       agent: "Agente",

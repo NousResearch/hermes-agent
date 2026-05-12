@@ -47,6 +47,7 @@ export const es: Translations = {
       "No se pudo cargar el script de este complemento. Revisa la pestaña Network (dashboard-plugins/…) y la ruta del complemento del servidor.",
     pluginNotRegistered:
       "El script del complemento no llamó a register(), o falló. Abre la consola del navegador para más detalles.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const es: Translations = {
     statusOverview: "Resumen de estado",
     system: "Sistema",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const es: Translations = {
     failedToLoadRaw: "No se pudo cargar la configuración en bruto",
     configImported: "Configuración importada — revisa y guarda",
     invalidJson: "Archivo JSON no válido",
+    yaml: "YAML",
     categories: {
       general: "General",
       agent: "Agente",

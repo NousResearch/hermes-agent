@@ -47,6 +47,7 @@ export const uk: Translations = {
       "Не вдалося завантажити скрипт цього плагіна. Перевірте вкладку Network (dashboard-plugins/…) та шлях до плагінів на сервері.",
     pluginNotRegistered:
       "Скрипт плагіна не викликав register(), або у скрипті сталася помилка. Відкрийте консоль браузера, щоб побачити деталі.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const uk: Translations = {
     statusOverview: "Огляд стану",
     system: "Система",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const uk: Translations = {
     failedToLoadRaw: "Не вдалося завантажити сирий конфіг",
     configImported: "Конфігурацію імпортовано — перегляньте та збережіть",
     invalidJson: "Недійсний файл JSON",
+    yaml: "YAML",
     categories: {
       general: "Загальне",
       agent: "Агент",

@@ -47,6 +47,7 @@ export const fr: Translations = {
       "Impossible de charger le script de ce plugin. Vérifiez l'onglet Réseau (dashboard-plugins/…) et le chemin des plugins du serveur.",
     pluginNotRegistered:
       "Le script du plugin n'a pas appelé register(), ou le script a échoué. Ouvrez la console du navigateur pour plus de détails.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -94,6 +95,37 @@ export const fr: Translations = {
     statusOverview: "Aperçu de l'état",
     system: "Système",
     webUi: "Web UI",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -344,6 +376,7 @@ export const fr: Translations = {
     failedToLoadRaw: "Échec du chargement de la configuration brute",
     configImported: "Configuration importée — vérifiez et enregistrez",
     invalidJson: "Fichier JSON invalide",
+    yaml: "YAML",
     categories: {
       general: "Général",
       agent: "Agent",

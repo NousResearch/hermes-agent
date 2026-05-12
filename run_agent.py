@@ -8896,15 +8896,27 @@ class AIAgent:
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
             # causing oversized sessions to overflow the fallback.
-            # Also pass _config_context_length so the explicit config override
-            # (model.context_length in config.yaml) is respected — without this,
-            # the fallback activation drops to 128K even when config says 204800.
+            #
+            # Do not reuse the primary model.context_length override here:
+            # provider-imposed context windows can differ across the fallback
+            # chain. Use fallback_providers[].context_length when present,
+            # otherwise let provider-aware metadata resolve the fallback limit.
             if hasattr(self, 'context_compressor') and self.context_compressor:
                 from agent.model_metadata import get_model_context_length
+                _fb_config_context_length = None
+                _fb_raw_context_length = fb.get("context_length")
+                if _fb_raw_context_length is not None:
+                    try:
+                        _fb_config_context_length = int(_fb_raw_context_length)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid fallback context_length for %s via %s: %r",
+                            fb_model, fb_provider, _fb_raw_context_length,
+                        )
                 fb_context_length = get_model_context_length(
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
-                    config_context_length=getattr(self, "_config_context_length", None),
+                    config_context_length=_fb_config_context_length,
                 )
                 self.context_compressor.update_model(
                     model=self.model,

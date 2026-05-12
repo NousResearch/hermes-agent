@@ -89,3 +89,50 @@ def test_compressor_not_present_does_not_crash(mock_ctx_len, mock_resolve):
 
     result = agent._try_activate_fallback()
     assert result is True
+
+
+@patch("agent.auxiliary_client.resolve_provider_client")
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+def test_fallback_context_length_does_not_reuse_primary_override(mock_ctx_len, mock_resolve):
+    """Primary model.context_length overrides must not leak to fallback compression."""
+    agent = _make_agent_with_compressor()
+    agent._config_context_length = 204_800
+
+    fb_client = MagicMock()
+    fb_client.base_url = "https://api.openai.com/v1"
+    fb_client.api_key = "sk-fallback"
+    mock_resolve.return_value = (fb_client, None)
+
+    agent._is_direct_openai_url = lambda url: "api.openai.com" in url
+    agent._emit_status = lambda msg: None
+
+    result = agent._try_activate_fallback()
+
+    assert result is True
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] is None
+
+
+@patch("agent.auxiliary_client.resolve_provider_client")
+@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+def test_fallback_context_length_uses_fallback_override(mock_ctx_len, mock_resolve):
+    """fallback_providers[].context_length should drive fallback compression limits."""
+    agent = _make_agent_with_compressor()
+    agent._fallback_model = {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "context_length": "32768",
+    }
+    agent._fallback_chain = [agent._fallback_model]
+
+    fb_client = MagicMock()
+    fb_client.base_url = "https://api.openai.com/v1"
+    fb_client.api_key = "sk-fallback"
+    mock_resolve.return_value = (fb_client, None)
+
+    agent._is_direct_openai_url = lambda url: "api.openai.com" in url
+    agent._emit_status = lambda msg: None
+
+    result = agent._try_activate_fallback()
+
+    assert result is True
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 32_768

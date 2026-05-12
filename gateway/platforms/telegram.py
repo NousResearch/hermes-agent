@@ -2580,11 +2580,26 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
+                # Edit message to show decision, remove buttons.
+                # Preserve original command content so the user can review
+                # it after approving or denying.
                 try:
+                    original_text = ""
+                    # Use text_html to preserve HTML formatting (e.g. <pre> code blocks)
+                    # since the original approval message is sent with parse_mode=HTML.
+                    msg_obj = getattr(query, "message", None)
+                    if msg_obj:
+                        original_text = getattr(msg_obj, "text_html", "") or ""
+                    if original_text:
+                        updated_text = (
+                            f"{original_text}\n\n"
+                            f"━━━ {label} by {user_display} ━━━"
+                        )
+                    else:
+                        updated_text = f"{label} by {user_display}"
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=updated_text,
+                        parse_mode=ParseMode.HTML,
                         reply_markup=None,
                     )
                 except Exception:

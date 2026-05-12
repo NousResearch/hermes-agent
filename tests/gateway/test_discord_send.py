@@ -45,6 +45,17 @@ _ensure_discord_mock()
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+class FakeDiscordHTTPError(RuntimeError):
+    def __init__(self, message, *, status=None, retry_after=None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+async def _noop_sleep(delay):
+    return None
+
+
 @pytest.mark.asyncio
 async def test_send_retries_without_reference_when_reply_target_is_system_message():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
@@ -158,6 +169,95 @@ async def test_send_does_not_retry_on_unrelated_errors():
     # Only the first attempt happens — no reference-retry replay.
     assert channel.send.await_count == 1
     assert send_calls[0]["reference"] is reference_obj
+
+
+
+
+@pytest.mark.asyncio
+async def test_send_retries_transient_broken_pipe_once(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+
+    sent_msg = SimpleNamespace(id=1234)
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=[BrokenPipeError("Broken pipe"), sent_msg]),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.success is True
+    assert result.message_id == "1234"
+    assert channel.send.await_count == 2
+    assert len(sleep_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_retries_429_with_retry_after(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+
+    sent_msg = SimpleNamespace(id=1235)
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=[
+            FakeDiscordHTTPError("429 Too Many Requests", status=429, retry_after=2.0),
+            sent_msg,
+        ]),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.success is True
+    assert result.message_id == "1235"
+    assert channel.send.await_count == 2
+    assert sleep_calls == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_send_returns_partial_success_after_acknowledged_chunk_failure(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 20
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+
+    first_msg = SimpleNamespace(id=2001)
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=[
+            first_msg,
+            BrokenPipeError("Broken pipe"),
+            BrokenPipeError("Broken pipe"),
+            BrokenPipeError("Broken pipe"),
+        ]),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "A" * 50)
+
+    assert result.success is True
+    assert result.message_id == "2001"
+    assert result.raw_response["partial"] is True
+    assert result.raw_response["message_ids"] == ["2001"]
+    assert "Broken pipe" in result.raw_response["warnings"][0]
+    assert channel.send.await_count == 4
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +417,101 @@ async def test_send_to_forum_follow_up_chunk_failures_collected_as_warnings():
     warnings = (result.raw_response or {}).get("warnings") or []
     assert len(warnings) >= 1
     assert all("rate limited" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_retries_follow_up_transient_failure(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 20
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+
+    starter = SimpleNamespace(id=500)
+    follow_up_calls = []
+
+    async def fake_follow_up_send(*, content):
+        follow_up_calls.append(content)
+        if len(follow_up_calls) == 1:
+            raise BrokenPipeError("Broken pipe")
+        return SimpleNamespace(id=500 + len(follow_up_calls))
+
+    thread_ch = SimpleNamespace(
+        id=555,
+        send=AsyncMock(side_effect=fake_follow_up_send),
+    )
+    thread = SimpleNamespace(id=555, message=starter, thread=thread_ch)
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "A" * 25)
+
+    assert result.success is True
+    assert result.raw_response["message_ids"][:2] == ["500", "502"]
+    assert "warnings" not in result.raw_response
+    assert thread_ch.send.await_count == len(result.raw_response["message_ids"])
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_retries_create_thread_on_429(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sleep_calls = []
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+
+    thread = SimpleNamespace(
+        id=555,
+        message=SimpleNamespace(id=500),
+        thread=SimpleNamespace(id=555, send=AsyncMock()),
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(side_effect=[
+        FakeDiscordHTTPError("429 Too Many Requests", status=429, retry_after=1.5),
+        thread,
+    ])
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "Hello forum!")
+
+    assert result.success is True
+    assert result.message_id == "500"
+    assert forum_channel.create_thread.await_count == 2
+    assert sleep_calls == [1.5]
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_does_not_retry_ambiguous_create_thread_disconnect(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(side_effect=RuntimeError("Server disconnected"))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "Hello forum!")
+
+    assert result.success is False
+    assert "not retried to avoid duplicate forum post" in (result.error or "")
+    assert result.raw_response["unsafe_to_retry"] is True
+    assert result.retryable is False
+    assert forum_channel.create_thread.await_count == 1
 
 
 @pytest.mark.asyncio

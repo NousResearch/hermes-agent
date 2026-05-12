@@ -3393,6 +3393,9 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        if isinstance(result.raw_response, dict) and result.raw_response.get("unsafe_to_retry"):
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 

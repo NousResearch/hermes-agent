@@ -31,6 +31,9 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_SEND_MAX_ATTEMPTS = 3
+_DISCORD_SEND_BASE_DELAY_SECONDS = 0.75
+_DISCORD_SEND_MAX_DELAY_SECONDS = 30.0
 
 try:
     import discord
@@ -1869,15 +1872,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
+            warnings: list[str] = []
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
+                    msg = await self._discord_api_call_with_retry(
+                        lambda: channel.send(
+                            content=chunk,
+                            reference=chunk_reference,
+                        ),
+                        op_name="send message chunk",
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1897,11 +1904,33 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
+                        msg = await self._discord_api_call_with_retry(
+                            lambda: channel.send(
+                                content=chunk,
+                                reference=None,
+                            ),
+                            op_name="send message chunk without reply reference",
                         )
                     else:
+                        # If earlier chunks are acknowledged, do not bubble a
+                        # failure back to BasePlatformAdapter._send_with_retry:
+                        # it would resend the whole response and duplicate the
+                        # delivered chunks. Return partial success with a
+                        # warning instead.
+                        if message_ids:
+                            warning = f"Failed to send Discord chunk {i + 1}/{len(chunks)} after retries: {e}"
+                            logger.error("[%s] %s", self.name, warning, exc_info=True)
+                            warnings.append(warning)
+                            raw_response: Dict[str, Any] = {
+                                "message_ids": message_ids,
+                                "warnings": warnings,
+                                "partial": True,
+                            }
+                            return SendResult(
+                                success=True,
+                                message_id=message_ids[0],
+                                raw_response=raw_response,
+                            )
                         raise
                 message_ids.append(str(msg.id))
 
@@ -1911,15 +1940,142 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
 
+            raw_response: Dict[str, Any] = {"message_ids": message_ids}
+            if warnings:
+                raw_response["warnings"] = warnings
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                raw_response=raw_response
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=self._is_transient_discord_send_error(e),
+            )
+
+
+    @staticmethod
+    def _discord_error_status(exc: BaseException) -> Optional[int]:
+        """Extract a Discord/HTTP status code from common exception shapes."""
+        for value in (
+            getattr(exc, "status", None),
+            getattr(exc, "status_code", None),
+            getattr(getattr(exc, "response", None), "status", None),
+            getattr(getattr(exc, "response", None), "status_code", None),
+        ):
+            try:
+                if value is not None:
+                    return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Extract Retry-After seconds, clamped to a safe local maximum."""
+        candidates: list[Any] = [getattr(exc, "retry_after", None)]
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            try:
+                candidates.append(headers.get("Retry-After"))
+            except Exception:
+                pass
+        for value in candidates:
+            try:
+                if value is not None:
+                    return max(0.0, min(float(value), _DISCORD_SEND_MAX_DELAY_SECONDS))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @classmethod
+    def _is_transient_discord_send_error(cls, exc: BaseException) -> bool:
+        """Return True for send failures worth retrying locally.
+
+        Permission, validation, auth, and missing-channel errors fail fast.
+        Transport drops and server/rate-limit responses get a short
+        operation-local retry so the whole response is not replayed by the
+        generic platform retry wrapper after partial delivery.
+        """
+        status = cls._discord_error_status(exc)
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        if status in {400, 401, 403, 404}:
+            return False
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionError)):
+            return True
+        if isinstance(exc, OSError):
+            text = str(exc).lower()
+            return any(pat in text for pat in ("broken pipe", "connection reset", "connection closed"))
+        text = str(exc).lower()
+        return any(
+            pat in text
+            for pat in (
+                "server disconnected",
+                "broken pipe",
+                "connection reset",
+                "connection closed",
+                "connection aborted",
+                "temporarily unavailable",
+            )
+        )
+
+    @classmethod
+    def _is_safe_create_thread_retry(cls, exc: BaseException) -> bool:
+        """Retry forum starter creation only when Discord clearly rejected it.
+
+        A Broken pipe / server-disconnected after create_thread() is ambiguous:
+        the thread may already exist, so replaying can duplicate a forum post.
+        A 429 with Retry-After is safe because Discord refused the mutation.
+        """
+        return cls._discord_error_status(exc) == 429
+
+    def _discord_send_delay(self, exc: BaseException, attempt_index: int) -> float:
+        retry_after = self._discord_retry_after(exc)
+        if retry_after is not None:
+            return retry_after
+        return min(
+            _DISCORD_SEND_BASE_DELAY_SECONDS * (2 ** attempt_index),
+            _DISCORD_SEND_MAX_DELAY_SECONDS,
+        )
+
+    async def _discord_api_call_with_retry(
+        self,
+        operation: Callable[[], Any],
+        *,
+        op_name: str,
+        retry_unknown_delivery: bool = True,
+    ) -> Any:
+        """Run one Discord API operation with bounded local retries."""
+        for attempt_index in range(_DISCORD_SEND_MAX_ATTEMPTS):
+            try:
+                return await operation()
+            except Exception as exc:
+                transient = self._is_transient_discord_send_error(exc)
+                safe_for_operation = retry_unknown_delivery or self._is_safe_create_thread_retry(exc)
+                if (
+                    not transient
+                    or not safe_for_operation
+                    or attempt_index >= _DISCORD_SEND_MAX_ATTEMPTS - 1
+                ):
+                    raise
+                delay = self._discord_send_delay(exc, attempt_index)
+                logger.warning(
+                    "[%s] Discord %s failed transiently (attempt %d/%d, retrying in %.1fs): %s",
+                    self.name,
+                    op_name,
+                    attempt_index + 1,
+                    _DISCORD_SEND_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -1941,13 +2097,30 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
+            thread = await self._discord_api_call_with_retry(
+                lambda: forum_channel.create_thread(
+                    name=thread_name,
+                    content=starter_content,
+                ),
+                op_name="create forum thread",
+                retry_unknown_delivery=False,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
-            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+            unsafe_to_retry = (
+                self._is_transient_discord_send_error(e)
+                and not self._is_safe_create_thread_retry(e)
+            )
+            raw_response = {"unsafe_to_retry": True} if unsafe_to_retry else None
+            error = f"Forum thread creation failed: {e}"
+            if unsafe_to_retry:
+                error = f"{error}; not retried to avoid duplicate forum post"
+            return SendResult(
+                success=False,
+                error=error,
+                raw_response=raw_response,
+                retryable=self._is_safe_create_thread_retry(e),
+            )
 
         thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
         thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
@@ -1960,7 +2133,10 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await self._discord_api_call_with_retry(
+                    lambda: thread_channel.send(content=chunk),
+                    op_name="send forum follow-up chunk",
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"

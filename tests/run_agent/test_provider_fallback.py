@@ -182,6 +182,23 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_groq_fallback_enables_low_token_mode(self):
+        fbs = [{"provider": "groq", "model": "llama-3.3-70b-versatile"}]
+        agent = _make_agent(fallback_model=fbs)
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.groq.com/openai/v1"), None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "groq"
+        assert agent._groq_low_token_mode_active is True
+        assert agent.max_iterations == 1
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._runtime_refresh_requested is True
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

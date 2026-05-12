@@ -1365,6 +1365,9 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        self._default_max_iterations = max_iterations
+        self._default_enabled_toolsets = list(enabled_toolsets) if enabled_toolsets is not None else None
+        self._default_disabled_toolsets = list(disabled_toolsets) if disabled_toolsets is not None else None
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
@@ -1786,6 +1789,8 @@ class AIAgent:
                     print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+        self._default_tools = list(self.tools or [])
+        self._default_valid_tool_names = set(self.valid_tool_names)
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
@@ -2016,6 +2021,20 @@ class AIAgent:
         except (TypeError, ValueError):
             _api_retries = 3
         self._api_max_retries = _api_retries
+        self._groq_low_token_skill_disabled = False
+        self._groq_low_token_mode_active = False
+        self._groq_low_token_activation_announced = False
+        self._runtime_refresh_requested = False
+        try:
+            from hermes_cli.skills_config import get_disabled_skills as _get_disabled_skills
+
+            _disabled_skills = _get_disabled_skills(
+                _agent_cfg,
+                platform=(self.platform or "").lower().strip() or None,
+            )
+            self._groq_low_token_skill_disabled = "groq-low-token-mode" in _disabled_skills
+        except Exception:
+            self._groq_low_token_skill_disabled = False
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -2388,6 +2407,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "groq_low_token_mode_active": self._groq_low_token_mode_active,
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2404,6 +2424,49 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+
+        self._apply_provider_low_token_mode(announce=False)
+
+    def _apply_provider_low_token_mode(self, announce: bool = True) -> bool:
+        """Apply or remove strict Groq low-token constraints for the live runtime."""
+        should_enable = (
+            (self.provider or "").strip().lower() == "groq"
+            and not getattr(self, "_groq_low_token_skill_disabled", False)
+        )
+        was_active = bool(getattr(self, "_groq_low_token_mode_active", False))
+
+        if should_enable:
+            self._groq_low_token_mode_active = True
+            self.max_iterations = 1
+            self.enabled_toolsets = []
+            self.disabled_toolsets = []
+            self.tools = []
+            self.valid_tool_names = set()
+            self._cached_system_prompt = None
+            if announce and not self._groq_low_token_activation_announced:
+                self._emit_status(
+                    "⚠️ Groq low-token mode active: tools disabled, prompt stripped, single-turn mode enabled."
+                )
+                self._groq_low_token_activation_announced = True
+        else:
+            self._groq_low_token_mode_active = False
+            self.max_iterations = getattr(self, "_default_max_iterations", self.max_iterations)
+            self.enabled_toolsets = (
+                list(self._default_enabled_toolsets)
+                if getattr(self, "_default_enabled_toolsets", None) is not None
+                else None
+            )
+            self.disabled_toolsets = (
+                list(self._default_disabled_toolsets)
+                if getattr(self, "_default_disabled_toolsets", None) is not None
+                else None
+            )
+            self.tools = list(getattr(self, "_default_tools", []) or [])
+            self.valid_tool_names = set(getattr(self, "_default_valid_tool_names", set()) or set())
+            if was_active:
+                self._cached_system_prompt = None
+
+        return was_active != self._groq_low_token_mode_active
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -5641,6 +5704,25 @@ class AIAgent:
             # Fallback to hardcoded identity
             prompt_parts = [DEFAULT_AGENT_IDENTITY]
 
+        if self._groq_low_token_mode_active:
+            prompt_parts.append(
+                "Groq low-token mode is active. Keep the response short. "
+                "Do not call tools. Prefer a single concise answer."
+            )
+            if system_message is not None:
+                prompt_parts.append(system_message)
+            from hermes_time import now as _hermes_now
+            now = _hermes_now()
+            timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+            if self.pass_session_id and self.session_id:
+                timestamp_line += f"\nSession ID: {self.session_id}"
+            if self.model:
+                timestamp_line += f"\nModel: {self.model}"
+            if self.provider:
+                timestamp_line += f"\nProvider: {self.provider}"
+            prompt_parts.append(timestamp_line)
+            return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
@@ -8505,6 +8587,9 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
+            _groq_mode_changed = self._apply_provider_low_token_mode(announce=True)
+            if _groq_mode_changed:
+                self._runtime_refresh_requested = True
 
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
@@ -8668,6 +8753,7 @@ class AIAgent:
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+            self._apply_provider_low_token_mode(announce=False)
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
@@ -12187,12 +12273,17 @@ class AIAgent:
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
+            restart_with_runtime_refresh = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
+                if self._runtime_refresh_requested:
+                    self._runtime_refresh_requested = False
+                    restart_with_runtime_refresh = True
+                    break
                 # ── Nous Portal rate limit guard ──────────────────────
                 # If another session already recorded that Nous is rate-
                 # limited, skip the API call entirely.  Each attempt
@@ -14085,6 +14176,14 @@ class AIAgent:
                 _boost_base = self.max_tokens if self.max_tokens else 4096
                 _boost = _boost_base * (length_continue_retries + 1)
                 self._ephemeral_max_output_tokens = min(_boost, 32768)
+                continue
+
+            if restart_with_runtime_refresh:
+                api_call_count -= 1
+                self.iteration_budget.refund()
+                restart_with_runtime_refresh = False
+                self._cached_system_prompt = self._build_system_prompt(system_message)
+                active_system_prompt = self._cached_system_prompt
                 continue
 
             # Guard: if all retries exhausted without a successful response

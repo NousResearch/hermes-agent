@@ -76,6 +76,21 @@ class TestPrimaryRuntimeSnapshot:
         assert "client_kwargs" in rt
         assert "compressor_context_length" in rt
 
+    def test_groq_primary_enables_low_token_mode(self):
+        agent = _make_agent(provider="groq", base_url="https://api.groq.com/openai/v1")
+        assert agent._groq_low_token_mode_active is True
+        assert agent.max_iterations == 1
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+
+    def test_groq_primary_respects_disabled_skill(self):
+        with patch("hermes_cli.skills_config.get_disabled_skills", return_value={"groq-low-token-mode"}):
+            agent = _make_agent(provider="groq", base_url="https://api.groq.com/openai/v1")
+        assert agent._groq_low_token_mode_active is False
+        assert agent.max_iterations != 1
+        assert [tool["function"]["name"] for tool in agent.tools] == ["web_search"]
+        assert agent.valid_tool_names == {"web_search"}
+
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()
         rt = agent._primary_runtime
@@ -202,6 +217,30 @@ class TestRestorePrimaryRuntime:
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
+
+    def test_restore_disables_groq_low_token_mode_after_groq_fallback(self):
+        agent = _make_agent(
+            fallback_model={"provider": "groq", "model": "llama-3.3-70b-versatile"},
+        )
+        original_max_iterations = agent.max_iterations
+        original_tools = [tool["function"]["name"] for tool in agent.tools]
+
+        mock_client = _mock_resolve(base_url="https://api.groq.com/openai/v1")
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent._groq_low_token_mode_active is True
+        assert agent.max_iterations == 1
+        assert agent.tools == []
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._groq_low_token_mode_active is False
+        assert agent.max_iterations == original_max_iterations
+        assert [tool["function"]["name"] for tool in agent.tools] == original_tools
+        assert agent.valid_tool_names == {"web_search"}
 
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""

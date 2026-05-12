@@ -590,6 +590,22 @@ async def get_status():
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
+    # Aggregate platform states from all profiles (multi-profile support).
+    # Each profile may run its own gateway with different platforms; merge them
+    # so the dashboard shows the full picture.
+    try:
+        from hermes_cli import profiles as profiles_mod
+        for profile in profiles_mod.list_profiles():
+            if profile.is_default:
+                continue
+            if not profile.gateway_running or not profile.gateway_platforms:
+                continue
+            for platform_name, platform_info in profile.gateway_platforms.items():
+                if platform_name not in gateway_platforms:
+                    gateway_platforms[platform_name] = platform_info
+    except Exception:
+        pass
+
     active_sessions = 0
     try:
         from hermes_state import SessionDB
@@ -2652,6 +2668,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "gateway_state": _profile_attr(info, "gateway_state"),
+        "gateway_platforms": _profile_attr(info, "gateway_platforms") or {},
+        "gateway_updated_at": _profile_attr(info, "gateway_updated_at"),
     }
 
 

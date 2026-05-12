@@ -517,9 +517,17 @@ def write_runtime_status(
     _write_json_file(path, payload)
 
 
-def read_runtime_status() -> Optional[dict[str, Any]]:
-    """Read the persisted gateway runtime health/status information."""
-    return _read_json_file(_get_runtime_status_path())
+def read_runtime_status(status_path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Read the persisted gateway runtime health/status information.
+
+    Parameters
+    ----------
+    status_path:
+        Optional path to a specific runtime status file. When omitted, reads
+        from the current HERMES_HOME.
+    """
+    path = status_path if status_path is not None else _get_runtime_status_path()
+    return _read_json_file(path)
 
 
 def remove_pid_file() -> None:

@@ -279,7 +279,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
+                    if _e in {"low", "medium", "high"}:
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
@@ -294,7 +294,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
+                    if _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
@@ -322,6 +322,21 @@ class ChatCompletionsTransport(ProviderTransport):
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
             extra_body["provider"] = provider_prefs
+
+        # Pareto Code router plugin — model-gated. Same shape as the
+        # profile path in plugins/model-providers/openrouter/__init__.py;
+        # this branch only runs when the OpenRouter profile isn't loaded.
+        if is_openrouter and model == "openrouter/pareto-code":
+            _pareto_score = params.get("openrouter_min_coding_score")
+            if _pareto_score is not None and _pareto_score != "":
+                try:
+                    _pareto_score_f = float(_pareto_score)
+                except (TypeError, ValueError):
+                    _pareto_score_f = None
+                if _pareto_score_f is not None and 0.0 <= _pareto_score_f <= 1.0:
+                    extra_body["plugins"] = [
+                        {"id": "pareto-router", "min_coding_score": _pareto_score_f}
+                    ]
 
         # Kimi extra_body.thinking
         if is_kimi:
@@ -448,6 +463,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
                 ollama_num_ctx=params.get("ollama_num_ctx"),
+                session_id=params.get("session_id"),
             )
         )
         api_kwargs.update(top_level_from_profile)
@@ -462,6 +478,7 @@ class ChatCompletionsTransport(ProviderTransport):
             model=model,
             base_url=params.get("base_url"),
             reasoning_config=reasoning_config,
+            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         if profile_body:
             extra_body.update(profile_body)

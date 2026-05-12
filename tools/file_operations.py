@@ -1244,7 +1244,7 @@ class ShellFileOperations(FileOperations):
 
         search_root = Path(path)
         has_hidden_path_ancestor = any(
-            part not in (".", "..") and part.startswith(".")
+            part not in {".", ".."} and part.startswith(".")
             for part in search_root.parts
         )
 
@@ -1305,7 +1305,7 @@ class ShellFileOperations(FileOperations):
                     rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
                 except ValueError:
                     rel_parts = Path(file_path).parts
-                if any(part not in (".", "..") and part.startswith(".") for part in rel_parts):
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
                     continue
                 filtered_files.append(file_path)
             files = filtered_files[offset:offset + limit]

@@ -257,6 +257,40 @@ class TestQwenAlibabaFamily:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_qwen_on_nous_portal_caches_with_envelope_layout(self):
+        # Nous Portal Qwen takes the same envelope-layout cache_control
+        # path as Portal Claude. Without this, Portal-routed qwen3.6-plus
+        # falls through to the alibaba-family check (which only matches
+        # provider=opencode/alibaba) and serves 0% cache hits.
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_qwen_vendored_slug_on_nous_portal_caches(self):
+        # Same path but with the vendored slug form Portal sometimes uses.
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="qwen/qwen3.6-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_non_qwen_non_claude_on_nous_portal_does_not_cache(self):
+        # Portal scope is narrow: Claude OR Qwen only. Other models
+        # routed through Portal keep their existing fall-through behavior.
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="openai/gpt-5.4",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
 
 class TestExplicitOverrides:
     """Policy accepts keyword overrides for switch_model / fallback activation."""
@@ -290,3 +324,133 @@ class TestExplicitOverrides:
             model="anthropic/claude-sonnet-4.6",
         )
         assert (should, native) == (True, False)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Long-lived prefix cache policy (cross-session 1h tier)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestSupportsLongLivedAnthropicCache:
+    """Narrower than _anthropic_prompt_cache_policy — only Claude on the 4
+    explicitly-validated endpoints get the long-lived layout."""
+
+    def test_native_anthropic_claude_supported(self):
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4.6",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_anthropic_oauth_supported(self):
+        # OAuth uses the same transport as native Anthropic
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+            model="claude-opus-4.6",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_openrouter_claude_supported(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_nous_portal_claude_supported(self):
+        # Nous Portal proxies to OpenRouter — same wire format
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-opus-4.7",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_nous_portal_qwen_supported(self):
+        # Portal Qwen rides the same OpenRouter-equivalent transport as
+        # Portal Claude; long-lived (1h cross-session) cache_control
+        # markers apply identically.
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_nous_portal_qwen_vendored_slug_supported(self):
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="qwen/qwen3.6-plus",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is True
+
+    def test_nous_portal_non_claude_non_qwen_rejected(self):
+        # Portal long-lived cache scope mirrors policy: Claude or Qwen only.
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="openai/gpt-5.4",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is False
+
+    def test_openrouter_non_claude_rejected(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="openai/gpt-5.4",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is False
+
+    def test_third_party_anthropic_gateway_rejected(self):
+        # MiniMax / Kimi / etc. — anthropic-wire but not in our validated list
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="minimax-m2.7",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is False
+
+    def test_alibaba_dashscope_rejected(self):
+        agent = _make_agent(
+            provider="alibaba",
+            base_url="https://dashscope.aliyuncs.com/api/v1/anthropic",
+            api_mode="anthropic_messages",
+            model="qwen3.5-plus",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is False
+
+    def test_opencode_qwen_rejected(self):
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://api.opencode-go.example/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        assert agent._supports_long_lived_anthropic_cache() is False
+
+    def test_fallback_target_evaluated_independently(self):
+        # Starting on a non-supported provider, falling back to OpenRouter Claude
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="minimax-m2.7",
+        )
+        assert agent._supports_long_lived_anthropic_cache(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        ) is True

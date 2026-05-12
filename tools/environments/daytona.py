@@ -51,6 +51,13 @@ class DaytonaEnvironment(BaseEnvironment):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.daytona", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
         from daytona import (
             Daytona,
             CreateSandboxFromImageParams,
@@ -124,7 +131,7 @@ class DaytonaEnvironment(BaseEnvironment):
             home = self._sandbox.process.exec("echo $HOME").result.strip()
             if home:
                 self._remote_home = home
-                if requested_cwd in ("~", "/home/daytona"):
+                if requested_cwd in {"~", "/home/daytona"}:
                     self.cwd = home
         except Exception:
             pass
@@ -195,7 +202,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
-        if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
+        if self._sandbox.state in {self._SandboxState.STOPPED, self._SandboxState.ARCHIVED}:
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 

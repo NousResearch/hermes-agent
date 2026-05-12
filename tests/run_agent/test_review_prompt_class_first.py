@@ -179,6 +179,50 @@ def test_combined_review_prompt_preserves_opt_out_clause():
 
 
 # ---------------------------------------------------------------------------
+# Anti-pattern guidance — see issue #6051. The reviewer was learning transient
+# environment failures (e.g. "browser tools do not work" from a fresh-install
+# Playwright miss) as durable skill rules, then citing them against itself for
+# weeks after the environment was fixed. Both review prompts must explicitly
+# tell the reviewer not to capture environment-dependent or negative-framing
+# content as skills.
+# ---------------------------------------------------------------------------
+
+
+def _assert_anti_pattern_guidance(prompt: str, label: str) -> None:
+    """Both review prompts must carry the same anti-pattern section."""
+    lower = prompt.lower()
+    assert "do not capture" in lower, (
+        f"{label}: must have an explicit 'Do NOT capture' section"
+    )
+    # Environment-dependent failures (the #6051 root cause)
+    assert any(k in lower for k in ("missing binar", "command not found", "uninstalled", "fresh-install")), (
+        f"{label}: must call out environment/setup failures as not-skill-worthy"
+    )
+    # Negative-framing avoidance
+    assert any(k in lower for k in ("negative claim", "do not work", "is broken")), (
+        f"{label}: must call out negative-claim phrasings as the failure mode"
+    )
+    # Positive reframing — "capture the fix, not the failure"
+    assert "capture the fix" in lower or "capture the fix " in lower, (
+        f"{label}: must redirect tool-failure capture toward the fix, not the constraint"
+    )
+    # One-off task narratives (#12812 family)
+    assert "one-off" in lower, (
+        f"{label}: must call out one-off task narratives as not-skill-worthy"
+    )
+
+
+def test_skill_review_prompt_has_anti_pattern_guidance():
+    """_SKILL_REVIEW_PROMPT must tell the reviewer NOT to capture transient env failures (#6051)."""
+    _assert_anti_pattern_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_has_anti_pattern_guidance():
+    """_COMBINED_REVIEW_PROMPT must carry the same guidance — same failure mode applies."""
+    _assert_anti_pattern_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
+# ---------------------------------------------------------------------------
 # _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
 # ---------------------------------------------------------------------------
 

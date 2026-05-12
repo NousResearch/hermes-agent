@@ -1034,7 +1034,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                                         filename=os.path.basename(media_path),
                                     )
                             async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
-                                if resp.status not in (200, 201):
+                                if resp.status not in {200, 201}:
                                     body = await resp.text()
                                     return _error(f"Discord forum thread creation error ({resp.status}): {body}")
                                 data = await resp.json()
@@ -1052,7 +1052,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             },
                             **_req_kw,
                         ) as resp:
-                            if resp.status not in (200, 201):
+                            if resp.status not in {200, 201}:
                                 body = await resp.text()
                                 return _error(f"Discord forum thread creation error ({resp.status}): {body}")
                             data = await resp.json()
@@ -1076,7 +1076,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
                 async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    if resp.status not in (200, 201):
+                    if resp.status not in {200, 201}:
                         body = await resp.text()
                         return _error(f"Discord API error ({resp.status}): {body}")
                     last_data = await resp.json()
@@ -1094,7 +1094,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                     with open(media_path, "rb") as f:
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                            if resp.status not in (200, 201):
+                            if resp.status not in {200, 201}:
                                 body = await resp.text()
                                 warning = _sanitize_error_text(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
                                 logger.error(warning)
@@ -1457,7 +1457,7 @@ async def _send_mattermost(token, extra, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(url, headers=headers, json={"channel_id": chat_id, "message": message}) as resp:
-                if resp.status not in (200, 201):
+                if resp.status not in {200, 201}:
                     body = await resp.text()
                     return _error(f"Mattermost API error ({resp.status}): {body}")
                 data = await resp.json()
@@ -1501,7 +1501,7 @@ async def _send_matrix(token, extra, chat_id, message):
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:
-                if resp.status not in (200, 201):
+                if resp.status not in {200, 201}:
                     body = await resp.text()
                     return _error(f"Matrix API error ({resp.status}): {body}")
                 data = await resp.json()
@@ -1585,7 +1585,7 @@ async def _send_homeassistant(token, extra, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(url, headers=headers, json={"message": message, "target": chat_id}) as resp:
-                if resp.status not in (200, 201):
+                if resp.status not in {200, 201}:
                     body = await resp.text()
                     return _error(f"Home Assistant API error ({resp.status}): {body}")
         return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
@@ -1757,7 +1757,20 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 
 def _check_send_message():
-    """Gate send_message on gateway running (always available on messaging platforms)."""
+    """Gate send_message on gateway running (always available on messaging platforms).
+
+    Also passes for kanban workers — the dispatcher sets ``HERMES_KANBAN_TASK``
+    on every spawned worker, but those workers run with the assignee profile's
+    ``HERMES_HOME`` which has no ``gateway.pid``, so the gateway-running check
+    would fail even though the parent gateway is alive. Honoring the env var
+    lets workers call ``send_message`` to deliver rich content directly to the
+    originating chat (paired with ``kanban_complete`` for the short notifier
+    summary), which is the canonical pattern for any worker that needs to
+    reply with more than the ~200-char first-line truncation the kanban
+    notifier applies.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
@@ -1814,7 +1827,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             # Try channel endpoint first (works for guild channels)
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
             resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in (200, 201):
+            if resp.status_code in {200, 201}:
                 data = resp.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}
@@ -1822,7 +1835,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
             url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
             resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in (200, 201):
+            if resp_c2c.status_code in {200, 201}:
                 data = resp_c2c.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}
@@ -1830,7 +1843,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             # If C2C also failed, try group endpoint
             url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
             resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in (200, 201):
+            if resp_group.status_code in {200, 201}:
                 data = resp_group.json()
                 return {"success": True, "platform": "qqbot", "chat_id": chat_id,
                         "message_id": data.get("id")}

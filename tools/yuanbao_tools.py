@@ -122,7 +122,7 @@ async def query_group_members(
         hint = {"mention_hint": MENTION_HINT} if mention else {}
 
         if action == "list_bots":
-            bots = [m for m in all_members if m["role"] in ("yuanbao_ai", "bot")]
+            bots = [m for m in all_members if m["role"] in {"yuanbao_ai", "bot"}]
             if not bots:
                 return {"success": False, "error": "No bots found in this group."}
             return {

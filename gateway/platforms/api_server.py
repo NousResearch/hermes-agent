@@ -2,8 +2,8 @@
 OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
-- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
-- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
+- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id; opt-in long-term memory scoping via X-Hermes-Session-Key; opt-in multi-user identity via X-Hermes-User-*/Chat-*/Thread-Id headers + OpenAI `user` body field fallback)
+- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key + X-Hermes-User-*/Chat-* supported)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
@@ -1294,6 +1294,88 @@ class APIServerAdapter(BasePlatformAdapter):
         return raw, None
 
     # ------------------------------------------------------------------
+    # User identity headers — subset of SessionSource fields used by
+    # native adapters to scope per-user memory and chat context.
+    # ------------------------------------------------------------------
+
+    # Each pair: (HTTP header name, AIAgent.__init__ kwarg name).  The
+    # kwargs already exist on AIAgent (run_agent.py:1098-1103) and are
+    # threaded by native adapters via GatewayRunner._run_agent_task
+    # (gateway/run.py:14881-14888).  This makes the api_server symmetrical
+    # with native adapters for multi-user / multi-chat scenarios.
+    _USER_IDENTITY_HEADERS: tuple[tuple[str, str], ...] = (
+        ("X-Hermes-User-Id",   "user_id"),
+        ("X-Hermes-User-Name", "user_name"),
+        ("X-Hermes-Chat-Id",   "chat_id"),
+        ("X-Hermes-Chat-Name", "chat_name"),
+        ("X-Hermes-Chat-Type", "chat_type"),
+        ("X-Hermes-Thread-Id", "thread_id"),
+    )
+
+    def _parse_user_identity_headers(
+        self,
+        request: "web.Request",
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Extract optional X-Hermes-User-* / Chat-* / Thread-Id headers.
+
+        Returns a dict of AIAgent kwargs (subset of: user_id, user_name,
+        chat_id, chat_name, chat_type, thread_id) for present, validated
+        headers.  Absent → key omitted.
+
+        Same auth gate as X-Hermes-Session-Key: without ``API_SERVER_KEY``
+        configured, identity headers are silently ignored (rather than
+        rejected with 403) so local-only dev without a key stays
+        frictionless.  Once a key is configured, headers from authenticated
+        callers are accepted.
+
+        Header values are best-effort: control chars (header-injection)
+        and oversized values are silently dropped with a WARN log, not
+        rejected with 4xx — partial identity is better than failing the
+        whole request.
+
+        When ``body`` is provided and contains an OpenAI-style top-level
+        ``"user"`` string, it is used as fallback for ``user_id`` when the
+        ``X-Hermes-User-Id`` header is absent.  This makes vanilla OpenAI
+        SDK clients (which already populate ``user`` for abuse monitoring)
+        work without custom header configuration.  Header always wins.
+        """
+        if not self._api_key:
+            return {}
+
+        out: Dict[str, str] = {}
+        for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+            raw = request.headers.get(header_name, "").strip()
+            if not raw:
+                continue
+            if re.search(r"[\r\n\x00]", raw):
+                logger.warning(
+                    "%s rejected: control characters in value", header_name,
+                )
+                continue
+            if len(raw) > self._MAX_SESSION_HEADER_LEN:
+                logger.warning(
+                    "%s rejected: value exceeds %d chars",
+                    header_name, self._MAX_SESSION_HEADER_LEN,
+                )
+                continue
+            out[kwarg_name] = raw
+
+        # OpenAI `user` body field fallback when X-Hermes-User-Id absent
+        if "user_id" not in out and body is not None:
+            body_user = body.get("user")
+            if isinstance(body_user, str):
+                stripped = body_user.strip()
+                if (
+                    stripped
+                    and not re.search(r"[\r\n\x00]", stripped)
+                    and len(stripped) <= self._MAX_SESSION_HEADER_LEN
+                ):
+                    out["user_id"] = stripped
+
+        return out
+
+    # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
 
@@ -1397,6 +1479,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        user_identity: Optional[Dict[str, str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1417,6 +1500,16 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+        ``user_identity`` is an optional dict subset of the keys
+        ``{user_id, user_name, chat_id, chat_name, chat_type, thread_id}``
+        extracted from the corresponding ``X-Hermes-User-*`` /
+        ``X-Hermes-Chat-*`` / ``X-Hermes-Thread-Id`` headers.  Each key
+        maps directly to an existing ``AIAgent.__init__`` kwarg
+        (run_agent.py:1097-1102), so values flow through to the same
+        downstream consumers (Honcho ``runtime_user_peer_name``, per-user
+        memory directories, session DB).  Mirrors the SessionSource subset
+        that native adapters pass via GatewayRunner._run_agent_task
+        (gateway/run.py:14881-14888).
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1516,6 +1609,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            **(user_identity or {}),
         )
         return agent
 
@@ -1674,6 +1768,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "user_id_header": "X-Hermes-User-Id",
+                "user_name_header": "X-Hermes-User-Name",
+                "chat_id_header": "X-Hermes-Chat-Id",
+                "chat_name_header": "X-Hermes-Chat-Name",
+                "chat_type_header": "X-Hermes-Chat-Type",
+                "thread_id_header": "X-Hermes-Thread-Id",
+                "user_body_fallback": "user",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -2288,6 +2389,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Optional multi-user identity headers (subset of SessionSource).
+        # When set on an authenticated request, threads through to AIAgent
+        # the same way native adapters do — drives Honcho per-user peer,
+        # per-user memory tooling, session DB attribution, etc.  Falls back
+        # to OpenAI's ``user`` body field for user_id.  See
+        # _parse_user_identity_headers.
+        user_identity = self._parse_user_identity_headers(request, body=body)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -2439,6 +2548,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                user_identity=user_identity,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2448,6 +2558,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_identity=user_identity,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2459,6 +2570,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                user_identity=user_identity,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2504,6 +2616,12 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        # Echo identity headers so clients can confirm what the server saw
+        # (parity with X-Hermes-Session-Key echo above).
+        for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+            value = user_identity.get(kwarg_name)
+            if value:
+                response_headers[header_name] = value
 
         # Hard-fail path: no usable assistant text AND a real failure → 5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
@@ -2566,6 +2684,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
         gateway_session_key: str = None,
+        user_identity: Optional[Dict[str, str]] = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2590,6 +2709,11 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_identity:
+            for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+                value = user_identity.get(kwarg_name)
+                if value:
+                    sse_headers[header_name] = value
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -2774,6 +2898,7 @@ class APIServerAdapter(BasePlatformAdapter):
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        user_identity: Optional[Dict[str, str]] = None,
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -2818,6 +2943,11 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_identity:
+            for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+                value = user_identity.get(kwarg_name)
+                if value:
+                    sse_headers[header_name] = value
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -3376,6 +3506,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # Multi-user identity headers (see chat_completions for details).
+        user_identity = self._parse_user_identity_headers(request, body=body)
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -3523,6 +3656,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                user_identity=user_identity,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3547,6 +3681,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 store=store,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_identity=user_identity,
             )
 
         async def _compute_response():
@@ -3557,6 +3692,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                user_identity=user_identity,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3639,6 +3775,10 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+            value = user_identity.get(kwarg_name)
+            if value:
+                response_headers[header_name] = value
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
@@ -4206,6 +4346,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        user_identity: Optional[Dict[str, str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4242,6 +4383,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    user_identity=user_identity,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4359,6 +4501,9 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        # Multi-user identity headers (see chat_completions for details).
+        user_identity = self._parse_user_identity_headers(request, body=body)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4487,6 +4632,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    user_identity=user_identity,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -4675,9 +4821,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
-        )
+        response_headers: Dict[str, str] = {}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+            value = user_identity.get(kwarg_name)
+            if value:
+                response_headers[header_name] = value
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,

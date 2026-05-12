@@ -907,6 +907,19 @@ When the agent tries to run a potentially dangerous command, it asks you for app
 
 Reply "yes"/"y" to approve or "no"/"n" to deny.
 
+## Interactive Prompts (clarify)
+
+When the agent calls the `clarify` tool — to ask which approach you prefer, get post-task feedback, or check before a non-trivial decision — Telegram renders the question with **inline keyboard buttons**:
+
+> ❓ Which framework should I use for the dashboard?
+>
+> [1. Next.js] [2. Remix] [3. Astro]
+> [✏️ Other (type answer)]
+
+Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+
 ## Security
 
 :::warning

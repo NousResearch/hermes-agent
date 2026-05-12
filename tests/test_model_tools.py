@@ -357,3 +357,82 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+
+# =========================================================================
+# Unknown-toolset rejection must surface through the logger, not just stdout
+# (regression: #23997 — silent rejection in quiet_mode hid an MCP misconfig
+#  in 283 cron sessions across a 13-profile fleet)
+# =========================================================================
+
+class TestUnknownToolsetWarnsInQuietMode:
+    """``_compute_tool_definitions`` is invoked with ``quiet_mode=True`` from
+    every production code path (cron, gateway, oneshot, TUI, delegate, ACP).
+    When an entry in ``enabled_toolsets`` / ``disabled_toolsets`` does not
+    resolve, the user-facing ``print("⚠️  Unknown toolset")`` is suppressed
+    in that mode — the rejection becomes invisible, which is exactly how
+    #23997's MCP-toolset-name misconfig stayed undiagnosed for 90 minutes
+    across a 283-session fleet sample. The rejection must still go through
+    ``logger.warning`` so it lands in ``gateway.log`` / cron logs."""
+
+    def test_unknown_enabled_toolset_logs_warning_in_quiet_mode(self, caplog):
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level("WARNING", logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["definitely_not_a_real_toolset_xyz"],
+                quiet_mode=True,
+            )
+
+        unknown_warnings = [
+            r for r in caplog.records
+            if r.levelname == "WARNING"
+            and "definitely_not_a_real_toolset_xyz" in r.getMessage()
+            and "Unknown toolset" in r.getMessage()
+        ]
+        assert unknown_warnings, (
+            "Unknown enabled_toolsets entry must emit a WARNING-level log "
+            "record even when quiet_mode=True — otherwise cron/gateway "
+            "sessions silently drop misnamed toolsets (#23997)."
+        )
+
+    def test_unknown_disabled_toolset_logs_warning_in_quiet_mode(self, caplog):
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level("WARNING", logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["file"],
+                disabled_toolsets=["definitely_not_a_real_toolset_xyz"],
+                quiet_mode=True,
+            )
+
+        unknown_warnings = [
+            r for r in caplog.records
+            if r.levelname == "WARNING"
+            and "definitely_not_a_real_toolset_xyz" in r.getMessage()
+            and "Unknown toolset" in r.getMessage()
+        ]
+        assert unknown_warnings, (
+            "Unknown disabled_toolsets entry must also emit a WARNING — the "
+            "subtractive path is just as silent in quiet_mode as the "
+            "additive path (#23997)."
+        )
+
+    def test_known_toolset_does_not_log_warning(self, caplog):
+        """Negative case: a recognized toolset must not produce the
+        unknown-toolset warning even in quiet_mode."""
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level("WARNING", logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["file"],
+                quiet_mode=True,
+            )
+
+        unknown_warnings = [
+            r for r in caplog.records
+            if "Unknown toolset" in r.getMessage()
+        ]
+        assert not unknown_warnings, (
+            "Known toolsets must not trigger the unknown-toolset warning."
+        )

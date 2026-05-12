@@ -364,8 +364,20 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                # Surface unresolved entries through the logger so cron / gateway
+                # / oneshot sessions (which all run with quiet_mode=True) don't
+                # silently drop misnamed toolsets. The cache key includes
+                # registry._generation, so this only fires once per unique
+                # (config, registry-state) pair — not on every turn. (#23997)
+                logger.warning(
+                    "Unknown toolset '%s' in enabled_toolsets — dropping. "
+                    "Check spelling against `hermes tools list` (MCP servers "
+                    "are exposed as the alias registered by mcp_tool).",
+                    toolset_name,
+                )
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
@@ -388,8 +400,14 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                logger.warning(
+                    "Unknown toolset '%s' in disabled_toolsets — ignoring. "
+                    "Check spelling against `hermes tools list`.",
+                    toolset_name,
+                )
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

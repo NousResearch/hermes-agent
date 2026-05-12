@@ -584,6 +584,47 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
 
+    def test_register_replaces_stale_event_registration(self, monkeypatch):
+        """Existing matching URL with updated-message is removed and recreated cleanly."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted = []
+        captured_payload = None
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+            ]},
+            post_response={"status": 200, "data": {"id": 8}},
+        )
+
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0] if args else "")
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+            return R()
+
+        orig_api_post = adapter._api_post
+        async def tracking_post(path, payload):
+            nonlocal captured_payload
+            captured_payload = payload
+            return await orig_api_post(path, payload)
+
+        adapter.client.delete = tracking_delete
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+
+        assert ok is True
+        assert len(deleted) == 1
+        assert "/api/v1/webhook/7" in deleted[0]
+        assert captured_payload["events"] == ["new-message"]
+
     def test_register_reuses_existing(self, monkeypatch):
         """Crash resilience — existing registration is reused, no POST needed."""
         import asyncio

@@ -281,6 +281,78 @@ def get_all_skills_dirs() -> List[Path]:
     return dirs
 
 
+def get_bundled_skills_dir() -> Path:
+    """Return the read-only bundled skills directory shipped with Hermes.
+
+    Package-manager wrappers may expose bundled skills outside the source tree
+    via ``HERMES_BUNDLED_SKILLS``.  Otherwise the repo/package layout keeps
+    them at ``<repo>/skills``.
+    """
+    env_override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
+    if env_override:
+        return Path(os.path.expandvars(os.path.expanduser(env_override)))
+    return Path(__file__).resolve().parents[1] / "skills"
+
+
+def get_bundled_manifest_names(local_skills_dir: Path | None = None) -> Set[str]:
+    """Return bundled skill names tracked in the local sync manifest."""
+    skills_dir = local_skills_dir or get_skills_dir()
+    manifest_file = skills_dir / ".bundled_manifest"
+    if not manifest_file.exists():
+        return set()
+    names: Set[str] = set()
+    try:
+        for line in manifest_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            name = line.partition(":")[0].strip()
+            if name:
+                names.add(name)
+    except OSError:
+        return set()
+    return names
+
+
+def get_skill_search_dirs(
+    local_skills_dir: Path | None = None,
+    *,
+    include_bundled_fallback: bool = False,
+) -> List[Path]:
+    """Return skill roots in precedence order.
+
+    Normal skill discovery searches the active Hermes home's skills directory
+    and configured external dirs.  Docker and other packaged deployments can
+    start with an empty/mismatched Hermes home while bundled skills are still
+    present in the install tree; ``include_bundled_fallback`` appends that
+    read-only bundled tree as the final fallback so bundled skills remain
+    invokable without being copied into the active profile first.
+    """
+    local_dir = local_skills_dir or get_skills_dir()
+    dirs: List[Path] = []
+    if local_dir.exists():
+        dirs.append(local_dir)
+    dirs.extend(get_external_skills_dirs())
+
+    if include_bundled_fallback:
+        bundled_dir = get_bundled_skills_dir()
+        if bundled_dir.is_dir():
+            try:
+                bundled_resolved = bundled_dir.resolve()
+            except OSError:
+                bundled_resolved = bundled_dir
+            seen: Set[Path] = set()
+            for existing in dirs:
+                try:
+                    seen.add(existing.resolve())
+                except OSError:
+                    seen.add(existing)
+            if bundled_resolved not in seen:
+                dirs.append(bundled_dir)
+
+    return dirs
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 

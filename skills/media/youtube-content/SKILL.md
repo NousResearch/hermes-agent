@@ -20,20 +20,20 @@ pip install youtube-transcript-api
 
 ## Helper Script
 
-`SKILL_DIR` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
+`${HERMES_SKILL_DIR}` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
 
 ```bash
 # JSON output with metadata
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python3 ${HERMES_SKILL_DIR}/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
 
 # Plain text (good for piping into further processing)
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+python3 ${HERMES_SKILL_DIR}/scripts/fetch_transcript.py "URL" --text-only
 
 # With timestamps
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
+python3 ${HERMES_SKILL_DIR}/scripts/fetch_transcript.py "URL" --timestamps
 
 # Specific language with fallback chain
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+python3 ${HERMES_SKILL_DIR}/scripts/fetch_transcript.py "URL" --language tr,en
 ```
 
 ## Output Formats

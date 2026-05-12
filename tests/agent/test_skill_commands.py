@@ -57,7 +57,13 @@ class TestScanSkillCommands:
         assert result["/my-skill"]["name"] == "my-skill"
 
     def test_empty_dir(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.get_bundled_skills_dir",
+                return_value=tmp_path / "no-bundled-skills",
+            ),
+        ):
             result = scan_skill_commands()
         assert result == {}
 
@@ -124,6 +130,47 @@ class TestScanSkillCommands:
 
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
+
+    def test_finds_bundled_fallback_when_local_skills_unseeded(self, tmp_path):
+        """Docker/package installs can invoke bundled skills before sync copies them."""
+        local_skills = tmp_path / "home" / "skills"
+        bundled_skills = tmp_path / "install" / "skills"
+        _make_skill(
+            bundled_skills,
+            "youtube-content",
+            body='Run `${HERMES_SKILL_DIR}/scripts/fetch_transcript.py`.',
+            category="media",
+        )
+        script = bundled_skills / "media" / "youtube-content" / "scripts" / "fetch_transcript.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("print('ok')\n")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch("agent.skill_utils.get_bundled_skills_dir", return_value=bundled_skills),
+        ):
+            result = scan_skill_commands()
+
+        assert "/youtube-content" in result
+        assert result["/youtube-content"]["skill_dir"] == str(
+            bundled_skills / "media" / "youtube-content"
+        )
+
+    def test_bundled_fallback_respects_deleted_manifest_entry(self, tmp_path):
+        """A user-deleted bundled skill should stay hidden when the manifest tracks it."""
+        local_skills = tmp_path / "home" / "skills"
+        local_skills.mkdir(parents=True)
+        (local_skills / ".bundled_manifest").write_text("youtube-content:abc123\n")
+        bundled_skills = tmp_path / "install" / "skills"
+        _make_skill(bundled_skills, "youtube-content", category="media")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch("agent.skill_utils.get_bundled_skills_dir", return_value=bundled_skills),
+        ):
+            result = scan_skill_commands()
+
+        assert "/youtube-content" not in result
 
     def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
         """Platform-specific disabled-skill caches must not leak across platforms.
@@ -327,7 +374,13 @@ class TestScanSkillCommands:
 
     def test_allspecial_name_skipped(self, tmp_path):
         """Skill with name consisting only of special chars is silently skipped."""
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.get_bundled_skills_dir",
+                return_value=tmp_path / "no-bundled-skills",
+            ),
+        ):
             skill_dir = tmp_path / "bad-name"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text(

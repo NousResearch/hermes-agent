@@ -249,15 +249,28 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from agent.skill_utils import (
+            get_bundled_manifest_names,
+            get_bundled_skills_dir,
+            get_skill_search_dirs,
+            iter_skill_index_files,
+        )
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
-        dirs_to_scan.extend(get_external_skills_dirs())
+        # Scan local dir first, then external dirs, then the read-only bundled
+        # install tree as a fallback for Docker/package installs whose active
+        # HERMES_HOME was not seeded with bundled skill copies.
+        dirs_to_scan = get_skill_search_dirs(SKILLS_DIR, include_bundled_fallback=True)
+        bundled_dir = get_bundled_skills_dir()
+        manifest_names = get_bundled_manifest_names(SKILLS_DIR)
+
+        def _from_bundled_fallback(path: Path) -> bool:
+            try:
+                path.resolve().relative_to(bundled_dir.resolve())
+                return True
+            except (OSError, ValueError):
+                return False
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -270,6 +283,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     if not skill_matches_platform(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
+                    if (
+                        manifest_names
+                        and _from_bundled_fallback(skill_md)
+                        and name in manifest_names
+                    ):
+                        continue
                     if name in seen_names:
                         continue
                     # Respect user's disabled skills config

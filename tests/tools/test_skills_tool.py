@@ -56,6 +56,16 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     return external_category
 
 
+@pytest.fixture(autouse=True)
+def _disable_bundled_skill_fallback_for_unit_tests(tmp_path):
+    """Keep legacy unit tests scoped to their patched SKILLS_DIR trees."""
+    with patch(
+        "agent.skill_utils.get_bundled_skills_dir",
+        return_value=tmp_path / "no-bundled-skills",
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------

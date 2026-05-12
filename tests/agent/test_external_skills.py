@@ -155,3 +155,65 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_falls_back_to_bundled_install_tree(self, hermes_home, tmp_path):
+        """Bundled skills should work even when Docker starts with an unseeded home."""
+        local_skills = hermes_home / "skills"
+        bundled_root = tmp_path / "install" / "skills"
+        skill_dir = bundled_root / "media" / "youtube-content"
+        scripts_dir = skill_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: youtube-content\n"
+            "description: YouTube helper\n"
+            "---\n\n"
+            "Run `${HERMES_SKILL_DIR}/scripts/fetch_transcript.py`.\n"
+        )
+        (scripts_dir / "fetch_transcript.py").write_text("print('ok')\n")
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch("agent.skill_utils.get_bundled_skills_dir", return_value=bundled_root),
+        ):
+            from tools.skills_tool import _find_all_skills, skill_view
+
+            listed = _find_all_skills()
+            result = json.loads(skill_view("youtube-content"))
+
+        assert [s["name"] for s in listed] == ["youtube-content"]
+        assert result["success"] is True
+        assert result["skill_dir"] == str(skill_dir)
+        assert f"{skill_dir}/scripts/fetch_transcript.py" in result["content"]
+        assert result["linked_files"]["scripts"] == ["scripts/fetch_transcript.py"]
+
+    def test_skill_view_does_not_resurrect_deleted_bundled_skill(
+        self, hermes_home, tmp_path
+    ):
+        """Manifest-tracked local deletions still opt out of bundled skill fallback."""
+        local_skills = hermes_home / "skills"
+        (local_skills / ".bundled_manifest").write_text("youtube-content:abc123\n")
+        bundled_root = tmp_path / "install" / "skills"
+        skill_dir = bundled_root / "media" / "youtube-content"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: youtube-content\n"
+            "description: YouTube helper\n"
+            "---\n\n"
+            "Bundled copy.\n"
+        )
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch("agent.skill_utils.get_bundled_skills_dir", return_value=bundled_root),
+        ):
+            from tools.skills_tool import _find_all_skills, skill_view
+
+            listed = _find_all_skills()
+            result = json.loads(skill_view("youtube-content"))
+
+        assert "youtube-content" not in [s["name"] for s in listed]
+        assert result["success"] is False

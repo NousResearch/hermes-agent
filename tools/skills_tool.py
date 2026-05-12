@@ -454,8 +454,11 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     # then fall back to external dirs from config.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_bundled_skills_dir, get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
+        bundled_dir = get_bundled_skills_dir()
+        if bundled_dir.exists():
+            dirs_to_check.append(bundled_dir)
     except Exception:
         pass
     for skills_dir in dirs_to_check:
@@ -467,6 +470,36 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
         except ValueError:
             continue
     return None
+
+
+def _is_within_dir(path: Path, root: Path | None) -> bool:
+    if root is None:
+        return False
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _read_skill_name_for_path(skill_md: Path) -> str:
+    try:
+        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+        frontmatter, _ = _parse_frontmatter(content)
+        return str(frontmatter.get("name") or skill_md.parent.name)
+    except Exception:
+        return skill_md.parent.name
+
+
+def _skip_bundled_fallback_skill(
+    skill_md: Path,
+    bundled_dir: Path | None,
+    manifest_names: Set[str],
+) -> bool:
+    """Respect explicit local deletions while using bundled skills as fallback."""
+    if not manifest_names or not _is_within_dir(skill_md, bundled_dir):
+        return False
+    return _read_skill_name_for_path(skill_md) in manifest_names
 
 
 def _parse_tags(tags_value) -> List[str]:
@@ -557,7 +590,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_bundled_manifest_names,
+        get_bundled_skills_dir,
+        get_skill_search_dirs,
+        iter_skill_index_files,
+    )
 
     skills = []
     seen_names: set = set()
@@ -565,15 +603,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    # Scan local dir first, then external dirs, then read-only bundled fallback
+    # for Docker/package installs where the active HERMES_HOME was not seeded.
+    dirs_to_scan = get_skill_search_dirs(SKILLS_DIR, include_bundled_fallback=True)
+    bundled_dir = get_bundled_skills_dir()
+    manifest_names = get_bundled_manifest_names(SKILLS_DIR)
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            if _skip_bundled_fallback_skill(skill_md, bundled_dir, manifest_names):
                 continue
 
             skill_dir = skill_md.parent
@@ -936,13 +976,18 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import (
+            get_bundled_manifest_names,
+            get_bundled_skills_dir,
+            get_skill_search_dirs,
+        )
 
-        # Build list of all skill directories to search
-        all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
+        # Build list of all skill directories to search.  The bundled install
+        # tree is a read-only fallback for packaged/Docker installs whose
+        # active HERMES_HOME was not seeded with user copies.
+        all_dirs = get_skill_search_dirs(SKILLS_DIR, include_bundled_fallback=True)
+        bundled_dir = get_bundled_skills_dir()
+        manifest_names = get_bundled_manifest_names(SKILLS_DIR)
 
         if not all_dirs:
             return json.dumps(
@@ -961,19 +1006,43 @@ def skill_view(
             # Try direct path first (e.g., "mlops/axolotl")
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                if _skip_bundled_fallback_skill(
+                    direct_path / "SKILL.md",
+                    bundled_dir,
+                    manifest_names,
+                ):
+                    continue
                 skill_dir = direct_path
                 skill_md = direct_path / "SKILL.md"
                 break
             elif direct_path.with_suffix(".md").exists():
+                if _skip_bundled_fallback_skill(
+                    direct_path.with_suffix(".md"),
+                    bundled_dir,
+                    manifest_names,
+                ):
+                    continue
                 skill_md = direct_path.with_suffix(".md")
                 break
             if local_category_name:
                 categorized_path = search_dir / local_category_name
                 if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                    if _skip_bundled_fallback_skill(
+                        categorized_path / "SKILL.md",
+                        bundled_dir,
+                        manifest_names,
+                    ):
+                        continue
                     skill_dir = categorized_path
                     skill_md = categorized_path / "SKILL.md"
                     break
                 elif categorized_path.with_suffix(".md").exists():
+                    if _skip_bundled_fallback_skill(
+                        categorized_path.with_suffix(".md"),
+                        bundled_dir,
+                        manifest_names,
+                    ):
+                        continue
                     skill_md = categorized_path.with_suffix(".md")
                     break
 
@@ -983,6 +1052,12 @@ def skill_view(
                 from agent.skill_utils import iter_skill_index_files
 
                 for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    if _skip_bundled_fallback_skill(
+                        found_skill_md,
+                        bundled_dir,
+                        manifest_names,
+                    ):
+                        continue
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
@@ -995,6 +1070,12 @@ def skill_view(
             for search_dir in all_dirs:
                 for found_md in search_dir.rglob(f"{name}.md"):
                     if found_md.name != "SKILL.md":
+                        if _skip_bundled_fallback_skill(
+                            found_md,
+                            bundled_dir,
+                            manifest_names,
+                        ):
+                            continue
                         skill_md = found_md
                         break
                 if skill_md:
@@ -1530,4 +1611,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

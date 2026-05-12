@@ -215,6 +215,7 @@ hermes skills uninstall <skill-name>
 | [**code-wiki**](/docs/user-guide/skills/optional/software-development/software-development-code-wiki) | Generate wiki docs + Mermaid diagrams for any codebase. |
 | [**rest-graphql-debug**](/docs/user-guide/skills/optional/software-development/software-development-rest-graphql-debug) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). |
+| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Read-only cross-chain wallet permission audit for Solana SPL delegates, XRPL trust lines, and targeted Base/EVM ERC-20 allowances. Surfaces revocable spend rights, issuer-control risk, rippling exposure, freeze authorities, and explicit... |
 
 ## web-development
 

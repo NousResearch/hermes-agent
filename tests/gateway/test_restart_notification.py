@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -43,6 +43,218 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     gateway_run._clear_planned_restart_notification()
 
     assert gateway_run._planned_restart_notification_pending() is False
+
+
+async def _start_gateway_for_lifecycle_test(
+    tmp_path,
+    monkeypatch,
+    *,
+    startup_notification: bool,
+    planned_restart_pending: bool,
+    chat_restart_pending: bool,
+):
+    """Exercise GatewayRunner.start() while isolating external platform/runtime I/O."""
+    runner, adapter = make_restart_runner()
+    runner.config.sessions_dir = tmp_path / "sessions"
+    runner.config.gateway_startup_notification = startup_notification
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-123",
+        name="Home",
+        thread_id="topic-456",
+    )
+    runner._running = False
+    runner._exit_with_failure = False
+    runner._exit_cleanly = False
+    runner._failed_platforms = {}
+    setattr(runner, "_honcho_managers", {})
+    setattr(runner, "_honcho_configs", {})
+    setattr(runner, "_create_adapter", MagicMock(return_value=adapter))
+    setattr(
+        runner,
+        "_connect_adapter_with_timeout",
+        AsyncMock(return_value=True),
+    )
+    setattr(runner, "_update_platform_runtime_status", MagicMock())
+    setattr(runner, "_sync_voice_mode_state_to_adapter", MagicMock())
+    setattr(
+        runner,
+        "_start_secondary_profile_adapters",
+        AsyncMock(return_value=0),
+    )
+    setattr(runner, "_suspend_stuck_loop_sessions", MagicMock(return_value=0))
+    setattr(runner, "_send_update_notification", AsyncMock(return_value=True))
+    setattr(runner, "_schedule_resume_pending_sessions", MagicMock())
+    setattr(runner, "_finish_startup_restore", AsyncMock())
+    setattr(runner, "_wire_teams_pipeline_runtime", MagicMock())
+    runner.hooks = MagicMock()
+    runner.hooks.loaded_hooks = []
+    runner.hooks.emit = AsyncMock()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    if planned_restart_pending:
+        (tmp_path / ".restart_pending.json").write_text(
+            "{}",
+            encoding="utf-8",
+        )
+    if chat_restart_pending:
+        (tmp_path / ".restart_notify.json").write_text(
+            json.dumps(
+                {
+                    "platform": "telegram",
+                    "chat_id": "origin-999",
+                    "chat_type": "group",
+                    "thread_id": "thread-888",
+                    "message_id": "message-777",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    # Avoid touching the real session DB/process checkpoint and avoid spawning
+    # long-lived watcher tasks. Closing each coroutine keeps asyncio warning-free.
+    (tmp_path / ".clean_shutdown").write_text("", encoding="utf-8")
+
+    def fake_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch("gateway.status.write_runtime_status"):
+        with patch("gateway.shutdown_forensics.check_systemd_timing_alignment", return_value=None):
+            with patch("hermes_cli.plugins.discover_plugins"):
+                with patch(
+                    "gateway.platform_registry.platform_registry.plugin_entries",
+                    return_value=[],
+                ):
+                    with patch("hermes_cli.config.load_config", return_value={}):
+                        with patch("agent.shell_hooks.register_from_config"):
+                            with patch(
+                                "tools.process_registry.process_registry.recover_from_checkpoint",
+                                return_value=0,
+                            ):
+                                with patch(
+                                    "gateway.channel_directory.build_channel_directory",
+                                    new=AsyncMock(return_value={"platforms": {}}),
+                                ):
+                                    with patch(
+                                        "gateway.run.asyncio.create_task",
+                                        side_effect=fake_create_task,
+                                    ):
+                                        with patch(
+                                            "gateway.run.asyncio.sleep",
+                                            new=AsyncMock(),
+                                        ):
+                                            assert await runner.start() is True
+
+    return runner, adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "startup_notification",
+        "planned_restart_pending",
+        "chat_restart_pending",
+        "expected_home_calls",
+    ),
+    [
+        pytest.param(False, False, False, 0, id="ordinary-start-default-off"),
+        pytest.param(True, False, False, 1, id="ordinary-start-opted-in"),
+        pytest.param(False, True, False, 1, id="planned-restart"),
+        pytest.param(True, False, True, 0, id="chat-restart-target-only"),
+        pytest.param(
+            True,
+            True,
+            True,
+            0,
+            id="chat-restart-wins-over-stale-planned-marker",
+        ),
+    ],
+)
+async def test_start_lifecycle_routes_online_notifications_without_duplicates(
+    tmp_path,
+    monkeypatch,
+    startup_notification,
+    planned_restart_pending,
+    chat_restart_pending,
+    expected_home_calls,
+):
+    _runner, adapter = await _start_gateway_for_lifecycle_test(
+        tmp_path,
+        monkeypatch,
+        startup_notification=startup_notification,
+        planned_restart_pending=planned_restart_pending,
+        chat_restart_pending=chat_restart_pending,
+    )
+
+    sent_calls = getattr(adapter, "sent_calls")
+    if expected_home_calls:
+        assert len(sent_calls) == 1
+        chat_id, content, metadata = sent_calls[0]
+        assert chat_id == "home-123"
+        assert content == "♻️ Gateway online — Hermes is back and ready."
+        assert metadata["thread_id"] == "topic-456"
+    elif chat_restart_pending:
+        # A chat-originated /restart gets exactly one targeted reply and no
+        # duplicate online ping in the configured home channel.
+        assert len(sent_calls) == 1
+        chat_id, content, metadata = sent_calls[0]
+        assert chat_id == "origin-999"
+        assert "Gateway restarted successfully" in content
+        assert metadata["thread_id"] == "thread-888"
+    else:
+        assert sent_calls == []
+
+    assert not (tmp_path / ".restart_notify.json").exists()
+    assert not (tmp_path / ".restart_pending.json").exists()
+
+
+def test_home_channel_startup_notification_skipped_on_cold_start_by_default():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=False,
+    ) is False
+
+
+def test_home_channel_startup_notification_runs_on_planned_restart_marker():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=True,
+        restart_notification_pending=False,
+    ) is True
+
+
+def test_home_channel_startup_notification_keeps_chat_restart_quiet_even_when_opted_in():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=True,
+    ) is False
+
+
+def test_chat_restart_marker_takes_priority_over_planned_restart_marker():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=True,
+        restart_notification_pending=True,
+    ) is False
+
+
+def test_home_channel_startup_notification_runs_on_opt_in_cold_start():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=False,
+    ) is True
 
 
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
@@ -100,9 +312,20 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+    """Without systemd or a container runtime, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    import gateway.slash_commands as slash_commands
+
+    real_exists = slash_commands.os.path.exists
+
+    def fake_exists(path):
+        if path in {"/.dockerenv", "/run/.containerenv"}:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(slash_commands.os.path, "exists", fake_exists)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

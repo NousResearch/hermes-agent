@@ -604,6 +604,15 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Gateway-only runtime settings. Use the nested shape produced by
+# `hermes config set gateway.<key> <value>`.
+gateway:
+  # Send the home-channel "Gateway online" notification after ordinary gateway
+  # cold starts too (Docker/systemd/reboot), not only after /restart. Disabled by
+  # default to avoid noisy boot pings; enable for operator back-channels where an
+  # explicit up-and-running signal is useful.
+  gateway_startup_notification: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

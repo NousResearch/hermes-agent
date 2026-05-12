@@ -711,6 +711,12 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Optional cold-start notification. The existing /restart completion path
+    # is marker-gated to avoid noisy ordinary boots; this opt-in flag covers
+    # operators who also want a home-channel "gateway is online" signal after
+    # process starts caused by Docker/systemd/reboots rather than /restart.
+    gateway_startup_notification: bool = False
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -825,6 +831,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "gateway_startup_notification": self.gateway_startup_notification,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -881,7 +888,7 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
-        nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        nested_gateway: Dict[str, Any] = _coerce_dict(data.get("gateway"))
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -912,6 +919,20 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        if "gateway_startup_notification" in nested_gateway:
+            gateway_startup_notification_raw = nested_gateway.get(
+                "gateway_startup_notification"
+            )
+        elif "gateway_startup_notification" in data:
+            gateway_startup_notification_raw = data.get(
+                "gateway_startup_notification"
+            )
+        else:
+            gateway_startup_notification_raw = None
+        gateway_startup_notification = _coerce_bool(
+            gateway_startup_notification_raw,
+            False,
+        )
 
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
@@ -939,6 +960,7 @@ class GatewayConfig:
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            gateway_startup_notification=gateway_startup_notification,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -1063,6 +1085,21 @@ def load_gateway_config() -> GatewayConfig:
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+
+            if (
+                isinstance(gateway_section, dict)
+                and "gateway_startup_notification" in gateway_section
+            ):
+                gw_data["gateway_startup_notification"] = gateway_section[
+                    "gateway_startup_notification"
+                ]
+            elif "gateway_startup_notification" in yaml_cfg:
+                # Backward compatibility for the original top-level preview
+                # shape. The canonical runtime location is now
+                # gateway.gateway_startup_notification.
+                gw_data["gateway_startup_notification"] = yaml_cfg[
+                    "gateway_startup_notification"
+                ]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
@@ -1466,6 +1503,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
         return platform_config
+
+    startup_notify = getenv("GATEWAY_STARTUP_NOTIFICATION", "")
+    if startup_notify.strip():
+        # _getenv_str() is profile-secret-scope aware. Preserve the YAML value
+        # for blank or unrecognized tokens instead of silently forcing False.
+        config.gateway_startup_notification = _coerce_bool(
+            startup_notify,
+            config.gateway_startup_notification,
+        )
     
     # Telegram
     telegram_token = getenv("TELEGRAM_BOT_TOKEN")

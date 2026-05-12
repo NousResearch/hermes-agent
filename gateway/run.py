@@ -7365,27 +7365,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
+        restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
+        if restart_notification_pending or planned_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
+        # channels for non-chat planned restarts and explicit cold-start opt-in
+        # only. Chat-originated /restart already has a precise reply target in
+        # .restart_notify.json, so keep that lifecycle in the originating
+        # chat/topic rather than also leaking it to the configured home channel.
+        should_send_home_startup_notification = (
+            self._should_send_home_channel_startup_notifications(
+                planned_restart_notification_pending=planned_restart_notification_pending,
+                restart_notification_pending=restart_notification_pending,
+            )
+        )
+        try:
+            if should_send_home_startup_notification:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
-            finally:
+        finally:
+            # A stale planned-restart marker may coexist with a more precise
+            # chat /restart marker. The chat route wins, but both one-shot
+            # markers belong to this boot and must be consumed.
+            if planned_restart_notification_pending:
                 _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
@@ -15058,6 +15069,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
+
+    def _should_send_home_channel_startup_notifications(
+        self,
+        *,
+        planned_restart_notification_pending: bool,
+        restart_notification_pending: bool = False,
+    ) -> bool:
+        """Return whether this startup should emit home-channel online pings.
+
+        #19271 salvaged #18440 and intentionally tied the generic
+        home-channel "gateway online" message to restart lifecycle markers so
+        ordinary cold starts would stay quiet. Operators can now opt in to the
+        same thread-aware online ping for Docker/systemd/reboot starts via
+        ``gateway.gateway_startup_notification`` while keeping chat-originated
+        /restart behavior unchanged. A chat restart marker deliberately takes
+        priority over a simultaneous planned-restart marker: the precise chat
+        reply is the only online notification, while ``start()`` still consumes
+        both one-shot markers.
+        """
+        if restart_notification_pending:
+            return False
+
+        if planned_restart_notification_pending:
+            return True
+
+        return bool(getattr(self.config, "gateway_startup_notification", False))
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

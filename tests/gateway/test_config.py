@@ -412,6 +412,35 @@ class TestGatewayConfigRoundtrip:
         assert restored.reset_by_platform == {}
         assert restored.streaming.transport == "auto"
 
+    def test_startup_notification_defaults_to_false(self):
+        config = GatewayConfig.from_dict({})
+
+        assert config.gateway_startup_notification is False
+
+    def test_roundtrip_preserves_startup_notification_flag(self):
+        config = GatewayConfig(gateway_startup_notification=True)
+
+        restored = GatewayConfig.from_dict(config.to_dict())
+
+        assert restored.gateway_startup_notification is True
+
+    def test_from_dict_accepts_nested_startup_notification_flag(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"gateway_startup_notification": True}}
+        )
+
+        assert config.gateway_startup_notification is True
+
+    def test_from_dict_nested_startup_notification_overrides_legacy_top_level(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway_startup_notification": False,
+                "gateway": {"gateway_startup_notification": True},
+            }
+        )
+
+        assert config.gateway_startup_notification is True
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
@@ -550,6 +579,118 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is True
+
+    def test_bridges_gateway_startup_notification_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("gateway_startup_notification: true\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_STARTUP_NOTIFICATION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.gateway_startup_notification is True
+
+    def test_bridges_nested_gateway_startup_notification_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  gateway_startup_notification: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_STARTUP_NOTIFICATION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.gateway_startup_notification is True
+
+    def test_nested_gateway_startup_notification_overrides_legacy_top_level(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway_startup_notification: false\n"
+            "gateway:\n"
+            "  gateway_startup_notification: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_STARTUP_NOTIFICATION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.gateway_startup_notification is True
+
+    def test_gateway_startup_notification_env_overrides_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("gateway_startup_notification: false\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_STARTUP_NOTIFICATION", "true")
+
+        config = load_gateway_config()
+
+        assert config.gateway_startup_notification is True
+
+    def test_gateway_startup_notification_uses_profile_scoped_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  gateway_startup_notification: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_STARTUP_NOTIFICATION", "false")
+        token = secret_scope.set_secret_scope(
+            {"GATEWAY_STARTUP_NOTIFICATION": "true"}
+        )
+        try:
+            config = load_gateway_config()
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert config.gateway_startup_notification is True
+
+    def test_blank_profile_scoped_startup_notification_env_keeps_yaml_value(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  gateway_startup_notification: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        token = secret_scope.set_secret_scope(
+            {"GATEWAY_STARTUP_NOTIFICATION": "  "}
+        )
+        try:
+            config = load_gateway_config()
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert config.gateway_startup_notification is True
 
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

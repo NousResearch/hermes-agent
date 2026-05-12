@@ -138,6 +138,7 @@ AUTHOR_MAP = {
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",
     "santoshhumagain1887@gmail.com": "npmisantosh",
+    "39641663+luarss@users.noreply.github.com": "luarss",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",

@@ -9,7 +9,7 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
-const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') => `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
 const CMD_PREVIEW_LINES = 10
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
@@ -68,7 +68,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         <Text key={o}>
           <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.muted} inverse={sel === i}>
             {sel === i ? '▸ ' : '  '}
-            {i + 1}. {LABELS[o]}
+            {i + 1}. {ti(approvalLabelKey(o) as never)}
           </Text>
         </Text>
       ))}

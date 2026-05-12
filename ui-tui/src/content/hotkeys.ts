@@ -32,7 +32,7 @@ export const HOTKEY_DEFS: [string, TranslationKey][] = [
   [action + '+←/→', 'hotkey.jumpWord'],
   ['Home/End', 'hotkey.lineStartEnd'],
   ['Shift+Enter / Alt+Enter', 'hotkey.insertNewline'],
-  ['\\\\+Enter', 'hotkey.multilineCont'],
+  ['\\+Enter', 'hotkey.multilineCont'],
   ['!<cmd>', 'hotkey.runShellCmd'],
   ['{!<cmd>}', 'hotkey.inlineShellCmd']
 ]

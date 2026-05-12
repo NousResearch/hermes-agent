@@ -17,10 +17,8 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
-import { translate, type TranslationKey } from '../../../i18n.js'
+import { translate, type Locale, type TranslationKey } from '../../../i18n.js'
 import type { SlashCommand } from '../types.js'
-
-const tz = (key: TranslationKey, vars?: Record<string, string | number>) => translate('zh', key, vars)
 
 interface SkillInfo {
   category?: string
@@ -158,7 +156,7 @@ export const opsCommands: SlashCommand[] = [
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(tz('sys.browserChecking', { url }))
+        ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserChecking', { url }))
       }
 
       ctx.gateway
@@ -180,13 +178,13 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (action === 'disconnect') {
-              return ctx.transcript.sys(tz('sys.browserDisconnected'))
+              return ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserDisconnected'))
             }
 
             if (r.connected) {
-              ctx.transcript.sys(tz('sys.browserConnected'))
-              ctx.transcript.sys(tz('sys.browserEndpoint', { url: r.url || '(url unavailable)' }))
-              ctx.transcript.sys(tz('sys.browserNextCall'))
+              ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserConnected'))
+              ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserEndpoint', { url: r.url || '(url unavailable)' }))
+              ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserNextCall'))
             }
           })
         )
@@ -199,7 +197,7 @@ export const opsCommands: SlashCommand[] = [
     name: 'rollback',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys(tz('sys.rollbackNoSession'))
+        return ctx.transcript.sys(translate(ctx.ui.locale,'sys.rollbackNoSession'))
       }
 
       const trimmed = arg.trim()
@@ -212,13 +210,13 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<RollbackListResponse>(r => {
               if (!r.enabled) {
-                return ctx.transcript.sys(tz('sys.rollbackNoCheckpoints'))
+                return ctx.transcript.sys(translate(ctx.ui.locale,'sys.rollbackNoCheckpoints'))
               }
 
               const checkpoints = r.checkpoints ?? []
 
               if (!checkpoints.length) {
-                return ctx.transcript.sys(tz('sys.rollbackNone'))
+                return ctx.transcript.sys(translate(ctx.ui.locale,'sys.rollbackNone'))
               }
 
               ctx.transcript.panel('Rollback checkpoints', [
@@ -248,7 +246,7 @@ export const opsCommands: SlashCommand[] = [
               const body = (r.rendered || r.diff || '').trim()
 
               if (!body && !r.stat) {
-                return ctx.transcript.sys(tz('sys.rollbackNoChanges'))
+                return ctx.transcript.sys(translate(ctx.ui.locale,'sys.rollbackNoChanges'))
               }
 
               const text = [r.stat || '', body].filter(Boolean).join('\n\n')
@@ -302,7 +300,7 @@ export const opsCommands: SlashCommand[] = [
           .request<DelegationPauseResponse>('delegation.pause', { paused })
           .then(r => {
             applyDelegationStatus({ paused: r?.paused })
-            ctx.transcript.sys(r?.paused ? tz('sys.delegationPaused') : tz('sys.delegationResumed'))
+            ctx.transcript.sys(r?.paused ? translate(ctx.ui.locale,'sys.delegationPaused') : translate(ctx.ui.locale,'sys.delegationResumed'))
           })
           .catch(ctx.guardedErr)
 
@@ -342,7 +340,7 @@ export const opsCommands: SlashCommand[] = [
               const entries = r.entries ?? []
 
               if (!entries.length) {
-                return ctx.transcript.sys(tz('sys.replayNoArchive'))
+                return ctx.transcript.sys(translate(ctx.ui.locale,'sys.replayNoArchive'))
               }
 
               const rows: [string, string][] = entries.map(e => {
@@ -373,7 +371,7 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SpawnTreeLoadResponse>(r => {
               if (!r.subagents?.length) {
-                return ctx.transcript.sys(tz('sys.replayEmpty'))
+                return ctx.transcript.sys(translate(ctx.ui.locale,'sys.replayEmpty'))
               }
 
               // Push onto the in-memory history so the overlay picks it up
@@ -389,7 +387,7 @@ export const opsCommands: SlashCommand[] = [
 
       // ── In-memory nav (same-session) ─────────────────────────────
       if (!history.length) {
-        return ctx.transcript.sys(tz('sys.replayNoCompleted'))
+        return ctx.transcript.sys(translate(ctx.ui.locale,'sys.replayNoCompleted'))
       }
 
       let index = 1
@@ -515,7 +513,7 @@ export const opsCommands: SlashCommand[] = [
               const cats = Object.entries(r.skills ?? {}).sort()
 
               if (!cats.length) {
-                return sys(tz('sys.noSkills'))
+                return sys(translate(ctx.ui.locale,'sys.noSkills'))
               }
 
               panel(
@@ -540,7 +538,7 @@ export const opsCommands: SlashCommand[] = [
               const info = r.info ?? {}
 
               if (!info.name) {
-                return sys(tz('sys.skillsUnknown', { name: query }))
+                return sys(translate(ctx.ui.locale,'sys.skillsUnknown', { name: query }))
               }
 
               const rows: [string, string][] = [
@@ -574,7 +572,7 @@ export const opsCommands: SlashCommand[] = [
               const results = r.results ?? []
 
               if (!results.length) {
-                return sys(tz('sys.skillsNoResults', { query }))
+                return sys(translate(ctx.ui.locale,'sys.skillsNoResults', { query }))
               }
 
               panel(`Search: ${query}`, [{ rows: results.map(s => [s.name, s.description ?? '']) }])
@@ -590,12 +588,12 @@ export const opsCommands: SlashCommand[] = [
           return sys('usage: /skills install <name or url>')
         }
 
-        sys(tz('sys.skillsInstalling', { name: query }))
+        sys(translate(ctx.ui.locale,'sys.skillsInstalling', { name: query }))
 
         rpc<SkillsInstallResponse>('skills.manage', { action: 'install', query })
           .then(
             ctx.guarded<SkillsInstallResponse>(r =>
-              sys(r.installed ? tz('sys.skillsInstalled', { name: r.name ?? query }) : tz('sys.skillsInstallFailed'))
+              sys(r.installed ? translate(ctx.ui.locale,'sys.skillsInstalled', { name: r.name ?? query }) : translate(ctx.ui.locale,'sys.skillsInstallFailed'))
             )
           )
           .catch(ctx.guardedErr)
@@ -610,7 +608,7 @@ export const opsCommands: SlashCommand[] = [
           return sys('usage: /skills browse [page]  (page must be a positive number)')
         }
 
-        sys(tz('sys.skillsFetching'))
+        sys(translate(ctx.ui.locale,'sys.skillsFetching'))
 
         rpc<SkillsBrowseResponse>('skills.manage', { action: 'browse', page: pageNum })
           .then(

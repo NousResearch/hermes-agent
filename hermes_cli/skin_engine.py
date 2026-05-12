@@ -118,6 +118,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from hermes_cli.display_compat import make_terminal_display_safe, terminal_prefers_ascii
 
 logger = logging.getLogger(__name__)
 
@@ -793,7 +794,9 @@ def get_active_prompt_symbol(fallback: str = "❯") -> str:
     except Exception:
         raw = fallback
 
-    cleaned = (raw or fallback).strip()
+    cleaned = make_terminal_display_safe((raw or fallback).strip())
+    if not cleaned and terminal_prefers_ascii():
+        cleaned = ">"
 
     return f"{cleaned or fallback.strip()} "
 

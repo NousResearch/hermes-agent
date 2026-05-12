@@ -149,6 +149,27 @@ class TestCuteToolMessagePreviewLength:
         assert path in line
         assert "..." not in line
 
+    def test_tool_message_uses_ascii_fallback_when_terminal_prefers_it(self, monkeypatch):
+        monkeypatch.setenv("HERMES_FORCE_ASCII_DISPLAY", "1")
+
+        line = get_cute_tool_message("browser_scroll", {"direction": "right"}, 0.1)
+
+        assert line.startswith("|")
+        assert "->" in line
+        assert "┊" not in line
+        assert "→" not in line
+
+
+class TestSpinnerAsciiFallback:
+    def test_spinner_uses_ascii_frames_in_msys_terminals(self, monkeypatch):
+        from agent.display import KawaiiSpinner
+
+        monkeypatch.setenv("HERMES_FORCE_ASCII_DISPLAY", "1")
+
+        spinner = KawaiiSpinner("⚡ working")
+
+        assert spinner.spinner_frames == ["-", "\\", "|", "/"]
+
 
 class TestEditDiffPreview:
     def test_extract_edit_diff_for_patch(self):

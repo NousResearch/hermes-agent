@@ -33,6 +33,7 @@ def test_cprint_no_app_direct_print(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_pt_print", lambda x: calls.append(("pt_print", x)))
     monkeypatch.setattr(cli, "_PT_ANSI", lambda t: ("ANSI", t))
+    monkeypatch.setattr(cli, "make_terminal_display_safe", lambda text: text.replace("◆", "*"))
 
     # Patch the prompt_toolkit import the function performs internally.
     fake_pt_app = types.ModuleType("prompt_toolkit.application")
@@ -43,6 +44,22 @@ def test_cprint_no_app_direct_print(monkeypatch):
     cli._cprint("hello")
 
     assert calls == [("pt_print", ("ANSI", "hello"))]
+
+
+def test_cprint_applies_ascii_display_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_pt_print", lambda x: calls.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+    monkeypatch.setattr(cli, "make_terminal_display_safe", lambda text: text.replace("◆", "*").replace("❯", ">"))
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: None
+    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("◆ Hermes: ready ❯")
+
+    assert calls == ["* Hermes: ready >"]
 
 
 def test_cprint_app_not_running_direct_print(monkeypatch):

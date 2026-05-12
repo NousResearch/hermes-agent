@@ -254,6 +254,14 @@ class TestCliBrandingHelpers:
         set_active_skin("ares")
         assert get_active_prompt_symbol() == "⚔ "
 
+    def test_active_prompt_symbol_uses_ascii_fallback_when_needed(self, monkeypatch):
+        from hermes_cli.skin_engine import get_active_prompt_symbol, set_active_skin
+
+        set_active_skin("default")
+        monkeypatch.setenv("HERMES_FORCE_ASCII_DISPLAY", "1")
+
+        assert get_active_prompt_symbol() == "> "
+
     def test_active_help_header_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_help_header
 

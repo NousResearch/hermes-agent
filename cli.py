@@ -108,6 +108,11 @@ from hermes_cli.browser_connect import (
     manual_chrome_debug_command,
     try_launch_chrome_debug,
 )
+from hermes_cli.display_compat import (
+    get_ascii_spinner_frames,
+    make_terminal_display_safe,
+    terminal_prefers_ascii,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches, is_truthy_value
 
@@ -1507,6 +1512,7 @@ def _cprint(text: str):
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
     """
+    text = make_terminal_display_safe(text)
     _record_output_history(text)
 
     try:
@@ -3811,8 +3817,9 @@ class HermesCLI:
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
-        frame_idx = int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
-        return _COMMAND_SPINNER_FRAMES[frame_idx]
+        frames = get_ascii_spinner_frames() if terminal_prefers_ascii() else _COMMAND_SPINNER_FRAMES
+        frame_idx = int(time.monotonic() * 10) % len(frames)
+        return frames[frame_idx]
 
     @contextmanager
     def _busy_command(self, status: str):
@@ -10857,6 +10864,7 @@ class HermesCLI:
         except Exception:
             symbol = "❯ "
 
+        symbol = make_terminal_display_safe(symbol)
         symbol = (symbol or "❯ ").rstrip() + " "
 
         # Prepend profile name when not default
@@ -10869,6 +10877,8 @@ class HermesCLI:
             pass
         stripped = symbol.rstrip()
         if not stripped:
+            if terminal_prefers_ascii():
+                return "> ", "> "
             return "❯ ", "❯ "
 
         parts = stripped.split()

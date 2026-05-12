@@ -13,6 +13,13 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 
+from hermes_cli.display_compat import (
+    get_ascii_spinner_frames,
+    get_ascii_thinking_faces,
+    get_ascii_waiting_faces,
+    make_terminal_display_safe,
+    terminal_prefers_ascii,
+)
 from utils import safe_json_loads
 
 # ANSI escape codes for coloring tool failure indicators
@@ -126,6 +133,8 @@ def _get_skin():
 
 def get_skin_tool_prefix() -> str:
     """Get tool output prefix character from active skin."""
+    if terminal_prefers_ascii():
+        return "|"
     skin = _get_skin()
     if skin:
         return skin.tool_prefix
@@ -140,6 +149,8 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     2. Tool registry's per-tool ``emoji`` field
     3. *default* fallback
     """
+    if terminal_prefers_ascii():
+        return "*"
     # 1. Skin override
     skin = _get_skin()
     if skin and skin.tool_emojis:
@@ -605,6 +616,8 @@ class KawaiiSpinner:
     @classmethod
     def get_waiting_faces(cls) -> list:
         """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        if terminal_prefers_ascii():
+            return get_ascii_waiting_faces()
         try:
             skin = _get_skin()
             if skin:
@@ -618,6 +631,8 @@ class KawaiiSpinner:
     @classmethod
     def get_thinking_faces(cls) -> list:
         """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        if terminal_prefers_ascii():
+            return get_ascii_thinking_faces()
         try:
             skin = _get_skin()
             if skin:
@@ -643,7 +658,10 @@ class KawaiiSpinner:
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
-        self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
+        if terminal_prefers_ascii():
+            self.spinner_frames = list(get_ascii_spinner_frames())
+        else:
+            self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
         self.running = False
         self.thread = None
         self.frame_idx = 0
@@ -663,6 +681,7 @@ class KawaiiSpinner:
         If a print_fn was supplied at construction, all output is routed through
         it instead — allowing callers to silence the spinner with a no-op lambda.
         """
+        text = make_terminal_display_safe(text)
         if self._print_fn is not None:
             try:
                 self._print_fn(text)
@@ -870,6 +889,7 @@ def get_cute_tool_message(
         """Apply skin tool prefix and failure suffix."""
         if skin_prefix != "┊":
             line = line.replace("┊", skin_prefix, 1)
+        line = make_terminal_display_safe(line)
         if not is_failure:
             return line
         return f"{line}{failure_suffix}"
@@ -1004,5 +1024,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

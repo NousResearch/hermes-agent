@@ -80,6 +80,13 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 

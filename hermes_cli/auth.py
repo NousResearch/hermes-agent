@@ -5271,6 +5271,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
                 union_with_portal_free_recommendations,
+                union_with_portal_paid_recommendations,
             )
             model_ids = get_curated_nous_model_ids()
 
@@ -5279,18 +5280,26 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             if model_ids:
                 pricing = get_pricing_for_provider("nous")
                 free_tier = check_nous_free_tier()
+                _portal_for_recs = auth_state.get("portal_base_url", "")
                 if free_tier:
                     # The Portal's freeRecommendedModels endpoint is the
                     # source of truth for what's free *right now*. Augment
                     # the curated list with anything new the Portal flags
                     # as free so users on older Hermes builds still see
                     # newly-launched free models without a CLI release.
-                    _portal_for_recs = auth_state.get("portal_base_url", "")
                     model_ids, pricing = union_with_portal_free_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
+                    )
+                else:
+                    # Paid-tier mirror: pull paidRecommendedModels so newly
+                    # launched paid models surface in the picker even if
+                    # the in-repo curated list and docs-hosted manifest
+                    # haven't caught up yet.
+                    model_ids, pricing = union_with_portal_paid_recommendations(
+                        model_ids, pricing, _portal_for_recs,
                     )
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:

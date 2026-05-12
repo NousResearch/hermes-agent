@@ -7,6 +7,7 @@ from hermes_cli.models import (
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
     union_with_portal_free_recommendations,
+    union_with_portal_paid_recommendations,
 )
 import hermes_cli.models as _models_mod
 
@@ -504,6 +505,147 @@ class TestUnionWithPortalFreeRecommendations:
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
         assert ids == ["qwen/qwen3.6-plus", "a"]
         assert p["qwen/qwen3.6-plus"] == self._FREE
+
+
+class TestUnionWithPortalPaidRecommendations:
+    """Tests for union_with_portal_paid_recommendations.
+
+    Mirror of TestUnionWithPortalFreeRecommendations: the Portal's
+    paidRecommendedModels endpoint is the source of truth for what's a
+    blessed paid model *right now*. The in-repo curated list and
+    docs-hosted manifest can lag — this helper guarantees newly-launched
+    paid models surface in the picker for paid-tier users without a CLI
+    release.
+    """
+
+    _PAID = {"prompt": "0.000003", "completion": "0.000015"}
+    _FREE = {"prompt": "0", "completion": "0"}
+
+    def _payload(self, paid_models: list[str]) -> dict:
+        return {
+            "paidRecommendedModels": [
+                {"modelName": mid, "displayName": mid} for mid in paid_models
+            ],
+        }
+
+    def test_adds_portal_paid_model_missing_from_curated(self):
+        """A Portal-advertised paid model not in curated is prepended."""
+        curated = ["anthropic/claude-opus-4.6"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["openai/gpt-5.4"]),
+        ):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+
+        assert ids[0] == "openai/gpt-5.4"  # prepended
+        assert "anthropic/claude-opus-4.6" in ids
+        # Existing pricing untouched
+        assert p["anthropic/claude-opus-4.6"] == self._PAID
+
+    def test_does_not_synthesize_pricing_for_paid_models(self):
+        """Paid recommendations missing from live pricing get no synthetic entry.
+
+        Synthesizing zero pricing (like the free helper does) would mislead
+        :func:`partition_nous_models_by_tier` into treating them as free;
+        synthesizing a non-zero placeholder would lie to the user. The
+        right thing is to leave pricing absent so the picker shows a blank
+        column until the live pricing endpoint catches up.
+        """
+        curated = ["anthropic/claude-opus-4.6"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["openai/gpt-5.4"]),
+        ):
+            _, p = union_with_portal_paid_recommendations(curated, pricing, "")
+
+        assert "openai/gpt-5.4" not in p
+        assert p["anthropic/claude-opus-4.6"] == self._PAID
+
+    def test_does_not_duplicate_curated_entries(self):
+        """A Portal paid model already in curated is not duplicated."""
+        curated = ["openai/gpt-5.4", "anthropic/claude-opus-4.6"]
+        pricing = {
+            "openai/gpt-5.4": self._PAID,
+            "anthropic/claude-opus-4.6": self._PAID,
+        }
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["openai/gpt-5.4"]),
+        ):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+
+        assert ids == curated
+        assert p == pricing
+
+    def test_empty_payload_returns_inputs_unchanged(self):
+        """Empty Portal response leaves curated + pricing untouched."""
+        curated = ["a", "b"]
+        pricing = {"a": self._PAID}
+        with patch("hermes_cli.models.fetch_nous_recommended_models", return_value={}):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_missing_paidRecommendedModels_key(self):
+        """Portal payload without paidRecommendedModels degrades gracefully."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value={"freeRecommendedModels": [{"modelName": "x"}]},
+        ):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_fetch_failure_returns_inputs(self):
+        """Network failures don't blow up the picker."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            side_effect=RuntimeError("network down"),
+        ):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_invalid_entries_skipped(self):
+        """Non-dict / missing-modelName entries are filtered out."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value={
+                "paidRecommendedModels": [
+                    "not-a-dict",
+                    {"displayName": "no-modelName"},
+                    {"modelName": ""},
+                    {"modelName": "openai/gpt-5.4"},
+                ]
+            },
+        ):
+            ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
+        assert ids == ["openai/gpt-5.4", "a"]
+        # No synthetic entry — pricing is untouched.
+        assert "openai/gpt-5.4" not in p
+
+    def test_preserves_relative_order_of_new_paid_models(self):
+        """Multiple new paid models are prepended in payload order."""
+        curated = ["anthropic/claude-opus-4.6"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["openai/gpt-5.4", "openai/gpt-5.5"]),
+        ):
+            ids, _ = union_with_portal_paid_recommendations(curated, pricing, "")
+        assert ids == [
+            "openai/gpt-5.4",
+            "openai/gpt-5.5",
+            "anthropic/claude-opus-4.6",
+        ]
 
 
 class TestCheckNousFreeTierCache:

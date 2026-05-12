@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    agent_id TEXT NOT NULL DEFAULT 'main',
     user_id TEXT,
     model TEXT,
     model_config TEXT,
@@ -663,6 +664,15 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
+        # agent_id index — created after _reconcile_columns has ensured the
+        # column exists on legacy databases.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
@@ -690,16 +700,18 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        agent_id: str = "main",
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, agent_id, user_id, model, model_config,
                    system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
+                    agent_id or "main",
                     user_id,
                     model,
                     json.dumps(model_config) if model_config else None,

@@ -31,6 +31,7 @@ dependencies = [
   "firecrawl-py>=4.16.0,<5",
   "parallel-web>=0.4.2,<1",
   "fal-client>=0.13.1,<1",
+  "telegramify-markdown>=1.1.5,<2",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter>=6.0.0,<7",
   # Text-to-speech (Edge TTS is free, no API key needed)

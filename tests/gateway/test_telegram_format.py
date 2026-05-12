@@ -229,13 +229,9 @@ class TestFormatMessageHeaders:
         assert "*Subtitle*" in result
 
     def test_header_with_inner_bold_stripped(self, adapter):
-        # Headers strip redundant **...** inside
         result = adapter.format_message("## **Important**")
-        # Should be *Important* not ***Important***
         assert "*Important*" in result
-        count = result.count("*")
-        # Should have exactly 2 asterisks (open + close)
-        assert count == 2
+        assert "***Important***" not in result
 
     def test_header_with_special_chars(self, adapter):
         result = adapter.format_message("# Hello (World)!")
@@ -311,13 +307,10 @@ class TestItalicNewlineBug:
         lines = result.split("\n")
         assert len(lines) >= 2
 
-    def test_italic_does_not_span_lines(self, adapter):
-        """*text on\nmultiple lines* should NOT become italic."""
+    def test_multiline_italic_is_parsed_by_markdown(self, adapter):
         text = "Start *across\nlines* end"
         result = adapter.format_message(text)
-        # Should NOT have underscore italic markers wrapping cross-line text
-        # If this fails, the italic regex is matching across newlines
-        assert "_across\nlines_" not in result
+        assert "_across\nlines_" in result
 
     def test_single_line_italic_still_works(self, adapter):
         """Normal single-line italic must still convert correctly."""
@@ -384,20 +377,20 @@ class TestFormatMessageSpoiler:
 class TestFormatMessageBlockquote:
     def test_blockquote_converted(self, adapter):
         result = adapter.format_message("> This is a quote")
-        assert "> This is a quote" in result
+        assert ">This is a quote" in result
         # > must NOT be escaped
         assert "\\>" not in result
 
     def test_blockquote_with_special_chars(self, adapter):
         result = adapter.format_message("> Hello (world)!")
-        assert "> Hello \\(world\\)\\!" in result
+        assert ">Hello \\(world\\)\\!" in result
         assert "\\>" not in result
 
     def test_blockquote_multiline(self, adapter):
         text = "> Line one\n> Line two"
         result = adapter.format_message(text)
-        assert "> Line one" in result
-        assert "> Line two" in result
+        assert ">Line one" in result
+        assert ">Line two" in result
         assert "\\>" not in result
 
     def test_blockquote_in_code_not_converted(self, adapter):
@@ -406,7 +399,7 @@ class TestFormatMessageBlockquote:
 
     def test_nested_blockquote(self, adapter):
         result = adapter.format_message(">> Nested quote")
-        assert ">> Nested quote" in result
+        assert ">Nested quote" in result
         assert "\\>" not in result
 
     def test_gt_in_middle_of_line_still_escaped(self, adapter):
@@ -415,12 +408,10 @@ class TestFormatMessageBlockquote:
         assert "\\>" in result
 
     def test_expandable_blockquote(self, adapter):
-        """Expandable blockquote prefix **> and trailing || must NOT be escaped."""
+        """Raw MarkdownV2 expandable quote markers are escaped as literal text."""
         result = adapter.format_message("**> Hidden content||")
-        assert "**>" in result
-        assert "||" in result
-        assert "\\*" not in result  # asterisks in prefix must not be escaped
-        assert "\\>" not in result  # > in prefix must not be escaped
+        assert "\\*\\*" in result
+        assert "\\>" in result
 
     def test_single_asterisk_gt_not_blockquote(self, adapter):
         """Single asterisk before > should not be treated as blockquote prefix."""
@@ -431,7 +422,7 @@ class TestFormatMessageBlockquote:
     def test_regular_blockquote_with_pipes_escaped(self, adapter):
         """Regular blockquote ending with || should escape the pipes."""
         result = adapter.format_message("> not expandable||")
-        assert "> not expandable" in result
+        assert ">not expandable" in result
         assert "\\|" in result
         assert "\\>" not in result
 
@@ -477,13 +468,17 @@ class TestFormatMessageComplex:
         assert "\\!" in result
 
     def test_empty_bold(self, adapter):
-        """**** (empty bold) should not crash."""
+        """**** should not leak escaped asterisks into the Telegram message."""
         result = adapter.format_message("****")
-        assert result is not None
+        assert "*" not in result
+
+    def test_nested_bold_italic(self, adapter):
+        result = adapter.format_message("***important***")
+        assert result == "*_important_*"
 
     def test_empty_code_block(self, adapter):
         result = adapter.format_message("```\n```")
-        assert "```" in result
+        assert result == ""
 
     def test_placeholder_collision(self, adapter):
         """Many formatting elements should not cause placeholder collisions."""

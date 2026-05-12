@@ -456,6 +456,28 @@ platforms:
 3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
 4. Messages in each topic have their own conversation history, memory flush, and context window
 
+### Root DM handling
+
+By default, messages sent to the root DM (outside any topic) are processed
+normally. Set `ignore_root_dm: true` to turn the root DM into a lobby — normal
+messages are silently ignored for users who have DM topics configured, while
+system commands (`/start`, `/help`, `/status`, etc.) still work.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      ignore_root_dm: true
+      dm_topics:
+        - chat_id: 123456789
+          topics:
+            - name: General
+```
+
+The check is **per-chat**: only users with at least one entry in `dm_topics`
+will have their root DM affected. Users without configured topics are
+unaffected.
+
 ### Skill binding
 
 Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
@@ -490,7 +512,7 @@ Only authorized users (allowlist via `TELEGRAM_ALLOWED_USERS` / platform auth co
 | Who activates it | Operator, in `config.yaml` | End user, by sending `/topic` |
 | Topic list | Fixed set declared in config | User creates/deletes topics freely |
 | Topic names | Chosen by operator | Chosen by user; auto-renamed to match Hermes session title |
-| Root DM behavior | Unchanged — normal chat | Becomes a system lobby (non-command messages are rejected) |
+| Root DM behavior | Normal chat (lobby if `ignore_root_dm: true`) | Becomes a system lobby (non-command messages are rejected) |
 | Primary use case | Permanent workspaces with optional skill binding | Ad-hoc parallel sessions |
 | Persistence | `extra.dm_topics` in config | `telegram_dm_topic_mode` + `telegram_dm_topic_bindings` SQLite tables |
 

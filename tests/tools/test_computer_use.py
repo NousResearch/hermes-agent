@@ -729,3 +729,199 @@ class TestUniversality:
         source = inspect.getsource(entry.check_fn)
         assert "anthropic" not in source.lower()
         assert "openai" not in source.lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for bugs 2 & 5 from issue #24170 (cua-driver v0.1.6)
+# ---------------------------------------------------------------------------
+
+class TestElementLabelParsing:
+    """Bug 5: element labels stripped in capture results (cua-driver v0.1.6 format).
+
+    cua-driver ≥0.1.6 emits ``[N] AXRole (order) id=Label`` instead of
+    ``  - [N] AXRole "label"``.  _parse_elements_from_tree must handle both.
+    """
+
+    def test_classic_quoted_label_format(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            '  - [14] AXButton "One"\n'
+            '  - [15] AXButton "Two"\n'
+            '  - [16] AXTextField ""\n'
+        )
+        els = _parse_elements_from_tree(tree)
+        assert len(els) == 3
+        assert els[0].index == 14
+        assert els[0].role == "AXButton"
+        assert els[0].label == "One"
+        assert els[1].label == "Two"
+        assert els[2].label == ""  # empty quoted label
+
+    def test_new_id_eq_format(self):
+        """cua-driver v0.1.6 format: [N] AXRole (order) id=Label"""
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            "[14] AXButton (1) id=One\n"
+            "[15] AXButton (2) id=Two\n"
+            "[16] AXTextField (3) id=\n"
+        )
+        els = _parse_elements_from_tree(tree)
+        assert len(els) == 3
+        assert els[0].index == 14
+        assert els[0].role == "AXButton"
+        assert els[0].label == "One"
+        assert els[1].label == "Two"
+        assert els[2].label == ""  # empty id= value
+
+    def test_mixed_formats_in_single_tree(self):
+        """Gracefully handles trees that mix old and new line formats."""
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            '  - [1] AXWindow "Main Window"\n'
+            "[14] AXButton (1) id=One\n"
+            '  - [15] AXTextField "Search"\n'
+        )
+        els = _parse_elements_from_tree(tree)
+        assert len(els) == 3
+        labels = {e.index: e.label for e in els}
+        assert labels[1] == "Main Window"
+        assert labels[14] == "One"
+        assert labels[15] == "Search"
+
+
+class TestCaptureAfterAppContext:
+    """Bug 2: capture_after=True loses app context after actions.
+
+    _maybe_follow_capture must re-target the same app that was set by
+    the preceding capture/focus_app call, rather than the frontmost window.
+    """
+
+    def test_capture_after_uses_last_app(self):
+        """capture_after=True should pass _last_app to the follow-up capture."""
+        from tools.computer_use.backend import ActionResult, CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        captured_app_args = []
+
+        class TrackingBackend:
+            _last_app = "Calculator"  # simulates a previous focus_app call
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def is_available(self):
+                return True
+
+            def capture(self, mode="som", app=None):
+                captured_app_args.append(app)
+                return CaptureResult(
+                    mode=mode, width=100, height=100,
+                    png_b64=None, elements=[],
+                    app=app or "Calculator", window_title="",
+                )
+
+            def click(self, **kw):
+                return ActionResult(ok=True, action="click")
+
+            def drag(self, **kw):
+                return ActionResult(ok=True, action="drag")
+
+            def scroll(self, **kw):
+                return ActionResult(ok=True, action="scroll")
+
+            def type_text(self, text):
+                return ActionResult(ok=True, action="type")
+
+            def key(self, keys):
+                return ActionResult(ok=True, action="key")
+
+            def list_apps(self):
+                return []
+
+            def focus_app(self, app, raise_window=False):
+                return ActionResult(ok=True, action="focus_app")
+
+            def set_value(self, value, element=None):
+                return ActionResult(ok=True, action="set_value")
+
+            def wait(self, seconds=1.0):
+                return ActionResult(ok=True, action="wait")
+
+        backend = TrackingBackend()
+        cu_tool.reset_backend_for_tests()
+        cu_tool._backend = backend
+
+        cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
+
+        # The follow-up capture must have been called with app="Calculator"
+        assert len(captured_app_args) == 1
+        assert captured_app_args[0] == "Calculator", (
+            f"Expected follow-up capture with app='Calculator', got {captured_app_args[0]!r}"
+        )
+
+    def test_capture_after_without_prior_app_uses_none(self):
+        """When no app context is set, follow-up capture uses app=None (frontmost)."""
+        from tools.computer_use.backend import ActionResult, CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        captured_app_args = []
+
+        class NoContextBackend:
+            _last_app = None  # no prior context
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def is_available(self):
+                return True
+
+            def capture(self, mode="som", app=None):
+                captured_app_args.append(app)
+                return CaptureResult(
+                    mode=mode, width=100, height=100,
+                    png_b64=None, elements=[],
+                    app="Finder", window_title="",
+                )
+
+            def click(self, **kw):
+                return ActionResult(ok=True, action="click")
+
+            def drag(self, **kw):
+                return ActionResult(ok=True, action="drag")
+
+            def scroll(self, **kw):
+                return ActionResult(ok=True, action="scroll")
+
+            def type_text(self, text):
+                return ActionResult(ok=True, action="type")
+
+            def key(self, keys):
+                return ActionResult(ok=True, action="key")
+
+            def list_apps(self):
+                return []
+
+            def focus_app(self, app, raise_window=False):
+                return ActionResult(ok=True, action="focus_app")
+
+            def set_value(self, value, element=None):
+                return ActionResult(ok=True, action="set_value")
+
+            def wait(self, seconds=1.0):
+                return ActionResult(ok=True, action="wait")
+
+        backend = NoContextBackend()
+        cu_tool.reset_backend_for_tests()
+        cu_tool._backend = backend
+
+        cu_tool.handle_computer_use({"action": "click", "element": 5, "capture_after": True})
+
+        # No app context — should pass None so cua-driver picks the frontmost window
+        assert len(captured_app_args) == 1
+        assert captured_app_args[0] is None

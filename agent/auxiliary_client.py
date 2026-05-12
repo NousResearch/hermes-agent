@@ -5257,6 +5257,16 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+    # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
+    # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`
+    # propagates the literal string "auto" to the wire, where the provider returns
+    # a 200 OK with an error-text body (e.g. "the model 'auto' does not exist"),
+    # which downstream consumers like ContextCompressor accept as the task output.
+    # The provider-side 'auto' is handled in _resolve_auto() via main_runtime
+    # fallback, so dropping cfg_model to None here lets that path do its job.
+    if cfg_model and cfg_model.lower() == "auto":
+        cfg_model = None
+
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 

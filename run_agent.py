@@ -2517,6 +2517,22 @@ class AIAgent:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
+    def _derive_session_user_id(self) -> Optional[str]:
+        """Derive the user_id for session-row creation.
+
+        For fire-and-forget agent sessions (background, cron, delegate) the
+        user_id is namespaced with a ``prefix:`` so listing UIs can distinguish
+        them from interactive chat sessions.  Plain interactive sessions pass
+        through ``self._user_id`` unchanged.
+        """
+        if self._user_id is None:
+            return None
+        sid = self.session_id or ""
+        if sid.startswith(("bg_", "cron_", "delegate_")):
+            prefix = sid.split("_", 1)[0]
+            return f"{prefix}:{self._user_id}"
+        return self._user_id
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
@@ -2528,7 +2544,7 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=self._derive_session_user_id(),
                 parent_session_id=self._parent_session_id,
             )
             self._session_db_created = True
@@ -10444,6 +10460,7 @@ class AIAgent:
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     model_config=self._session_init_model_config,
+                    user_id=self._user_id,
                     parent_session_id=old_session_id,
                 )
                 self._session_db_created = True

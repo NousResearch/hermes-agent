@@ -123,7 +123,7 @@ def verify_paper(doi=None, arxiv_id=None, title=None):
 
     # Check CrossRef (via DOI)
     if doi:
-        resp = requests.get(f"https://api.crossref.org/works/{doi}")
+        resp = requests.get(f"https://api.crossref.org/works/{doi}", timeout=10)
         if resp.status_code == 200:
             sources_found.append("CrossRef")
 

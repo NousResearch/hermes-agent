@@ -473,6 +473,27 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Long-task policy: concise prompt guidance that pushes agents toward
+        # staged checkpoints and durable background execution for finite work
+        # that is too long for a foreground tool call.
+        "long_task_policy": {
+            "enabled": True,
+            "foreground_soft_limit_seconds": 120,
+            "staged_task_soft_limit_seconds": 600,
+            "require_background_after_seconds": 600,
+            "require_progress_artifacts": True,
+            "default_log_dir": "reports/_run_logs",
+            "status_filename": "status.json",
+            "manifest_filename": "manifest.json",
+            "fail_fast_markers": [
+                "FATAL",
+                "AUTH_FAILED",
+                "NEEDS_USER_DECISION",
+                "BLOCKED",
+            ],
+            "notify_on_completion": True,
+            "watch_patterns_default": [],
+        },
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

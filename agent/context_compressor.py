@@ -944,6 +944,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
+                # Compression is continuity-critical. In auto mode, use the
+                # main/primary runtime only; do not silently fall through to
+                # generic auxiliary fallbacks (OpenRouter/Gemini/etc.) on a
+                # primary timeout. Explicit summary_model still gets one
+                # compressor-managed retry on main below.
+                "allow_provider_fallback": False,
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:

@@ -1062,6 +1062,24 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 
+    def test_gpt55_prompt_guidance_injected_for_exact_model(self):
+        from agent.prompt_builder import GPT55_PROMPT_GUIDANCE
+        agent = self._make_agent(model="gpt-5.5", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert GPT55_PROMPT_GUIDANCE in prompt
+
+    def test_gpt55_prompt_guidance_injected_for_provider_prefixed_model(self):
+        from agent.prompt_builder import GPT55_PROMPT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-5.5", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert GPT55_PROMPT_GUIDANCE in prompt
+
+    def test_gpt55_prompt_guidance_skips_other_gpt_models(self):
+        from agent.prompt_builder import GPT55_PROMPT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-5.4", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert GPT55_PROMPT_GUIDANCE not in prompt
+
     def test_auto_injects_for_codex(self):
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
         agent = self._make_agent(model="openai/codex-mini", tool_use_enforcement="auto")
@@ -2475,6 +2493,72 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_pending_model_switch_note_prepended_once_and_not_persisted(self, agent):
+        self._setup_agent(agent)
+        agent._pending_model_switch_event = {
+            "type": "fallback",
+            "from_model": "local-llm",
+            "from_provider": "custom:local",
+            "to_model": "openrouter/fallback",
+            "to_provider": "openrouter",
+            "reason": "rate_limit",
+        }
+        captured_api_messages = []
+
+        def _capture(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="Final answer", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("continue")
+
+        api_user_msg = [m for m in captured_api_messages[0] if m.get("role") == "user"][-1]["content"]
+        assert api_user_msg.startswith("[System note: Hermes automatically switched")
+        assert "local-llm via custom:local" in api_user_msg
+        assert "openrouter/fallback via openrouter" in api_user_msg
+        assert "private/local" in api_user_msg
+        assert api_user_msg.endswith("continue")
+        assert result["messages"][-2]["content"] == "continue"
+        assert agent._pending_model_switch_event is None
+
+    def test_pending_model_switch_note_consumed_only_once(self, agent):
+        self._setup_agent(agent)
+        agent._pending_model_switch_event = {
+            "type": "fallback",
+            "from_model": "primary",
+            "from_provider": "local",
+            "to_model": "fallback",
+            "to_provider": "openrouter",
+            "reason": "rate_limit",
+        }
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        captured = []
+
+        def _capture(api_kwargs):
+            captured.append(api_kwargs["messages"])
+            return resp
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("first")
+            agent.run_conversation("second", conversation_history=[])
+
+        first_user = [m for m in captured[0] if m.get("role") == "user"][-1]["content"]
+        second_user = [m for m in captured[1] if m.get("role") == "user"][-1]["content"]
+        assert first_user.startswith("[System note:")
+        assert second_user == "second"
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -5182,6 +5266,31 @@ class TestFallbackSetsOAuthFlag:
 
         assert result is True
         assert agent._is_anthropic_oauth is False
+
+    def test_fallback_records_model_switch_note_without_credentials(self, agent):
+        agent.model = "local-primary"
+        agent.provider = "custom:local"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "openrouter", "model": "openrouter/fallback"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-secret-should-not-appear"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback(FailoverReason.rate_limit)
+
+        assert result is True
+        note = agent._consume_pending_model_switch_note(restored_primary=False)
+        assert "local-primary via custom:local" in note
+        assert "openrouter/fallback via openrouter" in note
+        assert "operational failover" in note
+        assert "private/local" in note
+        assert "sk-secret-should-not-appear" not in note
+        assert "openrouter.ai" not in note
 
 
 class TestMemoryNudgeCounterPersistence:

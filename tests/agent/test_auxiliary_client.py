@@ -659,6 +659,7 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="google/gemini-3-flash-preview"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             from agent.auxiliary_client import _try_nous
@@ -1037,6 +1038,27 @@ class TestCallLlmPaymentFallback:
             )
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
+
+    def test_allow_provider_fallback_false_raises_primary_error(self):
+        """Compression can opt out of generic OpenRouter/secondary fallback."""
+        primary_client = MagicMock()
+        timeout_err = Exception("Codex auxiliary Responses stream exceeded 120.0s total timeout")
+        primary_client.chat.completions.create.side_effect = timeout_err
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback, \
+             patch("agent.auxiliary_client._evict_cached_client_instance"):
+            with pytest.raises(Exception, match="120.0s total timeout"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                    allow_provider_fallback=False,
+                )
+
+        mock_fallback.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -2085,6 +2107,8 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        emitted = {"count": 0}
+
         class SlowAliveStream:
             def __enter__(self):
                 return self
@@ -2095,6 +2119,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             def __iter__(self):
                 for _ in range(5):
                     time.sleep(0.03)
+                    emitted["count"] += 1
                     yield SimpleNamespace(type="response.in_progress")
 
             def get_final_response(self):
@@ -2113,14 +2138,13 @@ class TestCodexAuxiliaryAdapterTimeout:
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
-        started = time.monotonic()
         with pytest.raises(TimeoutError):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert emitted["count"] < 5, "timeout must abort before draining the full stream"
 
 
 # ---------------------------------------------------------------------------

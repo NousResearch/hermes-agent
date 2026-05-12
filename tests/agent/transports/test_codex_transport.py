@@ -160,25 +160,25 @@ class TestCodexBuildKwargs:
         assert kw.get("reasoning") == {"effort": "high"}
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
-    def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
+    def test_xai_reasoning_disabled_still_forces_high_for_grok(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="grok-4.3", messages=messages, tools=[],
             is_xai_responses=True,
             reasoning_config={"enabled": False},
         )
-        # When reasoning is disabled, do not send the reasoning key at all
-        assert "reasoning" not in kw
+        # EB policy: generic reasoning-disable must not downgrade Grok.
+        assert kw.get("reasoning") == {"effort": "high"}
 
-    def test_xai_minimal_effort_clamped(self, transport):
+    def test_xai_low_or_minimal_effort_forces_high_for_grok(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.3", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "minimal"},
-        )
-        # "minimal" should be clamped to "low" for xAI as well
-        assert kw.get("reasoning", {}).get("effort") == "low"
+        for requested_effort in ("minimal", "low", "medium"):
+            kw = transport.build_kwargs(
+                model="grok-4.3", messages=messages, tools=[],
+                is_xai_responses=True,
+                reasoning_config={"effort": requested_effort},
+            )
+            assert kw.get("reasoning", {}).get("effort") == "high"
 
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
@@ -263,7 +263,7 @@ class TestCodexBuildKwargs:
             is_xai_responses=True,
             reasoning_config={"effort": "low"},
         )
-        assert kw.get("reasoning") == {"effort": "low"}
+        assert kw.get("reasoning") == {"effort": "high"}
 
     def test_xai_grok_code_fast_omits_reasoning_effort(self, transport):
         """grok-code-fast-1 rejects reasoning.effort."""

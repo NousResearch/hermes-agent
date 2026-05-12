@@ -718,8 +718,11 @@ class _CodexCompletionsAdapter:
                 logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
+            if timed_out.is_set():
+                raise TimeoutError(_timeout_message())
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                if not timed_out.is_set():
+                    _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -4078,6 +4081,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -4096,6 +4100,10 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        allow_provider_fallback: When False, do not route auto-mode payment,
+            timeout, connection, or rate-limit failures to a secondary provider.
+            This is used by context compression so the primary model remains
+            the only implicit model unless a task-specific override is set.
 
     Returns:
         Response object with .choices[0].message.content
@@ -4360,7 +4368,7 @@ def call_llm(
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback and is_auto and allow_provider_fallback:
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be

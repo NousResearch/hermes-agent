@@ -8924,10 +8924,15 @@ class GatewayRunner:
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
+                        _from_model = _cur_model or "unknown model"
+                        _from_provider = _cur_provider or "unknown provider"
+                        _to_provider = result.provider_label or result.target_provider or "unknown provider"
                         _self._pending_model_notes[_session_key] = (
-                            f"[Note: model was just switched from {_cur_model} to {result.new_model} "
-                            f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
+                            f"[System note: The user explicitly switched the active model/provider "
+                            f"for this session from {_from_model} via {_from_provider} to "
+                            f"{result.new_model} via {_to_provider}. This is session model/provider "
+                            f"context only; no credentials are included. Adjust your "
+                            f"self-identification to the active model/provider for this turn.]"
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
@@ -9062,10 +9067,15 @@ class GatewayRunner:
         # knows about the switch (avoids system messages mid-history).
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
+        _from_model = current_model or "unknown model"
+        _from_provider = current_provider or "unknown provider"
+        _to_provider = result.provider_label or result.target_provider or "unknown provider"
         self._pending_model_notes[session_key] = (
-            f"[Note: model was just switched from {current_model} to {result.new_model} "
-            f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+            f"[System note: The user explicitly switched the active model/provider "
+            f"for this session from {_from_model} via {_from_provider} to "
+            f"{result.new_model} via {_to_provider}. This is session model/provider "
+            f"context only; no credentials are included. Adjust your "
+            f"self-identification to the active model/provider for this turn.]"
         )
 
         # Store session override so next agent creation uses the new model

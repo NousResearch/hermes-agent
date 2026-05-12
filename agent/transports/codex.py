@@ -103,17 +103,20 @@ class ResponsesApiTransport(ProviderTransport):
         if not is_github_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
-        if reasoning_enabled and is_xai_responses:
+        if is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
             kwargs["include"] = ["reasoning.encrypted_content"]
-            # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
-            # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
-            # those models reason natively. Only send the effort dial when
-            # the target model is on the allowlist; otherwise send no
-            # `reasoning` key at all and let the model reason on its own.
+            # Curtis/Engine Brands policy: whenever Hermes uses Grok, prefer
+            # the highest reasoning setting. This is intentionally independent
+            # of the generic reasoning_config so a later `/reasoning low` or
+            # config drift cannot silently downgrade Grok. xAI rejects
+            # `reasoning.effort` on grok-4 / grok-4-fast / grok-3 /
+            # grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
+            # those models reason natively, so only send the effort dial when
+            # the target model is on the verified allowlist.
             if grok_supports_reasoning_effort(model):
-                kwargs["reasoning"] = {"effort": reasoning_effort}
+                kwargs["reasoning"] = {"effort": "high"}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")

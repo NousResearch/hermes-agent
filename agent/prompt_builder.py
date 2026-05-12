@@ -13,7 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from agent.skill_utils import (
     extract_skill_conditions,
@@ -333,6 +333,74 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- If you must proceed with incomplete information, label assumptions explicitly.\n"
     "</missing_context>"
 )
+
+GPT55_PROMPT_GUIDANCE = (
+    "# GPT-5.5 prompt guidance\n"
+    "Apply these model-specific prompting preferences when interpreting the "
+    "system prompt, loaded skills, project instructions, and user requests.\n"
+    "\n"
+    "<gpt55_prompting>\n"
+    "- Optimize for outcome-oriented work: identify the desired result, hard "
+    "constraints, available evidence, and final answer shape; choose the most "
+    "efficient path yourself.\n"
+    "- Avoid becoming mechanical from stacked instructions. Treat legacy ALWAYS/NEVER "
+    "rules as guardrails, but do not over-narrate internal process or add ceremony.\n"
+    "- Separate voice from workflow: preserve the configured personality and user "
+    "preferences while applying collaboration rules for assumptions, tools, "
+    "uncertainty, and verification.\n"
+    "- Prefer progress over broad clarification. Ask only narrow questions when "
+    "missing information materially changes the action or creates meaningful risk.\n"
+    "- Use brief preambles before long tool workflows so the user knows what is "
+    "happening, then act. Keep final answers direct and grounded in results.\n"
+    "- Stop when the task is complete and verified. If evidence is missing or weak, "
+    "say so plainly and provide the best safe fallback rather than inventing details.\n"
+    "</gpt55_prompting>"
+)
+
+LONG_TASK_POLICY_DEFAULTS = {
+    "enabled": True,
+    "foreground_soft_limit_seconds": 120,
+    "staged_task_soft_limit_seconds": 600,
+    "require_background_after_seconds": 600,
+    "require_progress_artifacts": True,
+    "default_log_dir": "reports/_run_logs",
+    "status_filename": "status.json",
+    "manifest_filename": "manifest.json",
+    "notify_on_completion": True,
+}
+
+
+def _policy_int(policy: Mapping[str, Any], key: str) -> int:
+    try:
+        value = int(policy.get(key, LONG_TASK_POLICY_DEFAULTS[key]))
+    except (TypeError, ValueError):
+        value = int(LONG_TASK_POLICY_DEFAULTS[key])
+    return max(1, value)
+
+
+def build_long_task_policy_guidance(policy: Mapping[str, Any] | None) -> str:
+    """Render concise system-prompt guidance for Hermes long-task handling."""
+    if not isinstance(policy, Mapping):
+        return ""
+    if policy.get("enabled", LONG_TASK_POLICY_DEFAULTS["enabled"]) is False:
+        return ""
+
+    foreground_limit = _policy_int(policy, "foreground_soft_limit_seconds")
+    background_limit = _policy_int(policy, "require_background_after_seconds")
+    log_dir = str(policy.get("default_log_dir") or LONG_TASK_POLICY_DEFAULTS["default_log_dir"])
+    status_name = str(policy.get("status_filename") or LONG_TASK_POLICY_DEFAULTS["status_filename"])
+    manifest_name = str(policy.get("manifest_filename") or LONG_TASK_POLICY_DEFAULTS["manifest_filename"])
+
+    return (
+        "Hermes long-task policy: For work expected to run longer than "
+        f"{foreground_limit} seconds, break it into stages with saved artifacts. "
+        "For finite work expected to run longer than "
+        f"{background_limit} seconds, use terminal(background=true, notify_on_complete=true) "
+        f"and save logs/status/manifest under {log_dir} using {status_name} and {manifest_name}. "
+        "Do not use noisy watch_patterns; reserve them for rare blocker/readiness markers. "
+        "Before finalizing, verify artifacts and report exact paths."
+    )
+
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.

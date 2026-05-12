@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -2861,7 +2862,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         await interaction.response.defer(ephemeral=True)
-        event = self._build_slash_event(interaction, command_text)
+        event = await self._build_simple_slash_event(interaction, command_text)
         await self.handle_message(event)
         try:
             if followup_msg:
@@ -3374,48 +3375,151 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
-    def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
+    def _slash_goal_auto_thread_seed(self, text: str) -> str | None:
+        """Return a slash /goal seed string when the command should auto-thread.
+
+        Only a new goal starts agent work and should get the same isolated
+        conversation treatment as a channel @mention. Status/control subcommands
+        stay in the invoking channel/thread so they remain lightweight.
+        """
+        stripped = (text or "").strip()
+        if not stripped.startswith("/"):
+            return None
+        command, _, args = stripped[1:].partition(" ")
+        if command.lower() != "goal":
+            return None
+        goal_text = args.strip()
+        if not goal_text:
+            return None
+        if goal_text.lower() in ("status", "pause", "resume", "clear", "stop", "done"):
+            return None
+        return goal_text
+
+    async def _maybe_auto_thread_slash_goal(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+    ) -> Any | None:
+        """Auto-create a Discord thread for native /goal starts when enabled.
+
+        Normal Discord messages pass through _handle_message(), which auto-
+        creates a thread before building the MessageEvent source. Native slash
+        commands bypass that path, so a /goal started from a profile channel
+        would otherwise queue its kickoff and continuations against the parent
+        channel session. This helper mirrors the same auto_thread/no_thread
+        gates for goal-start slash commands and returns the new thread target.
+        """
+        seed = self._slash_goal_auto_thread_seed(text)
+        if seed is None:
+            return None
+
+        channel = getattr(interaction, "channel", None)
+        if channel is None or isinstance(channel, discord.DMChannel) or isinstance(channel, discord.Thread):
+            return None
+
+        auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+        if not auto_thread:
+            return None
+
+        channel_id = str(getattr(channel, "id", None) or getattr(interaction, "channel_id", "") or "")
+        no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
+        no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
+        if channel_id and channel_id in no_thread_channels:
+            return None
+
+        voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
+        if channel_id and channel_id in voice_linked_ids:
+            return None
+
+        pseudo_message = SimpleNamespace(
+            content=seed,
+            create_thread=getattr(channel, "create_thread", None),
+            channel=channel,
+            author=getattr(interaction, "user", None),
+        )
+        thread = await self._auto_create_thread(pseudo_message)
+        if thread is not None:
+            self._threads.mark(str(getattr(thread, "id", "")))
+        return thread
+
+    async def _build_simple_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
+        """Build a simple slash event, applying /goal auto-thread routing first."""
+        original_channel = getattr(interaction, "channel", None)
+        parent_channel_id = str(getattr(original_channel, "id", None) or getattr(interaction, "channel_id", "") or "")
+        thread = await self._maybe_auto_thread_slash_goal(interaction, text)
+        if thread is not None:
+            return self._build_slash_event(
+                interaction,
+                text,
+                channel_override=thread,
+                parent_channel_id=parent_channel_id or None,
+            )
+        return self._build_slash_event(interaction, text)
+
+    def _build_slash_event(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+        *,
+        channel_override: Any | None = None,
+        parent_channel_id: str | None = None,
+    ) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        channel = channel_override or interaction.channel
+        channel_id_value = getattr(channel, "id", None) or getattr(interaction, "channel_id", None)
+        is_dm = isinstance(channel, discord.DMChannel)
+        is_thread = isinstance(channel, discord.Thread)
         thread_id = None
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
-            thread_id = str(interaction.channel_id)
+            thread_id = str(channel_id_value)
         else:
             chat_type = "group"
 
         chat_name = ""
-        if not is_dm and hasattr(interaction.channel, "name"):
-            chat_name = interaction.channel.name
-            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
-                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+        if not is_dm and hasattr(channel, "name"):
+            if is_thread:
+                chat_name = self._format_thread_chat_name(channel)
+            else:
+                chat_name = channel.name
+                if hasattr(channel, "guild") and channel.guild:
+                    chat_name = f"{channel.guild.name} / #{chat_name}"
 
         # Get channel topic (if available).
         # For forum threads, inherit the parent forum's topic.
-        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        chat_topic = self._get_effective_topic(channel, is_thread=is_thread)
+
+        effective_parent_id = parent_channel_id
+        if effective_parent_id is None and is_thread:
+            effective_parent_id = self._get_parent_channel_id(channel)
+
+        guild = getattr(interaction, "guild", None) or getattr(channel, "guild", None)
+        guild_id = getattr(interaction, "guild_id", None) or getattr(guild, "id", None)
 
         source = self.build_source(
-            chat_id=str(interaction.channel_id),
+            chat_id=str(channel_id_value),
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(guild_id) if guild_id else None,
+            parent_chat_id=effective_parent_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
-        channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        channel_id = str(channel_id_value)
+        parent_id = str(effective_parent_id or getattr(channel, "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 

@@ -160,7 +160,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, build_long_task_policy_guidance, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, GPT55_PROMPT_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -1489,10 +1489,15 @@ class AIAgent:
         # (e.g. CLI voice mode adds a temporary prefix for the live call only).
         self._persist_user_message_idx = None
         self._persist_user_message_override = None
+        # One-shot provider/model switch context for the next user turn.
+        # Used for automatic fallback notes so the next model understands
+        # whether it is currently on a fallback or has restored the preferred
+        # primary.  Stores only provider/model labels — never credentials.
+        self._pending_model_switch_event = None
 
         # Cache anthropic image-to-text fallbacks per image payload/URL so a
         # single tool loop does not repeatedly re-run auxiliary vision on the
-        # same image history.
+        # same image when the main model lacks native vision support.
         self._anthropic_image_fallback_cache: Dict[str, str] = {}
 
         # Initialize LLM client via centralized provider router.
@@ -2032,6 +2037,8 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        _long_task_policy = _agent_section.get("long_task_policy", {})
+        self._long_task_policy = _long_task_policy if isinstance(_long_task_policy, dict) else {}
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -2859,6 +2866,68 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    @staticmethod
+    def _runtime_label(model: Any, provider: Any) -> str:
+        """Return a safe provider/model label with no credential-bearing fields."""
+        model_s = str(model or "").strip() or "unknown model"
+        provider_s = str(provider or "").strip() or "unknown provider"
+        return f"{model_s} via {provider_s}"
+
+    @classmethod
+    def _format_model_switch_context_note(
+        cls,
+        event: Dict[str, Any],
+        *,
+        restored_primary: bool = False,
+    ) -> str:
+        """Build the one-shot model-visible note for provider/model switches.
+
+        The note intentionally includes only provider/model labels and a reason;
+        never include API keys, base URLs, headers, or other secrets here.
+        """
+        from_label = cls._runtime_label(event.get("from_model"), event.get("from_provider"))
+        to_label = cls._runtime_label(event.get("to_model"), event.get("to_provider"))
+        reason = str(event.get("reason") or "automatic fallback").replace("_", " ")
+
+        if event.get("type") == "fallback" and restored_primary:
+            return (
+                f"[System note: During the previous turn, Hermes automatically switched "
+                f"from the configured/preferred primary {from_label} to fallback {to_label} "
+                f"because of {reason}. At the start of this turn, Hermes restored/retried "
+                f"the configured/preferred primary {from_label}. Do not infer that the "
+                f"user's provider preference changed; if the primary provider is private/local, "
+                f"preserve that context. Adjust your self-identification to the active "
+                f"model/provider for this turn.]"
+            )
+
+        if event.get("type") == "fallback":
+            return (
+                f"[System note: Hermes automatically switched the active model/provider "
+                f"for this session from the configured/preferred primary {from_label} "
+                f"to fallback {to_label} because of {reason}. This is operational failover, "
+                f"not a user preference change; if the primary provider is private/local, "
+                f"preserve that context. Adjust your self-identification to the active "
+                f"fallback model/provider for this turn.]"
+            )
+
+        return (
+            f"[System note: Hermes changed the active model/provider for this session "
+            f"from {from_label} to {to_label} because of {reason}. Adjust your "
+            f"self-identification to the active model/provider for this turn.]"
+        )
+
+    def _consume_pending_model_switch_note(self, *, restored_primary: bool = False) -> Optional[str]:
+        """Return and clear the one-shot model switch note, if any."""
+        event = getattr(self, "_pending_model_switch_event", None)
+        if not event:
+            return None
+        self._pending_model_switch_event = None
+        try:
+            return self._format_model_switch_context_note(event, restored_primary=restored_primary)
+        except Exception:
+            logger.debug("failed to format pending model switch note", exc_info=True)
+            return None
+
     # Headers we capture from the dying stream's HTTP response so post-mortem
     # diagnosis can answer "which CF edge / which OpenRouter downstream
     # provider / which request id".  Lowercased; httpx returns CIMultiDict.
@@ -3594,6 +3663,14 @@ class AIAgent:
         if "/" in m:
             m = m.rsplit("/", 1)[-1]
         return m.startswith("gpt-5")
+
+    @staticmethod
+    def _model_is_gpt55(model: str) -> bool:
+        """Return True for GPT-5.5 model names, including provider-prefixed names."""
+        m = (model or "").strip().lower()
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        return m == "gpt-5.5" or m.startswith("gpt-5.5-")
 
     @staticmethod
     def _provider_model_requires_responses_api(
@@ -5771,6 +5848,16 @@ class AIAgent:
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+        # GPT-5.5-specific prompting preferences from OpenAI's guidance.
+        # Keep this separate from tool-use enforcement so it applies to
+        # GPT-5.5 sessions across CLI/gateway/profiles, but not other models.
+        if self._model_is_gpt55(self.model):
+            stable_parts.append(GPT55_PROMPT_GUIDANCE)
+
+        long_task_guidance = build_long_task_policy_guidance(getattr(self, "_long_task_policy", None))
+        if long_task_guidance:
+            stable_parts.append(long_task_guidance)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -8654,6 +8741,7 @@ class AIAgent:
                 fb_api_mode = "bedrock_converse"
 
             old_model = self.model
+            old_provider = self.provider
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
@@ -8750,6 +8838,16 @@ class AIAgent:
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
                 )
+
+            _reason_label = getattr(reason, "value", None) or str(reason or "automatic fallback")
+            self._pending_model_switch_event = {
+                "type": "fallback",
+                "from_model": old_model,
+                "from_provider": old_provider,
+                "to_model": fb_model,
+                "to_provider": fb_provider,
+                "reason": _reason_label,
+            }
 
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
@@ -11675,7 +11773,16 @@ class AIAgent:
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
-        self._restore_primary_runtime()
+        _restored_primary_runtime = self._restore_primary_runtime()
+        if _restored_primary_runtime:
+            try:
+                from agent.auxiliary_client import set_runtime_main
+                set_runtime_main(
+                    getattr(self, "provider", "") or "",
+                    getattr(self, "model", "") or "",
+                )
+            except Exception:
+                pass
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -11684,6 +11791,16 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+
+        _switch_note = self._consume_pending_model_switch_note(
+            restored_primary=_restored_primary_runtime
+        )
+        if _switch_note:
+            # The note is API-facing context, not user-authored content; keep
+            # persisted transcripts clean by storing the original user text.
+            if persist_user_message is None:
+                persist_user_message = user_message
+            user_message = f"{_switch_note}\n\n{user_message}"
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback

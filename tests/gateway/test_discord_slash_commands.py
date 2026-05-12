@@ -705,6 +705,81 @@ async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_simple_slash_goal_auto_threads_channel(adapter, monkeypatch):
+    """Native /goal starts should route like channel mentions when auto-thread is on."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    channel = _FakeTextChannel(channel_id=123, name="profile")
+    thread = _FakeThreadChannel(channel_id=999, name="Build the thing", parent_id=123)
+    thread.parent = channel
+    channel.create_thread = AsyncMock(return_value=thread)
+    channel.send = AsyncMock()
+
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        guild_id=1,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        delete_original_response=AsyncMock(),
+    )
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    await adapter._run_simple_slash(interaction, "/goal Build the thing")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    channel.create_thread.assert_awaited_once()
+    assert channel.create_thread.await_args.kwargs["name"] == "Build the thing"
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    assert event.text == "/goal Build the thing"
+    assert event.source.chat_id == "999"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+    assert event.source.parent_chat_id == "123"
+    assert "999" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_goal_status_does_not_auto_thread(adapter, monkeypatch):
+    """Goal status/control commands stay in the channel instead of spawning threads."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    channel = _FakeTextChannel(channel_id=123, name="profile")
+    channel.create_thread = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        guild_id=1,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        delete_original_response=AsyncMock(),
+    )
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    await adapter._run_simple_slash(interaction, "/goal status")
+
+    channel.create_thread.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "123"
+    assert captured_events[0].source.chat_type == "group"
+    assert captured_events[0].source.thread_id is None
+
+
+@pytest.mark.asyncio
 async def test_auto_thread_can_be_disabled(adapter, monkeypatch):
     """Setting DISCORD_AUTO_THREAD=false keeps messages in the channel."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")

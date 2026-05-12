@@ -122,6 +122,30 @@ class TestKimiParity:
         assert kw.get("reasoning_effort") == "medium"
 
 
+class TestXAIParity:
+    """xAI/Grok: force highest reasoning effort on the chat-completions wire."""
+
+    def test_grok_4_3_forces_reasoning_effort_high(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("xai"),
+            reasoning_config={"enabled": False, "effort": "low"},
+        )
+        assert kw.get("reasoning_effort") == "high"
+
+    def test_effort_incapable_grok_omits_reasoning_effort(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("xai"),
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning_effort" not in kw
+
+
 class TestOpenRouterParity:
     """OpenRouter: provider preferences, reasoning in extra_body."""
 

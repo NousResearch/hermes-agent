@@ -245,6 +245,7 @@ class TestNonStringContent:
             "api_key": "codex-token",
             "api_mode": "codex_responses",
         }
+        assert mock_call.call_args.kwargs["allow_provider_fallback"] is False
 
 
 class TestSummaryFailureCooldown:

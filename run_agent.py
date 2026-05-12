@@ -5578,6 +5578,50 @@ class AIAgent:
         except Exception:
             pass
 
+    def _dispatch_memory_sync_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        interrupted: bool,
+    ) -> None:
+        """Run :meth:`_sync_external_memory_for_turn` on a daemon thread.
+
+        With external memory providers like Hindsight, ``sync_all`` reaches
+        out to a daemon and runs LLM-based entity resolution — 30-50s of
+        wall time per turn (#24453).  Doing that inline at the end of
+        ``run_conversation`` blocks the function from returning, which in
+        turn blocks the SSE writer from emitting ``response.completed``
+        long after ``response.output_text.delta`` finished streaming.  The
+        web UI shows a loading spinner well past the visible reply.
+
+        The work is already best-effort: ``_sync_external_memory_for_turn``
+        swallows exceptions, the Hindsight backend persists its own state,
+        and an interrupt-or-shutdown mid-sync is harmless.  Deferring to a
+        daemon thread matches the existing pattern used by
+        ``_spawn_background_review`` and keeps response delivery on the
+        critical path.
+
+        Early-skips when interrupted or no manager are handled here too
+        so we don't spin up a no-op thread; the worker enforces the same
+        invariants internally if called directly.
+        """
+        if interrupted:
+            return
+        if not (self._memory_manager and final_response and original_user_message):
+            return
+        import threading
+        threading.Thread(
+            target=self._sync_external_memory_for_turn,
+            kwargs=dict(
+                original_user_message=original_user_message,
+                final_response=final_response,
+                interrupted=interrupted,
+            ),
+            daemon=True,
+            name=f"hermes-memory-sync-{self.session_id or 'anon'}",
+        ).start()
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -15423,7 +15467,11 @@ class AIAgent:
             self._iters_since_skill = 0
 
         # External memory provider: sync the completed turn + queue next prefetch.
-        self._sync_external_memory_for_turn(
+        # Runs on a daemon thread so a 30-50s Hindsight retain doesn't park the
+        # SSE writer between response.output_text.delta and response.completed
+        # (#24453).  _sync_external_memory_for_turn is itself best-effort and
+        # idempotent, so deferring is safe.
+        self._dispatch_memory_sync_for_turn(
             original_user_message=original_user_message,
             final_response=final_response,
             interrupted=interrupted,

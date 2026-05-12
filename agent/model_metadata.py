@@ -217,6 +217,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Bare-model IDs for kimi-k2.6 family — OpenRouter metadata incorrectly
+    # reports 32,768 for these slugs (issue #24268).  The bare "kimi" pattern
+    # above acts as a catch-all via substring match, but explicit entries
+    # guarantee correct resolution regardless of how the model name is prefixed
+    # or normalised by the caller.
+    "kimi-k2.6": 262144,
+    "kimi-k2.6-20260420": 262144,
+    "kimi-latest": 262144,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).

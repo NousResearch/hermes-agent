@@ -3400,6 +3400,15 @@ class GatewayRunner:
         # Discover and load event hooks
         self.hooks.discover_and_load()
 
+        # Initialize plugin system so post_llm_call / pre_llm_call hooks
+        # (e.g. memos_sync, specialist_router) actually fire in gateway mode.
+        # Without this, get_plugin_manager() returns a bare PluginManager
+        # with no loaded plugins — hooks are registered but never invoked.
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            get_plugin_manager().discover_and_load()
+        except Exception as exc:
+            logger.warning("Plugin system init failed (non-blocking): %s", exc)
         
         # Recover background processes from checkpoint (crash recovery)
         try:

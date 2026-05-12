@@ -486,14 +486,20 @@ class TestInstallPs1SkipsStorePythonStub:
 
     def test_test_python_skips_windowsapps_alias(self):
         source = self._source()
-        # The fallback that calls `Get-Command python` must check the resolved
-        # Source path against `\WindowsApps\` and skip the alias rather than
-        # invoking it.
-        assert "WindowsApps" in source, (
-            "scripts/install.ps1 must detect the Microsoft Store python.exe "
+        # Assert on the *executable guard expression*, not just a substring
+        # mention.  A plain `"WindowsApps" in source` would still pass if the
+        # only remaining occurrence sat inside a comment after a regression.
+        # The actual fallback that calls `Get-Command python` must contain a
+        # `Source -notmatch '\Microsoft\WindowsApps\'` check (narrowed to the
+        # specific Microsoft Store alias path so a legitimate python.exe under
+        # any other WindowsApps directory is not also skipped).
+        guard_pattern = r"$pythonCmd.Source -notmatch '\\Microsoft\\WindowsApps\\'"
+        assert guard_pattern in source, (
+            "scripts/install.ps1 must guard the system-python fallback with "
+            f"`{guard_pattern}` so the Microsoft Store python.exe "
             "app-execution alias (under %LOCALAPPDATA%\\Microsoft\\WindowsApps\\) "
-            "and skip invoking it — otherwise a fresh Windows 11 install fails "
-            "with the stub's 'Python was not found' message (see #24424)."
+            "is skipped — otherwise a fresh Windows 11 install fails with the "
+            "stub's 'Python was not found' message (see #24424)."
         )
 
     def test_test_python_invokes_resolved_source_not_bare_python(self):
@@ -504,6 +510,18 @@ class TestInstallPs1SkipsStorePythonStub:
         assert "$pythonCmd.Source --version" in source, (
             "scripts/install.ps1 should invoke the resolved Get-Command Source "
             "path (after filtering out WindowsApps) rather than bare `python`."
+        )
+
+    def test_test_python_explains_store_alias_in_failure_message(self):
+        source = self._source()
+        # When detection of a real python fails AND the only thing on PATH is
+        # the Microsoft Store alias, the script must surface a user-actionable
+        # hint pointing at the App-execution-aliases setting.  This binds the
+        # match-branch error path to the same narrowed regex.
+        hint_pattern = r"$pythonCmd.Source -match '\\Microsoft\\WindowsApps\\'"
+        assert hint_pattern in source, (
+            "scripts/install.ps1 must emit the App-execution-aliases hint when "
+            f"the only python.exe on PATH is the Store stub (`{hint_pattern}`)."
         )
 
 

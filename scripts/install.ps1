@@ -183,8 +183,11 @@ function Test-Python {
     # `$ErrorActionPreference = "Stop"`, that turns into a terminating
     # NativeCommandError whose message replaces the script's own friendlier
     # one, surfacing as `Installation failed: Python was not found...` (#24424).
+    # Match only the specific `\Microsoft\WindowsApps\` alias location so a
+    # legitimate `python.exe` that happens to live under any other
+    # `WindowsApps` directory is not also skipped.
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd -and ($pythonCmd.Source -notmatch '\\WindowsApps\\')) {
+    if ($pythonCmd -and ($pythonCmd.Source -notmatch '\\Microsoft\\WindowsApps\\')) {
         try {
             $sysVer = & $pythonCmd.Source --version 2>&1
         } catch {
@@ -197,7 +200,7 @@ function Test-Python {
     }
 
     Write-Err "Failed to install Python $PythonVersion"
-    if ($pythonCmd -and ($pythonCmd.Source -match '\\WindowsApps\\')) {
+    if ($pythonCmd -and ($pythonCmd.Source -match '\\Microsoft\\WindowsApps\\')) {
         Write-Info "The 'python.exe' on your PATH is the Microsoft Store app-execution"
         Write-Info "alias, not a real Python install. Disable it under Settings >"
         Write-Info "Apps > Advanced app settings > App execution aliases, or install"

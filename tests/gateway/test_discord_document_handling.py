@@ -57,8 +57,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +371,7 @@ class TestIncomingDocumentHandling:
     async def test_image_attachment_unaffected(self, adapter):
         """Image attachments should still go through the image path, not the document path."""
         with patch(
-            "gateway.platforms.discord.cache_image_from_url",
+            "plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,
             return_value="/tmp/cached_image.png",
         ):

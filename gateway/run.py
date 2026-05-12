@@ -11756,7 +11756,7 @@ class GatewayRunner:
         cfg = self._telegram_hud_config(user_config)
         try:
             from gateway.context_hud import format_hud
-            return format_hud(
+            hud = format_hud(
                 used_tokens=state["used"],
                 context_length=state["limit"],
                 bar_width=int(cfg.get("bar_width", 20) or 20),
@@ -11769,6 +11769,35 @@ class GatewayRunner:
         except Exception as exc:
             logger.debug("HUD format failed: %s", exc)
             return None
+        if hud is None:
+            return None
+        title_line = self._resolve_telegram_hud_title_line(source)
+        if title_line:
+            return f"{title_line}\n{hud}"
+        return hud
+
+    def _resolve_telegram_hud_title_line(self, source: Any) -> Optional[str]:
+        """Return the quoted-title line for the HUD, or ``None``.
+
+        Uses the same `title or session_id` fallback that /status and /title
+        already rely on, so behavior matches existing title conventions.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            session_id = session_entry.session_id
+        except Exception:
+            return None
+        try:
+            title = session_db.get_session_title(session_id)
+        except Exception:
+            title = None
+        name = (title or "").strip() or session_id
+        if not name:
+            return None
+        return f'"{name}"'
 
     async def _handle_context_command(self, event: MessageEvent) -> str:
         """Handle /context — show session context-window state and reset hint."""

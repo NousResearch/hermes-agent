@@ -151,6 +151,51 @@ class TestComputeHudPrefix:
         assert len(second) == 12  # 10 cells + 2 brackets
 
 
+# ── HUD prefix: session title line ────────────────────────────────────────
+
+
+class TestComputeHudPrefixTitle:
+    def test_prepends_quoted_session_title_line(self):
+        agent = _fake_agent(used=22_500, limit=250_000)
+        h = _harness(agent=agent)
+        h._session_db = MagicMock()
+        h._session_db.get_session_title.return_value = "Update Help"
+        out = h._compute_telegram_hud_prefix(
+            _telegram_source(), "agent:main:telegram:dm:100:42"
+        )
+        assert out is not None
+        lines = out.split("\n")
+        # First line is exactly the quoted title — no label, no prefix, no suffix.
+        assert lines[0] == '"Update Help"'
+        # Existing HUD body (metric line + bar) is preserved beneath it.
+        assert "22k" in lines[1]
+        assert "250k" in lines[1]
+        assert lines[2].startswith("[") and lines[2].endswith("]")
+        h._session_db.get_session_title.assert_called_with("sess_abc")
+
+    def test_falls_back_to_session_id_when_title_missing(self):
+        agent = _fake_agent(used=22_500, limit=250_000)
+        h = _harness(agent=agent)
+        h._session_db = MagicMock()
+        h._session_db.get_session_title.return_value = None
+        out = h._compute_telegram_hud_prefix(
+            _telegram_source(), "agent:main:telegram:dm:100:42"
+        )
+        assert out is not None
+        assert out.split("\n", 1)[0] == '"sess_abc"'
+
+    def test_no_title_line_when_session_db_unavailable(self):
+        # Defensive path: when no session DB is wired up there is nothing to
+        # look the title up against, so the HUD body renders unchanged.
+        agent = _fake_agent(used=22_500, limit=250_000)
+        h = _harness(agent=agent)  # _session_db not set on harness
+        out = h._compute_telegram_hud_prefix(
+            _telegram_source(), "agent:main:telegram:dm:100:42"
+        )
+        assert out is not None
+        assert "22k" in out.split("\n", 1)[0]
+
+
 # ── /hud command ──────────────────────────────────────────────────────────
 
 

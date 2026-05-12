@@ -512,3 +512,46 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
         "does not expose POSIX uid/gid" in rec.getMessage()
         for rec in caplog.records
     ), "expected a warning when POSIX ids are unavailable"
+
+
+def test_persistent_credential_dir_corruption_cleaned_up(monkeypatch, tmp_path, caplog):
+    """When persistent=True and a credential's destination inside the sandbox home
+    is a directory (corrupted from a previous failed run), DockerEnvironment must
+    remove it before building the -v mount arg — otherwise Docker exits 125.
+
+    Regression test for issue #24483: Docker sandbox fails with exit 125 when
+    container_persistent=true and credential files are registered.
+    """
+    import tools.environments.base as base_env
+    import tools.credential_files as cred_mod
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+
+    # Simulate corrupted sandbox home: google_token.json is a directory instead
+    # of a file (Docker auto-creates source paths as directories on failed runs).
+    sandbox_home = tmp_path / "sandboxes" / "docker" / "cred-corruption-test" / "home"
+    sandbox_home.mkdir(parents=True)
+    corrupted_dir = sandbox_home / ".hermes" / "google_token.json"
+    corrupted_dir.mkdir(parents=True)
+    assert corrupted_dir.is_dir()
+
+    monkeypatch.setattr(base_env, "get_sandbox_dir", lambda: tmp_path / "sandboxes")
+
+    fake_cred = tmp_path / "google_token.json"
+    fake_cred.write_text("{}")
+
+    monkeypatch.setattr(
+        cred_mod,
+        "get_credential_file_mounts",
+        lambda: [{"host_path": str(fake_cred), "container_path": "/root/.hermes/google_token.json"}],
+    )
+    monkeypatch.setattr(cred_mod, "get_skills_directory_mount", lambda: [])
+    monkeypatch.setattr(cred_mod, "get_cache_directory_mounts", lambda: [])
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(persistent_filesystem=True, task_id="cred-corruption-test")
+
+    assert not corrupted_dir.exists(), (
+        "DockerEnvironment must remove corrupted sandbox directory before credential bind-mount"
+    )

@@ -410,6 +410,23 @@ class DockerEnvironment(BaseEnvironment):
             )
 
             for mount_entry in get_credential_file_mounts():
+                # When persistent, container_path maps into self._home_dir on
+                # disk (/root -> home_dir). Guard against a corrupted sandbox
+                # home where a credential filename was auto-created as a
+                # directory by Docker on a prior failed run — Docker cannot
+                # bind-mount a file over a directory and will exit 125.
+                if self._persistent and self._home_dir:
+                    rel = mount_entry["container_path"].removeprefix("/root/")
+                    if rel != mount_entry["container_path"]:
+                        host_dest = os.path.join(self._home_dir, rel)
+                        if os.path.isdir(host_dest):
+                            logger.warning(
+                                "Docker: removing corrupted sandbox path %s "
+                                "(directory where credential file expected)",
+                                host_dest,
+                            )
+                            shutil.rmtree(host_dest, ignore_errors=True)
+
                 volume_args.extend([
                     "-v",
                     f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",

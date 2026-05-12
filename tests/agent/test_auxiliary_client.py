@@ -26,19 +26,23 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _reset_aux_unhealthy_cache,
     _CodexCompletionsAdapter,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Strip provider env vars so each test starts clean."""
+    """Strip provider env vars and aux health state so each test starts clean."""
+    _reset_aux_unhealthy_cache()
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+    yield
+    _reset_aux_unhealthy_cache()
 
 
 @pytest.fixture
@@ -659,6 +663,8 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
@@ -2122,6 +2128,61 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+    def test_retries_transient_stream_disconnect_then_returns_summary(self):
+        class FailingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                raise ConnectionError("peer closed connection without sending complete message body (incomplete chunked read)")
+
+            def get_final_response(self):  # pragma: no cover - never reached
+                raise AssertionError("first stream should fail before final response")
+
+        class SuccessfulStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary after retry")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.calls = 0
+
+            def stream(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return FailingStream()
+                return SuccessfulStream()
+
+        responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=responses)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert responses.calls == 2
+        assert response.choices[0].message.content == "summary after retry"
 
 
 # ---------------------------------------------------------------------------

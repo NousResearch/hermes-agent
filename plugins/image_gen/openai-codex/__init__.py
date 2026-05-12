@@ -19,8 +19,12 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -161,9 +165,67 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _coerce_reference_image_list(value: Any) -> List[str]:
+    """Normalize provider kwargs into a flat list of reference image strings."""
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        items: Iterable[Any] = [value]
+    elif isinstance(value, Iterable):
+        items = value
+    else:
+        return []
+    refs: List[str] = []
+    for item in items:
+        if item is None:
+            continue
+        ref = str(item).strip()
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _reference_image_to_image_url(reference: str) -> str:
+    """Return a Responses API-compatible image_url for a URL or local path."""
+    parsed = urlparse(reference)
+    if parsed.scheme in {"http", "https", "data"}:
+        return reference
+
+    path = Path(reference).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Reference image not found: {reference}")
+    if not path.is_file():
+        raise ValueError(f"Reference image is not a file: {reference}")
+
+    mime, _ = mimetypes.guess_type(path.name)
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _build_input_content(prompt: str, reference_images: Any = None) -> List[Dict[str, str]]:
+    """Build Responses input content, including reference images when supplied."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    for reference in _coerce_reference_image_list(reference_images):
+        content.append({
+            "type": "input_image",
+            "image_url": _reference_image_to_image_url(reference),
+        })
+    return content
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Any = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    content = _build_input_content(prompt, reference_images)
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,7 +234,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
         tools=[{
             "type": "image_generation",
@@ -306,6 +368,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        reference_images = _coerce_reference_image_list(
+            kwargs.get("reference_images") or kwargs.get("reference_image")
+        )
 
         client = _build_codex_client()
         if client is None:
@@ -324,6 +389,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -364,7 +430,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "reference_image_count": len(reference_images),
+            },
         )
 
 

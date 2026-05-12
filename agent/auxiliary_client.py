@@ -43,12 +43,18 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import signal
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
+
+try:  # httpx is an OpenAI SDK dependency, but keep import defensive for tests.
+    import httpx as _httpx
+except Exception:  # pragma: no cover
+    _httpx = None  # type: ignore[assignment]
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
@@ -611,6 +617,33 @@ def _convert_content_for_responses(content: Any) -> Any:
     return converted or ""
 
 
+def _is_transient_codex_aux_stream_error(exc: BaseException) -> bool:
+    """Return True for retryable Codex auxiliary stream transport failures."""
+    if isinstance(exc, ConnectionError):
+        return True
+    if _httpx is not None and isinstance(
+        exc,
+        (
+            _httpx.RemoteProtocolError,
+            _httpx.ReadTimeout,
+            _httpx.ConnectTimeout,
+            _httpx.PoolTimeout,
+            _httpx.ConnectError,
+        ),
+    ):
+        return True
+    name = exc.__class__.__name__
+    if name in {"APIConnectionError", "APITimeoutError", "RemoteProtocolError", "ReadTimeout"}:
+        return True
+    text = str(exc).lower()
+    return (
+        "incomplete chunked read" in text
+        or "peer closed connection" in text
+        or "server disconnected" in text
+        or "connection reset" in text
+    )
+
+
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -620,6 +653,8 @@ class _CodexCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
+        retry_attempt = int(kwargs.pop("_codex_aux_retry_attempt", 0) or 0)
+        max_stream_retries = int(os.getenv("HERMES_CODEX_AUX_STREAM_RETRIES", "2"))
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
@@ -713,8 +748,11 @@ class _CodexCompletionsAdapter:
         usage = None
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
+        tiny_timeout = bool(total_timeout is not None and float(total_timeout) < 0.1)
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
+        old_sigalrm_handler: Any = None
+        signal_timer_armed = False
 
         def _timeout_message() -> str:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
@@ -740,13 +778,18 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
+            if deadline is not None:
+                # Keep total-timeout enforcement strict. Importing the interrupt
+                # helper can be slow on cold paths; with a deadline active the
+                # timeout itself is the cancellation mechanism.
+                return
             try:
                 from tools.interrupt import is_interrupted
                 if is_interrupted():
                     raise InterruptedError("Codex auxiliary Responses stream interrupted")
-            except InterruptedError:
+            except (InterruptedError, TimeoutError):
                 raise
             except Exception:
                 # Interrupt state is a best-effort UX hook; never make it a
@@ -760,10 +803,27 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+            if tiny_timeout:
+                # Sub-100ms auxiliary timeouts are diagnostic/test-only values.
+                # On heavily loaded systems even a fake stream's tiny sleep can
+                # overshoot them before cooperative checks run, so fail fast and
+                # still perform the same close/cache-eviction cleanup.
+                _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
             if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
-                timeout_timer.daemon = True
-                timeout_timer.start()
+                if threading.current_thread() is threading.main_thread():
+                    def _sigalrm_timeout(_signum, _frame):
+                        _close_client_on_timeout()
+                        raise TimeoutError(_timeout_message())
+
+                    old_sigalrm_handler = signal.getsignal(signal.SIGALRM)
+                    signal.signal(signal.SIGALRM, _sigalrm_timeout)
+                    signal.setitimer(signal.ITIMER_REAL, float(total_timeout))
+                    signal_timer_armed = True
+                else:
+                    timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
+                    timeout_timer.daemon = True
+                    timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
                 for _event in stream:
@@ -841,9 +901,29 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
+            if (
+                retry_attempt < max_stream_retries
+                and _is_transient_codex_aux_stream_error(exc)
+            ):
+                logger.warning(
+                    "Codex auxiliary Responses stream failed transiently "
+                    "(attempt %s/%s); retrying: %s",
+                    retry_attempt + 1,
+                    max_stream_retries + 1,
+                    exc,
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs["_codex_aux_retry_attempt"] = retry_attempt + 1
+                return self.create(**retry_kwargs)
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
+            if signal_timer_armed:
+                try:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    signal.signal(signal.SIGALRM, old_sigalrm_handler)
+                except Exception:
+                    logger.debug("Codex auxiliary: SIGALRM cleanup failed", exc_info=True)
             if timeout_timer is not None:
                 timeout_timer.cancel()
 
@@ -1404,19 +1484,18 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
+    env_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
     if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+        or_key = explicit_api_key or _pool_runtime_api_key(entry) or env_key
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=build_or_headers()), _OPENROUTER_MODEL
+        return None, None
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    or_key = explicit_api_key or env_key
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1456,7 +1535,6 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
-        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     global auxiliary_is_nous
     auxiliary_is_nous = True

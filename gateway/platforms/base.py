@@ -1299,6 +1299,12 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Multi-agent routing context.  Populated by GatewayRunner via
+        # ``set_routing_context``; left empty in single-agent installs so
+        # every message resolves to the legacy "main" agent.
+        self._gateway_routes: List[Dict[str, Any]] = []
+        self._default_agent_id: str = "main"
+        self._gateway_ref: Optional[Any] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -1522,12 +1528,84 @@ class BasePlatformAdapter(ABC):
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def set_routing_context(
+        self,
+        routes: Optional[List[Dict[str, Any]]],
+        default_agent: str = "main",
+        gateway: Optional[Any] = None,
+    ) -> None:
+        """Inject the multi-agent routing table.
+
+        Called once by GatewayRunner during adapter wire-up.  Single-agent
+        installs leave *routes* empty, so every inbound message resolves
+        to ``default_agent`` (which itself defaults to ``"main"``).
+
+        Passing the gateway reference enables the ``select_agent`` plugin
+        hook to access shared state when overriding the route result.
+        """
+        self._gateway_routes = list(routes or [])
+        self._default_agent_id = (default_agent or "main").strip() or "main"
+        self._gateway_ref = gateway
+
+    def _attach_agent_id(self, event: "MessageEvent") -> None:
+        """Resolve and stamp ``event.source.agent_id`` for downstream dispatch.
+
+        Resolution order: declarative routes → ``select_agent`` plugin
+        hook → ``default_agent_id`` → "main".  Idempotent: if a route or
+        plugin upstream already set ``agent_id`` it is left untouched.
+
+        Imported lazily so single-agent installs that never call
+        ``set_routing_context`` avoid loading the resolver / plugin
+        machinery on every message.
+        """
+        try:
+            source = event.source
+        except AttributeError:
+            return
+        if source is None:
+            return
+        if getattr(source, "agent_id", None):
+            return  # Already resolved upstream.
+
+        route_match: Optional[str] = None
+        try:
+            from gateway.agent_routing import resolve_agent_id  # lazy
+            route_match = resolve_agent_id(
+                source, self._gateway_routes, default=None,
+            )
+        except Exception as exc:  # never break dispatch on a routing bug
+            logger.debug("[%s] route resolution failed: %s", self.name, exc)
+
+        hook_pick: Optional[str] = None
+        try:
+            from hermes_cli.plugins import invoke_hook  # lazy
+            results = invoke_hook(
+                "select_agent",
+                event=event,
+                gateway=self._gateway_ref,
+                route_match=route_match,
+            )
+            for r in results or []:
+                if isinstance(r, str) and r.strip():
+                    hook_pick = r.strip()
+                    break
+        except Exception as exc:
+            logger.debug("[%s] select_agent hook failed: %s", self.name, exc)
+
+        agent_id = hook_pick or route_match or self._default_agent_id or "main"
+        try:
+            import dataclasses
+            event.source = dataclasses.replace(source, agent_id=agent_id)
+        except Exception as exc:
+            logger.debug("[%s] could not stamp agent_id=%r: %s",
+                         self.name, agent_id, exc)
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -2758,7 +2836,12 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
-        
+
+        # Resolve which agent should handle this message and stamp the
+        # decision onto ``event.source.agent_id`` so build_session_key,
+        # cron creation, hooks and delivery all see a consistent identity.
+        self._attach_agent_id(event)
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

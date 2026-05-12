@@ -151,6 +151,17 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Agent selection hook (single-gateway-multi-agent).  Fired once per
+    # inbound MessageEvent after the declarative routes table has been
+    # consulted but BEFORE the message dispatches to an AIAgent.  Plugins
+    # return a string (the agent_id) to bind the message to that agent,
+    # or None/"" to defer.  First non-empty string wins.  When all hooks
+    # defer, the runtime falls back to the routes-table result, then to
+    # ``config.default_agent``, then to ``"main"``.
+    #
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner,
+    #         route_match: Optional[str]  (what the routes table resolved to)
+    "select_agent",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

@@ -468,6 +468,13 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # ── Multi-agent (single-gateway-multi-agent) ─────────────────────────
+    # Empty defaults preserve legacy single-agent behavior: the runtime
+    # always synthesizes a {"main": AgentProfile()} registry on top of this.
+    agents: Dict[str, Any] = field(default_factory=dict)
+    routes: List[Dict[str, Any]] = field(default_factory=list)
+    default_agent: str = "main"
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -561,6 +568,9 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "agents": self.agents,
+            "routes": self.routes,
+            "default_agent": self.default_agent,
         }
     
     @classmethod
@@ -614,6 +624,21 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Multi-agent config (optional; empty defaults preserve legacy
+        # single-agent behavior).
+        agents = data.get("agents") or {}
+        if not isinstance(agents, dict):
+            agents = {}
+        routes_raw = data.get("routes") or []
+        routes: List[Dict[str, Any]] = []
+        if isinstance(routes_raw, list):
+            for r in routes_raw:
+                if isinstance(r, dict):
+                    routes.append(r)
+        default_agent = data.get("default_agent") or "main"
+        if not isinstance(default_agent, str) or not default_agent.strip():
+            default_agent = "main"
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -629,6 +654,9 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            agents=agents,
+            routes=routes,
+            default_agent=default_agent.strip(),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

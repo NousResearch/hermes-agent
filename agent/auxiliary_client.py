@@ -269,6 +269,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "minimax-oauth": "MiniMax-M2.7-highspeed",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
+    "openrouter": "google/gemini-3-flash-preview",
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -1381,23 +1382,42 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
+def _read_openrouter_aux_model() -> str:
+    """Return the auxiliary model for OpenRouter.
+
+    Checks ``fallback_providers`` in config first (user override), then
+    falls back to the hardcoded default.
+    """
+    try:
+        from hermes_cli.config import load_config
+        for entry in (load_config().get("fallback_providers") or []):
+            if isinstance(entry, dict) and entry.get("provider") == "openrouter":
+                model = entry.get("model")
+                if model:
+                    return str(model)
+    except Exception:
+        pass
+    return _OPENROUTER_MODEL
+
+
 def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+    model = _read_openrouter_aux_model()
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
+        logger.debug("Auxiliary client: OpenRouter via pool (%s)", model)
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+                       default_headers=build_or_headers()), model
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
-    logger.debug("Auxiliary client: OpenRouter")
+    logger.debug("Auxiliary client: OpenRouter (%s)", model)
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), _OPENROUTER_MODEL
+                   default_headers=build_or_headers()), model
 
 
 def _describe_openrouter_unavailable() -> str:

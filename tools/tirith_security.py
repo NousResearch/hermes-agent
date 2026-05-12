@@ -21,6 +21,7 @@ never blocks.
 """
 
 import hashlib
+import re
 import json
 import logging
 import os
@@ -669,11 +670,46 @@ def ensure_installed(*, log_failures: bool = True):
 
 
 # ---------------------------------------------------------------------------
+# Benign-TLD suppression
+# ---------------------------------------------------------------------------
+
+
+def _is_benign_tld_only(findings: list) -> bool:
+    """Return True if every finding is a lookalike_tld for a benign TLD.
+
+    A finding matches when its rule_id is ``lookalike_tld`` and its detail
+    text references only TLDs listed in ``_BENIGN_LOOKALIKE_TLDS``.
+    """
+    if not findings:
+        return False
+    for f in findings:
+        if not isinstance(f, dict):
+            return False
+        if f.get("rule_id") != "lookalike_tld":
+            return False
+        # Extract the TLD from the detail string.  Tirith formats it as e.g.
+        # "Domain uses '.app' TLD which can be confused with file extensions"
+        detail = f.get("detail", "") or f.get("description", "") or ""
+        tld_match = _BENIGN_TLD_RE.search(detail)
+        if not tld_match or tld_match.group(0) not in _BENIGN_LOOKALIKE_TLDS:
+            return False
+    return True
+
+
+_BENIGN_TLD_RE = re.compile(r"\.[a-z]{2,}")
+
+
+# ---------------------------------------------------------------------------
 # Main API
 # ---------------------------------------------------------------------------
 
 _MAX_FINDINGS = 50
 _MAX_SUMMARY_LEN = 500
+
+# Benign TLDs that tirith flags as lookalike_tld but are legitimate ICANN
+# gTLDs widely used by real services.  When *every* finding in a scan is a
+# lookalike_tld for one of these TLDs the verdict is downgraded to "allow".
+_BENIGN_LOOKALIKE_TLDS = frozenset({".app"})
 
 
 def check_command_security(command: str) -> dict:
@@ -770,5 +806,13 @@ def check_command_security(command: str) -> dict:
             summary = "security issue detected (details unavailable)"
         elif action == "warn":
             summary = "security warning detected (details unavailable)"
+
+    # Suppress false-positive warnings for benign TLDs (e.g. .app).
+    # When the only findings are lookalike_tld for a benign TLD, the warning
+    # is noise — downgrade to allow so the command proceeds without an
+    # unnecessary approval prompt.  Mixed findings are preserved as-is.
+    if action == "warn" and findings and _is_benign_tld_only(findings):
+        logger.debug("suppressing benign lookalike_tld-only warning")
+        action = "allow"
 
     return {"action": action, "findings": findings, "summary": summary}

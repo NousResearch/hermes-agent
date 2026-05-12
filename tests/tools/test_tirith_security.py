@@ -1221,3 +1221,83 @@ class TestSpawnWarningDedup:
             if "tirith path resolved to None" in rec.message
         ]
         assert len(none_warnings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for benign lookalike_tld suppression (issue #24461)
+# ---------------------------------------------------------------------------
+
+class TestBenignTldSuppression:
+
+    def test_app_only_finding_is_benign(self):
+        from tools.tirith_security import _is_benign_tld_only
+        findings = [
+            {"rule_id": "lookalike_tld", "detail": "Domain uses '.app' TLD which can be confused with file extensions"}
+        ]
+        assert _is_benign_tld_only(findings) is True
+
+    def test_mixed_findings_not_benign(self):
+        from tools.tirith_security import _is_benign_tld_only
+        findings = [
+            {"rule_id": "lookalike_tld", "detail": "Domain uses '.app' TLD which can be confused with file extensions"},
+            {"rule_id": "pipe_to_interpreter", "detail": "Pipe to shell"},
+        ]
+        assert _is_benign_tld_only(findings) is False
+
+    def test_non_app_tld_not_benign(self):
+        from tools.tirith_security import _is_benign_tld_only
+        findings = [
+            {"rule_id": "lookalike_tld", "detail": "Domain uses '.zip' TLD which can be confused with file extensions"}
+        ]
+        assert _is_benign_tld_only(findings) is False
+
+    def test_empty_findings(self):
+        from tools.tirith_security import _is_benign_tld_only
+        assert _is_benign_tld_only([]) is False
+
+    def test_multiple_app_findings_benign(self):
+        from tools.tirith_security import _is_benign_tld_only
+        findings = [
+            {"rule_id": "lookalike_tld", "detail": "Domain uses '.app' TLD"},
+            {"rule_id": "lookalike_tld", "detail": "Domain uses '.app' TLD"},
+        ]
+        assert _is_benign_tld_only(findings) is True
+
+    @patch("tools.tirith_security._load_security_config", return_value={
+        "tirith_enabled": True, "tirith_path": "/usr/bin/tirith",
+        "tirith_timeout": 5, "tirith_fail_open": True,
+    })
+    @patch("tools.tirith_security._resolve_tirith_path", return_value="/usr/bin/tirith")
+    @patch("subprocess.run")
+    def test_check_command_downgrades_app_warn(self, mock_run, _rtp, _cfg):
+        from tools.tirith_security import check_command_security
+        mock_run.return_value = MagicMock(
+            returncode=2,
+            stdout=json.dumps({
+                "findings": [{"rule_id": "lookalike_tld", "detail": "Domain uses .app TLD"}],
+                "summary": "lookalike TLD",
+            }),
+        )
+        result = check_command_security("curl https://test.local")
+        assert result["action"] == "allow"
+
+    @patch("tools.tirith_security._load_security_config", return_value={
+        "tirith_enabled": True, "tirith_path": "/usr/bin/tirith",
+        "tirith_timeout": 5, "tirith_fail_open": True,
+    })
+    @patch("tools.tirith_security._resolve_tirith_path", return_value="/usr/bin/tirith")
+    @patch("subprocess.run")
+    def test_check_command_preserves_mixed_warn(self, mock_run, _rtp, _cfg):
+        from tools.tirith_security import check_command_security
+        mock_run.return_value = MagicMock(
+            returncode=2,
+            stdout=json.dumps({
+                "findings": [
+                    {"rule_id": "lookalike_tld", "detail": "Domain uses .app TLD"},
+                    {"rule_id": "homograph_url", "detail": "URL homograph"},
+                ],
+                "summary": "warnings",
+            }),
+        )
+        result = check_command_security("curl https://test.local")
+        assert result["action"] == "warn"

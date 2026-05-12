@@ -206,6 +206,9 @@ class TestTitleInHelp:
         from gateway.run import GatewayRunner
         import inspect
         source = inspect.getsource(GatewayRunner._handle_message)
+        inner = getattr(GatewayRunner, "_handle_message_inner", None)
+        if inner is not None:
+            source += inspect.getsource(inner)
         assert '"title"' in source
 
 

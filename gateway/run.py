@@ -1188,6 +1188,12 @@ class GatewayRunner:
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
         self.delivery_router = DeliveryRouter(self.config)
+
+        # Build the AgentProfile registry from config.agents.  Always returns
+        # at least {"main": AgentProfile()}, so single-agent installs see
+        # zero behavior change.
+        from agent.profile import load_agent_registry
+        self._agent_registry = load_agent_registry(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -3452,6 +3458,16 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_routing_context(
+                routes=self.config.routes,
+                default_agent=self.config.default_agent,
+                gateway=self,
+            )
+            adapter.set_routing_context(
+                routes=self.config.routes,
+                default_agent=self.config.default_agent,
+                gateway=self,
+            )
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4733,6 +4749,11 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_routing_context(
+                        routes=self.config.routes,
+                        default_agent=self.config.default_agent,
+                        gateway=self,
+                    )
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -5627,7 +5648,7 @@ class GatewayRunner:
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -5637,6 +5658,28 @@ class GatewayRunner:
         6. Run agent conversation
         7. Return response
         """
+        # Bind the per-message AgentProfile into the ContextVar so every
+        # downstream path-getter (SOUL.md, memory dir, skills dir, sessions
+        # dir) honors the routed agent.  Falls back to "main" when the
+        # adapter didn't stamp an agent_id (legacy code path).  Uses
+        # ``getattr`` for the registry so tests that build a stripped-down
+        # GatewayRunner without going through ``__init__`` still work.
+        from agent.profile import _current_agent_profile as _hermes_agent_cv
+        _hermes_agent_id = getattr(event.source, "agent_id", None) or "main"
+        _hermes_registry = getattr(self, "_agent_registry", None) or {}
+        _hermes_profile = _hermes_registry.get(_hermes_agent_id) or _hermes_registry.get("main")
+        _hermes_profile_token = _hermes_agent_cv.set(_hermes_profile) if _hermes_profile else None
+        try:
+            return await self._handle_message_inner(event)
+        finally:
+            if _hermes_profile_token is not None:
+                _hermes_agent_cv.reset(_hermes_profile_token)
+
+    async def _handle_message_inner(self, event: MessageEvent) -> Optional[str]:
+        # Body of the legacy _handle_message — wrapped by _handle_message
+        # above so the AgentProfile ContextVar is bound for the duration
+        # of the call.  The "update" command and the rest of the
+        # _known_commands set live here.
         source = event.source
 
         # Internal events (e.g. background-process completion notifications)

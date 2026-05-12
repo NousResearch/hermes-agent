@@ -316,6 +316,12 @@ class TestExtractMedia:
         ]
         assert cleaned == ""
 
+    def test_quoted_media_without_allowed_extension_is_not_extracted(self):
+        content = 'Do not send MEDIA:"/etc/passwd" or MEDIA:`/tmp/nope`.'
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
     def test_media_tag_supports_quoted_paths_with_spaces(self):
         content = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
         media, cleaned = BasePlatformAdapter.extract_media(content)
@@ -327,6 +333,12 @@ class TestExtractMedia:
         content = "MEDIA:/tmp/Jane Doe/speech.flac"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
+        assert cleaned == ""
+
+    def test_media_tag_supports_uppercase_unquoted_extensions(self):
+        content = "MEDIA:/tmp/IMAGE.PNG"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/IMAGE.PNG", False)]
         assert cleaned == ""
 
     def test_as_document_directive_stripped_from_cleaned_text(self):
@@ -359,6 +371,44 @@ class TestExtractMedia:
         # Both directives stripped from cleaned text
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
+
+    def test_media_placeholder_example_is_not_extracted(self):
+        content = "Use MEDIA:<path> in the final block."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_regex_example_is_not_extracted(self):
+        content = r"Example regex: MEDIA:\s*(\S+) should stay documentation."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_inside_fenced_code_block_is_not_extracted(self):
+        content = "Before\n```text\nMEDIA:/tmp/example.png\n```\nAfter"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_inside_inline_code_is_not_extracted(self):
+        content = "Use `MEDIA:/tmp/example.png` as a literal example."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_inside_inline_code_does_not_hide_later_real_media(self):
+        content = "Use `MEDIA:/tmp/example.png` as a literal.\nMEDIA:/tmp/real.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/real.png", False)]
+        assert "`MEDIA:/tmp/example.png`" in cleaned
+        assert "MEDIA:/tmp/real.png" not in cleaned
+
+    def test_multiple_unquoted_media_tags_do_not_merge_across_prose(self):
+        content = "MEDIA:/tmp/a.png and MEDIA:/tmp/b.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/a.png", False), ("/tmp/b.pdf", False)]
+        assert "MEDIA:" not in cleaned
+        assert "and" in cleaned
 
 
 # ---------------------------------------------------------------------------

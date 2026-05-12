@@ -2055,28 +2055,64 @@ class BasePlatformAdapter(ABC):
 
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
-        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         # Strip [[as_document]] directive — callers inspect the original
         # ``content`` for it (so they can still react to it); here we just
         # keep it out of the user-visible cleaned text.
-        cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        #
+        # Only local absolute/home-relative paths are valid. Do not treat docs,
+        # regex snippets, or placeholder examples like ``MEDIA:<path>`` as
+        # attachments — gateway dispatch will try to send every extracted tuple.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`(?:~/|/)[^`\n]+`|"(?:~/|/)[^"\n]+"|'(?:~/|/)[^'\n]+'|(?:~/|/)(?:(?!MEDIA:)[^`\n])+?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?''',
+            re.IGNORECASE,
         )
+
+        # Build spans covered by fenced code blocks and inline code. MEDIA tags
+        # inside examples must stay visible text, not become delivery work.
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
+        allowed_media_exts = (
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov",
+            ".avi", ".mkv", ".webm", ".ogg", ".opus", ".mp3", ".wav",
+            ".m4a", ".flac", ".epub", ".pdf", ".zip", ".rar", ".7z",
+            ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt",
+            ".csv", ".apk", ".ipa",
+        )
+
+        valid_matches = []
         for match in media_pattern.finditer(content):
+            if _in_code(match.start()):
+                continue
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
+            if path and path.lower().endswith(allowed_media_exts):
                 media.append((os.path.expanduser(path), has_voice_tag))
+                valid_matches.append(match)
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        if valid_matches:
+            pieces = []
+            last_end = 0
+            for match in valid_matches:
+                pieces.append(cleaned[last_end:match.start()])
+                last_end = match.end()
+            pieces.append(cleaned[last_end:])
+            cleaned = ''.join(pieces)
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        cleaned = cleaned.replace("[[as_document]]", "")
+        if valid_matches:
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

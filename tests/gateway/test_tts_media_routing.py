@@ -106,6 +106,15 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+def _stream_runner():
+    return SimpleNamespace(
+        _reply_anchor_for_event=lambda event: None,
+        _thread_metadata_for_source=lambda source, reply_anchor: (
+            {"thread_id": source.thread_id} if source.thread_id else None
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender():
     event = _event(thread_id="topic-1")
@@ -121,7 +130,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stream_runner(),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -150,7 +159,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stream_runner(),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -181,7 +190,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stream_runner(),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,

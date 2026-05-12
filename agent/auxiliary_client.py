@@ -3822,6 +3822,26 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
+    # When an explicit provider is given and no task-config api_mode override,
+    # fall back to the provider profile's declared api_mode. Without this,
+    # plugin providers that declare api_mode="anthropic_messages" (i.e. their
+    # upstream speaks the Anthropic Messages API, not OpenAI Chat Completions)
+    # silently land on the OpenAI-wire transport and 404 from
+    # `chat/completions` calls. The URL-suffix detection in
+    # `_endpoint_speaks_anthropic_messages` only catches /anthropic-suffixed
+    # gateways; it misses plain-base-URL Anthropic-API endpoints (e.g. local
+    # proxies on 127.0.0.1:PORT). Reading the profile here closes the gap so
+    # any provider plugin can declare api_mode and have it honored regardless
+    # of upstream URL shape.
+    if provider and not resolved_api_mode:
+        try:
+            from providers import get_provider_profile as _gpf_resolve
+            _profile = _gpf_resolve(provider)
+            if _profile and getattr(_profile, "api_mode", None):
+                resolved_api_mode = _profile.api_mode
+        except Exception:
+            pass
+
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:

@@ -1165,13 +1165,33 @@ class TestBedrockErrorClassification:
 class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
+    def test_claude_opus_4_7(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Opus 4.7 has 1M context generally available (no beta header required)
+        # per https://platform.claude.com/docs/en/about-claude/models/overview
+        assert get_bedrock_context_length("anthropic.claude-opus-4-7") == 1_000_000
+
     def test_claude_opus_4_6(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 200_000
+        # Opus 4.6 has 1M context generally available (no beta header required).
+        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
 
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 200_000
+        # Sonnet 4.6 has 1M context generally available (no beta header required).
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 1_000_000
+
+    def test_claude_sonnet_4_5_is_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Sonnet 4.5's 1M beta was retired on April 30, 2026;
+        # it is now standard 200K.
+        # https://platform.claude.com/docs/en/release-notes/overview
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-5") == 200_000
+
+    def test_claude_haiku_4_5_is_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Haiku 4.5 is a 200K-context model per the Anthropic models overview.
+        assert get_bedrock_context_length("anthropic.claude-haiku-4-5-20251001-v1:0") == 200_000
 
     def test_nova_pro(self):
         from agent.bedrock_adapter import get_bedrock_context_length
@@ -1187,8 +1207,9 @@ class TestBedrockContextLength:
 
     def test_inference_profile_resolves(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        # Cross-region inference profiles contain the base model ID
-        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 200_000
+        # Cross-region inference profiles contain the base model ID.
+        # Sonnet 4.6 is 1M, so a 'us.' profile of it should also resolve to 1M.
+        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 1_000_000
 
     def test_longest_prefix_wins(self):
         from agent.bedrock_adapter import get_bedrock_context_length

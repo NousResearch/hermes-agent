@@ -366,7 +366,27 @@ install_uv() {
 
     # Install uv
     log_info "Installing uv (fast Python package manager)..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+    # Capture installer output so a failure shows the user WHY (network,
+    # glibc mismatch on old distros, missing curl, ~/.local/bin not
+    # writable, disk full, corp proxy / TLS interception, etc.) instead
+    # of the previous "✗ Failed to install uv" with zero diagnostic.
+    #
+    # Two-stage: download the installer, then run it.  Piping
+    # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
+    # and conflates network errors with installer errors.
+    local _uv_install_log _uv_installer
+    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
+        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+        log_info "curl output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
+        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
+        exit 1
+    fi
+    if sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+        rm -f "$_uv_installer"
         # uv installs to ~/.local/bin by default
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
@@ -375,15 +395,22 @@ install_uv() {
         elif command -v uv &> /dev/null; then
             UV_CMD="uv"
         else
-            log_error "uv installed but not found on PATH"
+            log_error "uv installer reported success but binary not found on PATH"
+            log_info "Installer output:"
+            sed 's/^/    /' "$_uv_install_log" >&2
             log_info "Try adding ~/.local/bin to your PATH and re-running"
+            rm -f "$_uv_install_log"
             exit 1
         fi
+        rm -f "$_uv_install_log"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
+        log_info "Installer output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
 }
@@ -1073,12 +1100,27 @@ install_deps() {
     # extras spec, NOT because they're equivalent in posture.
     if [ -f "uv.lock" ]; then
         log_info "Trying tier: hash-verified (uv.lock) ..."
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$(mktemp)"; then
+        log_info "(this resolves + downloads ~50 packages — first run on a fresh"
+        log_info " venv can take 1-5 minutes; uv prints progress below)"
+        # Stream uv's progress directly to the user instead of swallowing
+        # it with `2>"$(mktemp)"`.  Two reasons:
+        #   1. `--all-extras --locked` against a fresh venv has to pull
+        #      every transitive (torch-class deps included) — silencing
+        #      stderr makes the install look frozen for minutes on slow
+        #      networks. Users see "Trying tier: hash-verified ..." and
+        #      assume it's hung.
+        #   2. The previous `2>"$(mktemp)"` substituted the path at
+        #      command-build time but never saved it, so on failure the
+        #      uv error message was unreachable — the user just got the
+        #      generic "lockfile may be stale" warning.
+        # uv's own progress UI handles TTY detection and downgrades
+        # gracefully when stdout/stderr aren't terminals.
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
         fi
-        log_warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+        log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
     else
         log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
     fi

@@ -1,6 +1,6 @@
 # Managed-Agent Policy Guardrails
 
-Status: review
+Status: done
 Owner: Hermes main / Multica Codex worker
 Started: 2026-05-12 07:35
 Branch: feat/managed-agent-policy-guardrails
@@ -63,6 +63,15 @@ git diff --check
 - 2026-05-12 07:35 — in_progress: branch created and plan/task ledger drafted.
 - 2026-05-12 07:38 — in_progress: Multica trace created: parent JEF-222, implementation JEF-223, review gate JEF-224. Implementation not assigned until ledger is committed/pushed for agent visibility.
 - 2026-05-12 08:19 — review: implemented policy-contract descriptors/helper, worker env injection, run metadata, worker-context guardrail section, and CLI show/json visibility. Local workers remain contract/path scoped with `os_sandbox=false`; no OS/container sandbox enforcement is claimed. Focused verification passed; ready for JEF-224 review gate.
+- 2026-05-12 08:24 — review: JEF-224 read-only Codex review passed on commit `14b93331a`; reviewer reran required tests plus isolated `HERMES_HOME` CLI smoke and reported no blocking findings.
+- 2026-05-12 08:28 — done: controller reran required verification on canonical branch, confirmed `git diff --check` clean, and closed Multica parent/child/review issues as complete on the feature branch. No merge to `main` performed.
+- 2026-05-12 08:28 — done: copied plan and ledger backup to `/Users/jeffphoon/mnt/G/project-files/hermes-agent/.hermes/`.
+
+## Review evidence
+
+- JEF-223 implementation run `36bf8c12-48f0-4c96-a0f4-8abade32a82c` completed with commit `14b93331a feat: add kanban worker policy contracts`.
+- JEF-224 review run `53e6fb87-8283-4a3a-9b39-95030ffeceeb` completed with `Review pass`; no code changes by reviewer.
+- JEF-224 reviewer verification: Kanban DB/CLI `140 passed`; related regressions `135 passed, 1 skipped`; Kanban tools `198 passed`; `git diff --check` clean; isolated `HERMES_HOME` CLI smoke passed.
 
 ## Verification evidence
 
@@ -72,6 +81,17 @@ source venv/bin/activate && python -m pytest -q tests/hermes_cli/test_kanban_db.
 
 source venv/bin/activate && python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='
 # 135 passed, 1 skipped in 1.18s
+
+git diff --check
+# clean
+
+Controller closeout verification on 2026-05-12 08:28 +08:
+
+source venv/bin/activate && python -m pytest -q tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py -o 'addopts='
+# 140 passed in 3.99s
+
+source venv/bin/activate && python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='
+# 135 passed, 1 skipped in 0.95s
 
 git diff --check
 # clean

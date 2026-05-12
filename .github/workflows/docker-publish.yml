@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  IMAGE_NAME: badMade/hermes-agent
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-amd64:
     # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'badMade/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -134,7 +134,7 @@ jobs:
   # smoke test, then on push/release push by digest.
   # ---------------------------------------------------------------------------
   build-arm64:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'badMade/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:
@@ -211,7 +211,7 @@ jobs:
   # On releases it produces :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'badMade/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
     needs: [build-amd64, build-arm64]
     timeout-minutes: 10
@@ -299,7 +299,7 @@ jobs:
   # ---------------------------------------------------------------------------
   move-latest:
     if: |
-      github.repository == 'NousResearch/hermes-agent'
+      github.repository == 'badMade/hermes-agent'
       && github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && needs.merge.outputs.pushed_sha_tag == 'true'

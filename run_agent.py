@@ -4664,6 +4664,21 @@ class AIAgent:
             if not self._session_db_created:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
+            # Guard: if _repair_message_sequence() or
+            # _drop_trailing_empty_response_scaffolding() mutated ``messages``
+            # in-place (dropping orphan tool results, merging consecutive user
+            # messages), the list may now be shorter than the original
+            # conversation_history.  Cap both persistence cursors so the
+            # current turn is never silently skipped.
+            if self._last_flushed_db_idx > len(messages):
+                self._last_flushed_db_idx = len(messages)
+            if start_idx > len(messages):
+                logger.warning(
+                    "start_idx=%d > len(messages)=%d — repair removed %d messages; "
+                    "adjusting persistence boundary to last-flushed cursor",
+                    start_idx, len(messages), start_idx - len(messages),
+                )
+                start_idx = self._last_flushed_db_idx
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")

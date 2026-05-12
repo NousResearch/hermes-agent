@@ -102,7 +102,13 @@ class TestFlushAfterCompression:
             )
 
     def test_flush_with_stale_history_loses_messages(self):
-        """Demonstrates the bug condition: stale conversation_history causes data loss."""
+        """Regression: stale conversation_history no longer silently drops messages.
+
+        Before the fix, a stale conversation_history longer than the compressed
+        messages list caused flush_from to exceed len(messages), silently
+        skipping the current turn.  Now _flush_messages_to_session_db detects
+        this and adjusts the persistence boundary.
+        """
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -126,11 +132,12 @@ class TestFlushAfterCompression:
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
-            assert len(rows) == 0, (
-                "Expected 0 messages with stale conversation_history "
-                "(this test verifies the bug condition exists)"
+            # With the fix, stale history is detected and the boundary is
+            # adjusted to _last_flushed_db_idx (0), so all compressed
+            # messages are persisted.
+            assert len(rows) == 2, (
+                f"Expected 2 messages persisted after stale-history adjustment, got {len(rows)}. "
+                f"Fix for #24187 should prevent silent data loss."
             )
 
 

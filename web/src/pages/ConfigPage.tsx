@@ -118,6 +118,7 @@ export default function ConfigPage() {
   const [yamlText, setYamlText] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
+  const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
@@ -176,6 +177,10 @@ export default function ConfigPage() {
     api
       .getDefaults()
       .then(setDefaults)
+      .catch(() => {});
+    api
+      .getStatus()
+      .then((resp) => setConfigPath(resp.config_path))
       .catch(() => {});
   }, []);
 
@@ -416,7 +421,7 @@ export default function ConfigPage() {
         <div className="flex items-center gap-2">
           <Settings2 className="h-4 w-4 text-muted-foreground" />
           <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
-            {t.config.configPath}
+            {configPath ?? t.config.configPath}
           </code>
         </div>
         <div className="flex items-center gap-1.5">

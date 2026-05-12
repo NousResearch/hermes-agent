@@ -40,24 +40,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { fetchJSON } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type OfficeProfileName =
-  | "triage"
-  | "supervisor"
-  | "chief"
-  | "pm"
-  | "architect"
-  | "research"
-  | "coder"
-  | "reviewer"
-  | "qa"
-  | "security"
-  | "memory"
-  | "tooling"
-  | "approval"
-  | "observability"
-  | "devops"
-  | "docs"
-  | "demo";
+type OfficeProfileName = string;
 
 type TaskDiagnostic = { severity?: string; message?: string; kind?: string; last_seen_at?: number; count?: number };
 type TaskWarningSummary = { count?: number; highest_severity?: string; kinds?: Record<string, number>; latest_at?: number };
@@ -105,6 +88,7 @@ type OfficeStatus = {
     present: string[];
     missing: string[];
   };
+  roles?: Record<string, string[]>;
   workflow_states?: string[];
   health?: { checks?: OfficeHealthCheck[]; summary?: { pass?: number; warn?: number; fail?: number } };
   quality_gates?: Record<string, unknown>;
@@ -155,6 +139,40 @@ const OFFICE_ROLES: RoleMeta[] = [
   { name: "docs", title: "Docs", room: "ops", seat: "docs desk", description: "Writes runbooks, guides, and architecture documentation.", icon: MessageSquarePlus },
   { name: "demo", title: "Founder Demo", room: "ops", seat: "showcase wall", description: "Builds the story and demo path for founder-grade presentation.", icon: Sparkles },
 ];
+
+const ROLE_META_BY_NAME = Object.fromEntries(OFFICE_ROLES.map((role) => [role.name, role]));
+
+function seatTitle(base: RoleMeta, seat: string): string {
+  if (seat === base.name) return base.title;
+  const suffix = seat.startsWith(`${base.name}-`) ? seat.slice(base.name.length + 1) : seat;
+  return `${base.title} ${suffix}`;
+}
+
+function expandOfficeRoles(office?: OfficeStatus): RoleMeta[] {
+  const expanded: RoleMeta[] = [];
+  const seen = new Set<string>();
+  for (const base of OFFICE_ROLES) {
+    const seats = office?.roles?.[base.name]?.length ? office.roles[base.name] : [base.name];
+    for (const seat of seats) {
+      if (!seat || seen.has(seat)) continue;
+      seen.add(seat);
+      expanded.push({
+        ...base,
+        name: seat,
+        title: seatTitle(base, seat),
+        seat: seat === base.name ? base.seat : `${base.seat} · ${seat}`,
+      });
+    }
+  }
+  for (const profile of office?.profiles?.present ?? []) {
+    if (seen.has(profile)) continue;
+    const baseName = profile.replace(/-\d+$/, "");
+    const base = ROLE_META_BY_NAME[baseName] ?? OFFICE_ROLES[0];
+    seen.add(profile);
+    expanded.push({ ...base, name: profile, title: seatTitle(base, profile), seat: `${base.seat} · ${profile}` });
+  }
+  return expanded;
+}
 
 const ROOMS: Array<{ id: OfficeRoom; label: string; className: string }> = [
   { id: "front", label: "Front Desk", className: "lg:col-span-3" },
@@ -340,22 +358,77 @@ function OfficeRoomCard({ room, roles, assignments, now, office, onOpenTask }: {
   const roomTasks = roles.flatMap((role) => assignments.get(role.name) ?? []);
   const active = roomTasks.filter((task) => task.status === "running").length;
   const blocked = roomTasks.filter((task) => task.status === "blocked").length;
+  const queued = roomTasks.filter((task) => task.status === "ready").length;
+  const idle = roles.filter((role) => (assignments.get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
   return (
     <Card className={cn("relative overflow-hidden bg-gradient-to-br to-transparent", ROOM_GLOW[room.id], room.className)}>
       <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: "linear-gradient(currentColor 1px, transparent 1px), linear-gradient(90deg, currentColor 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
       <CardHeader className="relative">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <CardTitle>{room.label}</CardTitle>
-            <CardDescription>{roles.length} people · {roomTasks.length} assigned · {active} active{blocked ? ` · ${blocked} blocked` : ""}</CardDescription>
+            <CardDescription>{roles.length} crew · {roomTasks.length} assigned · {active} active{queued ? ` · ${queued} queued` : ""}{blocked ? ` · ${blocked} blocked` : ""}</CardDescription>
           </div>
-          <Building2 className="h-5 w-5 text-muted-foreground" />
+          <div className="grid grid-cols-2 gap-1 text-center text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+            <div className="border border-border/70 bg-background/35 px-2 py-1"><div className="text-foreground">{roles.length}</div><div>crew</div></div>
+            <div className="border border-border/70 bg-background/35 px-2 py-1"><div className="text-foreground">{idle}</div><div>idle</div></div>
+          </div>
         </div>
       </CardHeader>
-      <CardContent className="relative grid gap-3 md:grid-cols-2">
+      <CardContent className="relative grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {roles.map((role) => (
           <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} office={office} onOpenTask={onOpenTask} />
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CrewTeamOverview({ rooms, roles, assignments, onSelectRoom }: { rooms: typeof ROOMS; roles: RoleMeta[]; assignments: Map<string, KanbanTask[]>; onSelectRoom: (room: OfficeRoom) => void }) {
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Users className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <CardTitle>Crew by Team</CardTitle>
+            <CardDescription>Visual roster of every configured Office seat, grouped by operating team.</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {rooms.map((room) => {
+          const team = roles.filter((role) => role.room === room.id);
+          const teamTasks = team.flatMap((role) => assignments.get(role.name) ?? []);
+          const active = teamTasks.filter((task) => task.status === "running").length;
+          const blocked = teamTasks.filter((task) => task.status === "blocked").length;
+          const ready = teamTasks.filter((task) => task.status === "ready").length;
+          return (
+            <button key={room.id} type="button" onClick={() => onSelectRoom(room.id)} className={cn("group relative overflow-hidden border border-border bg-gradient-to-br to-transparent p-3 text-left transition hover:border-midground/70 hover:bg-card/70 focus:border-midground focus:outline-none", ROOM_GLOW[room.id])}>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-bold uppercase tracking-[0.08em] text-foreground">{room.label}</div>
+                  <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{team.length} seats · {teamTasks.length} tasks</div>
+                </div>
+                <Building2 className="h-4 w-4 text-muted-foreground transition group-hover:text-foreground" />
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-1 text-center text-[10px] uppercase tracking-[0.08em]">
+                <div className="border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-emerald-100"><div className="text-sm">{active}</div><div>active</div></div>
+                <div className="border border-sky-300/30 bg-sky-300/10 px-2 py-1 text-sky-100"><div className="text-sm">{ready}</div><div>queued</div></div>
+                <div className="border border-red-300/30 bg-red-300/10 px-2 py-1 text-red-100"><div className="text-sm">{blocked}</div><div>blocked</div></div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {team.slice(0, 12).map((role) => {
+                  const tasks = assignments.get(role.name) ?? [];
+                  const current = activeTask(tasks);
+                  const status = current?.status ?? "idle";
+                  return <span key={role.name} title={role.name} className={cn("h-2.5 w-2.5 rounded-full border", taskStatusTone(status))} />;
+                })}
+                {team.length > 12 && <span className="text-[10px] text-muted-foreground">+{team.length - 12}</span>}
+              </div>
+            </button>
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -1008,6 +1081,7 @@ export default function OfficePage() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [roomFilter, setRoomFilter] = useState<OfficeRoom | "all">("all");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [fallbackNow, setFallbackNow] = useState(0);
 
@@ -1095,26 +1169,35 @@ export default function OfficePage() {
   }, []);
 
   const tasks = useMemo(() => data?.columns.flatMap((column) => column.tasks) ?? [], [data]);
+  const officeRoles = useMemo(() => expandOfficeRoles(data?.office), [data?.office]);
   const links = data?.links ?? [];
   const now = data?.now ?? fallbackNow;
-  const assignees = useMemo(() => Array.from(new Set([...(data?.assignees ?? []), ...OFFICE_ROLES.map((role) => role.name)])).sort(), [data?.assignees]);
+  const assignees = useMemo(() => Array.from(new Set([...(data?.assignees ?? []), ...officeRoles.map((role) => role.name)])).sort(), [data?.assignees, officeRoles]);
+  const roomByAssignee = useMemo(() => Object.fromEntries(officeRoles.map((role) => [role.name, role.room])), [officeRoles]);
+  const visibleRooms = useMemo(() => roomFilter === "all" ? ROOMS : ROOMS.filter((room) => room.id === roomFilter), [roomFilter]);
   const filteredTasks = useMemo(() => {
     const q = query.trim().toLowerCase();
     return tasks.filter((task) => {
       if (statusFilter !== "all" && task.status !== statusFilter) return false;
       if (assigneeFilter === "unassigned" && task.assignee) return false;
       if (assigneeFilter !== "all" && assigneeFilter !== "unassigned" && task.assignee !== assigneeFilter) return false;
+      if (roomFilter !== "all") {
+        const room = task.assignee ? roomByAssignee[task.assignee] : undefined;
+        if (room !== roomFilter) return false;
+      }
       if (!q) return true;
       const haystack = [task.id, task.title, task.body, task.latest_summary, task.assignee, task.status].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(q);
     });
-  }, [assigneeFilter, query, statusFilter, tasks]);
+  }, [assigneeFilter, query, roomByAssignee, roomFilter, statusFilter, tasks]);
   const assignments = useMemo(() => roleMap(filteredTasks), [filteredTasks]);
+  const allAssignments = useMemo(() => roleMap(tasks), [tasks]);
   const unassigned = assignments.get("unassigned") ?? [];
   const activeCount = tasks.filter((task) => task.status === "running").length;
-  const idleCount = OFFICE_ROLES.filter((role) => (roleMap(tasks).get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
+  const idleCount = officeRoles.filter((role) => (allAssignments.get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
   const blockedCount = tasks.filter((task) => task.status === "blocked").length;
   const diagnosticCount = tasks.filter((task) => (task.diagnostics?.length ?? task.warnings?.count ?? 0) > 0).length;
+  const crewCount = data?.office?.profiles?.present?.length ?? officeRoles.length;
 
   async function dispatchNow() {
     setError(null);
@@ -1168,18 +1251,29 @@ export default function OfficePage() {
           </Card>
         )}
 
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-6">
+          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Crew present</div><div className="mt-2 text-3xl text-foreground">{crewCount}</div><div className="mt-1 text-[10px] normal-case text-muted-foreground">{officeRoles.length} seats visualized</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Active workers</div><div className="mt-2 text-3xl text-foreground">{activeCount}</div></CardContent></Card>
-          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Idle people</div><div className="mt-2 text-3xl text-foreground">{idleCount}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Idle crew</div><div className="mt-2 text-3xl text-foreground">{idleCount}</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Blocked</div><div className="mt-2 text-3xl text-foreground">{blockedCount}</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Diagnostics</div><div className="mt-2 text-3xl text-foreground">{diagnosticCount}</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Shown / Total</div><div className="mt-2 text-3xl text-foreground">{filteredTasks.length}/{tasks.length}</div></CardContent></Card>
         </div>
 
+        <CrewTeamOverview rooms={ROOMS} roles={officeRoles} assignments={allAssignments} onSelectRoom={(room) => { setRoomFilter(room); setViewMode("floor"); }} />
+
         <div className="flex flex-wrap items-center gap-2 border border-border bg-card/30 p-2">
           <Button ghost onClick={() => setViewMode("floor")} className={cn("gap-2", viewMode === "floor" && "border-midground/70 bg-card/80")}><LayoutGrid className="h-4 w-4" /> Floor</Button>
           <Button ghost onClick={() => setViewMode("table")} className={cn("gap-2", viewMode === "table" && "border-midground/70 bg-card/80")}><Table2 className="h-4 w-4" /> Table</Button>
           <Button ghost onClick={() => setViewMode("graph")} className={cn("gap-2", viewMode === "graph" && "border-midground/70 bg-card/80")}><ListTree className="h-4 w-4" /> Dependencies</Button>
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-xs normal-case text-muted-foreground">
+            <span>Team</span>
+            <select value={roomFilter} onChange={(e) => setRoomFilter(e.target.value as OfficeRoom | "all")} className="border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-midground">
+              <option value="all">All teams</option>
+              {ROOMS.map((room) => <option key={room.id} value={room.id}>{room.label}</option>)}
+            </select>
+            {roomFilter !== "all" && <Button ghost onClick={() => setRoomFilter("all")} className="px-2 py-1 text-xs">Clear team</Button>}
+          </div>
         </div>
 
         <AttentionQueue tasks={tasks} now={now} office={data?.office} onOpenTask={setSelectedTaskId} />
@@ -1189,11 +1283,11 @@ export default function OfficePage() {
             <FlowMap tasks={tasks} selectedStatus={statusFilter} onSelectStatus={setStatusFilter} />
             {viewMode === "floor" && (
               <div className="grid gap-4 lg:grid-cols-12">
-                {ROOMS.map((room) => (
+                {visibleRooms.map((room) => (
                   <OfficeRoomCard
                     key={room.id}
                     room={room}
-                    roles={OFFICE_ROLES.filter((role) => role.room === room.id)}
+                    roles={officeRoles.filter((role) => role.room === room.id)}
                     assignments={assignments}
                     now={now}
                     office={data?.office}

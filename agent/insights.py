@@ -90,6 +90,24 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def _format_usd(amount: float) -> str:
+    amount = float(amount or 0.0)
+    if amount == 0:
+        return "$0.00"
+    if amount < 0.01:
+        return f"${amount:.4f}"
+    return f"${amount:.2f}"
+
+
+def _has_displayable_cost(overview: Dict[str, Any]) -> bool:
+    return bool(
+        overview.get("estimated_cost")
+        or overview.get("actual_cost")
+        or overview.get("models_with_pricing")
+        or overview.get("included_cost_sessions")
+    )
+
+
 class InsightsEngine:
     """
     Analyzes session history and produces usage insights.
@@ -763,6 +781,8 @@ class InsightsEngine:
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
         lines.append(f"  Total tokens:      {o['total_tokens']:,}")
+        if _has_displayable_cost(o):
+            lines.append(f"  Est. cost:         ~{_format_usd(o.get('estimated_cost', 0.0))}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
@@ -878,6 +898,8 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        if _has_displayable_cost(o):
+            lines.append(f"**Est. cost:** ~{_format_usd(o.get('estimated_cost', 0.0))}")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")

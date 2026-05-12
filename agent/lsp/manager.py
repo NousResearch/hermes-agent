@@ -248,8 +248,15 @@ class LSPService:
     def enabled_for(self, file_path: str) -> bool:
         """Return True iff LSP should run for this specific file.
 
-        Gates on workspace detection (file or cwd inside a git worktree)
-        and on whether any registered server matches the extension.
+        Gates on workspace detection (file or cwd inside a git worktree),
+        on whether any registered server matches the extension, and
+        on whether the (server_id, workspace_root) pair is in the
+        broken-set from a previous spawn failure.
+
+        Files in already-broken pairs return False so the file_operations
+        layer skips the LSP path entirely — no spawn attempts, no
+        timeout cost — until the service is restarted (``hermes lsp
+        restart``) or the process exits.
         """
         if not self._enabled:
             return False
@@ -257,7 +264,19 @@ class LSPService:
         if srv is None or srv.server_id in self._disabled_servers:
             return False
         ws_root, gated_in = resolve_workspace_for_file(file_path)
-        return bool(ws_root and gated_in)
+        if not (ws_root and gated_in):
+            return False
+        # Broken-set short-circuit.  Use the per-server root if we can
+        # compute one cheaply; otherwise fall back to the workspace
+        # root as the broken key (which is what _get_or_spawn would
+        # have used anyway when it failed).
+        try:
+            per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
+        except Exception:  # noqa: BLE001
+            per_server_root = ws_root
+        if (srv.server_id, per_server_root) in self._broken:
+            return False
+        return True
 
     def snapshot_baseline(self, file_path: str) -> None:
         """Snapshot current diagnostics for ``file_path`` as the delta baseline.
@@ -265,6 +284,10 @@ class LSPService:
         Called BEFORE a write so the next ``get_diagnostics_sync()``
         can filter out pre-existing errors.  Best-effort — failures
         are silently swallowed so a flaky server can't break a write.
+
+        Outer timeouts (e.g. server hangs during initialize) mark the
+        (server_id, workspace_root) pair as broken so subsequent edits
+        skip it instantly instead of re-paying the timeout cost.
         """
         if not self.enabled_for(file_path):
             return
@@ -273,9 +296,7 @@ class LSPService:
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
-            # Set empty baseline so the next call still does the
-            # comparison (any post-edit diagnostic will be considered
-            # "new" — safe default).
+            self._mark_broken_for_file(file_path, e)
             self._delta_baseline[os.path.abspath(file_path)] = []
 
     def get_diagnostics_sync(
@@ -311,10 +332,12 @@ class LSPService:
         except asyncio.TimeoutError as e:
             eventlog.log_timeout(server_id, file_path)
             logger.debug("LSP diagnostics timeout for %s: %s", file_path, e)
+            self._mark_broken_for_file(file_path, e)
             return []
         except Exception as e:  # noqa: BLE001
             eventlog.log_server_error(server_id, file_path, e)
             logger.debug("LSP diagnostics fetch failed for %s: %s", file_path, e)
+            self._mark_broken_for_file(file_path, e)
             return []
 
         abs_path = os.path.abspath(file_path)
@@ -338,6 +361,54 @@ class LSPService:
         else:
             eventlog.log_clean(server_id, file_path)
         return diags
+
+    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
+        """Mark the (server_id, workspace_root) pair as broken so subsequent
+        edits skip it instantly instead of re-paying timeout cost.
+
+        Called when the outer ``_loop.run`` timeout cancels an in-flight
+        spawn/initialize that the inner ``_get_or_spawn`` task was still
+        holding open.  Without this, every subsequent write would re-enter
+        the spawn path and re-pay the full ``snapshot_baseline``
+        timeout (8s) until the binary is fixed.
+
+        Also kills any orphan client process that survived the cancelled
+        future, and emits a single eventlog WARNING so the user knows
+        which server gave up.
+
+        ``exc`` is whatever exception the outer wrapper caught — used
+        only for logging, never re-raised.
+        """
+        srv = find_server_for_file(file_path)
+        if srv is None:
+            return
+        ws_root, gated = resolve_workspace_for_file(file_path)
+        if not (ws_root and gated):
+            return
+        try:
+            per_server_root = srv.resolve_root(file_path, ws_root) or ws_root
+        except Exception:  # noqa: BLE001
+            per_server_root = ws_root
+        key = (srv.server_id, per_server_root)
+        already_broken = key in self._broken
+        self._broken.add(key)
+
+        # Kill any client we managed to spawn before the timeout.  The
+        # cancelled future never reached the broken-set add inside
+        # ``_get_or_spawn`` so the client may still be hanging in
+        # ``_clients`` with a half-initialized state.
+        with self._state_lock:
+            client = self._clients.pop(key, None)
+        if client is not None:
+            try:
+                # Fire-and-forget shutdown — give it a second to cleanup,
+                # but don't block.  We're already on a slow path.
+                self._loop.run(client.shutdown(), timeout=1.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not already_broken:
+            eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)
 
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""

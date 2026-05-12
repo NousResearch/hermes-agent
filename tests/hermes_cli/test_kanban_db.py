@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import subprocess
 import time
@@ -92,6 +93,41 @@ def test_create_task_defaults_worker_and_checkpoint_policy(kanban_home):
 def test_create_task_rejects_invalid_worker_policy(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="worker_policy"):
         kb.create_task(conn, title="bad policy", worker_policy="root_vm")
+
+
+def test_worker_policy_contract_is_structured_and_honest():
+    contract = kb.worker_policy_contract("read_only")
+
+    assert contract["name"] == "read_only"
+    assert contract["allows_edits"] is False
+    assert contract["allows_destructive_commands"] is False
+    assert contract["enforcement_level"] == "contract"
+    assert contract["policy_enforced_by"] == "contract"
+    assert contract["os_sandbox"] is False
+    assert contract["container_sandbox"] is False
+    assert contract["allowed_operations"]
+    assert contract["forbidden_operations"]
+    assert any("Do not edit files" in item for item in contract["instructions"])
+    assert "OS/container sandbox" in contract["honest_sandbox_note"]
+
+
+@pytest.mark.parametrize(
+    "policy,allows_edits,expected_instruction",
+    [
+        ("test_only", False, "Do not edit files"),
+        ("code_edit", True, "workspace-scoped edits"),
+        ("sandbox_strict", True, "strongest available isolation"),
+    ],
+)
+def test_worker_policy_contract_policy_specific_instructions(
+    policy, allows_edits, expected_instruction,
+):
+    contract = kb.worker_policy_contract(policy)
+
+    assert contract["allows_edits"] is allows_edits
+    assert any(expected_instruction in item for item in contract["instructions"])
+    assert contract["os_sandbox"] is False
+    assert contract["enforcement_level"] == "contract"
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +628,41 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
     assert "CLARIFICATION_MARKER" in ctx
     assert c in ctx
     assert "child" in ctx
+
+
+def test_worker_context_includes_read_only_policy_contract(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="review only",
+            assignee="alice",
+            worker_policy="read_only",
+        )
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert "## Worker policy contract" in ctx
+    assert "Policy: read_only" in ctx
+    assert "Do not edit files" in ctx
+    assert "os_sandbox=false" in ctx
+    assert "container_sandbox=false" in ctx
+    assert "enforced_by=contract" in ctx
+
+
+def test_worker_context_includes_code_edit_workspace_scope(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="edit code",
+            assignee="alice",
+            worker_policy="code_edit",
+            workspace_path="/tmp/example-workspace",
+        )
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert "## Worker policy contract" in ctx
+    assert "Policy: code_edit" in ctx
+    assert "workspace-scoped edits" in ctx
+    assert "outside the assigned workspace" in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1216,12 @@ class TestSharedBoardPaths:
         env = captured["env"]
         assert env["HERMES_KANBAN_WORKER_POLICY"] == "sandbox_strict"
         assert env["HERMES_KANBAN_CHECKPOINT_ID"] == checkpoint["id"]
+        contract = json.loads(env["HERMES_KANBAN_POLICY_CONTRACT"])
+        assert contract["name"] == "sandbox_strict"
+        assert contract["enforcement_level"] == "contract"
+        assert contract["os_sandbox"] is False
+        assert contract["container_sandbox"] is False
+        assert contract["capabilities"]["os_sandbox"] is False
         caps = kb.json.loads(env["HERMES_KANBAN_ISOLATION_CAPABILITIES"])
         assert caps["os_sandbox"] is False
         assert caps["workspace_kind"] == "scratch"
@@ -1175,6 +1252,10 @@ def test_dispatcher_records_checkpoint_event_and_run_metadata(kanban_home, monke
     assert task.workspace_path
     assert any(e.kind == "workspace_checkpoint" for e in events)
     assert run.metadata["worker_policy"]["name"] == "code_edit"
+    assert run.metadata["policy_contract"]["name"] == "code_edit"
+    assert run.metadata["policy_contract"]["allows_edits"] is True
+    assert run.metadata["policy_contract"]["allows_destructive_commands"] is False
+    assert run.metadata["policy_contract"]["os_sandbox"] is False
     assert run.metadata["checkpoint"]["policy"] == "manifest"
     assert run.metadata["workspace_capabilities"]["os_sandbox"] is False
 

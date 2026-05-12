@@ -131,7 +131,24 @@ def test_run_slash_create_accepts_policy_flags_and_show_surfaces_them(kanban_hom
 
     show = kc.run_slash(f"show {tid}")
     assert "worker-policy: read_only" in show
+    assert "policy-contract: enforcement=contract edits=false destructive=false os_sandbox=false" in show
     assert "checkpoint-policy: off" in show
+
+
+def test_run_slash_show_json_includes_policy_contract(kanban_home):
+    out = kc.run_slash(
+        "create 'json policy task' --assignee alice "
+        "--worker-policy sandbox_strict --json"
+    )
+    tid = json.loads(out)["id"]
+
+    payload = json.loads(kc.run_slash(f"show {tid} --json"))
+
+    contract = payload["task"]["policy_contract"]
+    assert contract["name"] == "sandbox_strict"
+    assert contract["enforcement_level"] == "contract"
+    assert contract["os_sandbox"] is False
+    assert any("strongest available isolation" in item for item in contract["instructions"])
 
 
 def test_run_slash_create_rejects_invalid_policy(kanban_home, capsys):

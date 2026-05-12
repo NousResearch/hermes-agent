@@ -108,30 +108,93 @@ WORKER_POLICY_DESCRIPTORS: dict[str, dict[str, Any]] = {
         "description": "current worker behavior with bounded workspace evidence",
         "allows_edits": True,
         "allows_destructive_commands": True,
+        "enforcement_level": "contract",
+        "allowed_operations": [
+            "Read task context, inspect the assigned workspace, run commands, edit files, and complete or block the task.",
+        ],
+        "forbidden_operations": [
+            "Do not claim OS/container sandbox isolation unless a real backend reports it.",
+        ],
+        "instructions": [
+            "Follow normal Hermes and user instructions for the assigned task.",
+            "Keep work scoped to the assigned workspace and task.",
+        ],
     },
     "read_only": {
         "name": "read_only",
         "description": "contract forbids file edits and destructive commands",
         "allows_edits": False,
         "allows_destructive_commands": False,
+        "enforcement_level": "contract",
+        "allowed_operations": [
+            "Read files, inspect repository state, run non-mutating diagnostics, and write comments or review findings.",
+        ],
+        "forbidden_operations": [
+            "Do not edit files.",
+            "Do not run destructive commands.",
+            "Do not create commits or mutate workspace state.",
+        ],
+        "instructions": [
+            "Do not edit files.",
+            "Report findings, risks, and verification evidence without changing the workspace.",
+        ],
     },
     "code_edit": {
         "name": "code_edit",
         "description": "permits code edits inside the assigned workspace",
         "allows_edits": True,
         "allows_destructive_commands": False,
+        "enforcement_level": "contract",
+        "allowed_operations": [
+            "Inspect files, make workspace-scoped edits, run tests, and record results.",
+        ],
+        "forbidden_operations": [
+            "Do not make edits outside the assigned workspace.",
+            "Do not run destructive commands unless explicitly approved by the user.",
+        ],
+        "instructions": [
+            "workspace-scoped edits are allowed.",
+            "Do not make edits outside the assigned workspace.",
+        ],
     },
     "test_only": {
         "name": "test_only",
         "description": "permits build/test commands; edits should be limited to temporary artifacts",
         "allows_edits": False,
         "allows_destructive_commands": False,
+        "enforcement_level": "contract",
+        "allowed_operations": [
+            "Run build, lint, test, and diagnostic commands that do not intentionally edit source files.",
+        ],
+        "forbidden_operations": [
+            "Do not edit files.",
+            "Do not create commits.",
+            "Do not run destructive commands.",
+        ],
+        "instructions": [
+            "Do not edit files.",
+            "Run tests or diagnostics only; leave source changes to a code_edit worker.",
+        ],
     },
     "sandbox_strict": {
         "name": "sandbox_strict",
         "description": "requires strongest available workspace isolation; local workspaces are contract-only",
         "allows_edits": True,
         "allows_destructive_commands": False,
+        "enforcement_level": "contract",
+        "allowed_operations": [
+            "Use the strongest available isolation, make workspace-scoped edits when needed, and run verification.",
+        ],
+        "forbidden_operations": [
+            "Do not claim OS/container sandbox isolation for local workers.",
+            "Do not run destructive commands unless explicitly approved by the user.",
+            "Do not make edits outside the assigned workspace.",
+        ],
+        "instructions": [
+            "Require the strongest available isolation before doing risky work.",
+            "For local Kanban workers, treat this as contract-only because os_sandbox=false.",
+            "workspace-scoped edits are allowed.",
+        ],
         "requires_strongest_available_isolation": True,
     },
 }
@@ -142,6 +205,7 @@ WORKSPACE_EVIDENCE_MAX_TEXT_BYTES = 16 * 1024
 WORKSPACE_EVIDENCE_MAX_FILES = 200
 WORKSPACE_EVIDENCE_MAX_DIRS = 200
 WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES = 64 * 1024
+POLICY_CONTRACT_ENV_MAX_BYTES = 12 * 1024
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -1327,7 +1391,67 @@ def validate_checkpoint_policy(policy: Optional[str]) -> str:
 
 def worker_policy_descriptor(policy: Optional[str]) -> dict[str, Any]:
     value = validate_worker_policy(policy)
-    return dict(WORKER_POLICY_DESCRIPTORS[value])
+    descriptor = dict(WORKER_POLICY_DESCRIPTORS[value])
+    for key in ("allowed_operations", "forbidden_operations", "instructions"):
+        descriptor[key] = list(descriptor.get(key) or [])
+    descriptor.setdefault("enforcement_level", "contract")
+    descriptor.setdefault("allows_edits", False)
+    descriptor.setdefault("allows_destructive_commands", False)
+    return descriptor
+
+
+def worker_policy_contract(
+    policy: Optional[str],
+    *,
+    capabilities: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return the machine-readable worker policy contract.
+
+    This is an instruction and audit contract for local workers, not an
+    OS/container sandbox claim. ``capabilities`` may add observed workspace
+    facts, but the top-level sandbox flags stay explicit for easy operator
+    and test assertions.
+    """
+    descriptor = worker_policy_descriptor(policy)
+    caps = dict(capabilities or {})
+    os_sandbox = bool(caps.get("os_sandbox", False))
+    container_sandbox = bool(caps.get("container_sandbox", False))
+    contract = {
+        **descriptor,
+        "policy_enforced_by": caps.get("policy_enforced_by") or "contract",
+        "os_sandbox": os_sandbox,
+        "container_sandbox": container_sandbox,
+        "network_sandbox": bool(caps.get("network_sandbox", False)),
+        "process_sandbox": bool(caps.get("process_sandbox", False)),
+        "honest_sandbox_note": (
+            "Local Kanban workers are policy-contract/path scoped only; "
+            "OS/container sandbox enforcement is not claimed "
+            "unless a future backend proves otherwise."
+        ),
+    }
+    if caps:
+        contract["capabilities"] = {
+            "workspace_kind": caps.get("workspace_kind"),
+            "path_scoped_workspace": bool(caps.get("path_scoped_workspace", False)),
+            "workspace_exists": bool(caps.get("workspace_exists", False)),
+            "git_repository": bool(caps.get("git_repository", False)),
+            "os_sandbox": os_sandbox,
+            "container_sandbox": container_sandbox,
+            "network_sandbox": bool(caps.get("network_sandbox", False)),
+            "process_sandbox": bool(caps.get("process_sandbox", False)),
+            "policy_enforced_by": caps.get("policy_enforced_by") or "contract",
+        }
+    return contract
+
+
+def _policy_contract_env_json(contract: dict[str, Any]) -> str:
+    raw = json.dumps(contract, ensure_ascii=False, sort_keys=True)
+    if len(raw.encode("utf-8")) <= POLICY_CONTRACT_ENV_MAX_BYTES:
+        return raw
+    slim = dict(contract)
+    slim.pop("capabilities", None)
+    slim["omitted"] = "capabilities omitted because contract env exceeded byte limit"
+    return json.dumps(slim, ensure_ascii=False, sort_keys=True)
 
 
 def create_task(
@@ -4260,10 +4384,15 @@ def dispatch_once(
         try:
             policy_meta = worker_policy_descriptor(claimed.worker_policy)
             capabilities = workspace_capabilities(claimed, workspace)
+            policy_contract = worker_policy_contract(
+                claimed.worker_policy,
+                capabilities=capabilities,
+            )
             checkpoint_policy = validate_checkpoint_policy(claimed.checkpoint_policy)
             checkpoint = create_workspace_checkpoint(claimed, workspace)
             run_meta = {
                 "worker_policy": policy_meta,
+                "policy_contract": policy_contract,
                 "checkpoint_policy": checkpoint_policy,
                 "checkpoint": {
                     k: v for k, v in checkpoint.items()
@@ -4294,6 +4423,7 @@ def dispatch_once(
                 )
             setattr(claimed, "checkpoint_id", checkpoint.get("id") or "")
             setattr(claimed, "workspace_capabilities", capabilities)
+            setattr(claimed, "policy_contract", policy_contract)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"checkpoint: {exc}",
@@ -4456,6 +4586,10 @@ def _default_spawn(
         ensure_ascii=False,
         sort_keys=True,
     )
+    contract = getattr(task, "policy_contract", None)
+    if not isinstance(contract, dict):
+        contract = worker_policy_contract(task.worker_policy, capabilities=capabilities)
+    env["HERMES_KANBAN_POLICY_CONTRACT"] = _policy_contract_env_json(contract)
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
@@ -4669,6 +4803,47 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 f"container_sandbox={bool(caps.get('container_sandbox'))}, "
                 f"enforced_by={caps.get('policy_enforced_by') or 'unknown'}"
             )
+    lines.append("")
+
+    caps = run_meta.get("workspace_capabilities") or {}
+    contract = run_meta.get("policy_contract")
+    if not isinstance(contract, dict):
+        contract = worker_policy_contract(task.worker_policy, capabilities=caps)
+
+    def _bool_text(value: Any) -> str:
+        return "true" if bool(value) else "false"
+
+    lines.append("## Worker policy contract")
+    lines.append(f"Policy: {contract.get('name') or task.worker_policy}")
+    lines.append(
+        "Enforcement: "
+        f"{contract.get('enforcement_level') or 'contract'} "
+        f"(enforced_by={contract.get('policy_enforced_by') or 'contract'})"
+    )
+    lines.append(
+        "Capabilities: "
+        f"os_sandbox={_bool_text(contract.get('os_sandbox'))}, "
+        f"container_sandbox={_bool_text(contract.get('container_sandbox'))}"
+    )
+    lines.append(
+        "Edit permissions: "
+        f"edits={_bool_text(contract.get('allows_edits'))}, "
+        f"destructive_commands={_bool_text(contract.get('allows_destructive_commands'))}"
+    )
+    allowed = contract.get("allowed_operations") or []
+    if allowed:
+        lines.append("Allowed operations:")
+        lines.extend(f"- {item}" for item in allowed[:6])
+    forbidden = contract.get("forbidden_operations") or []
+    if forbidden:
+        lines.append("Forbidden operations:")
+        lines.extend(f"- {item}" for item in forbidden[:8])
+    instructions = contract.get("instructions") or []
+    if instructions:
+        lines.append("Instructions:")
+        lines.extend(f"- {item}" for item in instructions[:8])
+    if contract.get("honest_sandbox_note"):
+        lines.append(f"Sandbox note: {contract['honest_sandbox_note']}")
     lines.append("")
 
     if task.body and task.body.strip():

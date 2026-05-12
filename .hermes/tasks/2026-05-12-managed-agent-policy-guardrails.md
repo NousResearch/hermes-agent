@@ -1,6 +1,6 @@
 # Managed-Agent Policy Guardrails
 
-Status: in_progress
+Status: review
 Owner: Hermes main / Multica Codex worker
 Started: 2026-05-12 07:35
 Branch: feat/managed-agent-policy-guardrails
@@ -62,3 +62,20 @@ git diff --check
 
 - 2026-05-12 07:35 — in_progress: branch created and plan/task ledger drafted.
 - 2026-05-12 07:38 — in_progress: Multica trace created: parent JEF-222, implementation JEF-223, review gate JEF-224. Implementation not assigned until ledger is committed/pushed for agent visibility.
+- 2026-05-12 08:19 — review: implemented policy-contract descriptors/helper, worker env injection, run metadata, worker-context guardrail section, and CLI show/json visibility. Local workers remain contract/path scoped with `os_sandbox=false`; no OS/container sandbox enforcement is claimed. Focused verification passed; ready for JEF-224 review gate.
+
+## Verification evidence
+
+```bash
+source venv/bin/activate && python -m pytest -q tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py -o 'addopts='
+# 140 passed in 3.92s
+
+source venv/bin/activate && python -m pytest -q tests/test_hermes_memory_provider.py tests/agent/test_auxiliary_temperature_retry.py tests/agent/test_prompt_builder.py -o 'addopts='
+# 135 passed, 1 skipped in 1.18s
+
+git diff --check
+# clean
+
+source venv/bin/activate && python -m pytest -q tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -o 'addopts='
+# 198 passed in 6.91s
+```

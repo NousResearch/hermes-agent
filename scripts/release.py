@@ -146,6 +146,8 @@ AUTHOR_MAP = {
     "98612432+Osraka@users.noreply.github.com": "Osraka",
     "112634774+ryptotalent@users.noreply.github.com": "ryptotalent",
     "270097726+hookinglau@users.noreply.github.com": "hookinglau",
+    "5029547+AllynSheep@users.noreply.github.com": "AllynSheep",
+    "allyn0306@gmail.com": "AllynSheep",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",

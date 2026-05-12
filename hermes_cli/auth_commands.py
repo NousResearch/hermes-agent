@@ -472,7 +472,22 @@ def auth_remove_command(args) -> None:
     for line in result.cleaned:
         print(line)
     if result.suppress:
-        suppress_credential_source(provider, removed.source)
+        # ``removed.source`` (e.g. ``manual:device_code``) can be shared by
+        # multiple pool entries — each `hermes auth add openai-codex --type oauth`
+        # produces another entry with the same source tag. Suppressing the
+        # shared source here would gate the survivors at every seed-time
+        # ``is_source_suppressed()`` check and pollute auth.json's
+        # ``suppressed_sources`` with a marker that contradicts the live
+        # pool. Only suppress when no survivor still carries that source.
+        # The source-specific ``remove_fn`` is still responsible for its
+        # own canonical-source suppression (e.g. codex's ``device_code``
+        # re-seed gate); we only skip the dispatcher's per-source default.
+        # See #24390.
+        shared_with_survivors = any(
+            entry.source == removed.source for entry in pool.entries()
+        )
+        if not shared_with_survivors:
+            suppress_credential_source(provider, removed.source)
     for line in result.hints:
         print(line)
 

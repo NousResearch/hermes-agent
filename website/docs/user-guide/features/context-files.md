@@ -182,6 +182,90 @@ When a file exceeds 20,000 characters, the truncation message reads:
 [...truncated AGENTS.md: kept 14000+4000 of 25000 chars. Use file tools to read the full file.]
 ```
 
+## `@`-Includes (Single Source of Truth)
+
+Any context file (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`,
+`SOUL.md`, `.cursor/rules/*.mdc`) may pull other files in via line-prefixed
+`@<path>` directives. This lets you keep one canonical instruction file in
+`~/` (or anywhere) and reference it from every project, the same way
+Claude Code, Cursor, and CAAMP-style tools do.
+
+### Syntax
+
+A line that contains *only* `@<path>` (with optional leading/trailing
+whitespace) is replaced inline with the contents of the referenced file.
+Inline `@mentions` in prose (e.g. "ask @bob") are **not** expanded — only
+line-prefixed directives.
+
+```markdown
+# My Project
+
+Project-specific rules go here.
+
+@~/.agents/AGENTS.md          # global personal rules
+@./docs/style-guide.md        # repo-relative
+@${COMPANY_RULES_DIR}/team.md # env-var
+```
+
+### Path resolution
+
+| Form | Resolves against |
+|------|------------------|
+| `@/abs/path.md` | absolute path as-is |
+| `@~/path.md` | `$HOME` |
+| `@$VAR/path.md` or `@${VAR}/path.md` | environment variable |
+| `@relative/path.md` | the **including file's** directory |
+
+Relative paths resolve against the directory of the file that contains
+the directive, not the agent's CWD. This means `@./shared.md` inside
+`subdir/AGENTS.md` looks for `subdir/shared.md`, which is almost always
+what you want for transitively-included files.
+
+### Recursion and safety rails
+
+Includes may nest: A → B → C all expand correctly. The expander applies
+several hard limits:
+
+| Guard | Behavior | Marker emitted |
+|-------|----------|----------------|
+| Max depth (`5`) | Includes deeper than 5 levels are stopped | `<!-- @max-depth: <path> -->` |
+| Cycle detection | A → B → A breaks the loop | `<!-- @cycle: already-included <path> -->` |
+| Missing file | Surrounding content preserved | `<!-- @missing: <path> ... -->` |
+| Unreadable file | Surrounding content preserved | `<!-- @unreadable: <path> (<err>) -->` |
+| Per-include size cap | Same 20K head/tail truncation as top-level files | standard truncation marker |
+| Prompt-injection scan | Same patterns as top-level context files | `[BLOCKED: <path> contained ...]` |
+
+Successfully-expanded chunks are wrapped with begin/end markers so you
+can see exactly which file each piece came from:
+
+```
+<!-- @include-begin: ~/.agents/AGENTS.md -->
+...included content...
+<!-- @include-end: ~/.agents/AGENTS.md -->
+```
+
+### Code blocks are inert
+
+`@<path>` written inside a fenced code block (`` ``` `` or `~~~`) is
+left as literal text. This means documentation that *describes* the
+syntax (like the example block above) does not accidentally trigger
+inclusion at load time.
+
+### When the global file is the source of truth
+
+The classic pattern: keep your personal cross-project rules in
+`~/.agents/AGENTS.md`, then in every project's `AGENTS.md` add:
+
+```markdown
+@~/.agents/AGENTS.md
+
+# Project-specific rules below
+...
+```
+
+Updating the global file once propagates to every project on the next
+session start — no copying, no symlinks, no drift.
+
 ## Tips for Effective Context Files
 
 :::tip Best practices for AGENTS.md
@@ -191,6 +275,7 @@ When a file exceeds 20,000 characters, the truncation message reads:
 4. **Mention what NOT to do** — "never modify migration files directly"
 5. **List key paths and ports** — the agent uses these for terminal commands
 6. **Update as the project evolves** — stale context is worse than no context
+7. **Use `@`-includes for shared rules** — keep one source of truth in `~/.agents/AGENTS.md` and reference it from every project
 :::
 
 ### Per-Subdirectory Context

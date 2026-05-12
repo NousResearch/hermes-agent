@@ -39,6 +39,7 @@ if [ "$(id -u)" = "0" ]; then
         # by the mapped user on the host side.
         chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
+        chmod 755 "$HERMES_HOME" 2>/dev/null || true
     fi
 
     # Ensure config.yaml is readable by the hermes runtime user even if it was

@@ -232,3 +232,43 @@ class TestPermissionErrorHandling:
             )
             # Result may be None (backend skipped) — the key point is no crash
             assert result is None or isinstance(result, str)
+
+
+class TestSubdirectoryHintsIncludeExpansion:
+    """Subdirectory hints must honor @<path> includes the same way startup
+    context files do — so a project's nested AGENTS.md can keep using the
+    single-source-of-truth pattern @~/.agents/AGENTS.md.
+    """
+
+    def test_includes_expand_in_subdirectory_hint(self, tmp_path):
+        # Root is the working dir (pre-loaded, no hints emitted from here).
+        (tmp_path / "AGENTS.md").write_text("Root rules.")
+
+        # Subdir contains an AGENTS.md with an @-include.
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        included = sub / "shared.md"
+        included.write_text("SHARED-RULE: always wear sunscreen.")
+        (sub / "AGENTS.md").write_text("Sub-prefix.\n@./shared.md\nSub-suffix.")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "anything.py")})
+        assert result is not None
+        assert "Sub-prefix." in result
+        assert "Sub-suffix." in result
+        # Critical: the included file's content must be present, not the raw @-line.
+        assert "SHARED-RULE: always wear sunscreen." in result
+        # The include marker confirms the expander ran.
+        assert "@include-begin" in result
+
+    def test_missing_include_does_not_break_hint(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Before.\n@./does-not-exist.md\nAfter.")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "x.py")})
+        assert result is not None
+        assert "Before." in result
+        assert "After." in result
+        assert "@missing" in result

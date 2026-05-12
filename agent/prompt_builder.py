@@ -825,6 +825,14 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
+# @-include expansion is implemented in agent.context_includes.  Re-export
+# the public knobs here so callers and tests have a single import surface
+# (``from agent.prompt_builder import CONTEXT_INCLUDE_MAX_DEPTH``).
+from agent.context_includes import (  # noqa: E402
+    CONTEXT_INCLUDE_MAX_DEPTH,
+    expand_includes as _expand_includes_raw,
+)
+
 
 # =========================================================================
 # Skills prompt cache
@@ -1289,6 +1297,22 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
+
+def _expand_includes(content: str, base_dir: Path) -> str:
+    """Project-aware wrapper around :func:`agent.context_includes.expand_includes`.
+
+    Wires in :func:`_scan_context_content` (prompt-injection guard) and
+    :func:`_truncate_content` (size cap) so every included chunk is held
+    to the same standards as a top-level context file.
+    """
+    return _expand_includes_raw(
+        content,
+        base_dir,
+        scanner=_scan_context_content,
+        truncator=_truncate_content,
+    )
+
+
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
     """Head/tail truncation with a marker in the middle."""
     if len(content) <= max_chars:
@@ -1321,6 +1345,7 @@ def load_soul_md() -> Optional[str]:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
+        content = _expand_includes(content, soul_path.parent)
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")
         return content
@@ -1344,6 +1369,7 @@ def _load_hermes_md(cwd_path: Path) -> str:
             rel = str(hermes_md_path.relative_to(cwd_path))
         except ValueError:
             pass
+        content = _expand_includes(content, hermes_md_path.parent)
         content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(result, ".hermes.md")
@@ -1360,6 +1386,7 @@ def _load_agents_md(cwd_path: Path) -> str:
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
+                    content = _expand_includes(content, candidate.parent)
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "AGENTS.md")
@@ -1376,6 +1403,7 @@ def _load_claude_md(cwd_path: Path) -> str:
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
+                    content = _expand_includes(content, candidate.parent)
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "CLAUDE.md")
@@ -1392,6 +1420,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
         try:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
+                content = _expand_includes(content, cursorrules_file.parent)
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
         except Exception as e:
@@ -1404,6 +1433,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
             try:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
+                    content = _expand_includes(content, mdc_file.parent)
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
             except Exception as e:

@@ -556,6 +556,71 @@ def partition_nous_models_by_tier(
     return (selectable, unavailable)
 
 
+def union_with_portal_free_recommendations(
+    curated_ids: list[str],
+    pricing: dict[str, dict[str, str]],
+    portal_base_url: str = "",
+    *,
+    force_refresh: bool = False,
+) -> tuple[list[str], dict[str, dict[str, str]]]:
+    """Augment curated list + pricing with the Portal's ``freeRecommendedModels``.
+
+    The Portal's ``/api/nous/recommended-models`` endpoint advertises which
+    models are free *right now* — independent of what the in-repo
+    ``_PROVIDER_MODELS["nous"]`` list happens to contain or whether the
+    docs-hosted catalog manifest has been rebuilt since the last release.
+
+    For free-tier users this is the source of truth: any model the Portal
+    flags as free should be selectable, even if the user is running an
+    older Hermes that doesn't ship that model in its hardcoded curated
+    list.  This function returns an augmented ``(model_ids, pricing)``
+    pair where:
+
+    * Portal free recommendations missing from ``curated_ids`` are
+      appended at the front (so the picker shows them first).
+    * ``pricing`` gets a synthetic ``{"prompt": "0", "completion": "0"}``
+      entry for any free recommendation missing from the live pricing
+      map, so :func:`partition_nous_models_by_tier` keeps it.
+
+    Failures (network, parse, missing field) are silent and degrade to
+    returning the inputs unchanged.
+    """
+    try:
+        payload = fetch_nous_recommended_models(
+            portal_base_url, force_refresh=force_refresh
+        )
+    except Exception:
+        return (list(curated_ids), dict(pricing))
+
+    free_block = payload.get("freeRecommendedModels") if isinstance(payload, dict) else None
+    if not isinstance(free_block, list) or not free_block:
+        return (list(curated_ids), dict(pricing))
+
+    portal_free_ids: list[str] = []
+    for entry in free_block:
+        name = _extract_model_name(entry)
+        if name:
+            portal_free_ids.append(name)
+    if not portal_free_ids:
+        return (list(curated_ids), dict(pricing))
+
+    augmented_pricing = dict(pricing)
+    free_synthetic = {"prompt": "0", "completion": "0"}
+    for mid in portal_free_ids:
+        if mid not in augmented_pricing:
+            augmented_pricing[mid] = dict(free_synthetic)
+
+    augmented_ids = list(curated_ids)
+    seen = set(augmented_ids)
+    # Prepend Portal free recommendations that aren't already curated, so
+    # they appear first in the picker.
+    new_ones = [mid for mid in portal_free_ids if mid not in seen]
+    if new_ones:
+        augmented_ids = new_ones + augmented_ids
+
+    return (augmented_ids, augmented_pricing)
+
+
 # ---------------------------------------------------------------------------
 # TTL cache for free-tier detection — avoids repeated API calls within a
 # session while still picking up upgrades quickly.
@@ -1338,8 +1403,21 @@ def _resolve_openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
+_DEFAULT_NOUS_INFERENCE_BASE = "https://inference-api.nousresearch.com"
+
+
 def _resolve_nous_pricing_credentials() -> tuple[str, str]:
-    """Return ``(api_key, base_url)`` for Nous Portal pricing, or empty strings."""
+    """Return ``(api_key, base_url)`` for Nous Portal pricing.
+
+    The Nous inference ``/v1/models`` endpoint exposes pricing without
+    authentication, so the api_key is best-effort: when runtime credential
+    resolution fails (expired refresh token, missing auth.json, etc.) we
+    still return the default inference base URL so the picker keeps
+    working with anonymous pricing data.  Free-tier users in particular
+    need this — pricing drives the free/paid partition, and silently
+    returning empty pricing because of an auth blip makes the picker
+    look broken ("No free models currently available").
+    """
     try:
         from hermes_cli.auth import resolve_nous_runtime_credentials
         creds = resolve_nous_runtime_credentials()
@@ -1347,7 +1425,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
             return (creds.get("api_key", ""), creds.get("base_url", ""))
     except Exception:
         pass
-    return ("", "")
+    return ("", _DEFAULT_NOUS_INFERENCE_BASE)
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:

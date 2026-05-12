@@ -6,6 +6,7 @@ from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    union_with_portal_free_recommendations,
 )
 import hermes_cli.models as _models_mod
 
@@ -381,6 +382,128 @@ class TestPartitionNousModelsByTier:
         sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
         assert sel == []
         assert unav == models
+
+
+class TestUnionWithPortalFreeRecommendations:
+    """Tests for union_with_portal_free_recommendations.
+
+    The Portal's freeRecommendedModels endpoint is the source of truth for
+    what's free *right now* — the in-repo curated list and docs-hosted
+    manifest can lag. This helper guarantees the picker still surfaces
+    Portal-flagged free models even when the rest of the catalog is stale.
+    """
+
+    _PAID = {"prompt": "0.000003", "completion": "0.000015"}
+    _FREE = {"prompt": "0", "completion": "0"}
+
+    def _payload(self, free_models: list[str]) -> dict:
+        return {
+            "freeRecommendedModels": [
+                {"modelName": mid, "displayName": mid} for mid in free_models
+            ],
+        }
+
+    def test_adds_portal_free_model_missing_from_curated(self):
+        """A Portal-advertised free model not in curated is prepended + priced free."""
+        curated = ["anthropic/claude-opus-4.6"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["qwen/qwen3.6-plus"]),
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+
+        assert ids[0] == "qwen/qwen3.6-plus"  # prepended
+        assert "anthropic/claude-opus-4.6" in ids
+        # Synthetic free pricing entry created
+        assert p["qwen/qwen3.6-plus"] == self._FREE
+        # Existing pricing untouched
+        assert p["anthropic/claude-opus-4.6"] == self._PAID
+
+    def test_does_not_duplicate_curated_entries(self):
+        """A Portal free model already in curated is not duplicated."""
+        curated = ["qwen/qwen3.6-plus", "anthropic/claude-opus-4.6"]
+        pricing = {
+            "qwen/qwen3.6-plus": self._FREE,
+            "anthropic/claude-opus-4.6": self._PAID,
+        }
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["qwen/qwen3.6-plus"]),
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+
+        assert ids == curated
+        assert p == pricing
+
+    def test_then_partition_keeps_portal_free_model(self):
+        """End-to-end: Portal-flagged free model survives partition."""
+        # Simulate the broken-state-before-this-fix: in-repo curated list
+        # contains qwen/qwen3.6-plus (because new builds shipped it) but
+        # live pricing endpoint hasn't published its zero-cost entry yet.
+        # The Portal's freeRecommendedModels still flags it as free.
+        curated = ["qwen/qwen3.6-plus", "anthropic/claude-opus-4.6"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}  # qwen missing!
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value=self._payload(["qwen/qwen3.6-plus"]),
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+        sel, unav = partition_nous_models_by_tier(ids, p, free_tier=True)
+        assert "qwen/qwen3.6-plus" in sel
+        assert "anthropic/claude-opus-4.6" in unav
+
+    def test_empty_payload_returns_inputs_unchanged(self):
+        """Empty Portal response leaves curated + pricing untouched."""
+        curated = ["a", "b"]
+        pricing = {"a": self._PAID}
+        with patch("hermes_cli.models.fetch_nous_recommended_models", return_value={}):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_missing_freeRecommendedModels_key(self):
+        """Portal payload without freeRecommendedModels degrades gracefully."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value={"paidRecommendedModels": [{"modelName": "x"}]},
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_fetch_failure_returns_inputs(self):
+        """Network failures don't blow up the picker."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            side_effect=RuntimeError("network down"),
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+        assert ids == curated
+        assert p == pricing
+
+    def test_invalid_entries_skipped(self):
+        """Non-dict / missing-modelName entries are filtered out."""
+        curated = ["a"]
+        pricing = {"a": self._PAID}
+        with patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value={
+                "freeRecommendedModels": [
+                    "not-a-dict",
+                    {"displayName": "no-modelName"},
+                    {"modelName": ""},
+                    {"modelName": "qwen/qwen3.6-plus"},
+                ]
+            },
+        ):
+            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
+        assert ids == ["qwen/qwen3.6-plus", "a"]
+        assert p["qwen/qwen3.6-plus"] == self._FREE
 
 
 class TestCheckNousFreeTierCache:

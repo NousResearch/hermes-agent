@@ -2376,6 +2376,14 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized == "minimax-oauth":
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+
+            creds = resolve_minimax_oauth_runtime_credentials()
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
         if normalized == "anthropic":
             from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
 
@@ -2652,7 +2660,7 @@ def resolve_provider_client(
     Args:
         provider: Provider identifier.  One of:
             "openrouter", "nous", "openai-codex" (or "codex"),
-            "zai", "kimi-coding", "minimax", "minimax-cn",
+            "zai", "kimi-coding", "minimax", "minimax-oauth", "minimax-cn",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default
@@ -2812,6 +2820,40 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
+
+    # ── MiniMax OAuth (Anthropic-compatible Messages API) ─────────────
+    if provider == "minimax-oauth":
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+
+            creds = resolve_minimax_oauth_runtime_credentials()
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but OAuth "
+                "credentials could not be resolved: %s",
+                exc,
+            )
+            return None, None
+
+        token = str(creds.get("api_key", "") or "").strip()
+        base_url = str(creds.get("base_url", "") or "").strip().rstrip("/")
+        if not token or not base_url:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth credentials are incomplete"
+            )
+            return None, None
+
+        final_model = _normalize_resolved_model(
+            model or _get_aux_model_for_provider(provider), provider
+        )
+        real_client = build_anthropic_client(token, base_url)
+        client = AnthropicAuxiliaryClient(
+            real_client, final_model, token, base_url, is_oauth=False
+        )
+        if async_mode:
+            return AsyncAnthropicAuxiliaryClient(client), final_model
+        return client, final_model
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":

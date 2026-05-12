@@ -84,6 +84,66 @@ class TestMinimaxAuxModel:
         assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")
 
 
+class TestMinimaxOAuthAuxResolution:
+    """MiniMax OAuth must resolve through the Anthropic-compatible aux client."""
+
+    def test_minimax_oauth_returns_anthropic_aux_client(self, monkeypatch):
+        from types import SimpleNamespace
+        from agent import auxiliary_client as aux
+
+        real_client = SimpleNamespace()
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            lambda: {
+                "provider": "minimax-oauth",
+                "api_key": "mm-oauth-token",
+                "base_url": "https://api.minimax.io/anthropic",
+                "source": "oauth",
+            },
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.build_anthropic_client",
+            lambda api_key, base_url: real_client,
+        )
+
+        client, model = aux.resolve_provider_client(
+            "minimax-oauth", model="MiniMax-M2.7"
+        )
+
+        assert isinstance(client, aux.AnthropicAuxiliaryClient)
+        assert model == "MiniMax-M2.7"
+        assert client.api_key == "mm-oauth-token"
+        assert client.base_url == "https://api.minimax.io/anthropic"
+        assert client._real_client is real_client
+
+    def test_minimax_oauth_async_returns_async_anthropic_aux_client(self, monkeypatch):
+        from types import SimpleNamespace
+        from agent import auxiliary_client as aux
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            lambda: {
+                "provider": "minimax-oauth",
+                "api_key": "mm-oauth-token",
+                "base_url": "https://api.minimax.io/anthropic",
+                "source": "oauth",
+            },
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.build_anthropic_client",
+            lambda api_key, base_url: SimpleNamespace(),
+        )
+
+        client, model = aux.resolve_provider_client(
+            "minimax-oauth", model="MiniMax-M2.7", async_mode=True
+        )
+
+        assert isinstance(client, aux.AsyncAnthropicAuxiliaryClient)
+        assert model == "MiniMax-M2.7"
+        assert client.api_key == "mm-oauth-token"
+        assert client.base_url == "https://api.minimax.io/anthropic"
+
+
 class TestMinimaxBetaHeaders:
     """MiniMax Anthropic-compat endpoints reject fine-grained-tool-streaming beta.
 

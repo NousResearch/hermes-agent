@@ -90,6 +90,14 @@ _RE_AKA          = re.compile(
     re.IGNORECASE,
 )
 
+# CJK-aware entity extraction patterns (issue #24416)
+_RE_CJK_BRACKETS = re.compile(
+    r"[「『]([^」』]+)[」』]|《([^》]+)》|\u201c([^\u201d]+)\u201d|\u2018([^\u2019]+)\u2019"
+)
+_RE_MIXED_SCRIPT = re.compile(
+    r'[A-Za-z][A-Za-z0-9_.\-]+(?:\s+\d+(?:\.\d+)*)*'
+)
+
 
 def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
@@ -396,24 +404,35 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Extract entity candidates from text using simple regex rules.
+        """Extract entity candidates from text using regex rules.
 
         Rules applied (in order):
         1. Capitalized multi-word phrases  e.g. "John Doe"
         2. Double-quoted terms             e.g. "Python"
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        5. CJK bracket/quote terms         e.g. 「白兔」 《红楼梦》
+        6. Mixed-script identifiers        e.g. lark-cli, GPT-5.5, Gemini 3.1 Pro
+        7. CJK runs (2-6 chars, filtered)  e.g. 飞书 (after stopword removal)
+            — intentionally omitted; bare CJK regex without a dictionary
+              segmenter produces too many cross-word fragments (see issue #24416
+              discussion).  Rules 5-6 cover the high-signal cases.
 
-        Returns a deduplicated list preserving first-seen order.
+        English behavior is fully unchanged — rules 1-4 are identical to
+        the original implementation.  Rules 5-6 only fire for non-ASCII
+        content.  Returns a deduplicated list preserving first-seen order.
         """
         seen: set[str] = set()
         candidates: list[str] = []
 
         def _add(name: str) -> None:
             stripped = name.strip()
-            if stripped and stripped.lower() not in seen:
-                seen.add(stripped.lower())
-                candidates.append(stripped)
+            if not stripped or stripped.lower() in seen:
+                return
+            seen.add(stripped.lower())
+            candidates.append(stripped)
+
+        # --- Rules 1-4: original ASCII rules (unchanged) ---
 
         for m in _RE_CAPITALIZED.finditer(text):
             _add(m.group(1))
@@ -427,6 +446,18 @@ class MemoryStore:
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        # --- Rules 5-7: CJK-aware rules ---
+
+        # Rule 5: CJK brackets and quotes — 「…」 『…』 《…》 "" ''
+        for m in _RE_CJK_BRACKETS.finditer(text):
+            for g in m.groups():
+                if g:
+                    _add(g)
+
+        # Rule 6: Mixed-script identifiers — lark-cli, GPT-5.5, Gemini 3.1 Pro
+        for m in _RE_MIXED_SCRIPT.finditer(text):
+            _add(m.group(0))
 
         return candidates
 

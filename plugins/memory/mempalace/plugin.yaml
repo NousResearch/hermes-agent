@@ -1,0 +1,6 @@
+name: mempalace
+version: 1.0.0
+description: "Native MemPalace memory provider — semantic search, knowledge graph, and diary journaling backed by ChromaDB."
+hooks:
+  - on_session_end
+  - on_memory_write

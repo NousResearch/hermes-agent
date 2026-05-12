@@ -59,15 +59,19 @@ def test_home_relative_cwd_empty_returns_empty():
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
-    (tmp_path / "projects" / "hermes").mkdir(parents=True)
-    out = format_runtime_footer(
-        model="openrouter/openai/gpt-5.4",
-        context_tokens=68000,
-        context_length=100000,
-        cwd=None,  # falls back to TERMINAL_CWD env var
-        fields=("model", "context_pct", "cwd"),
-    )
+    workspace = tmp_path / "projects" / "hermes"
+    workspace.mkdir(parents=True)
+    tokens = set_session_vars(session_key="session", terminal_cwd=str(workspace))
+    try:
+        out = format_runtime_footer(
+            model="openrouter/openai/gpt-5.4",
+            context_tokens=68000,
+            context_length=100000,
+            cwd=None,  # falls back to session-scoped TERMINAL_CWD
+            fields=("model", "context_pct", "cwd"),
+        )
+    finally:
+        clear_session_vars(tokens)
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 

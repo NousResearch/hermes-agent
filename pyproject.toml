@@ -111,7 +111,10 @@ termux-all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[google]",
-  "hermes-agent[mistral]",
+  # mistral: omitted from broad termux-all profile — `mistralai` PyPI package
+  # is currently quarantined (malicious 2.4.6 release). Users who explicitly
+  # want Voxtral STT/TTS can still `pip install hermes-agent[mistral]`
+  # directly once PyPI un-quarantines.
   "hermes-agent[bedrock]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
@@ -169,7 +172,11 @@ all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[google]",
-  "hermes-agent[mistral]",
+  # mistral: omitted from [all] — `mistralai` PyPI package is currently
+  # quarantined (malicious 2.4.6 release on 2026-05-12). Pulling it from
+  # [all] would break every fresh install / AUR build / Docker build / CI
+  # run until PyPI un-quarantines. Users who explicitly want Voxtral STT/TTS
+  # can still `pip install hermes-agent[mistral]` once it's available again.
   "hermes-agent[bedrock]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",

@@ -98,6 +98,86 @@ class LiteRtLmOpenAiProxyTest {
         assertTrue(decision.policy, decision.policy.contains("12.0GB RAM recommended"))
     }
 
+    @Test
+    fun speculativeDecodingDecision_autoEnablesCapabilityBackedGemma4OnArm64() {
+        val decision = LiteRtLmOpenAiProxy.decideSpeculativeDecoding(
+            capabilitiesSupported = true,
+            modelName = "gemma-4-E2B-it.litertlm",
+            modelBytes = 2_583_085_056L,
+            totalRamBytes = 8_000_000_000L,
+            isX86Device = false,
+            mode = LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+        )
+
+        assertTrue(decision.supported)
+        assertTrue(decision.enabled)
+        assertTrue(decision.policy, decision.policy.contains("capabilities advertise"))
+    }
+
+    @Test
+    fun speculativeDecodingDecision_usesGemma4FilenameFallbackWhenCapabilitiesProbeFails() {
+        val decision = LiteRtLmOpenAiProxy.decideSpeculativeDecoding(
+            capabilitiesSupported = false,
+            modelName = "gemma-4-E2B-it.litertlm",
+            modelBytes = 2_583_085_056L,
+            totalRamBytes = 8_000_000_000L,
+            isX86Device = false,
+            mode = LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+        )
+
+        assertTrue(decision.supported)
+        assertTrue(decision.enabled)
+        assertTrue(decision.policy, decision.policy.contains("filename fallback"))
+    }
+
+    @Test
+    fun speculativeDecodingDecision_keepsMtpOffOnX86Emulator() {
+        val decision = LiteRtLmOpenAiProxy.decideSpeculativeDecoding(
+            capabilitiesSupported = true,
+            modelName = "gemma-4-E2B-it.litertlm",
+            modelBytes = 2_583_085_056L,
+            totalRamBytes = 16_000_000_000L,
+            isX86Device = true,
+            mode = LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+        )
+
+        assertTrue(decision.supported)
+        assertFalse(decision.enabled)
+        assertEquals("disabled: x86 emulator/device build", decision.policy)
+    }
+
+    @Test
+    fun speculativeDecodingDecision_runtimeDisabledOverridesSupportedModel() {
+        val decision = LiteRtLmOpenAiProxy.decideSpeculativeDecoding(
+            capabilitiesSupported = true,
+            modelName = "gemma-4-E2B-it.litertlm",
+            modelBytes = 2_583_085_056L,
+            totalRamBytes = 16_000_000_000L,
+            isX86Device = false,
+            mode = LiteRtLmOpenAiProxy.SpeculativeDecodingMode.DISABLED,
+        )
+
+        assertTrue(decision.supported)
+        assertFalse(decision.enabled)
+        assertEquals("disabled: runtime setting disabled Gemma 4 MTP", decision.policy)
+    }
+
+    @Test
+    fun speculativeDecodingDecision_rejectsUnsupportedNonGemmaModel() {
+        val decision = LiteRtLmOpenAiProxy.decideSpeculativeDecoding(
+            capabilitiesSupported = false,
+            modelName = "qwen3-0.6b-it.litertlm",
+            modelBytes = 800_000_000L,
+            totalRamBytes = 16_000_000_000L,
+            isX86Device = false,
+            mode = LiteRtLmOpenAiProxy.SpeculativeDecodingMode.ENABLED,
+        )
+
+        assertFalse(decision.supported)
+        assertFalse(decision.enabled)
+        assertTrue(decision.policy, decision.policy.contains("does not advertise support"))
+    }
+
     private fun validateModelArtifact(file: File): String? {
         val method = LiteRtLmOpenAiProxy::class.java.getDeclaredMethod(
             "validateModelArtifact",

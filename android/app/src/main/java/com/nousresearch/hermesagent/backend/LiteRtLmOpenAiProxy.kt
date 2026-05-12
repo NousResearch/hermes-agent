@@ -31,6 +31,7 @@ import java.util.concurrent.TimeoutException
 object LiteRtLmOpenAiProxy {
     @Volatile private var server: LiteRtLmServer? = null
     @Volatile private var activeModelPath: String = ""
+    @Volatile private var activeRuntimeConfigKey: String = ""
 
     /** LiteRT-LM inference configuration from catalog entry or defaults */
     data class InferenceConfig(
@@ -41,11 +42,24 @@ object LiteRtLmOpenAiProxy {
         val maxContextLength: Int = -1,  // -1 = backend default
         val supportImage: Boolean = false,
         val supportAudio: Boolean = false,
+        val speculativeDecodingMode: SpeculativeDecodingMode = SpeculativeDecodingMode.AUTO,
     )
+
+    enum class SpeculativeDecodingMode {
+        AUTO,
+        ENABLED,
+        DISABLED,
+    }
 
     internal data class ModalityDecision(
         val supportImage: Boolean,
         val supportAudio: Boolean,
+        val policy: String,
+    )
+
+    internal data class SpeculativeDecodingDecision(
+        val supported: Boolean,
+        val enabled: Boolean,
         val policy: String,
     )
 
@@ -62,7 +76,13 @@ object LiteRtLmOpenAiProxy {
         inferenceConfig: InferenceConfig = InferenceConfig(),
     ): LocalBackendStatus {
         val current = server
-        if (current != null && current.isAlive() && activeModelPath == modelPath) {
+        val requestedRuntimeConfigKey = inferenceConfig.runtimeConfigKey()
+        if (
+            current != null &&
+            current.isAlive() &&
+            activeModelPath == modelPath &&
+            activeRuntimeConfigKey == requestedRuntimeConfigKey
+        ) {
             return LocalBackendStatus(
                 backendKind = BackendKind.LITERT_LM,
                 started = true,
@@ -94,6 +114,7 @@ object LiteRtLmOpenAiProxy {
             newServer.start(SOCKET_READ_TIMEOUT, false)
             server = newServer
             activeModelPath = modelPath
+            activeRuntimeConfigKey = requestedRuntimeConfigKey
             LocalBackendStatus(
                 backendKind = BackendKind.LITERT_LM,
                 started = true,
@@ -118,6 +139,20 @@ object LiteRtLmOpenAiProxy {
         server?.shutdown()
         server = null
         activeModelPath = ""
+        activeRuntimeConfigKey = ""
+    }
+
+    private fun InferenceConfig.runtimeConfigKey(): String {
+        return listOf(
+            topK,
+            topP,
+            temperature,
+            maxTokens,
+            maxContextLength,
+            supportImage,
+            supportAudio,
+            speculativeDecodingMode,
+        ).joinToString("|")
     }
 
     private fun validateModelArtifact(modelPath: String): String? {
@@ -201,6 +236,7 @@ object LiteRtLmOpenAiProxy {
             modelPath = modelPath,
             supportImage = inferenceConfig.supportImage,
             supportAudio = inferenceConfig.supportAudio,
+            speculativeDecodingMode = inferenceConfig.speculativeDecodingMode,
             maxNumTokens = engineMaxNumTokens.value,
             contextWindowPolicy = engineMaxNumTokens.policy,
         )
@@ -277,13 +313,14 @@ object LiteRtLmOpenAiProxy {
             modelPath: String,
             supportImage: Boolean,
             supportAudio: Boolean,
+            speculativeDecodingMode: SpeculativeDecodingMode,
             maxNumTokens: Int?,
             contextWindowPolicy: String,
         ): EngineInitResult {
             var lastError: Throwable? = null
             val openClAvailable = hasLoadableOpenClLibrary()
             val gpuPolicy = gpuBackendPolicy(context, openClAvailable)
-            val speculativeDecoding = speculativeDecodingDecision(context, modelPath)
+            val speculativeDecoding = speculativeDecodingDecision(context, modelPath, speculativeDecodingMode)
             val modalityDecision = memorySafeModalityDecision(
                 totalRamBytes = totalDeviceRamBytes(context),
                 modelBytes = runCatching { File(modelPath).length() }.getOrDefault(0L),
@@ -404,12 +441,6 @@ object LiteRtLmOpenAiProxy {
             val policy: String,
         )
 
-        private data class SpeculativeDecodingDecision(
-            val supported: Boolean,
-            val enabled: Boolean,
-            val policy: String,
-        )
-
         private data class GpuBackendPolicy(
             val enabled: Boolean,
             val description: String,
@@ -518,46 +549,24 @@ object LiteRtLmOpenAiProxy {
             ).joinToString(" ").lowercase(Locale.US)
         }
 
-        private fun speculativeDecodingDecision(context: Context, modelPath: String): SpeculativeDecodingDecision {
+        private fun speculativeDecodingDecision(
+            context: Context,
+            modelPath: String,
+            mode: SpeculativeDecodingMode,
+        ): SpeculativeDecodingDecision {
             val supported = runCatching {
                 Capabilities(modelPath).use { capabilities ->
                     capabilities.hasSpeculativeDecodingSupport()
                 }
             }.getOrDefault(false)
-            val gemma4Fallback = !supported && File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
-            val capabilitySupported = supported || gemma4Fallback
-            if (!capabilitySupported) {
-                return SpeculativeDecodingDecision(
-                    supported = false,
-                    enabled = false,
-                    policy = "disabled: model does not advertise Gemma 4 MTP support",
-                )
-            }
-            if (Build.SUPPORTED_ABIS.any { it.startsWith("x86") }) {
-                return SpeculativeDecodingDecision(
-                    supported = true,
-                    enabled = false,
-                    policy = "disabled: x86 emulator/device build",
-                )
-            }
-            val modelBytes = runCatching { File(modelPath).length() }.getOrDefault(0L)
-            val totalRamBytes = totalDeviceRamBytes(context)
-            val minimumRamBytes = minimumRamForLargeModelExtras(modelBytes)
-            if (minimumRamBytes > 0L && totalRamBytes > 0L && totalRamBytes < minimumRamBytes) {
-                return SpeculativeDecodingDecision(
-                    supported = true,
-                    enabled = false,
-                    policy = "disabled: memory guard for Gemma 4 MTP on ${formatRamGb(totalRamBytes)}GB RAM device; ${formatRamGb(minimumRamBytes)}GB RAM recommended",
-                )
-            }
-            return SpeculativeDecodingDecision(
-                supported = true,
-                enabled = true,
-                policy = if (supported) {
-                    "enabled: LiteRT-LM capabilities advertise Gemma 4 MTP support"
-                } else {
-                    "enabled: Gemma 4 filename fallback after capabilities probe failed"
-                },
+            val modelFile = File(modelPath)
+            return decideSpeculativeDecoding(
+                capabilitiesSupported = supported,
+                modelName = modelFile.name,
+                modelBytes = runCatching { modelFile.length() }.getOrDefault(0L),
+                totalRamBytes = totalDeviceRamBytes(context),
+                isX86Device = Build.SUPPORTED_ABIS.any { it.startsWith("x86") },
+                mode = mode,
             )
         }
 
@@ -1101,6 +1110,69 @@ object LiteRtLmOpenAiProxy {
             supportImage = requestedImage,
             supportAudio = requestedAudio,
             policy = requestedLabel,
+        )
+    }
+
+    internal fun decideSpeculativeDecoding(
+        capabilitiesSupported: Boolean,
+        modelName: String,
+        modelBytes: Long,
+        totalRamBytes: Long,
+        isX86Device: Boolean,
+        mode: SpeculativeDecodingMode,
+    ): SpeculativeDecodingDecision {
+        val gemma4Fallback = !capabilitiesSupported && modelName.lowercase(Locale.US).contains("gemma-4")
+        val capabilitySupported = capabilitiesSupported || gemma4Fallback
+        if (mode == SpeculativeDecodingMode.DISABLED) {
+            return SpeculativeDecodingDecision(
+                supported = capabilitySupported,
+                enabled = false,
+                policy = if (capabilitySupported) {
+                    "disabled: runtime setting disabled Gemma 4 MTP"
+                } else {
+                    "disabled: runtime setting disabled speculative decoding"
+                },
+            )
+        }
+        if (!capabilitySupported) {
+            return SpeculativeDecodingDecision(
+                supported = false,
+                enabled = false,
+                policy = if (mode == SpeculativeDecodingMode.ENABLED) {
+                    "disabled: runtime setting requested Gemma 4 MTP but model does not advertise support"
+                } else {
+                    "disabled: model does not advertise Gemma 4 MTP support"
+                },
+            )
+        }
+        if (isX86Device) {
+            return SpeculativeDecodingDecision(
+                supported = true,
+                enabled = false,
+                policy = "disabled: x86 emulator/device build",
+            )
+        }
+        val minimumRamBytes = minimumRamForLargeModelExtras(modelBytes)
+        if (minimumRamBytes > 0L && totalRamBytes > 0L && totalRamBytes < minimumRamBytes) {
+            return SpeculativeDecodingDecision(
+                supported = true,
+                enabled = false,
+                policy = "disabled: memory guard for Gemma 4 MTP on ${formatRamGb(totalRamBytes)}GB RAM device; ${formatRamGb(minimumRamBytes)}GB RAM recommended",
+            )
+        }
+        return SpeculativeDecodingDecision(
+            supported = true,
+            enabled = true,
+            policy = when {
+                mode == SpeculativeDecodingMode.ENABLED && capabilitiesSupported ->
+                    "enabled: runtime setting requested Gemma 4 MTP and LiteRT-LM capabilities advertise support"
+                mode == SpeculativeDecodingMode.ENABLED ->
+                    "enabled: runtime setting requested Gemma 4 MTP with Gemma 4 filename fallback after capabilities probe failed"
+                capabilitiesSupported ->
+                    "enabled: LiteRT-LM capabilities advertise Gemma 4 MTP support"
+                else ->
+                    "enabled: Gemma 4 filename fallback after capabilities probe failed"
+            },
         )
     }
 

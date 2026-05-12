@@ -1896,21 +1896,37 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
 
 
-def _handle_session_expired_and_retry(
+def _is_mcp_timeout_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is an MCP call timeout.
+
+    ``_run_on_mcp_loop`` raises ``TimeoutError`` when a synchronous tool
+    caller waits longer than the server's configured timeout. Treating
+    that as a transport-health signal lets the long-lived MCP task rebuild
+    stale HTTP/SSE/stdio sessions instead of leaving the server in a
+    circuit-breaker state until Hermes is restarted.
+    """
+    if isinstance(exc, InterruptedError):
+        return False
+    return isinstance(
+        exc,
+        (TimeoutError, concurrent.futures.TimeoutError, asyncio.TimeoutError),
+    )
+
+
+def _handle_transport_reconnect_and_retry(
     server_name: str,
     exc: BaseException,
     retry_call,
     op_description: str,
+    reason: str,
 ):
-    """Trigger a transport reconnect and retry once on session expiry.
+    """Trigger a transport reconnect and retry an MCP operation once.
 
-    Unlike :func:`_handle_auth_error_and_retry`, this does **not** call
-    the OAuth manager's ``handle_401`` — the access token is still
-    valid, only the server-side session state is stale.  Setting
-    ``_reconnect_event`` causes the server task's lifecycle loop to
-    tear down the current ``streamablehttp_client`` + ``ClientSession``
-    and rebuild them, reusing the existing OAuth provider instance.
-    See #13383.
+    Used for transport-layer failures where OAuth is not involved:
+    server-side session expiry, closed pipes, and call timeouts. Setting
+    ``_reconnect_event`` causes the server task's lifecycle loop to tear
+    down the current transport + ``ClientSession`` and rebuild them,
+    reusing the existing OAuth provider instance when present.
 
     Args:
         server_name: Name of the MCP server that raised.
@@ -1918,16 +1934,14 @@ def _handle_session_expired_and_retry(
         retry_call: Zero-arg callable that re-runs the operation,
             returning the same JSON string format as the handler.
         op_description: Human-readable name of the operation (logs).
+        reason: Short human-readable failure class for logs.
 
     Returns:
         A JSON string if reconnect + retry was attempted and produced
         a response, or ``None`` to fall through to the caller's
-        generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        generic error path (no server record, reconnect didn't ready in
+        time, or retry also failed).
     """
-    if not _is_session_expired_error(exc):
-        return None
-
     with _lock:
         srv = _servers.get(server_name)
     if srv is None or not hasattr(srv, "_reconnect_event"):
@@ -1938,9 +1952,9 @@ def _handle_session_expired_and_retry(
         return None
 
     logger.info(
-        "MCP server '%s': %s failed with session-expired error (%s); "
+        "MCP server '%s': %s failed with %s (%s); "
         "signalling transport reconnect and retrying once.",
-        server_name, op_description, exc,
+        server_name, op_description, reason, exc,
     )
 
     # Trigger the same reconnect mechanism the OAuth recovery path
@@ -1956,8 +1970,8 @@ def _handle_session_expired_and_retry(
     if not ready:
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "
-            "session-expired error; falling through to error response.",
-            server_name,
+            "%s; falling through to error response.",
+            server_name, reason,
         )
         return None
 
@@ -1966,10 +1980,10 @@ def _handle_session_expired_and_retry(
         try:
             parsed = json.loads(result)
             if "error" not in parsed:
-                _server_error_counts[server_name] = 0
+                _reset_server_error(server_name)
                 return result
         except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
+            _reset_server_error(server_name)
             return result
     except Exception as retry_exc:
         logger.warning(
@@ -1977,6 +1991,43 @@ def _handle_session_expired_and_retry(
             server_name, op_description, retry_exc,
         )
     return None
+
+
+def _handle_session_expired_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Trigger a transport reconnect and retry once on session expiry.
+
+    Unlike :func:`_handle_auth_error_and_retry`, this does **not** call
+    the OAuth manager's ``handle_401`` — the access token is still
+    valid, only the server-side session state is stale.  Setting
+    ``_reconnect_event`` causes the server task's lifecycle loop to
+    tear down the current ``streamablehttp_client`` + ``ClientSession``
+    and rebuild them, reusing the existing OAuth provider instance.
+    See #13383.
+    """
+    if not _is_session_expired_error(exc):
+        return None
+    return _handle_transport_reconnect_and_retry(
+        server_name, exc, retry_call, op_description, "session-expired error"
+    )
+
+
+def _handle_timeout_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Trigger a transport reconnect and retry once on MCP call timeout."""
+    if not _is_mcp_timeout_error(exc):
+        return None
+    return _handle_transport_reconnect_and_retry(
+        server_name, exc, retry_call, op_description, "call timeout"
+    )
 
 
 # Sanitized server names whose ``supports_parallel_tool_calls`` config is True.
@@ -2323,6 +2374,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            recovered = _handle_timeout_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
 
             _bump_server_error(server_name)
             logger.error(
@@ -2380,6 +2437,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "resources/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_timeout_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
             if recovered is not None:
@@ -2444,6 +2506,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            recovered = _handle_timeout_and_retry(
+                server_name, exc, _call_once, "resources/read",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -2503,6 +2570,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "prompts/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_timeout_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
             if recovered is not None:
@@ -2574,6 +2646,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "prompts/get",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_timeout_and_retry(
                 server_name, exc, _call_once, "prompts/get",
             )
             if recovered is not None:

@@ -98,6 +98,19 @@ def test_is_session_expired_rejects_empty_message():
     assert _is_session_expired_error(Exception()) is False
 
 
+def test_is_mcp_timeout_error_detects_timeout_variants():
+    """Configured tool-call timeouts should be treated as transport
+    health signals so stale sessions can reconnect."""
+    import concurrent.futures
+
+    from tools.mcp_tool import _is_mcp_timeout_error
+
+    assert _is_mcp_timeout_error(TimeoutError("timed out")) is True
+    assert _is_mcp_timeout_error(concurrent.futures.TimeoutError()) is True
+    assert _is_mcp_timeout_error(InterruptedError("timed out")) is False
+    assert _is_mcp_timeout_error(RuntimeError("timed out")) is False
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------
@@ -187,6 +200,50 @@ def test_call_tool_handler_reconnects_on_session_expired(monkeypatch, tmp_path):
     finally:
         mcp_tool._servers.pop("wpcom", None)
         mcp_tool._server_error_counts.pop("wpcom", None)
+
+
+def test_call_tool_handler_reconnects_on_timeout(monkeypatch, tmp_path):
+    """If the synchronous MCP call times out, rebuild the transport and
+    retry once instead of leaving the server behind the circuit breaker."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("slow")
+    mcp_tool._servers["slow"] = server
+    mcp_tool._server_error_counts.pop("slow", None)
+
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise TimeoutError(
+                "MCP call timed out after 15.0s "
+                "(configured timeout: 15.0s)"
+            )
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text="tool completed")]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler("slow", "tool", 10.0)
+        out = handler({"slug": "hello"})
+        parsed = json.loads(out)
+        assert "error" not in parsed, parsed
+        assert reconnect_flag.is_set(), (
+            "Handler did not trigger transport reconnect on timeout"
+        )
+        assert call_count["n"] == 2
+        assert mcp_tool._server_error_counts.get("slow", 0) == 0
+    finally:
+        mcp_tool._servers.pop("slow", None)
+        mcp_tool._server_error_counts.pop("slow", None)
 
 
 def test_call_tool_handler_non_session_expired_error_falls_through(
@@ -301,6 +358,38 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
         )
     finally:
         mcp_tool._servers.pop("srv-retry-fail", None)
+
+
+def test_timeout_handler_returns_none_when_retry_also_fails(
+    monkeypatch, tmp_path
+):
+    """Timeout recovery retries once and then falls through cleanly if
+    the post-reconnect call also fails."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_timeout_and_retry
+
+    server, reconnect_flag = _install_stub_server("srv-timeout-retry-fail")
+    mcp_tool._servers["srv-timeout-retry-fail"] = server
+
+    def _retry_raises():
+        raise RuntimeError("retry blew up too")
+
+    try:
+        out = _handle_timeout_and_retry(
+            "srv-timeout-retry-fail",
+            TimeoutError("MCP call timed out after 15.0s"),
+            _retry_raises,
+            "tools/call",
+        )
+        assert out is None
+        deadline = time.time() + 1
+        while time.time() < deadline and not reconnect_flag.is_set():
+            time.sleep(0.01)
+        assert reconnect_flag.is_set()
+    finally:
+        mcp_tool._servers.pop("srv-timeout-retry-fail", None)
 
 
 # ---------------------------------------------------------------------------

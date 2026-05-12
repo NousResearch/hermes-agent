@@ -3779,7 +3779,7 @@ class DiscordAdapter(BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            seed_msg = await send(f"🧵 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
                 name=thread_name,
                 auto_archive_duration=1440,
@@ -3792,6 +3792,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name, parent_chat_id, fallback_error,
             )
             return None
+
+    async def rename_thread(self, thread_id: int, new_name: str) -> bool:
+        """Best-effort rename of a Discord thread to match the auto-generated session title."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        try:
+            thread = self._client.get_channel(thread_id) or await self._client.fetch_channel(thread_id)
+            if thread and hasattr(thread, "edit"):
+                trimmed_name = (new_name or "").strip()[:100]
+                if not trimmed_name:
+                    return False
+                await thread.edit(name=trimmed_name)  # Discord caps at 100 chars
+                logger.debug("[%s] Renamed thread %s to '%s'", self.name, thread_id, trimmed_name)
+                return True
+        except Exception:
+            logger.debug("[%s] Failed to rename thread %s", self.name, thread_id, exc_info=True)
+        return False
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

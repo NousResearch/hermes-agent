@@ -11015,6 +11015,39 @@ class GatewayRunner:
 
         future.add_done_callback(_log_rename_failure)
 
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        title: str,
+    ) -> None:
+        """Schedule a thread rename from the auto-title background thread."""
+        if not title or source.platform != Platform.DISCORD or not source.thread_id:
+            return
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None or not hasattr(adapter, "rename_thread"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            thread_id = int(source.thread_id)
+        except (ValueError, TypeError):
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            adapter.rename_thread(thread_id, title),
+            loop,
+        )
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
 
     def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
@@ -15360,6 +15393,12 @@ class GatewayRunner:
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,
+                            title,
+                        )
+                    elif source.platform == Platform.DISCORD and source.thread_id:
+                        copied_source = dataclasses.replace(source)
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
+                            copied_source,
                             title,
                         )
                     maybe_auto_title(

@@ -8501,14 +8501,29 @@ class AIAgent:
                                 "stream" in _err_lower
                                 and "not supported" in _err_lower
                             )
-                            if _is_stream_unsupported:
+                            # Some providers (e.g. custom:llmgateway) return
+                            # malformed or empty SSE responses when streaming
+                            # tool-call turns, raising json.JSONDecodeError
+                            # ("Expecting value: line 1 column 1 (char 0)").
+                            # Treat this the same as "stream not supported" so
+                            # the session automatically falls back to
+                            # non-streaming for subsequent requests.
+                            _is_json_decode_err = isinstance(e, json.JSONDecodeError)
+                            if _is_stream_unsupported or _is_json_decode_err:
                                 self._disable_streaming = True
-                                self._safe_print(
-                                    "\n⚠  Streaming is not supported for this "
-                                    "model/provider. Switching to non-streaming.\n"
-                                    "   To avoid this delay, set display.streaming: false "
-                                    "in config.yaml\n"
-                                )
+                                if _is_stream_unsupported:
+                                    self._safe_print(
+                                        "\n⚠  Streaming is not supported for this "
+                                        "model/provider. Switching to non-streaming.\n"
+                                        "   To avoid this delay, set display.streaming: false "
+                                        "in config.yaml\n"
+                                    )
+                                else:
+                                    logger.warning(
+                                        "Streaming returned malformed response "
+                                        "(JSONDecodeError) — falling back to "
+                                        "non-streaming for this session: %s", e,
+                                    )
                             logger.info(
                                 "Streaming failed before delivery: %s",
                                 e,

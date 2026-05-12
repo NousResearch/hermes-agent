@@ -510,6 +510,42 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_json_decode_error_sets_disable_streaming(self, mock_close, mock_create):
+        """JSONDecodeError during streaming sets _disable_streaming.
+
+        Some providers (e.g. custom:llmgateway) return malformed or empty
+        SSE responses when streaming tool-call turns, raising
+        json.JSONDecodeError ("Expecting value: line 1 column 1 (char 0)").
+        The agent should fall back to non-streaming for subsequent requests.
+        """
+        import json as _json
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _json.JSONDecodeError(
+            "Expecting value", "", 0
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with pytest.raises(_json.JSONDecodeError):
+            agent._interruptible_streaming_api_call({})
+
+        # The flag should be set so the main retry loop switches to non-streaming
+        assert agent._disable_streaming is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_non_transport_error_propagates(self, mock_close, mock_create):
         """Non-transport streaming errors propagate to the main retry loop."""
         from run_agent import AIAgent

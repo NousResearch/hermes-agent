@@ -311,6 +311,7 @@ def load_cli_config() -> Dict[str, Any]:
             "cwd": ".",  # "." is resolved to os.getcwd() at runtime
             "timeout": 60,
             "lifetime_seconds": 300,
+            "max_foreground_timeout_seconds": 600,
             "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "docker_forward_env": [],
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",

@@ -102,13 +102,22 @@ def _safe_parse_import_env(
         return default
 
 
-# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
-FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
-    "TERMINAL_MAX_FOREGROUND_TIMEOUT",
-    600,
-    int,
-    "integer",
-)
+# Default hard cap on foreground timeout (seconds). Configurable only via
+# ``terminal.max_foreground_timeout_seconds`` in ~/.hermes/config.yaml.
+FOREGROUND_MAX_TIMEOUT = 600
+
+
+def _get_foreground_max_timeout() -> int:
+    """Effective foreground timeout cap from ``terminal.max_foreground_timeout_seconds``."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = load_config().get("terminal", {}).get("max_foreground_timeout_seconds")
+        if raw is not None and str(raw).strip() != "":
+            return max(1, int(float(raw)))
+    except Exception:
+        pass
+    return int(FOREGROUND_MAX_TIMEOUT)
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
@@ -1715,12 +1724,13 @@ def terminal_tool(
         effective_timeout = timeout or default_timeout
 
         # Reject foreground commands where the model explicitly requests
-        # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
-        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+        # a timeout above the configured cap — nudge it toward background.
+        fg_max = _get_foreground_max_timeout()
+        if not background and timeout and timeout > fg_max:
             return json.dumps({
                 "error": (
                     f"Foreground timeout {timeout}s exceeds the maximum of "
-                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
+                    f"{fg_max}s. Use background=true with "
                     f"notify_on_complete=true for long-running commands."
                 ),
             }, ensure_ascii=False)
@@ -2297,7 +2307,12 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": (
+                    "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — "
+                    "set high for long tasks, you won't wait unnecessarily. Foreground timeout above "
+                    "terminal.max_foreground_timeout_seconds in ~/.hermes/config.yaml is rejected; "
+                    "use background=true for longer commands."
+                ),
                 "minimum": 1
             },
             "workdir": {

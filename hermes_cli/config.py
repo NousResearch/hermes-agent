@@ -595,6 +595,9 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Hard cap on foreground terminal timeout (seconds). Set in config.yaml only
+        # (``terminal.max_foreground_timeout_seconds``); not read from .env.
+        "max_foreground_timeout_seconds": 600,
     },
 
     "web": {
@@ -1136,6 +1139,8 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Auxiliary LLM timeout (seconds) for each /goal verdict call.
+        "judge_timeout_seconds": 30,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.
@@ -1494,7 +1499,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -3686,6 +3691,45 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"{', '.join(added_aux)}"
                     )
 
+    # ── Version 23 → 24: seed goals.judge_timeout_seconds + terminal.max_foreground_timeout_seconds ──
+    # Runtime merge already applies defaults, but users cannot see or edit these keys in
+    # config.yaml until they exist on disk (same pattern as curator migration above).
+    if current_ver < 24:
+        config = read_raw_config()
+        touched = False
+
+        goals_defaults = DEFAULT_CONFIG.get("goals") or {}
+        raw_goals = config.get("goals")
+        if not isinstance(raw_goals, dict):
+            raw_goals = {}
+        if "judge_timeout_seconds" not in raw_goals:
+            raw_goals["judge_timeout_seconds"] = copy.deepcopy(
+                goals_defaults.get("judge_timeout_seconds", 30)
+            )
+            config["goals"] = raw_goals
+            touched = True
+            results["config_added"].append("goals.judge_timeout_seconds")
+
+        term_defaults = DEFAULT_CONFIG.get("terminal") or {}
+        raw_term = config.get("terminal")
+        if not isinstance(raw_term, dict):
+            raw_term = {}
+        if "max_foreground_timeout_seconds" not in raw_term:
+            raw_term["max_foreground_timeout_seconds"] = copy.deepcopy(
+                term_defaults.get("max_foreground_timeout_seconds", 600)
+            )
+            config["terminal"] = raw_term
+            touched = True
+            results["config_added"].append("terminal.max_foreground_timeout_seconds")
+
+        if touched:
+            save_config(config)
+            if not quiet:
+                print(
+                    "  ✓ Seeded goals.judge_timeout_seconds and "
+                    "terminal.max_foreground_timeout_seconds in config.yaml"
+                )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -4703,7 +4747,12 @@ def show_config():
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
-    
+    print(
+        "  Foreground max:"
+        f" {terminal.get('max_foreground_timeout_seconds', 600)}s"
+        " (config.yaml: terminal.max_foreground_timeout_seconds)"
+    )
+
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
@@ -4724,6 +4773,12 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+    
+    print()
+    print(color("◆ Goals", Colors.CYAN, Colors.BOLD))
+    goals_cfg = config.get("goals", {})
+    print(f"  Judge timeout: {goals_cfg.get('judge_timeout_seconds', 30)}s")
+    print(f"  Goal max turns: {goals_cfg.get('max_turns', 20)}")
     
     # Timezone
     print()

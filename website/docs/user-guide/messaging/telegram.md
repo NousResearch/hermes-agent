@@ -328,6 +328,22 @@ With this setup, a group message like `@research_bot @ops_bot summarize this` is
 
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
 
+To operate several profiles, run the gateway command once per profile. For example:
+
+```bash
+# default profile
+hermes gateway start
+hermes gateway status
+hermes gateway stop
+
+# named profiles
+hermes -p research gateway start
+hermes -p research gateway status
+hermes -p research gateway stop
+```
+
+For a small fixed fleet, use a shell loop or script that calls `hermes gateway <action>` for the default profile and `hermes -p <profile> gateway <action>` for each named profile. This is more reliable than assuming a single process-level command controls every named profile on every service manager.
+
 ### Troubleshooting: works in DMs but not groups
 
 If the bot responds in a private chat but stays silent in a group, check these

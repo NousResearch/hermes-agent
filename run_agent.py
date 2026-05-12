@@ -5855,7 +5855,10 @@ class AIAgent:
         if self._model_is_gpt55(self.model):
             stable_parts.append(GPT55_PROMPT_GUIDANCE)
 
-        long_task_guidance = build_long_task_policy_guidance(getattr(self, "_long_task_policy", None))
+        long_task_guidance = build_long_task_policy_guidance(
+            getattr(self, "_long_task_policy", None),
+            available_tools=self.valid_tool_names,
+        )
         if long_task_guidance:
             stable_parts.append(long_task_guidance)
 

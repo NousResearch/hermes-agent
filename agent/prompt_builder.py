@@ -13,7 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from agent.skill_utils import (
     extract_skill_conditions,
@@ -366,7 +366,9 @@ LONG_TASK_POLICY_DEFAULTS = {
     "default_log_dir": "reports/_run_logs",
     "status_filename": "status.json",
     "manifest_filename": "manifest.json",
+    "fail_fast_markers": ["FATAL", "AUTH_FAILED", "NEEDS_USER_DECISION", "BLOCKED"],
     "notify_on_completion": True,
+    "watch_patterns_default": [],
 }
 
 
@@ -378,27 +380,75 @@ def _policy_int(policy: Mapping[str, Any], key: str) -> int:
     return max(1, value)
 
 
-def build_long_task_policy_guidance(policy: Mapping[str, Any] | None) -> str:
+def _policy_bool(policy: Mapping[str, Any], key: str) -> bool:
+    value = policy.get(key, LONG_TASK_POLICY_DEFAULTS[key])
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off", "never"}
+    return bool(value)
+
+
+def build_long_task_policy_guidance(
+    policy: Mapping[str, Any] | None,
+    available_tools: Iterable[str] | None = None,
+) -> str:
     """Render concise system-prompt guidance for Hermes long-task handling."""
     if not isinstance(policy, Mapping):
         return ""
-    if policy.get("enabled", LONG_TASK_POLICY_DEFAULTS["enabled"]) is False:
+    if not _policy_bool(policy, "enabled"):
         return ""
 
     foreground_limit = _policy_int(policy, "foreground_soft_limit_seconds")
+    staged_limit = _policy_int(policy, "staged_task_soft_limit_seconds")
     background_limit = _policy_int(policy, "require_background_after_seconds")
     log_dir = str(policy.get("default_log_dir") or LONG_TASK_POLICY_DEFAULTS["default_log_dir"])
     status_name = str(policy.get("status_filename") or LONG_TASK_POLICY_DEFAULTS["status_filename"])
     manifest_name = str(policy.get("manifest_filename") or LONG_TASK_POLICY_DEFAULTS["manifest_filename"])
+    require_artifacts = _policy_bool(policy, "require_progress_artifacts")
+    notify_on_completion = _policy_bool(policy, "notify_on_completion")
+    tool_names = set(available_tools or [])
+    terminal_available = available_tools is None or "terminal" in tool_names
+    artifact_tools_available = available_tools is None or bool({"terminal", "write_file", "patch"} & tool_names)
+    durable_artifacts_available = require_artifacts and artifact_tools_available
+
+    stage_clause = (
+        f"For work expected to run longer than {foreground_limit} seconds, "
+        f"break it into stages with checkpoints before {staged_limit} seconds."
+    )
+    if durable_artifacts_available:
+        artifact_clause = f" save logs/status/manifest under {log_dir} using {status_name} and {manifest_name}."
+    elif require_artifacts:
+        artifact_clause = " keep concise progress notes in your response because artifact-writing tools are unavailable."
+    else:
+        artifact_clause = " keep recoverable progress notes when practical."
+
+    if terminal_available:
+        notify_arg = ", notify_on_complete=true" if notify_on_completion else ""
+        background_clause = (
+            f"For finite work expected to run longer than {background_limit} seconds, "
+            f"use terminal(background=true{notify_arg}) and{artifact_clause}"
+        )
+    else:
+        background_clause = (
+            f"For finite work expected to run longer than {background_limit} seconds, "
+            "do not invent unavailable background tool calls; use shorter verified stages "
+            "or explain the missing durable-execution path and"
+            f"{artifact_clause}"
+        )
+    if durable_artifacts_available:
+        final_clause = "Before finalizing, verify artifacts and report exact paths."
+    elif require_artifacts:
+        final_clause = "Before finalizing, verify the latest progress state and avoid inventing artifact paths."
+    else:
+        final_clause = "Before finalizing, verify the progress state and summarize any recoverable notes."
 
     return (
-        "Hermes long-task policy: For work expected to run longer than "
-        f"{foreground_limit} seconds, break it into stages with saved artifacts. "
-        "For finite work expected to run longer than "
-        f"{background_limit} seconds, use terminal(background=true, notify_on_complete=true) "
-        f"and save logs/status/manifest under {log_dir} using {status_name} and {manifest_name}. "
+        "Hermes long-task policy: "
+        f"{stage_clause} "
+        f"{background_clause} "
         "Do not use noisy watch_patterns; reserve them for rare blocker/readiness markers. "
-        "Before finalizing, verify artifacts and report exact paths."
+        f"{final_clause}"
     )
 
 

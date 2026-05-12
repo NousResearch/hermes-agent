@@ -7,12 +7,14 @@ tests verify the config-driven prelude that fixes that.
 """
 
 import os
+import shlex
 from unittest.mock import patch
 
 import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _prepend_github_auth_bridge,
     _prepend_shell_init,
     _read_terminal_shell_init_config,
     _resolve_shell_init_files,
@@ -179,8 +181,50 @@ class TestPrependShellInit:
     def test_escapes_single_quotes(self):
         wrapped = _prepend_shell_init("echo hi", ["/tmp/o'malley.sh"])
         # The path must survive as the shell receives it; embedded single
-        # quote is escaped as '\'' rather than breaking the outer quoting.
-        assert "o'\\''malley" in wrapped
+        # quote is escaped by shlex.quote rather than breaking the outer quoting.
+        assert shlex.quote("/tmp/o'malley.sh") in wrapped
+
+
+class TestPrependGithubAuthBridge:
+    def test_returns_command_unchanged_without_bridge_env(self):
+        assert _prepend_github_auth_bridge("gh auth status", {}) == "gh auth status"
+
+    def test_returns_command_unchanged_when_hosts_file_missing(self, tmp_path):
+        auth_home = tmp_path / "operator"
+        auth_home.mkdir()
+
+        wrapped = _prepend_github_auth_bridge(
+            "gh auth status",
+            {"HERMES_KANBAN_GITHUB_AUTH_HOME": str(auth_home)},
+        )
+
+        assert wrapped == "gh auth status"
+
+    def test_wraps_gh_and_git_when_bridge_config_exists(self, tmp_path, monkeypatch):
+        auth_home = tmp_path / "operator home"
+        gh_config = auth_home / ".config" / "gh"
+        gh_config.mkdir(parents=True)
+        (gh_config / "hosts.yml").write_text("github.com: {}\n")
+        fake_gh = tmp_path / "bin" / "gh"
+        fake_gh.parent.mkdir()
+        fake_gh.write_text("#!/bin/sh\n")
+        monkeypatch.setattr("tools.environments.local.shutil.which", lambda *a, **k: str(fake_gh))
+
+        wrapped = _prepend_github_auth_bridge(
+            "gh auth status && git push --dry-run",
+            {
+                "HERMES_KANBAN_GITHUB_AUTH_HOME": str(auth_home),
+                "HERMES_KANBAN_GITHUB_CONFIG_DIR": str(gh_config),
+                "PATH": str(fake_gh.parent),
+            },
+        )
+
+        assert "gh()" in wrapped
+        assert "git()" in wrapped
+        assert f"__hermes_gh_auth_home={shlex.quote(str(auth_home))}" in wrapped
+        assert "credential.https://github.com.helper" in wrapped
+        assert "auth git-credential" in wrapped
+        assert wrapped.endswith("gh auth status && git push --dry-run")
 
 
 @pytest.mark.skipif(

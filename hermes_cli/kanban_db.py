@@ -3902,6 +3902,47 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _resolve_dispatcher_github_auth_bridge(env: dict, profile_hermes_home: str | None) -> tuple[str, str] | None:
+    """Return ``(auth_home, gh_config_dir)`` for Kanban worker GitHub auth.
+
+    The dispatcher process often has working ``gh`` auth in the operator's real
+    HOME, while worker terminal commands run with ``HOME={profile}/home`` for
+    profile isolation.  On macOS that isolated HOME cannot see the operator
+    keychain-backed gh token.  If the target profile does not already have its
+    own gh auth config, expose the dispatcher's authenticated HOME to the
+    worker via non-secret env vars; the terminal backend wraps only ``gh`` and
+    ``git`` commands with that HOME.
+    """
+    disabled = str(env.get("HERMES_KANBAN_GITHUB_AUTH_BRIDGE") or "").strip().lower()
+    if disabled in {"0", "false", "no", "off"}:
+        return None
+
+    profile_home = None
+    if profile_hermes_home:
+        profile_home = Path(profile_hermes_home).expanduser() / "home"
+        if (profile_home / ".config" / "gh" / "hosts.yml").is_file():
+            # Profile-specific gh auth wins; no cross-profile bridge needed.
+            return None
+
+    auth_home_raw = str(env.get("HOME") or "").strip()
+    if not auth_home_raw:
+        return None
+    auth_home = Path(auth_home_raw).expanduser()
+    if profile_home is not None:
+        try:
+            if auth_home.resolve() == profile_home.resolve():
+                return None
+        except OSError:
+            if str(auth_home) == str(profile_home):
+                return None
+
+    gh_config_raw = str(env.get("GH_CONFIG_DIR") or "").strip()
+    gh_config = Path(gh_config_raw).expanduser() if gh_config_raw else auth_home / ".config" / "gh"
+    if not (gh_config / "hosts.yml").is_file():
+        return None
+    return (str(auth_home), str(gh_config))
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3941,14 +3982,23 @@ def _default_spawn(
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
     from hermes_cli.profiles import resolve_profile_env
+    profile_hermes_home: str | None = None
     try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        profile_hermes_home = resolve_profile_env(profile_arg)
+        env["HERMES_HOME"] = profile_hermes_home
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+
+    github_bridge = _resolve_dispatcher_github_auth_bridge(env, profile_hermes_home)
+    if github_bridge:
+        auth_home, gh_config_dir = github_bridge
+        env["HERMES_KANBAN_GITHUB_AUTH_HOME"] = auth_home
+        env["HERMES_KANBAN_GITHUB_CONFIG_DIR"] = gh_config_dir
+
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

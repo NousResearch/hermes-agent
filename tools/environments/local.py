@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -351,12 +352,65 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 
     prelude_parts = ["set +e"]
     for path in files:
-        # shlex.quote isn't available here without an import; the files list
-        # comes from os.path.expanduser output so it's a concrete absolute
-        # path.  Escape single quotes defensively anyway.
-        safe = path.replace("'", "'\\''")
-        prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+        # The files list comes from os.path.expanduser output so it's a
+        # concrete absolute path.  Quote defensively anyway.
+        prelude_parts.append(
+            f"[ -r {shlex.quote(path)} ] && . {shlex.quote(path)} 2>/dev/null || true"
+        )
     prelude = "\n".join(prelude_parts) + "\n"
+    return prelude + cmd_string
+
+
+def _prepend_github_auth_bridge(cmd_string: str, env: dict) -> str:
+    """Let Kanban workers use dispatcher GitHub auth without copying tokens.
+
+    Profile subprocess HOME isolation is normally desirable: git/ssh/gh/npm
+    configs stay inside ``{HERMES_HOME}/home``. On macOS, though, GitHub CLI
+    tokens stored in the operator keychain are tied to the real login HOME; a
+    Kanban worker with ``HOME={profile}/home`` sees ``gh auth status`` as
+    unauthenticated even though the gateway/operator session is authenticated.
+
+    The dispatcher may set ``HERMES_KANBAN_GITHUB_AUTH_HOME`` to the operator
+    HOME that already has gh auth. When present, wrap only the ``gh`` and
+    ``git`` shell commands so those tools run with the authenticated HOME while
+    every other subprocess still uses the profile-isolated HOME. No token is
+    copied into env or onto disk.
+    """
+    if _IS_WINDOWS:
+        return cmd_string
+
+    auth_home = str(env.get("HERMES_KANBAN_GITHUB_AUTH_HOME") or "").strip()
+    if not auth_home or not os.path.isdir(auth_home):
+        return cmd_string
+
+    config_dir = str(
+        env.get("HERMES_KANBAN_GITHUB_CONFIG_DIR")
+        or os.path.join(auth_home, ".config", "gh")
+    ).strip()
+    if not config_dir or not os.path.isfile(os.path.join(config_dir, "hosts.yml")):
+        return cmd_string
+
+    gh_bin = shutil.which("gh", path=env.get("PATH") or os.environ.get("PATH") or "") or "gh"
+    helper = f"!{shlex.quote(gh_bin)} auth git-credential"
+    prelude = "\n".join([
+        f"__hermes_gh_auth_home={shlex.quote(auth_home)}",
+        f"__hermes_gh_config_dir={shlex.quote(config_dir)}",
+        f"__hermes_gh_bin={shlex.quote(gh_bin)}",
+        f"__hermes_git_credential_helper={shlex.quote(helper)}",
+        "gh() {",
+        "  HOME=\"$__hermes_gh_auth_home\" GH_CONFIG_DIR=\"$__hermes_gh_config_dir\" command \"$__hermes_gh_bin\" \"$@\"",
+        "}",
+        "git() {",
+        "  local __hermes_git_config_count=\"${GIT_CONFIG_COUNT:-0}\"",
+        "  case \"$__hermes_git_config_count\" in ''|*[!0-9]*) __hermes_git_config_count=0 ;; esac",
+        "  env HOME=\"$__hermes_gh_auth_home\" GH_CONFIG_DIR=\"$__hermes_gh_config_dir\" \\",
+        "    GIT_CONFIG_COUNT=\"$((__hermes_git_config_count + 1))\" \\",
+        "    \"GIT_CONFIG_KEY_${__hermes_git_config_count}=credential.https://github.com.helper\" \\",
+        "    \"GIT_CONFIG_VALUE_${__hermes_git_config_count}=$__hermes_git_credential_helper\" \\",
+        "    git \"$@\"",
+        "}",
+        "",
+    ])
     return prelude + cmd_string
 
 
@@ -436,8 +490,9 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
+        cmd_string = _prepend_github_auth_bridge(cmd_string, run_env)
+        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

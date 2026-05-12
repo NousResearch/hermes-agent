@@ -80,6 +80,53 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+class TestDispatcherGithubAuthBridge:
+    def test_uses_dispatcher_home_when_profile_lacks_gh_auth(self, tmp_path):
+        operator_home = tmp_path / "operator"
+        operator_gh = operator_home / ".config" / "gh"
+        operator_gh.mkdir(parents=True)
+        (operator_gh / "hosts.yml").write_text("github.com: {}\n")
+        profile_home = tmp_path / "profiles" / "ops"
+        (profile_home / "home").mkdir(parents=True)
+
+        bridge = kb._resolve_dispatcher_github_auth_bridge(
+            {"HOME": str(operator_home)},
+            str(profile_home),
+        )
+
+        assert bridge == (str(operator_home), str(operator_gh))
+
+    def test_profile_specific_gh_auth_wins(self, tmp_path):
+        operator_home = tmp_path / "operator"
+        operator_gh = operator_home / ".config" / "gh"
+        operator_gh.mkdir(parents=True)
+        (operator_gh / "hosts.yml").write_text("github.com: {}\n")
+        profile_home = tmp_path / "profiles" / "ops"
+        profile_gh = profile_home / "home" / ".config" / "gh"
+        profile_gh.mkdir(parents=True)
+        (profile_gh / "hosts.yml").write_text("github.com: {}\n")
+
+        bridge = kb._resolve_dispatcher_github_auth_bridge(
+            {"HOME": str(operator_home)},
+            str(profile_home),
+        )
+
+        assert bridge is None
+
+    def test_bridge_can_be_disabled(self, tmp_path):
+        operator_home = tmp_path / "operator"
+        operator_gh = operator_home / ".config" / "gh"
+        operator_gh.mkdir(parents=True)
+        (operator_gh / "hosts.yml").write_text("github.com: {}\n")
+
+        bridge = kb._resolve_dispatcher_github_auth_bridge(
+            {"HOME": str(operator_home), "HERMES_KANBAN_GITHUB_AUTH_BRIDGE": "off"},
+            str(tmp_path / "profile"),
+        )
+
+        assert bridge is None
+
+
 # ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------

@@ -4149,6 +4149,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_exclusive_bot_mentions(self) -> bool:
+        """Return whether explicit @...bot mentions exclusively route group messages."""
+        configured = self.config.extra.get("exclusive_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -4259,6 +4268,42 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    @staticmethod
+    def _extract_bot_mention_usernames(message: Message) -> set[str]:
+        """Extract explicit Telegram bot usernames mentioned in text/captions.
+
+        Telegram bot usernames are 5-32 characters and must end in "bot".
+        Entity mentions are authoritative. The raw-text fallback is intentionally narrow so
+        entity-less mobile/client variants still work without treating email
+        addresses or arbitrary substrings as bot mentions.
+        """
+        mentioned_bot_usernames: set[str] = set()
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type != "mention":
+                    continue
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset < 0 or length <= 0:
+                    continue
+                handle = source_text[offset:offset + length].strip().lstrip("@").lower()
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    mentioned_bot_usernames.add(handle)
+
+        for raw_text in (getattr(message, "text", None), getattr(message, "caption", None)):
+            if not raw_text:
+                continue
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
+                mentioned_bot_usernames.add(match.group(1).lower())
+
+        return mentioned_bot_usernames
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -4273,7 +4318,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
-        # a user without a public username). Only those entities are authoritative —
+        # a user without a public username). Those entities are authoritative:
         # raw substring matches like "foo@hermes_bot.example" are not mentions
         # (bug #12545). Entities also correctly handle @handles inside URLs, code
         # blocks, and quoted text, where a regex scan would over-match.
@@ -4311,7 +4356,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
+        if bot_username and re.fullmatch(r"[a-z0-9_]{2,29}bot", bot_username, re.IGNORECASE):
+            return bot_username in self._extract_bot_mention_usernames(message)
         return False
+
+    def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
+        """Return True when explicit bot handles target other bots, not this one.
+
+        Telegram groups can contain several Hermes bot profiles. A message like
+        ``@bot3 hi @bot4`` must not wake ``@bot1`` through reply/wake-word
+        fallbacks. Treat explicit bot-handle mentions as an exclusive routing
+        hint: if at least one @...bot username is present and none matches this
+        adapter's own bot username, this adapter should ignore the message.
+
+        MessageEntity values are preferred, but some Telegram clients expose
+        selected bot handles as plain text in group messages. The raw-text
+        fallback is intentionally limited to usernames ending in "bot", which
+        Telegram requires for bot accounts.
+        """
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        if not bot_username:
+            return False
+
+        mentioned_bot_usernames = self._extract_bot_mention_usernames(message)
+        return bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -4392,6 +4463,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
         # is not called redundantly in the normal flow below.

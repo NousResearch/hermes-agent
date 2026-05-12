@@ -2327,7 +2327,7 @@ class AIAgent:
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
         if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url) and self.provider not in ("custom", "litellm"):
             try:
-                _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "")
+                _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "", provider=self.provider or "")
                 if _detected and _detected > 0:
                     self._ollama_num_ctx = _detected
             except Exception as exc:

@@ -584,6 +584,7 @@ def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
+    provider: str = "",
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
@@ -613,7 +614,7 @@ def fetch_endpoint_model_metadata(
 
     if is_local_endpoint(normalized):
         try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+            if detect_local_server_type(normalized, api_key=api_key, provider=provider) == "lm-studio":
                 server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
@@ -728,9 +729,10 @@ def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
+    provider: str = "",
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key, provider=provider)
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
@@ -909,7 +911,7 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
-def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "", provider: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 
     Returns the model's maximum context from GGUF metadata via ``/api/show``,
@@ -927,7 +929,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
         server_url = server_url[:-3]
 
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=api_key, provider=provider)
     except Exception:
         return None
     if server_type != "ollama":
@@ -1339,7 +1341,9 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    # LiteLLM is a multi-backend gateway — skip Ollama/LM Studio/llama.cpp
+    # probes that would 404 against it.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and provider != "litellm":
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length

@@ -1475,6 +1475,26 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_main_base_url_and_key() -> Tuple[str, str]:
+    """Read model.base_url and model.api_key from config.yaml.
+
+    Used by _resolve_auto() Step 1 to pass configured endpoint details to
+    resolve_provider_client() for providers that need user-supplied base_url
+    (e.g. litellm) but aren't the generic "custom" provider.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base = str(model_cfg.get("base_url") or "").strip()
+            key = str(model_cfg.get("api_key") or "").strip()
+            return base, key
+    except Exception:
+        pass
+    return "", ""
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -2056,6 +2076,15 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        else:
+            # For first-class providers that require user-configured endpoints
+            # (e.g. litellm with model.base_url in config.yaml), pass the
+            # configured base_url and api_key so resolve_provider_client can
+            # reach the endpoint.  Without this, api_key providers with no
+            # hardcoded inference_base_url get an empty URL and fail.
+            cfg_base, cfg_key = _read_main_base_url_and_key()
+            explicit_base_url = runtime_base_url or cfg_base or None
+            explicit_api_key = runtime_api_key or cfg_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,
             main_model,

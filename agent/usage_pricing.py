@@ -648,7 +648,7 @@ def get_pricing_entry(
         return _openrouter_pricing_entry(route)
     if route.base_url:
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or "", provider=route.provider or ""),
             route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",

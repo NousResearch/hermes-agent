@@ -768,7 +768,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        # Respect explicit api_mode on the fallback entry. Without this,
+        # a custom_providers entry that speaks a non-default protocol but
+        # whose provider name / base URL doesn't match any heuristic below
+        # activates with chat_completions and routes to /chat/completions
+        # on a backend that doesn't serve it. The primary resolution path
+        # in hermes_cli/main.py already reads custom_providers[x].api_mode
+        # correctly — this restores parity on the fallback path.
+        _explicit_fb_api_mode = (fb.get("api_mode") or "").strip()
+        if _explicit_fb_api_mode:
+            fb_api_mode = _explicit_fb_api_mode
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"

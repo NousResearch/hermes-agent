@@ -305,3 +305,94 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Explicit api_mode on fallback entries ──────────────────────────────────
+
+
+class TestExplicitFallbackApiMode:
+    """An ``api_mode`` declared on a fallback entry must override heuristics.
+
+    The fallback activation path determined api_mode from a hardcoded
+    heuristic chain (provider name, base URL suffix, model pattern) and
+    never consulted the fallback entry's own ``api_mode`` field. For a
+    custom_providers entry that speaks a non-default protocol but whose
+    provider name / base URL doesn't match any heuristic (e.g. an
+    Anthropic-speaking local shim whose base URL doesn't end in
+    /anthropic), the fallback activated with ``chat_completions`` and
+    routed to /chat/completions on a backend that only serves /v1/messages.
+
+    Same bug class as the auxiliary-client gap (#10814) and the model
+    validator gap (#9146).
+    """
+
+    def test_explicit_api_mode_respected(self):
+        """Explicit api_mode on a custom-shim entry resolves to that mode."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:anthropic-shim",
+                "model": "claude-sonnet-4.6",
+                "api_mode": "anthropic_messages",
+            },
+        )
+        mock_client = _mock_client(
+            api_key="shim-key",
+            base_url="http://127.0.0.1:9000",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "claude-sonnet-4.6"),
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+            assert agent.provider == "custom:anthropic-shim"
+            assert agent.model == "claude-sonnet-4.6"
+
+    def test_explicit_api_mode_overrides_heuristics(self):
+        """Explicit api_mode wins over URL / model heuristics."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:anthropic-shim",
+                "model": "claude-sonnet-4.6",
+                "api_mode": "anthropic_messages",
+            },
+        )
+        mock_client = _mock_client(
+            api_key="shim-key",
+            base_url="http://127.0.0.1:4000/chat",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "claude-sonnet-4.6"),
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+
+    def test_absent_api_mode_falls_through_to_heuristics(self):
+        """No explicit api_mode → existing heuristics resolve normally.
+
+        Regression guard that the explicit-mode shortcut doesn't change
+        URL / name based resolution.
+        """
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        mock_client = _mock_client(
+            api_key="sk-or-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "chat_completions"

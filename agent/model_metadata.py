@@ -1079,6 +1079,22 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+def _model_name_suggests_minimax(model: str) -> bool:
+    """Return True if the model name looks like a MiniMax-family model.
+
+    Catches ``MiniMax-M2.7``, ``minimax-m2.5``, ``MiniMaxAI/MiniMax-M2.5``,
+    and similar variants. Used as a guard against stale 32K metadata that
+    underreports the MiniMax M2 family, whose real context window is 204.8K.
+    """
+    lower = model.lower()
+    return lower.startswith("minimax") or "minimaxai/" in lower
+
+
+def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
+    """Return True for model families known to be wrongly underreported as 32K."""
+    return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1340,7 +1356,7 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     metadata = fetch_model_metadata()  # OpenRouter cache
 
     def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
-        """Return context length, but reject stale 32k values for Kimi models.
+        """Return context length, but reject known stale 32K underreports.
 
         Apply the same guard used for the generic OpenRouter path (step 6 in 
         resolve_context_length) so the Nous portal path does not short-circuit it.
@@ -1348,10 +1364,10 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
         ctx = entry.get("context_length")
         if ctx is None:
             return None
-        if ctx <= 32768 and _model_name_suggests_kimi(or_id):
+        if ctx <= 32768 and _model_name_suggests_stale_32k_underreport(or_id):
             logger.info(
                 "Rejecting OpenRouter metadata context=%s for %r "
-                "(Kimi-family underreport, Nous path); falling through to hardcoded defaults",
+                "(known 32K underreport, Nous path); falling through to hardcoded defaults",
                 ctx, or_id,
             )
             return None
@@ -1456,10 +1472,11 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale 32k cache entries for Kimi-family models.
-            elif cached <= 32768 and _model_name_suggests_kimi(model):
+            # Invalidate stale 32k cache entries for model families known to
+            # be underreported by stale third-party metadata.
+            elif cached <= 32768 and _model_name_suggests_stale_32k_underreport(model):
                 logger.info(
-                    "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
+                    "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )
@@ -1601,11 +1618,12 @@ def get_model_context_length(
         metadata = fetch_model_metadata()
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
-            # Guard against stale OpenRouter metadata for Kimi-family models.
-            if or_ctx == 32768 and _model_name_suggests_kimi(model):
+            # Guard against stale OpenRouter metadata for model families
+            # known to be underreported as 32K.
+            if or_ctx == 32768 and _model_name_suggests_stale_32k_underreport(model):
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "
-                    "(Kimi-family underreport); falling through to hardcoded defaults",
+                    "(known 32K underreport); falling through to hardcoded defaults",
                     or_ctx, model,
                 )
             else:

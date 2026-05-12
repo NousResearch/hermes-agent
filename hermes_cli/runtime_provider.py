@@ -176,6 +176,21 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _ensure_provider_id(
+    runtime: Dict[str, Any],
+    *,
+    provider_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Attach canonical provider identity without changing transport family."""
+    resolved = dict(runtime)
+    provider = str(resolved.get("provider") or "").strip()
+    canonical = str(provider_id or resolved.get("provider_id") or provider).strip()
+    if not canonical:
+        canonical = provider
+    resolved["provider_id"] = canonical
+    return resolved
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -287,6 +302,7 @@ def _resolve_runtime_from_pool_entry(
 
     return {
         "provider": provider,
+        "provider_id": provider,
         "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key,
@@ -320,6 +336,7 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
+    provider_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
@@ -337,6 +354,7 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
+            "provider_id": (provider_id or provider_label),
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": pool_api_key,
@@ -400,6 +418,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
+                        "provider_key": ep_name,
                     }
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
@@ -425,6 +444,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
+                            "provider_key": ep_name,
                         }
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
@@ -503,6 +523,7 @@ def _resolve_named_custom_runtime(
         ) or "no-key-required"
         return {
             "provider": "custom",
+            "provider_id": "custom",
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": api_key,
@@ -522,7 +543,15 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    provider_key = str(custom_provider.get("provider_key", "") or "").strip()
+    custom_slug = f"custom:{_normalize_custom_provider_name(provider_key or str(custom_provider.get('name', '') or ''))}"
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+        provider_id=custom_slug,
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -542,6 +571,7 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
+        "provider_id": custom_slug,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -655,6 +685,7 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
+        "provider_id": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -925,6 +956,7 @@ def resolve_runtime_provider(
         )
         return {
             "provider": "anthropic",
+            "provider_id": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": _eff_base.rstrip("/"),
             "api_key": _azure_key,
@@ -945,7 +977,7 @@ def resolve_runtime_provider(
             explicit_base_url=explicit_base_url,
             target_model=target_model,
         )
-        return azure_runtime
+        return _ensure_provider_id(azure_runtime, provider_id="azure-foundry")
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
@@ -954,7 +986,10 @@ def resolve_runtime_provider(
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
-        return custom_runtime
+        return _ensure_provider_id(
+            custom_runtime,
+            provider_id=custom_runtime.get("provider_id"),
+        )
 
     provider = resolve_provider(
         requested_provider,
@@ -970,7 +1005,7 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     if explicit_runtime:
-        return explicit_runtime
+        return _ensure_provider_id(explicit_runtime)
 
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
@@ -1037,6 +1072,7 @@ def resolve_runtime_provider(
             )
             return {
                 "provider": "nous",
+                "provider_id": "nous",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
@@ -1057,6 +1093,7 @@ def resolve_runtime_provider(
             creds = resolve_codex_runtime_credentials()
             return {
                 "provider": "openai-codex",
+                "provider_id": "openai-codex",
                 "api_mode": "codex_responses",
                 "base_url": creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
@@ -1077,6 +1114,7 @@ def resolve_runtime_provider(
             creds = resolve_qwen_runtime_credentials()
             return {
                 "provider": "qwen-oauth",
+                "provider_id": "qwen-oauth",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
@@ -1097,6 +1135,7 @@ def resolve_runtime_provider(
             creds = resolve_minimax_oauth_runtime_credentials()
             return {
                 "provider": provider,
+                "provider_id": provider,
                 "api_mode": "anthropic_messages",
                 "base_url": creds["base_url"],
                 "api_key": creds["api_key"],
@@ -1109,6 +1148,7 @@ def resolve_runtime_provider(
             creds = resolve_gemini_oauth_runtime_credentials()
             return {
                 "provider": "google-gemini-cli",
+                "provider_id": "google-gemini-cli",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", ""),
                 "api_key": creds.get("api_key", ""),
@@ -1128,6 +1168,7 @@ def resolve_runtime_provider(
         creds = resolve_external_process_provider_credentials(provider)
         return {
             "provider": "copilot-acp",
+            "provider_id": "copilot-acp",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
@@ -1197,6 +1238,7 @@ def resolve_runtime_provider(
                 )
         return {
             "provider": "anthropic",
+            "provider_id": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
@@ -1251,6 +1293,7 @@ def resolve_runtime_provider(
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
+                "provider_id": "bedrock",
                 "api_mode": "anthropic_messages",
                 "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
                 "api_key": "aws-sdk",
@@ -1263,6 +1306,7 @@ def resolve_runtime_provider(
             # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
             runtime = {
                 "provider": "bedrock",
+                "provider_id": "bedrock",
                 "api_mode": "bedrock_converse",
                 "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
                 "api_key": "aws-sdk",
@@ -1322,6 +1366,7 @@ def resolve_runtime_provider(
             base_url = re.sub(r"/v1/?$", "", base_url)
         return {
             "provider": provider,
+            "provider_id": provider,
             "api_mode": api_mode,
             "base_url": base_url,
             "api_key": creds.get("api_key", ""),
@@ -1335,7 +1380,10 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
-    return runtime
+    return _ensure_provider_id(
+        runtime,
+        provider_id=runtime.get("provider_id") or provider,
+    )
 
 
 def format_runtime_provider_error(error: Exception) -> str:

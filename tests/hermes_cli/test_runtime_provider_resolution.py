@@ -557,6 +557,7 @@ def test_custom_endpoint_prefers_openai_key(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "https://api.z.ai/api/coding/paas/v4"
     assert resolved["api_key"] == "zai-key"
 
@@ -580,6 +581,7 @@ def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
     assert resolved["api_key"] == "local-key"
 
@@ -602,6 +604,7 @@ def test_custom_endpoint_uses_config_api_key_over_env(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "https://my-api.example.com/v1"
     assert resolved["api_key"] == "config-api-key"
 
@@ -624,6 +627,7 @@ def test_custom_endpoint_uses_config_api_field_when_no_api_key(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "https://custom.example.com/v1"
     assert resolved["api_key"] == "config-api-field"
 
@@ -645,6 +649,7 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "https://my-vllm-server.example.com/v1"
     assert resolved["api_key"] == "sk-vllm-key"
 
@@ -670,6 +675,7 @@ def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monke
     resolved = rp.resolve_runtime_provider(requested="custom")
 
     assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
     assert resolved["api_key"] == "openai-key"
 
@@ -691,6 +697,7 @@ def test_bare_custom_custom_base_url_env_overrides_remote_yaml(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="custom")
 
     assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom"
     assert resolved["base_url"] == "http://localhost:9999/v1"
 
 
@@ -744,6 +751,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="local")
 
     assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom:local"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
@@ -784,6 +792,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
 
     assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom:openai-direct-primary"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
     assert resolved["api_key"] == "dir-key"
@@ -824,6 +833,7 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
 
     assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom:mycorp-proxy"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "https://proxy.example.com/v1"
     assert resolved["api_key"] == "env-secret"
@@ -859,9 +869,31 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
 
+    assert resolved["provider"] == "custom"
+    assert resolved["provider_id"] == "custom:local-llm"
     assert resolved["base_url"] == "http://localhost:1234/v1"
     assert resolved["api_key"] == "env-openai-key"
     assert resolved["requested_provider"] == "custom:local-llm"
+
+
+def test_non_custom_provider_sets_provider_id(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_resolve_openrouter_runtime",
+        lambda **kwargs: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "or-key",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["provider_id"] == "openrouter"
 
 
 def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):

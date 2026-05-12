@@ -1324,6 +1324,64 @@ class TestModelInfoEndpoint:
 # ---------------------------------------------------------------------------
 
 
+class TestModelAssignmentEndpoint:
+    """Tests for POST /api/model/set endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_named_custom_provider_persists_full_provider_id(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        cfg = {"model": {"default": "old-model", "provider": "openrouter", "base_url": ""}}
+        saved = {}
+
+        monkeypatch.setattr(ws, "load_config", lambda: cfg)
+
+        def _save_config(next_cfg):
+            saved["config"] = next_cfg
+
+        monkeypatch.setattr(ws, "save_config", _save_config)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom:company-model",
+                "model": "acme-coder",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert saved["config"]["model"]["provider"] == "custom:company-model"
+        assert saved["config"]["model"]["default"] == "acme-coder"
+
+    def test_bare_custom_requires_base_url(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(
+            ws,
+            "load_config",
+            lambda: {"model": {"default": "old-model", "provider": "openrouter", "base_url": ""}},
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "custom", "model": "local-model"},
+        )
+
+        assert resp.status_code == 400
+        assert "bare 'custom'" in resp.json()["detail"]
+
+
 class TestProbeGatewayHealth:
     """Tests for _probe_gateway_health() — cross-container gateway detection."""
 

@@ -100,6 +100,22 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
+    def test_main_with_named_custom_does_not_log_custom_main_warning(self, tmp_path, caplog):
+        _write_config(tmp_path, {
+            "model": {"default": "my-model", "provider": "custom:beans"},
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+
+        with caplog.at_level("WARNING"):
+            client, model = resolve_provider_client("main", "test")
+
+        assert client is not None
+        assert model == "test"
+        assert "custom/main requested" not in caplog.text
+
     def test_main_resolves_github_copilot_alias(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "gpt-5.4", "provider": "github-copilot"},

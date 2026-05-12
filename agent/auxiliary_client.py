@@ -2407,8 +2407,12 @@ def resolve_provider_client(
                 client = _wrap_if_needed(client, final_model, _cbase, _ckey)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
-        logger.warning("resolve_provider_client: custom/main requested "
-                       "but no endpoint credentials found")
+        logger.warning(
+            "resolve_provider_client: '%s' requested but no endpoint credentials found. "
+            "If using a named custom provider (e.g. custom:name), verify the name matches "
+            "custom_providers[].name in your config.",
+            original_provider or provider,
+        )
         return None, None
 
     # ── Named custom providers (config.yaml providers dict / custom_providers list) ───

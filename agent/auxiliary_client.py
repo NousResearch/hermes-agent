@@ -3773,7 +3773,18 @@ def _get_cached_client(
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
-    return client, model or default_model
+    # Re-apply model name normalization on the raw caller-passed `model` so
+    # the caller's explicit override still wins (preserving existing
+    # caller-wins semantics) but the namespace-stripping that
+    # `resolve_provider_client` performed via `_normalize_resolved_model`
+    # isn't silently bypassed. Without this, namespaced model names like
+    # "my-provider/claude-haiku-4-5" leak past the resolver's normalization
+    # and arrive at the wire unstripped — the Anthropic API rejects them
+    # with a 404 "model not found". `default_model` is the resolver's
+    # already-normalized `final_model`, so any normalization failure falls
+    # back to it safely.
+    normalized_caller_model = _normalize_resolved_model(model, provider) if model else None
+    return client, normalized_caller_model or default_model
 
 
 def _resolve_task_provider_model(

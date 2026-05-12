@@ -135,4 +135,25 @@ describe('external link helpers', () => {
     await expect(fetchLinkTitle('file:///tmp/demo.html')).resolves.toBe('')
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it('does not follow title redirects to private hosts', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.redirect === 'manual') {
+        return new Response('', {
+          headers: { location: 'http://169.254.169.254/latest/meta-data' },
+          status: 302
+        })
+      }
+
+      return new Response('<html><head><title>Instance Metadata</title></head></html>', {
+        headers: { 'content-type': 'text/html' },
+        status: 200
+      })
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchLinkTitle('https://example.com/redirect')).resolves.toBe('')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

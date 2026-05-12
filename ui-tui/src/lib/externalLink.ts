@@ -9,6 +9,7 @@ const titleSubs = new Map<string, Set<(value: string) => void>>()
 const TITLE_CACHE_LIMIT = 500
 const TITLE_MAX_LENGTH = 240
 const TITLE_BYTE_BUDGET = 96 * 1024
+const TITLE_MAX_REDIRECTS = 5
 const TITLE_TIMEOUT_MS = 5000
 
 const TITLE_USER_AGENT =
@@ -321,34 +322,71 @@ function usableTitle(value: string): string {
   return clean && !TITLE_ERROR_RE.test(clean) ? clean : ''
 }
 
+function redirectTarget(currentUrl: string, location: null | string): string {
+  if (!location) {
+    return ''
+  }
+
+  try {
+    return new URL(location, currentUrl).toString()
+  } catch {
+    return ''
+  }
+}
+
 async function fetchHtmlTitle(normalizedUrl: string): Promise<string> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), TITLE_TIMEOUT_MS)
+  let currentUrl = normalizedUrl
 
   try {
-    const response = await fetch(normalizedUrl, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-        'Accept-Language': 'en-US,en;q=0.7',
-        'User-Agent': TITLE_USER_AGENT
-      },
-      redirect: 'follow',
-      signal: controller.signal
-    })
+    for (let redirects = 0; redirects <= TITLE_MAX_REDIRECTS; redirects++) {
+      if (!isTitleFetchable(currentUrl)) {
+        return ''
+      }
 
-    if (!response.ok) {
-      return ''
+      const response = await fetch(currentUrl, {
+        headers: {
+          Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
+          'Accept-Language': 'en-US,en;q=0.7',
+          'User-Agent': TITLE_USER_AGENT
+        },
+        redirect: 'manual',
+        signal: controller.signal
+      })
+
+      if (response.status >= 300 && response.status < 400) {
+        const nextUrl = redirectTarget(currentUrl, response.headers.get('location'))
+
+        if (!nextUrl || !isTitleFetchable(nextUrl)) {
+          return ''
+        }
+
+        currentUrl = nextUrl
+
+        continue
+      }
+
+      if (response.url && !isTitleFetchable(response.url)) {
+        return ''
+      }
+
+      if (!response.ok) {
+        return ''
+      }
+
+      const contentType = response.headers.get('content-type')
+
+      if (contentType && !/(?:html|xml|text\/html)/i.test(contentType)) {
+        return ''
+      }
+
+      const html = await readResponseSnippet(response)
+
+      return parseHtmlTitle(html).slice(0, TITLE_MAX_LENGTH)
     }
 
-    const contentType = response.headers.get('content-type')
-
-    if (contentType && !/(?:html|xml|text\/html)/i.test(contentType)) {
-      return ''
-    }
-
-    const html = await readResponseSnippet(response)
-
-    return parseHtmlTitle(html).slice(0, TITLE_MAX_LENGTH)
+    return ''
   } catch {
     return ''
   } finally {

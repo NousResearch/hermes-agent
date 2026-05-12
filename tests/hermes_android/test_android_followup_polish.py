@@ -432,6 +432,10 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'node.className?.toString().orEmpty().contains(className' in ui_bridge
 
     for action in [
+        '"sense"',
+        '"opengui_sense"',
+        '"perception_status"',
+        '"a11y_tree"',
         '"tap"',
         '"long_press"',
         '"swipe"',
@@ -475,6 +479,8 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
         '"save_file"',
         '"include_base64"',
         '"max_image_edge_px"',
+        '"include_snapshot"',
+        '"include_screenshot"',
         '"class_name"',
         '"app_name"',
     ]:
@@ -487,6 +493,9 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'coordinate_arguments' in chat_client
     assert 'opengui_action_arguments' in chat_client
     assert 'screenshot_capture_supported' in chat_client
+    assert 'OpenGuiSenseStatus.build' in chat_client
+    assert 'opengui_sense_supported' in chat_client
+    assert 'opengui_sense_actions' in chat_client
     assert 'executeAndroidScreenshotTool' in chat_client
     assert 'optionalBooleanArgument' in chat_client
     assert 'normalized_coordinate_support' in chat_client
@@ -519,6 +528,7 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'OpenGuiExecutionReview.review' in chat_client
     assert 'requires_replan' in chat_client
     assert 'repeated-action and screen-state review guards' in chat_client
+    assert 'OpenGUI-style sense/perception routing' in chat_client
     assert 'ui_state_hash' in chat_client
     assert 'screen_hash' in chat_client
     assert 'android:canTakeScreenshot="true"' in accessibility_config

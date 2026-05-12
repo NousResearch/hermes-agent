@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
 
@@ -55,6 +56,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
+  const [disconnectTarget, setDisconnectTarget] =
+    useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
@@ -74,10 +77,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
-    if (!confirm(`${t.oauth.disconnect} ${provider.name}?`)) {
-      return;
-    }
     setBusyId(provider.id);
+    setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
       onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
@@ -236,7 +237,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     <Button
                       size="sm"
                       outlined
-                      onClick={() => handleDisconnect(p)}
+                      onClick={() => setDisconnectTarget(p)}
                       disabled={isBusy}
                       prefix={isBusy ? <Spinner /> : <LogOut />}
                     >
@@ -266,6 +267,17 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
           onError={(msg) => onError?.(msg)}
         />
       )}
+      <ConfirmDialog
+        open={disconnectTarget !== null}
+        onCancel={() => setDisconnectTarget(null)}
+        onConfirm={() => {
+          if (disconnectTarget) void handleDisconnect(disconnectTarget);
+        }}
+        title={`${t.oauth.disconnect} ${disconnectTarget?.name ?? ""}?`}
+        description={`This will remove the stored OAuth tokens for ${disconnectTarget?.name ?? "this provider"}. You will need to re-authenticate to use it again.`}
+        destructive
+        confirmLabel={t.oauth.disconnect}
+      />
     </Card>
   );
 }

@@ -46,6 +46,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
@@ -118,6 +119,7 @@ export default function ConfigPage() {
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>("");
+  const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -290,11 +292,17 @@ export default function ConfigPage() {
     // "reset this tab", not "wipe my entire config.yaml".
     const scopedFields = isSearching ? searchMatchedFields : activeFields;
     if (scopedFields.length === 0) return;
+    setConfirmReset(true);
+  };
+
+  const executeReset = () => {
+    if (!defaults || !config) return;
+    setConfirmReset(false);
+    const scopedFields = isSearching ? searchMatchedFields : activeFields;
+    if (scopedFields.length === 0) return;
     const scopeLabel = isSearching
       ? t.config.searchResults
       : prettyCategoryName(activeCategory);
-    const message = t.config.confirmResetScope.replace("{scope}", scopeLabel);
-    if (!window.confirm(message)) return;
     let next: Record<string, unknown> = config;
     for (const [key] of scopedFields) {
       next = setNestedValue(next, key, getNestedValue(defaults, key));
@@ -627,6 +635,22 @@ export default function ConfigPage() {
         </div>
       )}
       <PluginSlot name="config:bottom" />
+      <ConfirmDialog
+        open={confirmReset}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={executeReset}
+        title={t.config.confirmResetScope.replace(
+          "{scope}",
+          isSearching
+            ? t.config.searchResults
+            : prettyCategoryName(activeCategory),
+        )}
+        description={`This will reset ${
+          (isSearching ? searchMatchedFields : activeFields).length
+        } field(s) to their default values.`}
+        destructive
+        confirmLabel={t.config.resetDefaults}
+      />
     </div>
   );
 }

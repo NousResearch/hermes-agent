@@ -11,6 +11,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/useToast";
@@ -393,6 +394,7 @@ function PluginRowCard(props: PluginRowCardProps) {
   const tabPath = dm?.tab && !dm.tab.hidden ? dm.tab.override ?? dm.tab.path : null;
 
   const busy = rowBusy === row.name;
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const badgeTone =
     row.runtime_status === "enabled"
@@ -533,18 +535,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 disabled={busy}
                 ghost
                 size="sm"
-                onClick={() => {
-                  const ok =
-                    typeof window !== "undefined"
-                      ? window.confirm(t.pluginsPage.removeConfirm)
-                      : false;
-                  if (!ok) return;
-
-                  void setRuntimeLoading(row.name, async () => {
-                    await api.removeAgentPlugin(row.name);
-                    showToast(`${row.name} removed`, "success");
-                  });
-                }}
+                onClick={() => setConfirmRemove(true)}
               >
 
                 {busy ? <Spinner /> : <Trash2 className="h-3.5 w-3.5" />}
@@ -576,6 +567,21 @@ function PluginRowCard(props: PluginRowCardProps) {
         ) : null}
       </CardContent>
 
+      <ConfirmDialog
+        open={confirmRemove}
+        onCancel={() => setConfirmRemove(false)}
+        onConfirm={() => {
+          setConfirmRemove(false);
+          void setRuntimeLoading(row.name, async () => {
+            await api.removeAgentPlugin(row.name);
+            showToast(`${row.name} removed`, "success");
+          });
+        }}
+        title={t.pluginsPage.removeConfirm}
+        description={`This will remove the "${row.name}" plugin from your agent.`}
+        destructive
+        confirmLabel={t.common.delete}
+      />
     </Card>
   );
 }

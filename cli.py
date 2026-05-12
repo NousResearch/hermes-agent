@@ -6015,10 +6015,18 @@ class HermesCLI:
 
         return result[0]
 
-    def _prompt_text_input(self, prompt_text: str) -> str | None:
+    def _prompt_text_input(self, prompt_text: str, preamble: str = "") -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit.
 
-        Three cases:
+        ``preamble``, when provided, is printed immediately before the input()
+        call *inside* the same ``run_in_terminal`` block.  This guarantees the
+        preamble text (option list, warning lines) and the prompt cursor appear
+        in the correct order — callers must NOT print the preamble themselves
+        via bare ``print()`` before calling this method, because those prints
+        race against the ``run_in_terminal`` scheduling on the event loop and
+        can render after the "Choice:" prompt rather than before it.
+
+        Three dispatch cases:
 
         1. Main thread + app running: call ``run_in_terminal`` directly —
            prompt_toolkit pauses the input area, runs ``_ask``, then redraws.
@@ -6041,6 +6049,8 @@ class HermesCLI:
 
         def _ask():
             try:
+                if preamble:
+                    print(preamble, end="", flush=True)
                 result[0] = input(prompt_text).strip() or None
             except (KeyboardInterrupt, EOFError):
                 pass
@@ -8726,19 +8736,24 @@ class HermesCLI:
         if not confirm_required:
             return "once"
 
-        # Render warning + prompt — single-line composer prompt, mirrors
-        # ``_confirm_and_reload_mcp``.
-        print()
-        print(f"⚠️  /{command} — destroys conversation state")
-        print()
-        for line in detail.splitlines():
-            print(f"  {line}")
-        print()
-        print("  [1] Approve Once   — proceed this time only")
-        print("  [2] Always Approve — proceed and silence this prompt permanently")
-        print("  [3] Cancel         — keep current conversation")
-        print()
-        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        # Build the preamble — all text that must appear BEFORE the input
+        # cursor.  Passed into _prompt_text_input so it's printed atomically
+        # inside the same run_in_terminal block as the input() call.  Printing
+        # separately before calling _prompt_text_input races against the
+        # event-loop scheduling and can display the "Choice:" cursor before
+        # the option list on background threads.
+        detail_lines = "".join(f"  {line}\n" for line in detail.splitlines())
+        preamble = (
+            f"\n⚠️  /{command} — destroys conversation state\n"
+            f"\n"
+            f"{detail_lines}"
+            f"\n"
+            f"  [1] Approve Once   — proceed this time only\n"
+            f"  [2] Always Approve — proceed and silence this prompt permanently\n"
+            f"  [3] Cancel         — keep current conversation\n"
+            f"\n"
+        )
+        raw = self._prompt_text_input("Choice [1/2/3]: ", preamble=preamble)
         if raw is None:
             print(f"🟡 /{command} cancelled (no input).")
             return None
@@ -8794,21 +8809,23 @@ class HermesCLI:
                 self._reload_mcp()
             return
 
-        # Render warning + prompt.  Use a single-line prompt so the user
-        # sees the warning as output and types a response into the composer.
-        print()
-        print("⚠️  /reload-mcp — Prompt cache invalidation warning")
-        print()
-        print("  Reloading MCP servers rebuilds the tool set for this session and")
-        print("  invalidates the provider prompt cache.  The next message will")
-        print("  re-send full input tokens (can be expensive on long-context or")
-        print("  high-reasoning models).")
-        print()
-        print("  [1] Approve Once   — reload now")
-        print("  [2] Always Approve — reload now and silence this prompt permanently")
-        print("  [3] Cancel         — leave MCP tools unchanged")
-        print()
-        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        # Build preamble atomically with the input prompt — same pattern as
+        # _confirm_destructive_slash.  Avoids "Choice:" appearing before the
+        # option list on background threads.
+        preamble = (
+            "\n⚠️  /reload-mcp — Prompt cache invalidation warning\n"
+            "\n"
+            "  Reloading MCP servers rebuilds the tool set for this session and\n"
+            "  invalidates the provider prompt cache.  The next message will\n"
+            "  re-send full input tokens (can be expensive on long-context or\n"
+            "  high-reasoning models).\n"
+            "\n"
+            "  [1] Approve Once   — reload now\n"
+            "  [2] Always Approve — reload now and silence this prompt permanently\n"
+            "  [3] Cancel         — leave MCP tools unchanged\n"
+            "\n"
+        )
+        raw = self._prompt_text_input("Choice [1/2/3]: ", preamble=preamble)
         if raw is None:
             print("🟡 /reload-mcp cancelled (no input).")
             return

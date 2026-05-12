@@ -19,7 +19,7 @@ def _make_self(prompt_response):
     """Build a minimal stand-in 'self' for _confirm_destructive_slash."""
     return SimpleNamespace(
         _app=None,
-        _prompt_text_input=lambda _prompt: prompt_response,
+        _prompt_text_input=lambda _prompt, **kwargs: prompt_response,
     )
 
 

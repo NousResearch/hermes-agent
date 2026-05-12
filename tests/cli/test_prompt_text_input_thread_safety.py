@@ -180,3 +180,37 @@ class TestPromptTextInputThreadSafety:
 
         assert captured.get("prompt") == "Choice: "
         assert result_holder["value"] == "3"
+
+    def test_preamble_printed_before_input_prompt(self):
+        """Preamble text is printed inside _ask before input() is called.
+
+        Ensures that option lines always appear before the 'Choice:' cursor —
+        the ordering bug where 'Choice [1/2/3]:' appeared before the option
+        list because bare print() calls on the daemon thread raced against the
+        run_in_terminal scheduling on the event loop.
+        """
+        cli = _make_cli()
+        cli._app = None  # simple path — no PT app, no threading complexity
+
+        call_order = []
+
+        def fake_print(text, **kwargs):
+            call_order.append(("print", text))
+
+        def fake_input(prompt):
+            call_order.append(("input", prompt))
+            return "2"
+
+        with patch("builtins.print", side_effect=fake_print), \
+             patch("builtins.input", side_effect=fake_input):
+            result = cli._prompt_text_input(
+                "Choice [1/2/3]: ",
+                preamble="  [1] Approve Once\n  [2] Always Approve\n  [3] Cancel\n\n"
+            )
+
+        assert result == "2"
+        # print must come before input in the call order
+        assert call_order[0][0] == "print", "preamble print must come before input()"
+        assert call_order[-1][0] == "input", "input() must be last"
+        # preamble content was printed
+        assert any("Approve Once" in str(args) for op, args in call_order if op == "print")

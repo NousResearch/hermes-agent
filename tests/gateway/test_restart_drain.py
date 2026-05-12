@@ -107,6 +107,29 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
 
+def test_load_orchestration_status_queries_prefers_env_then_config_then_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES", raising=False)
+
+    assert gateway_run.GatewayRunner._load_orchestration_status_queries_enabled() is False
+
+    (tmp_path / "config.yaml").write_text(
+        "orchestration:\n  status_queries_enabled: true\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_orchestration_status_queries_enabled() is True
+
+    (tmp_path / "config.yaml").write_text(
+        "orchestration:\n  status_queries_enabled: false\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_orchestration_status_queries_enabled() is False
+
+    monkeypatch.setenv("HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES", "1")
+    assert gateway_run.GatewayRunner._load_orchestration_status_queries_enabled() is True
+
+    monkeypatch.setenv("HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES", "off")
+    assert gateway_run.GatewayRunner._load_orchestration_status_queries_enabled() is False
+
+
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
     tmp_path, monkeypatch, caplog
 ):

@@ -130,6 +130,30 @@ def _ensure_deps():
             sys.exit(1)
 
 
+def _print_oauth_client_disabled_banner(label: str, exc: Exception):
+    """Print urgent disabled-client/account guidance."""
+    line = "=" * 60
+    print(line)
+    print(f"{label} - STOP AND READ")
+    print(line)
+    print(str(exc))
+    print()
+    print("The OAuth client or Google account has been disabled by Google.")
+    print()
+    print("DO THIS NOW:")
+    print("  1. Appeal the account at https://accounts.google.com/signin/recovery")
+    print("     (time-sensitive; disabled accounts can be permanently deleted).")
+    print("  2. Do NOT retry API calls; repeated failures from a disabled account")
+    print("     can reduce appeal success.")
+    print()
+    print("THEN DIAGNOSE:")
+    print("  - Check OAuth client status: https://console.cloud.google.com/apis/credentials")
+    print("  - Check account status:      https://myaccount.google.com")
+    print("  - If only the OAuth CLIENT is disabled (not the account), create a new")
+    print("    one in Cloud Console and re-run setup.")
+    print(line)
+
+
 def check_auth_live():
     """Check auth with a real API call to detect disabled_client/account issues."""
     # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
@@ -147,10 +171,10 @@ def check_auth_live():
     except Exception as e:
         err_str = str(e).lower()
         if "disabled_client" in err_str or "invalid_client" in err_str:
-            print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {e}")
-            print("  1. Check Google Cloud Console for disabled OAuth client")
-            print("  2. Check myaccount.google.com for account status")
-            print("  3. Do NOT retry with a disabled account")
+            _print_oauth_client_disabled_banner(
+                "LIVE_CHECK_FAILED: OAuth client or account disabled",
+                e,
+            )
         else:
             print(f"LIVE_CHECK_FAILED: {e}")
         return False
@@ -207,14 +231,8 @@ def check_auth(quiet: bool = False):
         except Exception as e:
             err_str = str(e).lower()
             if "disabled_client" in err_str or "invalid_client" in err_str:
-                print(f"OAUTH_CLIENT_DISABLED: {e}")
-                print("  The OAuth client or Google account has been disabled.")
-                print("  Steps to resolve:")
-                print("    1. Check your Google Cloud Console — verify the OAuth client is not disabled")
-                print("    2. Check if your Google account itself has been disabled at myaccount.google.com")
-                print("    3. If the account is disabled, you can appeal at accounts.google.com/signin/recovery")
-                print("    4. Do NOT retry API calls with a disabled account — this may worsen the situation")
-                print("    5. If the OAuth client is disabled, create a new one in Google Cloud Console")
+                _print_oauth_client_disabled_banner("OAUTH_CLIENT_DISABLED", e)
+                return False
             elif "token_revoked" in err_str or "invalid_grant" in err_str:
                 print(f"TOKEN_REVOKED: {e}")
                 print("  Re-run setup to re-authenticate.")

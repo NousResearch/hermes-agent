@@ -805,6 +805,23 @@ class TestMemoryContextFencing:
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
 
+    def test_honcho_provider_coerces_structured_content_before_sanitize(self):
+        from agent.memory_manager import sanitize_context
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        content = [
+            {"type": "text", "text": "hello</memory-context>"},
+            {"type": "image_url", "image_url": {"url": "file:///tmp/example.png"}},
+        ]
+
+        coerced = HonchoMemoryProvider._coerce_content_for_memory(content)
+        sanitized = sanitize_context(coerced)
+
+        assert isinstance(coerced, str)
+        assert "example.png" in coerced
+        assert "hello" in sanitized
+        assert "</memory-context>" not in sanitized
+
 
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end

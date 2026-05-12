@@ -360,6 +360,82 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    # -----------------------------------------------------------------
+    # Regression tests for the 2026-05-12 extract_media regex fixes.
+    # See gateway/platforms/base.py for the corresponding inline comment.
+    # -----------------------------------------------------------------
+
+    def test_prose_media_word_does_not_bridge_to_later_tag(self):
+        """Regression: when the response contains ``MEDIA:`` as conversational
+        text on one line and a real ``MEDIA:/path.ext`` tag on a later line,
+        the regex must NOT bridge across the newlines and capture the
+        literal ``MEDIA:`` prefix as part of the path.
+
+        Previously the ``\\s*`` after ``MEDIA:`` consumed the newlines and
+        the path slot fell through to the ``|\\S+`` fallback, producing
+        ``('MEDIA:/Users/.../foo.png', False)``.
+        """
+        content = (
+            "Test 3 — the PNG via MEDIA:\n"
+            "\n"
+            "MEDIA:/tmp/output/foo.png\n"
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        # The real ``MEDIA:/tmp/output/foo.png`` tag should extract cleanly
+        # — no ``MEDIA:`` prefix glued onto the path.
+        assert media == [("/tmp/output/foo.png", False)]
+
+    def test_html_extension_is_allowlisted(self):
+        """Regression: ``.html`` and other common developer text formats
+        (svg, md, json, yaml, xml, log, py, jsx, tsx, sh, toml, ini, conf,
+        env) are now allowlisted so MEDIA: can attach them."""
+        for ext in (
+            "html", "htm", "svg", "md", "markdown", "json", "yaml", "yml",
+            "xml", "log", "py", "js", "jsx", "ts", "tsx", "sh", "bash",
+            "zsh", "toml", "ini", "conf", "cfg", "env",
+        ):
+            content = f"MEDIA:/tmp/foo.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [(f"/tmp/foo.{ext}", False)], (
+                f"extension {ext!r} should be allowlisted by extract_media"
+            )
+
+    def test_unquoted_path_with_unrecognized_extension_is_left_alone(self):
+        """Regression: the ``|\\S+`` fallback at the end of the path
+        alternatives was removed because it (a) truncated paths with
+        spaces at the first whitespace and (b) re-captured the ``MEDIA:``
+        prefix in pathological cases. Unrecognized extensions are now
+        left as plain text (user can quote the path to opt in)."""
+        content = "MEDIA:/tmp/foo.unknownext"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        # The original MEDIA: tag remains in the cleaned text since it
+        # didn't match — agent + user can see the unsupported-extension
+        # state instead of silently dropping it.
+        assert "MEDIA:/tmp/foo.unknownext" in cleaned
+
+    def test_quoted_path_with_unrecognized_extension_still_works(self):
+        """Quoted (single, double, or backtick) paths bypass the extension
+        allowlist — the quotes act as the explicit opt-in. This preserves
+        the ``MEDIA:\"/path/anything\"`` escape hatch for unusual files."""
+        for quote in ('"', "'", "`"):
+            content = f"MEDIA:{quote}/tmp/foo.unknownext{quote}"
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [("/tmp/foo.unknownext", False)], (
+                f"quoted path with {quote!r} should bypass extension allowlist"
+            )
+
+    def test_path_with_spaces_in_allowlisted_extension_still_works(self):
+        """Verify the existing unquoted-spaces support didn't regress.
+        Internal spaces within an unquoted path are still allowed as long
+        as the final extension is allowlisted (since allowlisted extensions
+        give the regex an unambiguous anchor)."""
+        content = "MEDIA:/tmp/Ace Place/Engineering/Subagent Router.html"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/Ace Place/Engineering/Subagent Router.html", False)
+        ]
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

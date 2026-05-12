@@ -10012,9 +10012,16 @@ class GatewayRunner:
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            media_files, _ = adapter.extract_media(response)
-            _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
+            # Chain cleaned text through each extractor so MEDIA: tags and image
+            # URLs are stripped before extract_local_files runs its bare-path
+            # auto-detect. Previously this dropped the cleaned text on the floor
+            # (used ``_``), causing extract_local_files to scan raw ``MEDIA:``
+            # text and produce false-positive bare-path matches with the
+            # ``MEDIA:`` prefix glued on. Matches the chain order used by the
+            # non-streaming path in gateway/platforms/base.py.
+            media_files, response_cleaned = adapter.extract_media(response)
+            _, response_cleaned = adapter.extract_images(response_cleaned)
+            local_files, _ = adapter.extract_local_files(response_cleaned)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 

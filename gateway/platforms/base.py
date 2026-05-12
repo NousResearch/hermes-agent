@@ -2061,10 +2061,23 @@ class BasePlatformAdapter(ABC):
         # keep it out of the user-visible cleaned text.
         cleaned = cleaned.replace("[[as_document]]", "")
         
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
+        # Extract MEDIA:<path> tags, allowing optional HORIZONTAL whitespace after
+        # the colon and quoted/backticked paths for LLM-formatted outputs.
+        #
+        # Fixes (2026-05-12):
+        #   1. Use ``[^\S\n]*`` instead of ``\s*`` so the regex cannot bridge
+        #      across newlines from a prose ``MEDIA:`` mention to a later real
+        #      ``MEDIA:/path.ext`` tag (which used to fall through to the
+        #      ``\S+`` fallback and capture the literal ``MEDIA:`` prefix as
+        #      part of the path).
+        #   2. Drop the trailing ``|\S+`` fallback. ``\S+`` truncated paths
+        #      containing spaces (e.g. ``/Users/.../Ace Place/foo.html`` →
+        #      ``/Users/.../Ace``) and re-captured the ``MEDIA:`` prefix in
+        #      pathological cases. Unrecognized extensions now require quoting.
+        #   3. Expand the allowlist to common developer text formats (html,
+        #      svg, md, json, yaml, xml, log, source code, shell, config).
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:[^\S\n]*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|svg|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|html?|md|markdown|json|ya?ml|xml|log|py|jsx?|tsx?|sh|bash|zsh|toml|ini|conf|cfg|env)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

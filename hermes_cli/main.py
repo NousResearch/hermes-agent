@@ -7801,6 +7801,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
+        # Refresh the cua-driver binary used by the Computer Use toolset.
+        # The upstream installer is gated on macOS and on the binary already
+        # being on PATH, so this is a no-op for users who don't have it.
+        # Tying the refresh to ``hermes update`` gives users a predictable
+        # cadence (matches when they pull new agent code) without adding
+        # startup latency or a per-launch GitHub API call.
+        try:
+            if sys.platform == "darwin" and shutil.which("cua-driver"):
+                from hermes_cli.tools_config import install_cua_driver
+
+                print()
+                print("→ Refreshing cua-driver (Computer Use)...")
+                install_cua_driver(upgrade=True)
+        except Exception as e:
+            logger.debug("cua-driver refresh failed: %s", e)
+
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's
         # /update command), this process lives inside the gateway's systemd
@@ -10801,9 +10817,18 @@ Examples:
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
-    computer_use_sub.add_parser(
+    computer_use_install = computer_use_sub.add_parser(
         "install",
         help="Install or repair the cua-driver binary (macOS)",
+    )
+    computer_use_install.add_argument(
+        "--upgrade",
+        action="store_true",
+        help=(
+            "Re-run the upstream installer even if cua-driver is already on "
+            "PATH. The upstream install.sh always pulls the latest release, "
+            "so this performs an in-place upgrade."
+        ),
     )
     computer_use_sub.add_parser(
         "status",
@@ -10813,14 +10838,27 @@ Examples:
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
         if action == "install":
-            from hermes_cli.tools_config import _run_post_setup
-            _run_post_setup("cua_driver")
+            from hermes_cli.tools_config import install_cua_driver
+            install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
             import shutil
+            import subprocess
             path = shutil.which("cua-driver")
             if path:
-                print(f"cua-driver: installed at {path}")
+                version = ""
+                try:
+                    version = subprocess.run(
+                        ["cua-driver", "--version"],
+                        capture_output=True, text=True, timeout=5,
+                    ).stdout.strip()
+                except Exception:
+                    pass
+                if version:
+                    print(f"cua-driver: installed at {path} ({version})")
+                else:
+                    print(f"cua-driver: installed at {path}")
+                print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")
             print("  Run: hermes computer-use install")

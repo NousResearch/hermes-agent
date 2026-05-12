@@ -13,6 +13,10 @@ LAUNCHER_RENAMES = {
     "llama-server": "libhermes_android_llama_server.so",
 }
 
+BIONIC_SPAWN_LAUNCHER_RENAMES = {
+    "llama-server": "libhermes_android_llama_server_bionic_spawn.so",
+}
+
 NEEDED_RENAMES = {
     "libbusybox.so.1.37.0": "libbusybox.so",
     "libbz2.so.1.0": "libbz2.so",
@@ -25,6 +29,9 @@ NEEDED_RENAMES = {
     "libssl.so.3": "libssl.so",
     "libz.so.1": "libz.so",
 }
+
+ANDROID_SPAWN_NEEDED = b"libandroid-spawn.so\0"
+BIONIC_LIBC_NEEDED = b"libc.so\0"
 
 
 def packaged_library_name(name: str) -> str:
@@ -50,6 +57,14 @@ def patch_needed_names(path: Path) -> None:
         path.write_bytes(patched)
 
 
+def patch_android_spawn_needed_to_libc(path: Path) -> None:
+    payload = path.read_bytes()
+    if ANDROID_SPAWN_NEEDED not in payload:
+        return
+    replacement = BIONIC_LIBC_NEEDED + (b"\0" * (len(ANDROID_SPAWN_NEEDED) - len(BIONIC_LIBC_NEEDED)))
+    path.write_bytes(payload.replace(ANDROID_SPAWN_NEEDED, replacement))
+
+
 def copy_abi(linux_assets_dir: Path, output_dir: Path, abi: str) -> None:
     prefix = linux_assets_dir / "hermes-linux" / abi / "prefix"
     bin_dir = prefix / "bin"
@@ -61,6 +76,13 @@ def copy_abi(linux_assets_dir: Path, output_dir: Path, abi: str) -> None:
         source = bin_dir / source_name
         if source.is_file():
             shutil.copy2(source, abi_output / dest_name)
+
+    for source_name, dest_name in BIONIC_SPAWN_LAUNCHER_RENAMES.items():
+        source = bin_dir / source_name
+        if source.is_file():
+            destination = abi_output / dest_name
+            shutil.copy2(source, destination)
+            patch_android_spawn_needed_to_libc(destination)
 
     for source in sorted(lib_dir.glob("lib*.so*"), key=lambda item: item.name):
         if not source.is_file():

@@ -91,7 +91,7 @@ _KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cm
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 
@@ -192,6 +192,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("key", {"keys": keys}))
         return ActionResult(ok=True, action="key")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
+
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
@@ -216,13 +220,14 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
 
     # Safety: validate actions before approval prompt.
-    if action == "type":
-        text = args.get("text", "")
+    if action in {"type", "set_value"}:
+        field = "text" if action == "type" else "value"
+        text = str(args.get(field, ""))
         pat = _is_blocked_type(text)
         if pat:
             return json.dumps({
-                "error": f"blocked pattern in type text: {pat!r}",
-                "hint": "Dangerous shell patterns cannot be typed via computer_use.",
+                "error": f"blocked pattern in {field}: {pat!r}",
+                "hint": "Dangerous shell patterns cannot be entered via computer_use.",
             })
 
     if action == "key":
@@ -304,6 +309,10 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
     if action == "key":
         return f"key {args.get('keys', '')!r}"
+    if action == "set_value":
+        value = str(args.get("value", ""))
+        summary = f"set_value element #{args.get('element')} to {value[:60]!r}"
+        return summary + ("..." if len(value) > 60 else "")
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
     return action

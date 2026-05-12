@@ -1322,15 +1322,18 @@ def classify_bedrock_error(error_message: str) -> str:
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock.
-    # Claude 4.x (opus/sonnet/haiku) support a 1M-token context window via the
-    # ``context-1m-2025-08-07`` beta header, which Hermes injects automatically
-    # in ``build_anthropic_bedrock_client`` (see agent/anthropic_adapter.py).
+    # Context windows per Anthropic's official models comparison
+    # (https://platform.claude.com/docs/en/about-claude/models/overview).
+    # Sonnet 5 / Opus 4.7 / Opus 4.6 / Sonnet 4.6 have 1M generally
+    # available (no beta header required as of April 2026). Sonnet 4.5 and
+    # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
+    # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
     "anthropic.claude-sonnet-5":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
     "anthropic.claude-opus-4-6":     1_000_000,
     "anthropic.claude-sonnet-4-6":   1_000_000,
-    "anthropic.claude-sonnet-4-5":   1_000_000,
-    "anthropic.claude-haiku-4-5":    1_000_000,
+    "anthropic.claude-sonnet-4-5":   200_000,
+    "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,
     "anthropic.claude-sonnet-4":     200_000,
     "anthropic.claude-3-5-sonnet":   200_000,

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import logging
+import os
 import time
 
 from agent.error_classifier import FailoverReason

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import copy
 import logging
+import re
 import threading
 
 # Re-export utilities for mixin method access
@@ -259,9 +261,7 @@ class ProviderMixin:
 
 
     def _provider_model_requires_responses_api(
-        model: str,
-        *,
-        provider: Optional[str] = None,
+        self, model: str, *, provider: Optional[str] = None,
     ) -> bool:
         """Return True when this provider/model pair should use Responses API."""
         normalized_provider = (provider or "").strip().lower()
@@ -277,10 +277,10 @@ class ProviderMixin:
                 # Fall back to the generic GPT-5 rule if Copilot-specific
                 # logic is unavailable for any reason.
                 pass
-        return AIAgent._model_requires_responses_api(model)
+        return self._model_requires_responses_api(model)
 
 
-    def _model_requires_responses_api(model: str) -> bool:
+    def _model_requires_responses_api(self, model: str) -> bool:
         """Return True for models that require the Responses API path.
 
         GPT-5.x models are rejected on /v1/chat/completions by both

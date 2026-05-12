@@ -145,7 +145,6 @@ class AIAgent(StreamingMixin, ToolExecutionMixin, FallbackMixin, CompressionMixi
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
-    @property
     def __init__(
         self,
         base_url: str = None,
@@ -1591,12 +1590,14 @@ class AIAgent(StreamingMixin, ToolExecutionMixin, FallbackMixin, CompressionMixi
         # in _compression_warning and replayed in the first run_conversation().
         self._compression_warning = None
         self._check_compression_model_feasibility()
+        print("DEBUG: past compression check", file=__import__('sys').stderr)
 
         # Snapshot primary runtime for per-turn restoration.  When fallback
         # activates during a turn, the next turn restores these values so the
         # preferred model gets a fresh attempt each time.  Uses a single dict
         # so new state fields are easy to add without N individual attributes.
         _cc = self.context_compressor
+        print(f"DEBUG: _cc={type(_cc).__name__}", file=__import__('sys').stderr)
         self._primary_runtime = {
             "model": self.model,
             "provider": self.provider,
@@ -1616,12 +1617,16 @@ class AIAgent(StreamingMixin, ToolExecutionMixin, FallbackMixin, CompressionMixi
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
         }
+        print("DEBUG: past primary_runtime", file=__import__('sys').stderr)
         if self.api_mode == "anthropic_messages":
             self._primary_runtime.update({
                 "anthropic_api_key": self._anthropic_api_key,
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+
+        # DEBUG: init completed successfully
+        self._init_completed = True
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls

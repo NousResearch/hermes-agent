@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import logging
+import re
 import threading
 
 # Re-export utilities for mixin method access
@@ -230,6 +231,7 @@ class SteerMixin:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
 
+    @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
         if not isinstance(text, str):
             return ""

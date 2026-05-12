@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import logging
+import os
 
 # Re-export utilities for mixin method access
 from agent.utils import *  # noqa: F401,F403

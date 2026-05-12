@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import copy
+import json
 import logging
 import re
 
@@ -18,6 +20,25 @@ from agent.utils import *  # noqa: F401,F403
 logger = logging.getLogger(__name__)
 
 
+_VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+
+def _get_tool_call_id_static(tc) -> str:
+    if isinstance(tc, dict):
+        return tc.get("call_id", "") or tc.get("id", "") or ""
+    return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+
+
+def _get_tool_call_name_static(tc) -> str:
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return fn.get("name", "") or ""
+        return ""
+    fn = getattr(tc, "function", None)
+    return getattr(fn, "name", "") or ""
+
+
 class MessagePrepMixin:
     """Mixin providing API message preparation methods for AIAgent.
 
@@ -25,6 +46,7 @@ class MessagePrepMixin:
     mixed into the AIAgent class.
     """
 
+    @staticmethod
     def _sanitize_tool_call_arguments(
         messages: list,
         *,
@@ -37,24 +59,27 @@ class MessagePrepMixin:
             return 0
 
         repaired = 0
-        marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+        _CORRUPTION_MARKER = (
+            "[hermes-agent: tool call arguments were corrupted in this session and "
+            "have been dropped to keep the conversation alive. See issue #15236.]"
+        )
 
-        def _prepend_marker(tool_msg: dict) -> None:
+        def _prepend__CORRUPTION_MARKER(tool_msg: dict) -> None:
             existing = tool_msg.get("content")
             if isinstance(existing, str):
                 if not existing:
-                    tool_msg["content"] = marker
-                elif not existing.startswith(marker):
-                    tool_msg["content"] = f"{marker}\n{existing}"
+                    tool_msg["content"] = _CORRUPTION_MARKER
+                elif not existing.startswith(_CORRUPTION_MARKER):
+                    tool_msg["content"] = f"{_CORRUPTION_MARKER}\n{existing}"
                 return
             if existing is None:
-                tool_msg["content"] = marker
+                tool_msg["content"] = _CORRUPTION_MARKER
                 return
             try:
                 existing_text = json.dumps(existing)
             except TypeError:
                 existing_text = str(existing)
-            tool_msg["content"] = f"{marker}\n{existing_text}"
+            tool_msg["content"] = f"{_CORRUPTION_MARKER}\n{existing_text}"
 
         message_index = 0
         while message_index < len(messages):
@@ -121,12 +146,12 @@ class MessagePrepMixin:
                                 "role": "tool",
                                 "name": function_name if function_name != "?" else "",
                                 "tool_call_id": tool_call_id,
-                                "content": marker,
+                                "content": _CORRUPTION_MARKER,
                             },
                         )
                         insert_at += 1
                     else:
-                        _prepend_marker(existing_tool_msg)
+                        _prepend__CORRUPTION_MARKER(existing_tool_msg)
 
                     repaired += 1
 
@@ -135,6 +160,7 @@ class MessagePrepMixin:
         return repaired
 
 
+    @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -146,7 +172,7 @@ class MessagePrepMixin:
         filtered = []
         for msg in messages:
             role = msg.get("role")
-            if role not in AIAgent._VALID_API_ROLES:
+            if role not in _VALID_API_ROLES:
                 logger.debug(
                     "Pre-call sanitizer: dropping message with invalid role %r",
                     role,
@@ -159,7 +185,7 @@ class MessagePrepMixin:
         for msg in messages:
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
-                    cid = AIAgent._get_tool_call_id_static(tc)
+                    cid = _get_tool_call_id_static(tc)
                     if cid:
                         surviving_call_ids.add(cid)
 
@@ -190,11 +216,11 @@ class MessagePrepMixin:
                 patched.append(msg)
                 if msg.get("role") == "assistant":
                     for tc in msg.get("tool_calls") or []:
-                        cid = AIAgent._get_tool_call_id_static(tc)
+                        cid = _get_tool_call_id_static(tc)
                         if cid in missing_results:
                             patched.append({
                                 "role": "tool",
-                                "name": AIAgent._get_tool_call_name_static(tc),
+                                "name": _get_tool_call_name_static(tc),
                                 "content": "[Result unavailable — see context summary above]",
                                 "tool_call_id": cid,
                             })
@@ -206,6 +232,7 @@ class MessagePrepMixin:
         return messages
 
 
+    @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
 
@@ -408,6 +435,7 @@ class MessagePrepMixin:
         return None
 
 
+    @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
@@ -547,9 +575,9 @@ class MessagePrepMixin:
           * ``should_cache`` — inject ``cache_control`` breakpoints for this
             request (applies to OpenRouter Claude, native Anthropic, and
             third-party gateways that speak the native Anthropic protocol).
-          * ``use_native_layout`` — place markers on the *inner* content
+          * ``use_native_layout`` — place _CORRUPTION_MARKERs on the *inner* content
             blocks (native Anthropic accepts and requires this layout);
-            when False markers go on the message envelope (OpenRouter and
+            when False _CORRUPTION_MARKERs go on the message envelope (OpenRouter and
             OpenAI-wire proxies expect the looser layout).
 
         Third-party providers using the native Anthropic transport
@@ -561,8 +589,8 @@ class MessagePrepMixin:
 
         Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
         Alibaba (DashScope) also honour Anthropic-style ``cache_control``
-        markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
-        pi #3393 documented this for opencode-go Qwen. Without markers
+        _CORRUPTION_MARKERs on OpenAI-wire chat completions. Upstream pi-mono #3392 /
+        pi #3393 documented this for opencode-go Qwen. Without _CORRUPTION_MARKERs
         these providers serve zero cache hits, re-billing the full prompt
         on every turn.
         """
@@ -608,7 +636,7 @@ class MessagePrepMixin:
                 return True, True
 
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
-        # transport that accepts Anthropic-style cache_control markers and
+        # transport that accepts Anthropic-style cache_control _CORRUPTION_MARKERs and
         # rewards them with real cache hits.  Without this branch
         # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
         # through the subscription on every turn.
@@ -617,7 +645,7 @@ class MessagePrepMixin:
             "opencode", "opencode-zen", "opencode-go", "alibaba",
         }
         if provider_is_alibaba_family and model_is_qwen:
-            # Envelope layout (native_anthropic=False): markers on inner
+            # Envelope layout (native_anthropic=False): _CORRUPTION_MARKERs on inner
             # content parts, not top-level tool messages.  Matches
             # pi-mono's "alibaba" cacheControlFormat.
             return True, False
@@ -660,7 +688,8 @@ class MessagePrepMixin:
         )
 
 
-    def _drop_thinking_only_and_merge_users(
+    @staticmethod
+    def _drop_thinking_only_and_merge_users( 
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
@@ -683,7 +712,7 @@ class MessagePrepMixin:
             return messages
 
         # Pass 1: drop thinking-only assistant turns.
-        kept = [m for m in messages if not AIAgent._is_thinking_only_assistant(m)]
+        kept = [m for m in messages if not MessagePrepMixin._is_thinking_only_assistant(m)]
         dropped = len(messages) - len(kept)
         if dropped == 0:
             return messages
@@ -1016,6 +1045,7 @@ class MessagePrepMixin:
         return None
 
 
+    @staticmethod
     def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 

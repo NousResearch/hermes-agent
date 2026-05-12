@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import logging
+import os
 import threading
 
 # Re-export utilities for mixin method access
@@ -46,6 +47,7 @@ class NetworkMixin:
         return t
 
 
+    @staticmethod
     def _build_keepalive_http_client(base_url: str = "") -> Any:
         try:
             import httpx as _httpx
@@ -71,6 +73,7 @@ class NetworkMixin:
             return None
 
 
+    @staticmethod
     def _force_close_tcp_sockets(client: Any) -> int:
         """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
 

@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import json
 import logging
+import os
+import re
 import threading
+import time
 
 # Re-export utilities for mixin method access
 from agent.utils import *  # noqa: F401,F403
@@ -136,9 +140,6 @@ class AuxiliaryMixin:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
 
-    @property
-
-
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
 
@@ -209,6 +210,7 @@ class AuxiliaryMixin:
         return toolguard_synthetic_result(decision)
 
 
+    @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         if not isinstance(content, list):
             return False
@@ -239,6 +241,7 @@ class AuxiliaryMixin:
             return False
 
 
+    @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
         mime = "image/jpeg"
@@ -452,6 +455,7 @@ class AuxiliaryMixin:
         return cleaned
 
 
+    @staticmethod
     def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
         """Extract structured rate-limit details from provider errors."""
         context: Dict[str, Any] = {}
@@ -531,6 +535,7 @@ class AuxiliaryMixin:
         return {"max_tokens": value}
 
 
+    @staticmethod
     def _has_natural_response_ending(content: str) -> bool:
         """Heuristic: does visible assistant text look intentionally finished?"""
         if not content:
@@ -557,6 +562,7 @@ class AuxiliaryMixin:
         return self.api_mode != "codex_responses"
 
 
+    @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.
 
@@ -576,11 +582,13 @@ class AuxiliaryMixin:
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
 
 
+    @staticmethod
     def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
         """Split a stored tool id into (call_id, response_item_id)."""
         return _codex_split_responses_tool_id(raw_id)
 
 
+    @staticmethod
     def _get_tool_call_name_static(tc) -> str:
         """Extract function name from a tool_call entry (dict or object).
 
@@ -600,6 +608,7 @@ class AuxiliaryMixin:
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
 
+    @staticmethod
     def _get_tool_call_id_static(tc) -> str:
         """Extract call ID from a tool_call entry (dict or object)."""
         if isinstance(tc, dict):
@@ -647,6 +656,7 @@ class AuxiliaryMixin:
         }
 
 
+    @staticmethod
     def _clean_session_content(content: str) -> str:
         """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
         if not content:
@@ -735,6 +745,7 @@ class AuxiliaryMixin:
         )
 
 
+    @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
         """Truncate excess delegate_task calls to max_concurrent_children.
 

@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import copy
+import json
 import logging
+import os
+import re
 import threading
 
 # Re-export utilities for mixin method access
@@ -886,6 +890,7 @@ class RequestBuildMixin:
         t.start()
 
 
+    @staticmethod
     def _summarize_background_review_actions(
         review_messages: List[Dict],
         prior_snapshot: List[Dict],
@@ -1126,6 +1131,7 @@ class RequestBuildMixin:
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
 
 
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -1198,6 +1204,7 @@ class RequestBuildMixin:
         return messages[:last_assistant_idx]
 
 
+    @staticmethod
     def _api_kwargs_have_image_parts(api_kwargs: dict) -> bool:
         """Return True when the outbound request still contains native image parts."""
         if not isinstance(api_kwargs, dict):
@@ -1237,6 +1244,11 @@ class RequestBuildMixin:
             self._memory_store.load_from_disk()
 
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @base_url.setter
     def base_url(self, value: str) -> None:
         self._base_url = value
         self._base_url_lower = value.lower() if value else ""

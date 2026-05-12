@@ -1,6 +1,6 @@
 ---
 name: arxiv
-description: "Search arXiv papers by keyword, author, category, or ID."
+description: "Use when searching arXiv for papers by topic/author/category, fetching paper metadata or BibTeX, looking up a specific arXiv ID, or finding citation/reference graphs via Semantic Scholar. Triggers: 'find papers on X', 'who cited Y', 'arxiv search', 'bibtex for arxiv:1706.03762'. Returns Atom XML; helper script `scripts/search_arxiv.py` parses to readable output. For per-paper structured overviews use the `alphaxiv` skill; for full-body acknowledgments use `arxiv-body-search`; for local PDFs use `ocr-and-documents`."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

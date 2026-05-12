@@ -86,8 +86,32 @@ def _clean_discord_id(entry: str) -> str:
 
 
 def check_discord_requirements() -> bool:
-    """Check if Discord dependencies are available."""
-    return DISCORD_AVAILABLE
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``tools.lazy_deps.ensure("platform.discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
+    global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
+    if DISCORD_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.discord", prompt=False)
+    except Exception:
+        return False
+    try:
+        import discord as _discord
+        from discord import Message as _DM, Intents as _Intents
+        from discord.ext import commands as _commands
+    except ImportError:
+        return False
+    discord = _discord
+    DiscordMessage = _DM
+    Intents = _Intents
+    commands = _commands
+    DISCORD_AVAILABLE = True
+    return True
 
 
 def _build_allowed_mentions():

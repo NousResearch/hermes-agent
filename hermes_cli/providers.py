@@ -377,7 +377,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
-    "morpheus": "Morpheus Skill (EverClaw / MOR decentralized)",
+    "morpheus": "Morpheus Gateway (decentralized inference)",
 }
 
 

@@ -1,6 +1,6 @@
 ---
 name: morpheus-provider
-description: Use when switching to or troubleshooting Morpheus decentralized inference (MOR-staked, GLM-5.1, remote gateway). Provides exact config, .env fixes, curl tests, key/dot pitfalls, and auxiliary fallback patterns.
+description: Use when switching to or troubleshooting Morpheus API Gateway (GLM-5.1, decentralized inference, remote endpoint). Provides exact config, .env fixes, curl tests, key/dot pitfalls, and auxiliary fallback patterns.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -10,7 +10,7 @@ metadata:
     related_skills: [hermes-agent, github-pr-workflow]
 ---
 
-# Morpheus Provider (Remote Gateway + GLM-5.1)
+# Morpheus Provider (API Gateway + GLM-5.1)
 
 Use when the user wants Morpheus (https://api.mor.org) for GLM-5.1 or other decentralized models. Handles the common 401 "Invalid API key format" even when curl succeeds, .env vs config conflicts, endpoint sensitivity (/api/v1 vs /v1), and auxiliary title/compression errors.
 
@@ -45,10 +45,10 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
    hermes config set model.api_key "sk-your-morpheus-key-here"
    ```
 
-3. Add grok fallback for auxiliaries (title generation, etc.):
+3. Add glm-4.7-flash fallback for auxiliaries (title generation, etc.):
    ```bash
-   hermes config set auxiliary.title_generation.provider xai
-   hermes config set auxiliary.title_generation.model grok-4.20-0309-reasoning
+   hermes config set auxiliary.title_generation.provider morpheus
+   hermes config set auxiliary.title_generation.model glm-4.7-flash
    ```
 
 4. Verify:
@@ -66,7 +66,7 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
 - base_url must be exactly `https://api.mor.org/api/v1` ( /v1 gives 403).
 - Key with dot works in raw curl but triggers SDK 401 unless both env and config.model.api_key are set.
 - `hermes auth add morpheus` and `hermes model` require real TTY — fails in tool calls.
-- Auxiliary "Connection error" fixed by explicit xai/grok fallback (auto often fails without OpenRouter key).
+- Auxiliary "Connection error" fixed by explicit morpheus/glm-4.7-flash fallback (auto often fails without OpenRouter key).
 - Changes require fresh session (`hermes` or `/new`). Python cache clear if editing providers.py.
 - Prefer remote gateway over local :8083 proxy unless running full EverClaw stack.
 
@@ -75,8 +75,8 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
 - [ ] No 401 on GLM-5.1; curl /models and /chat/completions both succeed
 - [ ] Auxiliary title generation succeeds (no warning)
 - [ ] `hermes doctor` and `hermes config check` clean
-- [ ] Fresh session defaults to GLM-5.1 with grok auxiliary fallback
+- [ ] Fresh session defaults to GLM-5.1 with glm-4.7-flash auxiliary fallback
 
 See `hermes-agent` skill for full provider registration details and code patches to `hermes_cli/providers.py` / `auth.py`.
 
-Last updated: May 2026 session (remote gateway stabilization + skill).
+Last updated: May 2026 (API Gateway + skill).

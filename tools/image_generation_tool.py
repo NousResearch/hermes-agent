@@ -52,6 +52,13 @@ def _load_fal_client() -> Any:
     global fal_client
     if fal_client is not None:
         return fal_client
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("image.fal", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import fal_client as _fal_client  # noqa: F811 — module-global rebind
     fal_client = _fal_client
     return fal_client

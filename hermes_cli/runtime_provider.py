@@ -411,6 +411,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    _ua = str(entry.get("user_agent", "") or "").strip()
+                    if _ua:
+                        result["user_agent"] = _ua
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -429,6 +432,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        _ua2 = str(entry.get("user_agent", "") or "").strip()
+                        if _ua2:
+                            result["user_agent"] = _ua2
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -560,6 +566,10 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    # Propagate custom User-Agent for third-party endpoints behind WAFs.
+    _user_agent = str(custom_provider.get("user_agent", "") or "").strip()
+    if _user_agent:
+        result["user_agent"] = _user_agent
     return result
 
 

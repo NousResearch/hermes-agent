@@ -32,7 +32,7 @@ class HermesProviderSetupWebActivityTest {
     }
 
     @Test
-    fun openStartsInternalActivityForHttpProviderSetupUrl() {
+    fun openStartsExternalBrowserForHttpProviderSetupUrl() {
         val context = RuntimeEnvironment.getApplication()
         val uri = Uri.parse("https://home.qwencloud.com/api-keys")
 
@@ -40,8 +40,9 @@ class HermesProviderSetupWebActivityTest {
         val started = Shadows.shadowOf(context).nextStartedActivity
 
         assertTrue(result.success)
-        assertEquals(HermesProviderSetupWebActivity::class.java.name, started.component?.className)
-        assertEquals(uri.toString(), started.getStringExtra(HermesProviderSetupWebActivity.EXTRA_URL))
+        assertEquals(Intent.ACTION_VIEW, started.action)
+        assertEquals(uri, started.data)
+        assertTrue(started.categories.orEmpty().contains(Intent.CATEGORY_BROWSABLE))
     }
 
     @Test

@@ -322,8 +322,13 @@ class DeepAppUiVisualInstrumentedTest {
             }
 
             override fun matchesSafely(intent: Intent): Boolean {
-                val matches = intent.component?.className == HermesProviderSetupWebActivity::class.java.name &&
-                    intent.getStringExtra(PROVIDER_SETUP_URL_EXTRA) == uri.toString()
+                val chooserTarget = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                val matches = (intent.action == Intent.ACTION_VIEW && intent.data == uri) ||
+                    (intent.action == Intent.ACTION_CHOOSER && chooserTarget?.data == uri) ||
+                    (
+                        intent.component?.className == HermesProviderSetupWebActivity::class.java.name &&
+                            intent.getStringExtra(PROVIDER_SETUP_URL_EXTRA) == uri.toString()
+                        )
                 if (matches) {
                     onMatch?.invoke()
                 }

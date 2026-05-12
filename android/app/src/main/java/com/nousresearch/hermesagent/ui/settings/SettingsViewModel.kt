@@ -152,9 +152,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         target: ProviderSetupTarget?,
     ): String {
         val cycleHint = if (target != null && target.total > 1) {
-            " inside Hermes ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
+            " in your browser ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
         } else {
-            " inside Hermes. If this page stalls, copy the setup URL and paste it into another browser."
+            " in your browser. If this page stalls, copy the setup URL and paste it into another browser."
         }
         val qwenLegacyHint = if (providerId == "qwen-oauth") {
             " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."

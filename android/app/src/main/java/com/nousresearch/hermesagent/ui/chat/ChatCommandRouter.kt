@@ -100,9 +100,9 @@ object ChatCommandRouter {
                     if (method in runtimeProviderAuthMethods) {
                         host.navigateToSection(AppSection.Settings)
                         val feedback = if (method == "qwen-oauth") {
-                            "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
+                            "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page in your browser. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
                         } else {
-                            "Prepared $method API-key/token setup in Settings and opened the provider setup page. Paste the provider credential there to power Hermes."
+                            "Prepared $method API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes."
                         }
                         ChatCommandResult(handled = true, feedback = feedback)
                     } else {

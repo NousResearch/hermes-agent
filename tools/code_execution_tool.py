@@ -854,10 +854,15 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
+    # Only fall back to all SANDBOX_ALLOWED_TOOLS when the caller passes no
+    # policy at all (``enabled_tools is None``).  An explicit list — even one
+    # whose intersection with SANDBOX_ALLOWED_TOOLS is empty — is honored as
+    # an opt-in allow-list, so no sandbox helpers are exposed.
+    if enabled_tools is None:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        session_tools = set(enabled_tools)
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1079,12 +1084,16 @@ def execute_code(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
+    # Determine which tools the sandbox can call.
+    # Only fall back to all SANDBOX_ALLOWED_TOOLS when the caller passes no
+    # policy at all (``enabled_tools is None``).  An explicit list — even one
+    # whose intersection with SANDBOX_ALLOWED_TOOLS is empty — is honored as
+    # an opt-in allow-list, so no sandbox helpers are exposed.
+    if enabled_tools is None:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        session_tools = set(enabled_tools)
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")

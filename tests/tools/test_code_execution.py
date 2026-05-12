@@ -312,6 +312,26 @@ print(result)
         # terminal won't be in hermes_tools.py, so import fails
         self.assertEqual(result["status"], "error")
 
+    def test_explicit_enabled_tools_excludes_sandbox_tools(self):
+        """Explicit enabled_tools=['execute_code'] must not fall back to all
+        sandbox tools when the intersection with SANDBOX_ALLOWED_TOOLS is empty.
+
+        The caller has explicitly opted into only the execute_code meta-tool;
+        no sandbox helpers should be exposed.  `from hermes_tools import terminal`
+        must therefore fail (terminal is not in the generated stub module),
+        matching the existing test_excluded_tool_returns_error shape.
+
+        Currently fails: tools/code_execution_tool.py treats an empty
+        intersection the same as `enabled_tools is None` and re-enables all
+        sandbox tools, so `terminal` remains importable and the script
+        succeeds instead of erroring.
+        """
+        result = self._run(
+            "from hermes_tools import terminal",
+            enabled_tools=["execute_code"],
+        )
+        self.assertEqual(result["status"], "error")
+
     def test_empty_code(self):
         """Empty code string returns an error."""
         result = json.loads(execute_code("", task_id="test"))
@@ -806,8 +826,14 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("all imports ok", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_empty_enabled_tools_uses_all(self):
-        """When enabled_tools is [] (empty), all sandbox tools should be available."""
+    def test_empty_enabled_tools_exposes_no_sandbox_helpers(self):
+        """An explicit empty enabled_tools=[] is an opt-in allow-list whose
+        intersection with SANDBOX_ALLOWED_TOOLS is empty, so no sandbox
+        helpers are exposed and ``from hermes_tools import terminal`` fails.
+
+        Only ``enabled_tools is None`` (no caller policy) re-enables all
+        sandbox tools — covered by test_none_enabled_tools_uses_all above.
+        """
         code = (
             "from hermes_tools import terminal, web_search\n"
             "print('imports ok')\n"
@@ -816,13 +842,14 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-empty",
                                              enabled_tools=[]))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("imports ok", result["output"])
+        self.assertEqual(result["status"], "error")
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
+    def test_nonoverlapping_tools_exposes_no_sandbox_helpers(self):
+        """An explicit enabled_tools list whose intersection with
+        SANDBOX_ALLOWED_TOOLS is empty must be honored as "no sandbox
+        helpers", not silently widened back to the full allow-list.
+        """
         code = (
             "from hermes_tools import terminal\n"
             "print('fallback ok')\n"
@@ -833,8 +860,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error")
 
 
 # ---------------------------------------------------------------------------

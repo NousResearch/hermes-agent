@@ -7490,6 +7490,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                     check=False,
                 )
+            # Fork: check upstream even when origin has no new commits.
+            # Without this, forks that track upstream via a separate remote
+            # always show "Already up to date" because origin (fork) is
+            # behind upstream but the early return never reaches
+            # _sync_with_upstream_if_needed at the end of the function.
+            if is_fork and branch == "main":
+                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                # Push to origin so the fork stays in sync with upstream.
+                subprocess.run(
+                    git_cmd + ["push", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
             print("✓ Already up to date!")
             return
 

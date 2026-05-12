@@ -642,3 +642,53 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+    def test_create_source_returns_line_session_source(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        source = ad.create_source(
+            chat_id="U123",
+            chat_type="dm",
+            user_id="U123",
+            user_name="Line User",
+            chat_name="Direct LINE chat",
+            message_id="m1",
+        )
+
+        assert source.platform.name == "line"
+        assert source.chat_id == "U123"
+        assert source.chat_type == "dm"
+        assert source.user_id == "U123"
+        assert source.user_name == "Line User"
+        assert source.chat_name == "Direct LINE chat"
+        assert source.message_id == "m1"
+
+    def test_message_event_dispatches_with_line_source(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        ad.handle_message = AsyncMock()
+
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+
+        asyncio.run(ad._handle_message_event(event))
+
+        ad.handle_message.assert_awaited_once()
+        message_event = ad.handle_message.await_args.args[0]
+        assert message_event.text == "hello"
+        assert message_event.source.platform.name == "line"
+        assert message_event.source.chat_id == "U123"
+        assert message_event.source.user_id == "U123"
+        assert message_event.source.message_id == "m1"

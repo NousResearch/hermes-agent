@@ -915,6 +915,29 @@ class LineAdapter(BasePlatformAdapter):
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
 
+    def create_source(
+        self,
+        *,
+        chat_id: str,
+        chat_name: Optional[str] = None,
+        chat_type: str = "dm",
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> SessionSource:
+        """Build a SessionSource for LINE webhook dispatch."""
+        return SessionSource(
+            platform=Platform("line"),
+            chat_id=str(chat_id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(user_id) if user_id else None,
+            user_name=user_name,
+            thread_id=str(thread_id) if thread_id else None,
+            message_id=str(message_id) if message_id else None,
+        )
+
     async def _handle_message_event(self, event: Dict[str, Any]) -> None:
         msg = event.get("message") or {}
         msg_type = msg.get("type", "")
@@ -965,6 +988,7 @@ class LineAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_id,
             chat_name=chat_id,
+            message_id=message_id,
         )
 
         event_obj = MessageEvent(

@@ -465,7 +465,7 @@ def create_board(
     return meta
 
 
-def list_boards(*, include_archived: bool = True) -> list[dict]:
+def list_boards(*, include_archived: bool = False) -> list[dict]:
     """Enumerate all boards that exist on disk.
 
     Always includes ``default`` (even when the ``boards/default/``
@@ -534,6 +534,12 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         clear_current_board()
 
     if archive:
+        # Mark the board as archived in its metadata before moving so that
+        # the archived flag survives if the board is ever restored manually.
+        try:
+            write_board_metadata(normed, archived=True)
+        except Exception:
+            pass  # best-effort — the move is the authoritative archive action
         archive_root = boards_root() / "_archived"
         archive_root.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())

@@ -508,6 +508,17 @@
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
 
+    // Refresh board list when the browser tab regains visibility.
+    // Fixes the case where a board is archived via CLI while the dashboard
+    // is open — the dropdown would otherwise show a stale list.
+    useEffect(function () {
+      function handleVisibility() {
+        if (document.visibilityState === "visible") loadBoardList();
+      }
+      document.addEventListener("visibilitychange", handleVisibility);
+      return function () { document.removeEventListener("visibilitychange", handleVisibility); };
+    }, [loadBoardList]);
+
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
       reloadTimerRef.current = setTimeout(function () {
@@ -870,6 +881,9 @@
       }).then(function () {
         loadBoardList();
         if (board === slug) switchBoard("default");
+      }).catch(function (err) {
+        console.error("Failed to archive board:", err);
+        loadBoardList();
       });
     }, [board, loadBoardList, switchBoard]);
 
@@ -1424,8 +1438,8 @@
             h(Select, Object.assign({
               value: props.board,
               className: "h-8 min-w-[220px]",
-              "aria-label": "Switch kanban board",
-              title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
+              "aria-label": tx(t, "switchBoardAria", "Switch kanban board"),
+              title: tx(t, "boardSwitcherTitle", "Boards are independent work streams. Each board has its own tasks, tenants, and assignees."),
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
                 const label = b.total > 0
@@ -1444,7 +1458,7 @@
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
-          title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
+          title: tx(t, "newBoardHint", "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area)."),
         }, tx(t, "newBoard", "+ New board")),
         props.board !== "default"
           ? h(Button, {
@@ -1596,7 +1610,7 @@
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
-                 title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
+                 title: tx(t, "searchHint", "Fuzzy-match tasks by id, title, or description. Matches across all columns.") },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
         h(Input, {
           placeholder: tx(t, "filterCards", "Filter cards…"),
@@ -1632,7 +1646,7 @@
         ),
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
-                   title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
+                   title: tx(t, "showArchivedHint", "Include archived tasks in the board view. Archived tasks are hidden by default.") },
         h("input", {
           type: "checkbox",
           checked: props.includeArchived,
@@ -1653,7 +1667,7 @@
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
-        title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
+        title: tx(t, "nudgeDispatcherHint", "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately."),
       }, tx(t, "nudgeDispatcher", "Nudge dispatcher")),
       h(Button, {
         onClick: props.onRefresh,
@@ -1668,7 +1682,7 @@
           props.setIncludeArchived(false);
         },
         size: "sm",
-        title: "Clear all active filters (search, tenant, assignee, archived).",
+        title: tx(t, "clearFiltersHint", "Clear all active filters (search, tenant, assignee, archived)."),
       }, tx(t, "clearFilters", "Clear filters")),
     );
   }

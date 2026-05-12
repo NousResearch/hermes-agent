@@ -14335,22 +14335,28 @@ class GatewayRunner:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
+                # Dedup on the FULL preview BEFORE truncation so that two
+                # different commands sharing a long prefix (first ~37 chars)
+                # are not falsely collapsed into (×N).  (Issue #24298)
+                dedup_key = f"{tool_name}:\"{preview}\""
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
+                dedup_key = f"{tool_name}"
                 msg = f"{emoji} {tool_name}..."
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
+            # Comparison uses the pre-truncation key (issue #24298).
+            if dedup_key == last_progress_msg[0]:
                 repeat_count[0] += 1
                 # Update the last line in progress_lines with a counter
                 # via a special "dedup" queue message.
                 progress_queue.put(("__dedup__", msg, repeat_count[0]))
                 return
-            last_progress_msg[0] = msg
+            last_progress_msg[0] = dedup_key
             repeat_count[0] = 0
             
             progress_queue.put(msg)

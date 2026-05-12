@@ -6016,7 +6016,13 @@ class AIAgent:
             pass  # Non-fatal
 
         try:
-            symlink_apm_skills(_apm_cwd)
+            # Phase 3: Load policy before symlinking so it can filter
+            _apm_policy = load_apm_policy(_apm_cwd)
+        except Exception:
+            pass  # Non-fatal
+
+        try:
+            symlink_apm_skills(_apm_cwd, policy=_apm_policy)
         except Exception:
             pass  # Non-fatal
 
@@ -6032,8 +6038,6 @@ class AIAgent:
             valid, issues = validate_lockfile_against_modules(_apm_cwd)
             if not valid:
                 logger.warning("APM lockfile validation issues: %s", "; ".join(issues[:3]))
-            # Phase 3: Load policy for skill/instruction filtering
-            _apm_policy = load_apm_policy(_apm_cwd)
         except Exception:
             pass  # Non-fatal
 
@@ -6110,7 +6114,7 @@ class AIAgent:
 
             # ── APM: load package instructions & agents ─
             try:
-                apm_instructions = load_apm_instructions(_context_cwd)
+                apm_instructions = load_apm_instructions(_context_cwd, policy=_apm_policy)
                 if apm_instructions:
                     context_parts.append(apm_instructions)
                 # Phase 3: Log policy state if active

@@ -119,7 +119,7 @@ def _package_name_from_path(path: Path, modules_dir: Path) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def symlink_apm_skills(cwd: Optional[str] = None) -> int:
+def symlink_apm_skills(cwd: Optional[str] = None, policy: Optional[Dict] = None) -> int:
     """Create symlinks from APM skills into ``~/.hermes/skills/apm/``.
 
     Hermes discovers SKILL.md files in ``~/.hermes/skills/`` automatically
@@ -129,6 +129,9 @@ def symlink_apm_skills(cwd: Optional[str] = None) -> int:
     Skill naming convention:
         ``apm/<owner>/<repo>/<skill_name>/SKILL.md``
 
+    When *policy* is provided, skills are filtered through
+    :func:`filter_by_policy` before symlinking.
+
     Returns:
         Number of skills symlinked.
     """
@@ -137,6 +140,13 @@ def symlink_apm_skills(cwd: Optional[str] = None) -> int:
     discovered = discover_apm_skill_files(cwd)
     if not discovered:
         return 0
+
+    # Apply policy filtering
+    if policy is not None:
+        discovered = [
+            (p, n) for p, n in discovered
+            if filter_by_policy(n, "skills", policy)
+        ]
 
     apm_skills_root = get_skills_dir() / "apm"
     apm_skills_root.mkdir(parents=True, exist_ok=True)
@@ -182,13 +192,16 @@ def symlink_apm_skills(cwd: Optional[str] = None) -> int:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def load_apm_instructions(cwd: Optional[str] = None) -> str:
+def load_apm_instructions(cwd: Optional[str] = None, policy: Optional[Dict] = None) -> str:
     """Load APM instructions, agents, and prompts for system prompt injection.
 
     Scans ``apm_modules/`` for:
     - ``.apm/instructions/*.instructions.md`` — project instructions
     - ``.apm/agents/*.md`` — agent definitions
     - ``.apm/prompts/*.prompt.md`` — named prompt templates
+
+    When *policy* is provided, each file is filtered through
+    :func:`filter_by_policy` using its derived qualified name.
 
     Returns:
         Formatted markdown string, or empty string if no content found.
@@ -199,12 +212,16 @@ def load_apm_instructions(cwd: Optional[str] = None) -> str:
         return ""
 
     sections: List[str] = []
-    total_chars = 0
     CHAR_CAP = 20_000  # Per Hermes' existing context file limit
 
     # Instructions
     for instr in sorted(modules_dir.glob("**/.apm/instructions/*.instructions.md")):
         try:
+            if policy is not None:
+                pkg = _package_name_from_path(instr, modules_dir)
+                qname = f"apm/{pkg}/instructions/{instr.stem}"
+                if not filter_by_policy(qname, "instructions", policy):
+                    continue
             content = _safe_read(instr, CHAR_CAP)
             if content.strip():
                 sections.append(f"## APM Instructions: {instr.stem}\n\n{content}")
@@ -214,6 +231,11 @@ def load_apm_instructions(cwd: Optional[str] = None) -> str:
     # Agents (loaded as reference context, not as active sub-agents)
     for agent_md in sorted(modules_dir.glob("**/.apm/agents/*.md")):
         try:
+            if policy is not None:
+                pkg = _package_name_from_path(agent_md, modules_dir)
+                qname = f"apm/{pkg}/agents/{agent_md.stem}"
+                if not filter_by_policy(qname, "agents", policy):
+                    continue
             content = _safe_read(agent_md, CHAR_CAP)
             if content.strip():
                 sections.append(
@@ -225,6 +247,11 @@ def load_apm_instructions(cwd: Optional[str] = None) -> str:
     # Prompts (named prompt templates)
     for prompt_md in sorted(modules_dir.glob("**/.apm/prompts/*.prompt.md")):
         try:
+            if policy is not None:
+                pkg = _package_name_from_path(prompt_md, modules_dir)
+                qname = f"apm/{pkg}/prompts/{prompt_md.stem}"
+                if not filter_by_policy(qname, "prompts", policy):
+                    continue
             content = _safe_read(prompt_md, CHAR_CAP)
             if content.strip():
                 sections.append(f"## APM Prompt: {prompt_md.stem}\n\n{content}")
@@ -398,13 +425,14 @@ def validate_lockfile_against_modules(
 ) -> Tuple[bool, List[str]]:
     """Check whether installed ``apm_modules/`` matches the lockfile.
 
-    Compares each lockfile dependency's ``resolved_commit`` and
-    ``virtual_path`` against the on-disk modules.
+    Verifies that every dependency in the lockfile has a corresponding
+    directory on disk and that any declared ``virtual_path`` exists within
+    the installed module.
 
     Returns:
         ``(valid: bool, issues: list[str])``.  *valid* is True when every
         lockfile entry has a matching module on disk.  *issues* lists
-        human-readable problems (missing modules, wrong commits, etc.).
+        human-readable problems (missing modules, missing virtual paths).
     """
     lock_data = parse_apm_lockfile(cwd)
     if lock_data is None:
@@ -413,35 +441,46 @@ def validate_lockfile_against_modules(
     modules_dir = get_apm_modules_dir(cwd)
     issues: List[str] = []
 
-    # Build index of what's on disk: repo_url -> set of virtual_paths
+    # Build index of what's on disk: repo_key -> set of virtual_paths.
+    # apm_modules/ can have two layouts:
+    #   - apm_modules/owner/repo/.apm/...        (GitHub default)
+    #   - apm_modules/github.com/owner/repo/.apm/... (explicit host)
+    # We detect repo roots by walking until we find a directory containing
+    # .apm/, then index by the path from modules_dir to that directory.
     disk_modules: Dict[str, set] = {}
     if modules_dir is not None:
-        for item in modules_dir.iterdir():
-            if not item.is_dir():
+        for candidate in sorted(modules_dir.rglob(".apm")):
+            if not candidate.is_dir():
                 continue
-            # item = apm_modules/<host> or apm_modules/<owner>
-            for sub in item.iterdir():
-                if not sub.is_dir():
-                    continue
-                # sub = apm_modules/<host>/<repo> or apm_modules/<owner>/<repo>
-                disk_key = f"{item.name}/{sub.name}"
-                disk_modules.setdefault(disk_key, set())
-                _populate_virtual_paths(sub, set(), disk_modules[disk_key])
+            repo_root = candidate.parent  # the directory containing .apm/
+            try:
+                repo_key = str(repo_root.relative_to(modules_dir))
+            except ValueError:
+                continue
+            disk_modules.setdefault(repo_key, set())
+            _populate_virtual_paths(repo_root, set(), disk_modules[repo_key])
 
     for dep in lock_data.get("dependencies", []):
         repo = dep.get("repo_url", "")
         vpath = dep.get("virtual_path", "")
         commit = dep.get("resolved_commit", "")
 
-        # Check if the repo exists on disk
-        parts = repo.split("/", 1) if "/" in repo else (repo, "")
-        disk_key = repo
-        if disk_key not in disk_modules:
-            # Try alternate key formats (host/repo vs owner/repo)
-            alt_key = f"github.com/{repo}"
-            if alt_key not in disk_modules:
-                issues.append(f"Missing module: {repo}")
-                continue
+        # Check if the repo exists on disk.  repo_url from the lockfile
+        # can be "owner/repo" or "github.com/owner/repo".  We match
+        # against the relative path from apm_modules/ to the repo root.
+        matched = False
+        for disk_key in disk_modules:
+            if disk_key == repo or disk_key.endswith("/" + repo):
+                # Validate virtual_path exists (if specified)
+                if vpath and vpath not in disk_modules[disk_key]:
+                    issues.append(
+                        "Virtual path not found: " + repo + " -> " + vpath
+                    )
+                matched = True
+                break
+
+        if not matched:
+            issues.append("Missing module: " + repo)
 
     if issues:
         logger.warning(
@@ -858,10 +897,12 @@ def resolve_transitive_deps(
 def discover_apm_mcp_servers(cwd: Optional[str] = None) -> Dict[str, dict]:
     """Parse ``mcp:`` entries from ``apm.yml``.
 
-    Returns a dict suitable for ``tools.mcp_tool.register_mcp_servers()``.
+    Returns a dict suitable for ``tools.mcp_tool.register_mcp_servers()``,
+    keyed by server name (with ``/`` replaced by ``-``).  Supports both
+    ``http`` and ``stdio`` transports.
 
-    Phase 1: stub — returns empty dict. Full implementation in Phase 2
-    will handle HTTP and stdio transports.
+    Returns an empty dict when ``apm.yml`` is absent or contains no
+    ``mcp:`` entries.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -955,10 +996,10 @@ def run_apm_audit(
         return True, []
     except subprocess.TimeoutExpired:
         logger.warning("apm audit timed out after 60s")
-        return True, ["APM audit timed out — results incomplete"]
+        return False, ["APM audit timed out — results incomplete"]
     except Exception as exc:
         logger.warning("apm audit failed: %s", exc)
-        return True, [f"APM audit error: {exc}"]
+        return False, [f"APM audit error: {exc}"]
 
     output = (result.stdout + result.stderr).strip()
     if not output:

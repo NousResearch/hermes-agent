@@ -1648,10 +1648,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     except ValueError:
                         # Title collision — same job ran twice today. Try numbered variant.
                         try:
-                            _numbered = _session_db.get_next_title_in_lineage(_cron_title)
-                            if _numbered and _numbered != _cron_title:
-                                if len(_numbered) > SessionDB.MAX_TITLE_LENGTH:
+                            # Truncate base to leave room for " #N" suffix (6 chars: " #999")
+                            _cron_title_trimmed = _cron_title[:SessionDB.MAX_TITLE_LENGTH - 6]
+                            if _cron_title_trimmed != _cron_title:
+                                # Final safety truncation after suffix is appended
+                                _numbered = _session_db.get_next_title_in_lineage(_cron_title_trimmed)
+                                if _numbered and len(_numbered) > SessionDB.MAX_TITLE_LENGTH:
                                     _numbered = _numbered[:SessionDB.MAX_TITLE_LENGTH]
+                            else:
+                                _numbered = _session_db.get_next_title_in_lineage(_cron_title)
+                            if _numbered and _numbered != _cron_title:
                                 _session_db.set_session_title(_cron_session_id, _numbered)
                         except (ValueError, AttributeError):
                             pass
@@ -1664,7 +1670,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             
             # Token usage tracking — log cron job sessions for optimization
             try:
-                _tracking_module_path = get_hermes_home() / "scripts" / "tracking" / "token_reporter.py"
+                _tracking_module_path = _get_hermes_home() / "scripts" / "tracking" / "token_reporter.py"
                 if _tracking_module_path.exists():
                     _tracking_spec = importlib.util.spec_from_file_location(
                         "token_reporter", _tracking_module_path

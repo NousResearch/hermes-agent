@@ -847,6 +847,7 @@ class TestEnvironmentHints:
     def test_build_environment_hints_on_wsl(self, monkeypatch):
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
@@ -854,6 +855,22 @@ class TestEnvironmentHints:
         assert "WSL" in result
         # WSL block still carries the always-on host info ahead of it.
         assert "User home directory:" in result
+
+    def test_build_environment_hints_container_on_wsl(self, monkeypatch):
+        """Container on WSL host should NOT get /mnt/c/ path hints."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Should get the container-specific hint, not the full WSL one
+        assert "container" in result.lower()
+        # The container hint explicitly warns against /mnt/c/ assumptions
+        assert "NOT available" in result
+        # The full WSL_ENVIRONMENT_HINT (which tells the agent /mnt/c/ IS
+        # available and to translate Windows paths) must NOT appear.
+        assert WSL_ENVIRONMENT_HINT not in result
 
     def test_build_environment_hints_on_linux_local(self, monkeypatch):
         import agent.prompt_builder as _pb

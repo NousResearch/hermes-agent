@@ -82,7 +82,22 @@ else
         echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
     else
         echo -e "${CYAN}→${NC} Installing uv..."
-        if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        # Capture installer output so a failure shows the user WHY
+        # (network, glibc mismatch on old distros, missing curl, disk
+        # full, etc.) instead of "✗ Failed to install uv" with zero
+        # diagnostic.  Two-stage to avoid `curl | sh` masking curl
+        # failures (sh exits 0 on empty stdin under no pipefail).
+        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+        if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
+            echo -e "${RED}✗${NC} Failed to download uv installer."
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
+            exit 1
+        fi
+        if sh "$_uv_installer" >>"$_uv_log" 2>&1; then
+            rm -f "$_uv_installer"
             if [ -x "$HOME/.local/bin/uv" ]; then
                 UV_CMD="$HOME/.local/bin/uv"
             elif [ -x "$HOME/.cargo/bin/uv" ]; then
@@ -90,14 +105,22 @@ else
             fi
 
             if [ -n "$UV_CMD" ]; then
+                rm -f "$_uv_log"
                 UV_VERSION=$($UV_CMD --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
-                echo -e "${RED}✗${NC} uv installed but not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${CYAN}→${NC} Installer output:"
+                sed 's/^/    /' "$_uv_log" >&2
+                rm -f "$_uv_log"
                 exit 1
             fi
         else
-            echo -e "${RED}✗${NC} Failed to install uv. Visit https://docs.astral.sh/uv/"
+            echo -e "${RED}✗${NC} Failed to install uv."
+            echo -e "${CYAN}→${NC} Installer output:"
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi
     fi

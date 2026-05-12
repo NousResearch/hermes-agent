@@ -86,8 +86,11 @@ def discover_apm_skill_files(
 
     # Secondary: skills/<name>/SKILL.md (top-level, not under .apm/)
     for skill_md in sorted(modules_dir.glob("**/skills/*/SKILL.md")):
-        if ".apm/skills" in str(skill_md):
-            continue
+        # Exclude paths under .apm/skills/ using OS-independent check
+        if ".apm" in skill_md.parts and "skills" in skill_md.parts:
+            apm_idx = skill_md.parts.index(".apm")
+            if apm_idx + 1 < len(skill_md.parts) and skill_md.parts[apm_idx + 1] == "skills":
+                continue
         skill_name = skill_md.parent.name
         pkg_name = _package_name_from_path(skill_md, modules_dir)
         full_name = f"apm/{pkg_name}/{skill_name}"
@@ -161,10 +164,23 @@ def symlink_apm_skills(cwd: Optional[str] = None, policy: Optional[Dict] = None)
         link_path = target_dir / "SKILL.md"
 
         try:
+            # Resolve and validate: must stay within apm_modules/
+            resolved = skill_path.resolve()
+            modules_dir = get_apm_modules_dir(cwd)
+            if modules_dir is not None:
+                try:
+                    resolved.relative_to(modules_dir)
+                except ValueError:
+                    logger.warning(
+                        "APM skill %s resolves outside apm_modules/ — skipped: %s",
+                        qualified_name, resolved,
+                    )
+                    continue
+
             # Resolve current symlink target (if any) to avoid re-linking
             if link_path.is_symlink():
                 try:
-                    if link_path.resolve() == skill_path.resolve():
+                    if link_path.resolve() == resolved:
                         continue  # Already points to the correct file
                 except OSError:
                     pass  # Broken symlink — recreate
@@ -172,7 +188,7 @@ def symlink_apm_skills(cwd: Optional[str] = None, policy: Optional[Dict] = None)
             elif link_path.exists():
                 link_path.unlink()
 
-            link_path.symlink_to(skill_path.resolve())
+            link_path.symlink_to(resolved)
             count += 1
         except OSError as exc:
             logger.warning(

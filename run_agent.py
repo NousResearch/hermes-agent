@@ -194,6 +194,7 @@ from agent.apm_consumer import (
     detect_apm_staleness, should_auto_install,
     validate_lockfile_against_modules, filter_by_policy,
     load_apm_policy, install_apm_dependencies,
+    detect_apm_project, remove_apm_skill_symlinks,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
@@ -6005,6 +6006,18 @@ class AIAgent:
         _apm_policy = None  # Phase 3: loaded below, used in instruction loading
 
         _apm_did_something = False
+
+        # If apm.yml is absent, clean up stale APM skill symlinks from a
+        # previous project so they don't persist across project switches.
+        if not detect_apm_project(_apm_cwd):
+            try:
+                remove_apm_skill_symlinks()
+            except Exception:
+                pass
+            # Skip all further APM work — nothing to do without a manifest.
+            _apm_project_active = False
+        else:
+            _apm_project_active = True
         try:
             # Phase 2: Auto-install if lockfile is newer than modules
             if should_auto_install(_apm_cwd):

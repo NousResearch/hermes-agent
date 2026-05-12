@@ -549,6 +549,43 @@ def _merge_trace_output(output: Any, state: TraceState) -> Any:
     return merged
 
 
+
+
+def _score_turn(
+    client: Any,
+    *,
+    trace_id: str,
+    api_duration: float,
+    usage_details: dict,
+    response_len: int,
+    tool_count: int,
+) -> None:
+    """Score a completed Hermes turn with simple numeric metrics."""
+    try:
+        if api_duration and api_duration > 0:
+            client.create_score(
+                name="latency_seconds", value=round(api_duration, 3),
+                trace_id=trace_id, data_type="NUMERIC",
+                comment=f"API call duration: {api_duration:.3f}s",
+            )
+        _input = usage_details.get("input", 0) or usage_details.get("input_tokens", 0)
+        _output = usage_details.get("output", 0) or usage_details.get("output_tokens", 0)
+        if _input and _input > 0:
+            client.create_score(name="input_tokens", value=_input, trace_id=trace_id, data_type="NUMERIC")
+        if _output and _output > 0:
+            client.create_score(name="output_tokens", value=_output, trace_id=trace_id, data_type="NUMERIC")
+        if _input and _output and _input > 0:
+            efficiency = round(_output / _input, 4)
+            client.create_score(name="token_efficiency", value=efficiency, trace_id=trace_id, data_type="NUMERIC",
+                comment=f"Output/input ratio: {_output}/{_input} = {efficiency}")
+        if response_len > 0:
+            client.create_score(name="response_chars", value=response_len, trace_id=trace_id, data_type="NUMERIC")
+        client.create_score(name="tool_calls", value=tool_count, trace_id=trace_id, data_type="NUMERIC",
+            comment=f"Tool calls: {tool_count}" if tool_count else "No tool calls")
+    except Exception as exc:
+        _debug(f"scoring failed: {exc}")
+
+
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
     client = _get_langfuse()
     if client is None:
@@ -801,6 +838,21 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         cost_details=cost_details,
         metadata=gen_metadata,
     )
+
+    # --- automatic turn scoring ---
+    try:
+        trace_id = state.trace_id if state else None
+        if trace_id:
+            _score_turn(
+                client,
+                trace_id=trace_id,
+                api_duration=api_duration,
+                usage_details=usage_details,
+                response_len=assistant_content_chars or len(str(assistant_response or "")),
+                tool_count=tool_count,
+            )
+    except Exception:
+        pass
 
     has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
     has_content = bool(output.get("content"))

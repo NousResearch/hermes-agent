@@ -435,6 +435,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_lock = asyncio.Lock()
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
+        self._dm_topic_chat_ids: Set[str] = {
+            str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
+        }
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -4473,12 +4477,21 @@ class TelegramAdapter(BasePlatformAdapter):
             if topic_id not in allowed_topics:
                 return False
 
+        # Check ignored_threads first — applies to both groups and DM topics
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():
                     return False
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+
+        if not self._is_group_chat(message):
+            # Root DM (non-topic): ignore if ignore_root_dm is configured
+            if thread_id is None and self.config.extra.get("ignore_root_dm", False):
+                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+                if not is_command and chat_id in self._dm_topic_chat_ids:
+                    return False
+            return True
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
@@ -5133,10 +5146,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 .get("dm_topics", [])
             )
             if not dm_topics:
+                # Clear both config and precomputed set when all topics are removed
+                self._dm_topics_config = []
+                self._dm_topic_chat_ids = set()
                 return
 
             # Update in-memory config and cache any new thread_ids
             self._dm_topics_config = dm_topics
+            # Rebuild the chat_id set for O(1) root-DM ignore lookup
+            self._dm_topic_chat_ids = {
+                str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry
+            }
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")
                 if not cid:

@@ -111,6 +111,8 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
+_WORKER_LOG_EVIDENCE_TAIL_BYTES = 24 * 1024
+_WORKER_LOG_SUMMARY_CHARS = 4 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +341,75 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "logs"
     return board_dir(slug) / "logs"
+
+
+def _clean_worker_log_text(text: str) -> str:
+    """Normalize captured worker log text for run summaries/evidence."""
+    # Strip ANSI SGR/control sequences and normalize carriage-return progress
+    # output into regular lines. Keep box-drawing characters; they often frame
+    # the CLI's final answer and are useful evidence in the dashboard/log.
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    # Collapse huge blank runs without destroying paragraph structure.
+    out: list[str] = []
+    blank = 0
+    for line in lines:
+        if line.strip():
+            blank = 0
+            out.append(line)
+        else:
+            blank += 1
+            if blank <= 1:
+                out.append("")
+    return "\n".join(out).strip()
+
+
+def _worker_log_evidence(task_id: str, *, board: Optional[str] = None) -> dict[str, str]:
+    """Best-effort evidence from the worker's per-task log.
+
+    Used when a worker exits rc=0 while the task is still running. That state
+    means the worker produced a conversational answer instead of calling a
+    terminal kanban tool; the dispatcher must block, but the useful final
+    answer should not be buried in raw logs.
+    """
+    log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+    evidence: dict[str, str] = {"log_path": str(log_path)}
+    try:
+        with open(log_path, "rb") as fh:
+            try:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - _WORKER_LOG_EVIDENCE_TAIL_BYTES), os.SEEK_SET)
+            except OSError:
+                pass
+            raw = fh.read(_WORKER_LOG_EVIDENCE_TAIL_BYTES)
+    except OSError:
+        return evidence
+
+    tail = _clean_worker_log_text(raw.decode("utf-8", errors="replace"))
+    if not tail:
+        return evidence
+    evidence["log_tail"] = tail
+
+    summary_source = tail
+    # If the final response is followed by the iteration-budget warning, keep
+    # the response as the run summary and leave the warning in metadata.tail.
+    budget_match = re.search(r"\n[⚠! ]*Iteration budget reached.*$", summary_source, re.DOTALL)
+    if budget_match:
+        summary_source = summary_source[:budget_match.start()].rstrip()
+    # Drop the banner/query/tool-progress prelude when possible. The final CLI
+    # response is normally the last box-drawn panel in the log; use that as the
+    # most concise actionable evidence.
+    last_box = summary_source.rfind("╭")
+    if last_box >= 0:
+        summary_source = summary_source[last_box:].strip()
+    if len(summary_source) > _WORKER_LOG_SUMMARY_CHARS:
+        summary_source = summary_source[-_WORKER_LOG_SUMMARY_CHARS:].lstrip()
+        summary_source = "… [worker log summary excerpt]\n" + summary_source
+    if summary_source:
+        evidence["summary_excerpt"] = summary_source
+    return evidence
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:
@@ -3314,8 +3385,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case so we can trip the breaker
     # immediately instead of incrementing by 1.
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, dict[str, str]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, evidence)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock FROM tasks "
@@ -3336,19 +3407,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
+                # help. Preserve any final conversational answer from the
+                # worker log so the blocked task is actionable.
                 protocol_violation = True
                 error_text = (
                     "worker exited cleanly (rc=0) without calling "
                     "kanban_complete or kanban_block — protocol violation"
                 )
+                evidence = _worker_log_evidence(row["id"])
                 event_kind = "protocol_violation"
                 event_payload = {
                     "pid": pid,
                     "claimer": row["claim_lock"],
                     "exit_code": code,
                 }
+                event_payload.update(evidence)
             else:
+                evidence = {}
                 protocol_violation = False
                 if kind == "nonzero_exit":
                     error_text = f"pid {pid} exited with code {code}"
@@ -3372,6 +3447,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 run_id = _end_run(
                     conn, row["id"],
                     outcome="crashed", status="crashed",
+                    summary=evidence.get("summary_excerpt"),
                     error=error_text,
                     metadata=dict(event_payload),
                 )
@@ -3383,7 +3459,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 crashed.append(row["id"])
                 crash_details.append(
                     (row["id"], pid, row["claim_lock"],
-                     protocol_violation, error_text)
+                     protocol_violation, error_text, evidence)
                 )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
@@ -3396,7 +3472,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
     # times first.
     auto_blocked: list[str] = []
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
+    for tid, pid, claimer, protocol_violation, error_text, evidence in crash_details:
         tripped = _record_task_failure(
             conn, tid,
             error=error_text,
@@ -3404,7 +3480,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             failure_limit=(1 if protocol_violation else None),
             release_claim=False,
             end_run=False,
-            event_payload_extra={"pid": pid, "claimer": claimer},
+            event_payload_extra={
+                "pid": pid,
+                "claimer": claimer,
+                **evidence,
+            },
         )
         if tripped:
             auto_blocked.append(tid)

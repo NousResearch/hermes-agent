@@ -4017,6 +4017,63 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_block_includes_worker_summary_evidence(kanban_home):
+    """A clean-exit protocol violation should preserve the worker's final
+    conversational summary in the blocked run/event evidence.
+
+    This covers max-iteration exits where the CLI prints a useful final
+    summary and then exits rc=0 without a terminal kanban tool call.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="summary-only", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{tid}.log").write_text(
+            """
+Query: work kanban task t_example
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Summary: Verification passed for the integration branch.                     │
+│ Evidence: npm test passed, cargo test passed.                                │
+│ Remaining: browser smoke still needed before deployment.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+⚠ Iteration budget reached (90/90) — response may be incomplete
+""".strip(),
+            encoding="utf-8",
+        )
+
+        _kb._record_worker_exit(fake_pid, 0)
+        monkeypatch_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = monkeypatch_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "crashed"
+        assert run.summary and "Verification passed" in run.summary
+        assert run.metadata["log_path"].endswith(f"{tid}.log")
+        assert "Iteration budget reached" in run.metadata["log_tail"]
+
+        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
+        assert gave_up
+        assert "summary_excerpt" in gave_up[-1].payload
+        assert "Verification passed" in gave_up[-1].payload["summary_excerpt"]
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

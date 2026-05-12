@@ -983,6 +983,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 except Exception:
                     pass
 
+            def __getattr__(self, name):
+                """Forward all other attribute accesses to the inner HTTP client.
+
+                This ensures that calls like ``client.aretain_batch()``,
+                ``client.arecall()``, etc. are dispatched to the real
+                ``hindsight_client.Hindsight`` instance behind the wrapper.
+                """
+                return getattr(self._client, name)
+
         profile = self._config.get("profile", "hermes")
         llm_api_key = (
             self._config.get("llmApiKey")

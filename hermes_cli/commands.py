@@ -1362,9 +1362,9 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd,
+                    cwd=cwd, encoding="utf-8", errors="replace",
                 )
-                if proc.returncode == 0 and proc.stdout.strip():
+                if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:

@@ -1,0 +1,8 @@
+name: angel-action-packets
+version: 0.1.0
+description: Native Discord Action Packet approval-card bridge for Angel control-plane deployments.
+author: Angel Ops
+kind: standalone
+provides_hooks:
+  - gateway_startup
+requires_env: []

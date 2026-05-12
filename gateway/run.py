@@ -3594,6 +3594,21 @@ class GatewayRunner:
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+
+        # Fire plugin gateway-startup lifecycle hook after adapters are live.
+        # This lets opt-in plugins attach supported gateway-side background
+        # tasks without patching platform adapters directly. Return values are
+        # intentionally ignored; startup should not depend on observer plugins.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "gateway_startup",
+                gateway=self,
+                adapters=self.adapters,
+                platforms=[p.value for p in self.adapters.keys()],
+            )
+        except Exception as _plugin_hook_exc:
+            logger.warning("gateway_startup plugin hook failed: %s", _plugin_hook_exc)
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)

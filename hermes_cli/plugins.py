@@ -151,6 +151,12 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway lifecycle hook fired after configured platform adapters are
+    # connected and before startup notifications are delivered. Observers only:
+    # return values are ignored. Kwargs: gateway: GatewayRunner, adapters: dict,
+    # platforms: list[str]. Plugins may start background tasks on the running
+    # gateway event loop, but must not block startup.
+    "gateway_startup",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

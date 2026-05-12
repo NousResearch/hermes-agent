@@ -4597,6 +4597,22 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
+            if not self._session_db_created and self.session_id:
+                # Final persistence is our last chance to heal a session row
+                # that transiently failed to insert at startup. Without this,
+                # the JSON transcript can exist while state.db lacks the
+                # corresponding session row, breaking /resume and analytics.
+                self._session_db.ensure_session(
+                    session_id=self.session_id,
+                    source=self.platform
+                    or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=self.model,
+                    model_config=self._session_init_model_config,
+                    system_prompt=self._cached_system_prompt,
+                    user_id=None,
+                    parent_session_id=self._parent_session_id,
+                )
+                self._session_db_created = True
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:

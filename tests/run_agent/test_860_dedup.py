@@ -24,7 +24,7 @@ import pytest
 class TestFlushDeduplication:
     """Verify _flush_messages_to_session_db tracks what it already wrote."""
 
-    def _make_agent(self, session_db):
+    def _make_agent(self, session_db, *, ensure_row=True):
         """Create a minimal AIAgent with a real session DB."""
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
@@ -38,8 +38,9 @@ class TestFlushDeduplication:
                 skip_context_files=True,
                 skip_memory=True,
             )
-        # Simulate lazy session creation (normally done by run_conversation)
-        agent._ensure_db_session()
+        # Simulate lazy session creation (normally done by run_conversation).
+        if ensure_row:
+            agent._ensure_db_session()
         return agent
 
     def test_flush_writes_only_new_messages(self):
@@ -165,6 +166,58 @@ class TestFlushDeduplication:
             # Old session should still have its 2 messages
             old_rows = db.get_messages(old_session)
             assert len(old_rows) == 2
+
+    def test_flush_self_heals_missing_session_row_before_appending(self):
+        """Flush should backfill a missing session row before appending messages."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db, ensure_row=False)
+            agent._ensure_db_session = MagicMock()
+
+            messages = [
+                {"role": "user", "content": "hello after missed create"},
+            ]
+
+            agent._flush_messages_to_session_db(messages, [])
+
+            row = db.get_session(agent.session_id)
+            assert row is not None
+            assert row["source"] == "cli"
+            assert row["model"] == "test/model"
+            assert agent._session_db_created is True
+
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 1
+            assert rows[0]["content"] == "hello after missed create"
+
+    def test_flush_self_heals_missing_row_even_when_no_new_messages(self):
+        """A fully-flushed session must still recreate its missing DB row."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db, ensure_row=False)
+            agent._ensure_db_session = MagicMock()
+
+            conversation_history = [
+                {"role": "user", "content": "already persisted elsewhere"},
+            ]
+            agent._last_flushed_db_idx = len(conversation_history)
+
+            agent._flush_messages_to_session_db(conversation_history, conversation_history)
+
+            row = db.get_session(agent.session_id)
+            assert row is not None
+            assert row["source"] == "cli"
+            assert row["model"] == "test/model"
+            assert agent._session_db_created is True
+            assert db.get_messages(agent.session_id) == []
 
 
 # ---------------------------------------------------------------------------

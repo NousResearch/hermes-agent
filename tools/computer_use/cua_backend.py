@@ -497,9 +497,25 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         modifiers: Optional[List[str]] = None,
     ) -> ActionResult:
-        # cua-driver does not expose a drag tool.
-        return ActionResult(ok=False, action="drag",
-                            message="drag is not supported by the cua-driver backend.")
+        pid = self._active_pid
+        if pid is None:
+            return ActionResult(ok=False, action="drag",
+                                message="No active window — call capture() first.")
+        args: Dict[str, Any] = {"pid": pid}
+        if from_element is not None and to_element is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action="drag",
+                                    message="No active window_id for element-based drag.")
+            args["from_element"] = from_element
+            args["to_element"] = to_element
+            args["window_id"] = self._active_window_id
+        elif from_xy is not None and to_xy is not None:
+            args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
+            args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
+        else:
+            return ActionResult(ok=False, action="drag",
+                                message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        return self._action("drag", args)
 
     def scroll(
         self,
@@ -534,10 +550,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        return self._action("type_text", {"pid": pid, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid

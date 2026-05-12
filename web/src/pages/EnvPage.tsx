@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -35,6 +35,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
@@ -132,7 +133,7 @@ function EnvVarRow({
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
+      <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden opacity-50 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
@@ -168,7 +169,7 @@ function EnvVarRow({
   // Non-compact unset row
   if (!info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 opacity-60 hover:opacity-100 transition-opacity">
+      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
           <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
@@ -203,7 +204,7 @@ function EnvVarRow({
 
   // Full expanded row for set keys or keys being edited
   return (
-    <div className="grid gap-2 border border-border p-4">
+    <div className="grid gap-2 border border-border p-4 min-w-0 overflow-hidden">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
@@ -493,6 +494,7 @@ export default function EnvPage() {
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const { setAfterTitle } = usePageHeader();
 
   useEffect(() => {
     api
@@ -500,6 +502,58 @@ export default function EnvPage() {
       .then(setVars)
       .catch(() => {});
   }, []);
+
+  // Scroll-to sub-nav in the page header
+  const sections = useMemo(() => {
+    const items: { id: string; label: string }[] = [
+      { id: "section-oauth", label: "OAuth" },
+      { id: "section-providers", label: "Providers" },
+    ];
+    if (vars) {
+      const categories = ["tool", "messaging", "setting"];
+      const CATEGORY_LABELS: Record<string, string> = {
+        tool: "Tools",
+        messaging: "Messaging",
+        setting: "Settings",
+      };
+      for (const cat of categories) {
+        const hasEntries = Object.values(vars).some(
+          (info) => info.category === cat,
+        );
+        if (hasEntries) {
+          items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
+        }
+      }
+    }
+    return items;
+  }, [vars]);
+
+  useLayoutEffect(() => {
+    if (!vars) {
+      setAfterTitle(null);
+      return;
+    }
+    const scrollTo = (id: string) => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    setAfterTitle(
+      <nav className="flex items-center gap-1" aria-label="Jump to section">
+        {sections.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => scrollTo(s.id)}
+            className="cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>,
+    );
+    return () => {
+      setAfterTitle(null);
+    };
+  }, [vars, sections, setAfterTitle]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -701,12 +755,14 @@ export default function EnvPage() {
         </Button>
       </div>
 
-      <OAuthProvidersCard
-        onError={(msg) => showToast(msg, "error")}
-        onSuccess={(msg) => showToast(msg, "success")}
-      />
+      <div id="section-oauth">
+        <OAuthProvidersCard
+          onError={(msg) => showToast(msg, "error")}
+          onSuccess={(msg) => showToast(msg, "success")}
+        />
+      </div>
 
-      <Card>
+      <Card id="section-providers">
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
@@ -750,7 +806,7 @@ export default function EnvPage() {
           if (totalEntries === 0) return null;
 
           return (
-            <Card key={category}>
+            <Card key={category} id={`section-${category}`}>
               <CardHeader className="border-b border-border bg-card">
                 <div className="flex items-center gap-2">
                   <Icon className="h-5 w-5 text-muted-foreground" />
@@ -762,7 +818,7 @@ export default function EnvPage() {
                 </CardDescription>
               </CardHeader>
 
-              <CardContent className="grid gap-3 pt-4">
+              <CardContent className="grid gap-3 pt-4 overflow-hidden">
                 {setEntries.map(([key, info]) => (
                   <EnvVarRow
                     key={key}

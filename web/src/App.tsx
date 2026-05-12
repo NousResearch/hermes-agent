@@ -473,7 +473,7 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2",
+                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
                 "border-b border-current/20",
               )}
             >

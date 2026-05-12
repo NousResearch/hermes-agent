@@ -60,6 +60,26 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `pw_info` | Get current page info. | playwright (pip) |
 | `pw_close` | Close current session (or all). | playwright (pip) |
 
+## `translation_master` toolset
+
+Chrome's built-in Translator API via `@translation-master/chrome`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `tm_translate` | Translate text via Chrome's Translator API. | node, npm, Chrome 138+, @translation-master/chrome |
+
+Install:
+- npm i -g @translation-master/chrome
+- Chrome 138+
+
+Example:
+```
+Translate these texts to English:
+texts: ["Guten Morgen", "Wie geht's?"]
+source_locale: "de"
+target_locale: "en"
+```
+
 ## `code_execution` toolset
 
 | Tool | Description | Requires environment |

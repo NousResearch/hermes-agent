@@ -69,6 +69,13 @@ pip install playwright
 playwright install
 ```
 
+Translation Master toolset (optional):
+
+```bash
+npm i -g @translation-master/chrome
+# requires Chrome 138+
+```
+
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
 ## CLI vs Messaging Quick Reference

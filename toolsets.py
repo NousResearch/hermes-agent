@@ -49,6 +49,8 @@ _HERMES_CORE_TOOLS = [
     "pw_press", "pw_wait_for_selector", "pw_eval", "pw_screenshot",
     "pw_pdf", "pw_content", "pw_text", "pw_set_cookies", "pw_get_cookies",
     "pw_set_viewport", "pw_route_block", "pw_info", "pw_close",
+    # Translation (Chrome Translator API via Playwright)
+    "tm_translate",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -137,14 +139,9 @@ TOOLSETS = {
         "includes": []
     },
 
-    "playwright": {
-        "description": "Playwright browser automation (stateful sessions)",
-        "tools": [
-            "pw_start", "pw_navigate", "pw_click", "pw_type", "pw_fill",
-            "pw_press", "pw_wait_for_selector", "pw_eval", "pw_screenshot",
-            "pw_pdf", "pw_content", "pw_text", "pw_set_cookies", "pw_get_cookies",
-            "pw_set_viewport", "pw_route_block", "pw_info", "pw_close"
-        ],
+    "translation_master": {
+        "description": "Chrome built-in Translator API via @translation-master/chrome",
+        "tools": ["tm_translate"],
         "includes": []
     },
     

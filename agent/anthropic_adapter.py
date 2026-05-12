@@ -2272,10 +2272,10 @@ def _manage_thinking_signatures(
 
     Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
     Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
-    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
+    and will reject them outright.  Kimi's /coding, DeepSeek's /anthropic,
+    and MiniMax's Anthropic-compatible endpoints require unsigned thinking
+    blocks (synthesised from ``reasoning_content``) to round-trip on replayed
+    assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
     hermes-agent#16748 (DeepSeek).
 
     Mutates ``result`` in place.
@@ -2297,8 +2297,11 @@ def _manage_thinking_signatures(
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
-        elif _is_deepseek_anthropic_endpoint(base_url):
-            # DeepSeek: strip signed, preserve unsigned.
+        elif (
+            _is_deepseek_anthropic_endpoint(base_url)
+            or _is_minimax_anthropic_endpoint(base_url)
+        ):
+            # DeepSeek and MiniMax: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

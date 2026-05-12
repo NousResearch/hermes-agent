@@ -325,6 +325,18 @@ def build_session_context_prompt(
             "current message's Slack block/attachment payload when available, but "
             "you still cannot call Slack APIs yourself."
         )
+        # Inject strong threading directive when already inside a Slack thread.
+        # This structural injection fires even if SOUL.md is ever overwritten.
+        if context.source.thread_id and context.source.chat_id:
+            lines.append("")
+            lines.append(
+                f"**IMPORTANT — You are already inside Slack thread "
+                f"`{context.source.thread_id}` in channel `{context.source.chat_id}`. "
+                f"Do NOT post a new top-level message to the channel. "
+                f"Send ALL responses directly to "
+                f"`slack:{context.source.chat_id}:{context.source.thread_id}` "
+                f"using send_message. NEVER create a new thread when already in one.**"
+            )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into

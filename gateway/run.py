@@ -7508,6 +7508,23 @@ class GatewayRunner:
         )
 
         try:
+            # ── SRA Pre-Process Hook Injection ──────────────────────────────
+            # Intercept the message before agent:start. Allow hooks to
+            # modify the message content via message_override (e.g., for
+            # skill pre-check or translation).
+            hook_results = await self.hooks.emit_collect("agent:pre_process", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "message": message_text,
+            })
+            for hook_result in hook_results:
+                if isinstance(hook_result, dict) and "message_override" in hook_result:
+                    override = hook_result["message_override"]
+                    if override and isinstance(override, str):
+                        message_text = override
+            # ─────────────────────────────────────────────────────────────────
+
             # Emit agent:start hook
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",

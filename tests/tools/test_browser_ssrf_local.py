@@ -319,6 +319,93 @@ class TestPostRedirectSsrf:
         assert "cloud metadata endpoint" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# Always-blocked floor on LOCAL backends (#16234 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestLocalBackendImdsFloor:
+    """The cloud-metadata / IMDS floor must fire even on a local backend.
+
+    Local-backend mode (Camofox, headless Chromium without a cloud provider)
+    intentionally skips the SSRF check because the agent already has full
+    local-network access via the terminal tool.  That carve-out is fine for
+    ordinary RFC1918 / loopback URLs, but it MUST NOT extend to cloud
+    metadata endpoints.  An agent running on an EC2 / GCE / Azure host with
+    a local browser backend can still be coerced by a malicious prompt into
+    navigating to 169.254.169.254 (or sibling addresses) and exfiltrating
+    IAM credentials via subsequent ``browser_snapshot`` calls (#16234).
+
+    The floor must be unconditional: regardless of backend (local vs cloud),
+    regardless of ``allow_private_urls``, regardless of ``_is_safe_url``,
+    if ``_is_always_blocked_url(url)`` is True the navigation must be
+    rejected with a ``cloud metadata`` error.
+    """
+
+    PUBLIC_URL = "https://example.com/redirect"
+
+    @pytest.fixture()
+    def _common_patches(self, monkeypatch):
+        """Shared patches: pretend we're running a local browser backend."""
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "check_website_access", lambda url: None)
+        monkeypatch.setattr(
+            browser_tool,
+            "_get_session_info",
+            lambda task_id: {
+                "session_name": f"s_{task_id}",
+                "bb_session_id": None,
+                "cdp_url": None,
+                "features": {"local": True},
+                "_first_nav": False,
+            },
+        )
+        monkeypatch.setattr(
+            browser_tool,
+            "_run_browser_command",
+            lambda *a, **kw: _make_browser_result(),
+        )
+
+    # -- Pre-navigation: all IMDS endpoints blocked on local backend ----------
+
+    @pytest.mark.parametrize("imds_url", TestPreNavigationSsrf.IMDS_URLS)
+    def test_local_backend_blocks_imds_pre_navigation(
+        self, monkeypatch, _common_patches, imds_url
+    ):
+        """Direct nav to a cloud metadata URL is blocked even on a local backend."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: True)
+
+        result = json.loads(browser_tool.browser_navigate(imds_url))
+
+        assert result["success"] is False
+        assert "cloud metadata" in result["error"]
+
+    # -- Post-redirect: redirect landing on IMDS blocked on local backend ----
+
+    @pytest.mark.parametrize("imds_url", TestPreNavigationSsrf.IMDS_URLS)
+    def test_local_backend_blocks_imds_post_redirect(
+        self, monkeypatch, _common_patches, imds_url
+    ):
+        """A redirect to a cloud metadata URL is blocked even on a local backend."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: True)
+        monkeypatch.setattr(
+            browser_tool,
+            "_run_browser_command",
+            lambda *a, **kw: _make_browser_result(url=imds_url),
+        )
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
+
+        assert result["success"] is False
+        assert "cloud metadata" in result["error"]
+
+
 class TestAllowPrivateUrlsConfig:
     @pytest.fixture(autouse=True)
     def _reset_cache(self):

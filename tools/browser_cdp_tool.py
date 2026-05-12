@@ -424,6 +424,15 @@ MAC_CDP_INVENTORY_RUNNER = str(DEFAULT_SHARED_ROOT / "mac-cdp-readonly-dom-inven
 MAC_CDP_FILL_RUNNER = str(DEFAULT_SHARED_ROOT / "mac-cdp-form-fill-sidecar.py")
 
 
+def _mac_config_path_under_shared_root(path: str, shared_root: str) -> str:
+    """Return a normalized config path, rejecting paths outside shared_root."""
+    resolved = Path(path).expanduser().resolve()
+    root = Path(shared_root).expanduser().resolve()
+    if not (resolved == root or root in resolved.parents):
+        raise ValueError(f"config_path outside shared root: {resolved}")
+    return str(resolved)
+
+
 def _mac_sidecar_config_payload(
     spec: Dict[str, Any],
     *,
@@ -443,7 +452,7 @@ def _mac_sidecar_config_payload(
         cfg = build_config(spec, shared_root=shared_root)
         mode = "inventory" if cfg.get("readOnly") is True else "fill"
         if config_path:
-            intended_path = config_path
+            intended_path = _mac_config_path_under_shared_root(config_path, shared_root)
         else:
             name = "cdp-readonly-inventory-config.json" if mode == "inventory" else "cdp-form-fill-config.json"
             intended_path = str(DEFAULT_SHARED_ROOT / name) if shared_root == str(DEFAULT_SHARED_ROOT) else str(Path(shared_root) / name)

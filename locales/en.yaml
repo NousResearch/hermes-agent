@@ -226,6 +226,15 @@ gateway:
     title_error_untitled:  "\n⚠️ {error} — session started untitled."
     title_empty_untitled:  "\n⚠️ Title is empty after cleanup — session started untitled."
     tip:                   "\n✦ Tip: {tip}"
+    # /new all — bulk topic reset (#24362). Used only when the slash arg
+    # is `all` (or `*`) in a group/forum chat. Singular vs plural split
+    # keeps the message grammatical without dragging in a real
+    # pluralisation lib.
+    bulk_header_one:       "✨ Reset 1 topic session in this group."
+    bulk_header_many:      "✨ Reset {count} topic sessions in this group."
+    bulk_empty:            "ℹ️ No topic sessions to reset in this group yet."
+    bulk_all_failed:       "⚠️ /new all matched topic sessions but none could be reset — see logs."
+    bulk_partial_failure:  "⚠️ {failed} topic(s) could not be reset; check gateway logs.\n"
 
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."

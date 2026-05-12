@@ -194,6 +194,34 @@ def _mock_response(
     return resp
 
 
+def _assert_tool_call_id_pairing(messages: list) -> None:
+    """Every tool_call_id emitted by an assistant must have a matching tool response.
+
+    OpenAI Chat Completions API rejects messages where this contract breaks.
+    Tool responses may appear in any order after their assistant message; this
+    checks that the set of ids on each assistant equals the set of ids on the
+    immediately-following tool responses (up to the next assistant/user).
+    """
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            i += 1
+            continue
+        expected_ids = {tc["id"] for tc in msg["tool_calls"]}
+        j = i + 1
+        seen_ids: set = set()
+        while j < len(messages) and messages[j].get("role") == "tool":
+            seen_ids.add(messages[j].get("tool_call_id"))
+            j += 1
+        missing = expected_ids - seen_ids
+        assert not missing, (
+            f"assistant tool_calls {expected_ids} but tool responses only "
+            f"covered {seen_ids}; missing {missing}"
+        )
+        i = j
+
+
 # ===================================================================
 # Group 1: Pure Functions
 # ===================================================================
@@ -1522,6 +1550,156 @@ class TestRunConversation:
         assert result["final_response"] == "Got it"
         assert result["completed"] is True
         assert result["api_calls"] == 2
+
+    # ─── B-0512-01: drop-invalid-only behavior (axis C) ──────────────────
+    # Bug: when an LLM emits a valid + invalid tool_call in the same turn,
+    # the fork used to discard the whole turn and retry, producing a
+    # truncated reply on the second attempt. The fix drops only the
+    # invalid call, executes the valid one, and preserves the reply text.
+
+    def test_mixed_valid_and_invalid_tool_call_executes_valid_keeps_reply(self, agent):
+        """Elva 5/11 scenario: 1 valid + 1 invalid tool_call in the same turn.
+
+        Expected (axis C): the valid tool executes, the invalid is dropped
+        with a "dropped" tool response (no retry), and the reply text from
+        the first attempt reaches the user.
+        """
+        self._setup_agent(agent)
+        good_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        bad_tc = _mock_tool_call(
+            name="artemis-job-scanning:skill_view", arguments="{}", call_id="c2"
+        )
+        # Reply text the LLM almost lost on the old retry path.
+        reply_text = "好的，目标明确了 — 软件测试工程师，CS 背景。我帮你先跑一下。"
+        resp_mixed = _mock_response(
+            content=reply_text,
+            finish_reason="tool_calls",
+            tool_calls=[good_tc, bad_tc],
+        )
+        # After tool execution, LLM produces the final answer in turn 2.
+        resp_final = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_mixed, resp_final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("软件测试工程师，CS 背景")
+
+        # The valid tool was actually executed (not "Skipped").
+        assert mock_call.called, "web_search must execute despite sibling invalid tool"
+        assert mock_call.call_args.kwargs["tool_call_id"] == "c1"
+
+        # Only 2 API calls (mixed-turn + follow-up). The old behavior took
+        # 3 (retry + retry-result + follow-up) AND truncated the retry reply.
+        assert result["api_calls"] == 2, (
+            f"expected mixed turn to execute valid + 1 follow-up, got {result['api_calls']}"
+        )
+
+        # The reply text from the mixed turn must be preserved in messages.
+        assistant_msgs = [
+            m for m in result["messages"]
+            if m.get("role") == "assistant" and m.get("content")
+        ]
+        assert any(reply_text in (m.get("content") or "") for m in assistant_msgs), (
+            "reply text from mixed turn must survive — that's the whole bug"
+        )
+
+        # API contract: every assistant tool_call_id has a matching tool response.
+        _assert_tool_call_id_pairing(result["messages"])
+
+        # The invalid tool_call got a "dropped" response (not "Skipped: retry").
+        tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+        dropped = [m for m in tool_msgs if m.get("tool_call_id") == "c2"]
+        assert dropped, "invalid tool_call needs a tool response for API contract"
+        content = dropped[0]["content"]
+        assert "dropped" in content.lower() or "does not exist" in content.lower()
+        # The old retry-path wording is forbidden — the bug surface was the
+        # model treating this as "regenerate the whole turn", which produced
+        # truncated reply text. Axis C tells the model to keep going instead.
+        assert "Skipped:" not in content, (
+            "axis C: dropped wording must not use the old retry-prompt phrasing"
+        )
+        assert "Please retry this tool call" not in content
+
+    def test_all_invalid_tool_calls_still_retries_with_counter(self, agent):
+        """All-invalid turn keeps the safety cap to prevent stuck loops."""
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(name="nonexistent_tool", arguments="{}", call_id="c1")
+        resp_bad = _mock_response(
+            content="reply attempt 1",
+            finish_reason="tool_calls",
+            tool_calls=[bad_tc],
+        )
+        resp_good = _mock_response(content="Got it", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_bad, resp_good]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do something")
+        # All-invalid behavior preserved: 1 invalid turn + 1 successful retry.
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        _assert_tool_call_id_pairing(result["messages"])
+
+    def test_mixed_turn_invalid_call_with_malformed_json_args_still_drops(self, agent):
+        """Invalid tool_call with malformed JSON args must not derail axis C.
+
+        Without skipping dropped tcs in the JSON validator, a mixed turn where
+        the invalid call had bad JSON would fall into the json-retry path,
+        losing axis C's reply-text preservation.
+        """
+        self._setup_agent(agent)
+        good_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        # invalid name AND broken JSON args — should be dropped without
+        # triggering _invalid_json_retries.
+        bad_tc = _mock_tool_call(
+            name="bogus_tool", arguments="{not valid json", call_id="c2"
+        )
+        resp_mixed = _mock_response(
+            content="reply", finish_reason="tool_calls", tool_calls=[good_tc, bad_tc]
+        )
+        resp_final = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_mixed, resp_final]
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+        # Valid tool still executed despite sibling's broken JSON.
+        assert mock_call.called
+        assert mock_call.call_args.kwargs["tool_call_id"] == "c1"
+        # No json-retry was triggered (only 2 api calls total).
+        assert result["api_calls"] == 2
+        assert getattr(agent, "_invalid_json_retries", 0) == 0
+        _assert_tool_call_id_pairing(result["messages"])
+
+    def test_mixed_turn_does_not_increment_invalid_retry_counter(self, agent):
+        """Mixed valid+invalid turns must not count toward the 3-strike cap."""
+        self._setup_agent(agent)
+        good_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        bad_tc = _mock_tool_call(name="bogus_tool", arguments="{}", call_id="c2")
+        resp_mixed = _mock_response(
+            content="reply", finish_reason="tool_calls", tool_calls=[good_tc, bad_tc]
+        )
+        resp_final = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_mixed, resp_final]
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+        # Counter must be 0 after a mixed turn — valid tools executed, no retry
+        # needed, so this turn doesn't count toward the all-invalid safety cap.
+        assert getattr(agent, "_invalid_tool_retries", 0) == 0
 
     def test_inline_think_blocks_reasoning_only_accepted(self, agent):
         """Inline <think> reasoning-only responses accepted with (empty) content, no retries."""

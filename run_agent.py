@@ -5934,6 +5934,16 @@ class AIAgent:
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
         """
+        # B-0512-01: skip tool_calls marked as dropped (invalid name in a mixed
+        # turn). Their "dropped" tool response is appended by the caller after
+        # this method returns — see the _pending_dropped_tool_responses path.
+        # Mutating in place is safe: the persisted assistant_msg dict was
+        # already built by _build_assistant_message before this filter runs.
+        if any(getattr(tc, "_b0512_dropped", False) for tc in assistant_message.tool_calls):
+            assistant_message.tool_calls = [
+                tc for tc in assistant_message.tool_calls
+                if not getattr(tc, "_b0512_dropped", False)
+            ]
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
@@ -8642,56 +8652,106 @@ class AIAgent:
                             if repaired:
                                 print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                                 tc.function.name = repaired
-                    invalid_tool_calls = [
-                        tc.function.name for tc in assistant_message.tool_calls
+                    # B-0512-01: drop-invalid-only handling (axis C).
+                    # Split tool_calls into valid/invalid. If the turn is purely
+                    # invalid we still retry (with the 3-strike safety cap), but
+                    # if it's a mixed turn we drop the invalid call, keep the
+                    # reply text + valid calls, and continue normally — no retry.
+                    # This preserves user-facing reply text the LLM may have
+                    # generated alongside the invalid call (the Elva 5/11 case).
+                    invalid_tcs = [
+                        tc for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names
                     ]
-                    if invalid_tool_calls:
-                        # Track retries for invalid tool calls
-                        if not hasattr(self, '_invalid_tool_retries'):
-                            self._invalid_tool_retries = 0
-                        self._invalid_tool_retries += 1
-
-                        # Return helpful error to model — model can self-correct next turn
+                    valid_tcs = [
+                        tc for tc in assistant_message.tool_calls
+                        if tc.function.name in self.valid_tool_names
+                    ]
+                    if invalid_tcs:
                         available = ", ".join(sorted(self.valid_tool_names))
-                        invalid_name = invalid_tool_calls[0]
+                        invalid_name = invalid_tcs[0].function.name
                         invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
-                        self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
 
-                        if self._invalid_tool_retries >= 3:
-                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
-                            self._invalid_tool_retries = 0
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "final_response": None,
-                                "messages": messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "partial": True,
-                                "error": f"Model generated invalid tool call: {invalid_preview}"
-                            }
+                        if not valid_tcs:
+                            # All-invalid turn: keep the safety cap to prevent
+                            # the model from looping forever on bad names.
+                            if not hasattr(self, '_invalid_tool_retries'):
+                                self._invalid_tool_retries = 0
+                            self._invalid_tool_retries += 1
+                            self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
 
-                        assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
-                        messages.append(assistant_msg)
-                        for tc in assistant_message.tool_calls:
-                            if tc.function.name not in self.valid_tool_names:
-                                content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
-                            else:
-                                content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
-                            messages.append({
+                            if self._invalid_tool_retries >= 3:
+                                self._vprint(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
+                                self._invalid_tool_retries = 0
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": None,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "partial": True,
+                                    "error": f"Model generated invalid tool call: {invalid_preview}"
+                                }
+
+                            assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                            messages.append(assistant_msg)
+                            for tc in assistant_message.tool_calls:
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": f"Tool '{tc.function.name}' does not exist. Available tools: {available}",
+                                })
+                            continue
+
+                        # Mixed turn: drop invalid, execute valid, no retry.
+                        # Reset the all-invalid counter — mixed turns produce
+                        # forward progress and shouldn't count toward the cap.
+                        self._invalid_tool_retries = 0
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  Dropped invalid tool '{invalid_preview}' "
+                            f"— {len(valid_tcs)} valid call(s) will execute; reply text preserved."
+                        )
+                        # Stash dropped responses; they're appended after
+                        # _execute_tool_calls so they sit beside the valid tool
+                        # responses. We keep invalid tool_calls in the persisted
+                        # assistant message (OpenAI requires every tool response
+                        # to match a tool_call in the immediately-preceding
+                        # assistant message — orphans get rejected). The
+                        # downstream dispatch is the only place we need to skip
+                        # invalid names; we mark them so _execute_tool_calls
+                        # can filter them out without changing the persisted
+                        # message shape.
+                        for tc in invalid_tcs:
+                            tc._b0512_dropped = True
+                        self._pending_dropped_tool_responses = [
+                            {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
-                                "content": content,
-                            })
-                        continue
-                    # Reset retry counter on successful tool call validation
-                    if hasattr(self, '_invalid_tool_retries'):
-                        self._invalid_tool_retries = 0
+                                "content": (
+                                    f"Tool '{tc.function.name}' does not exist and was dropped. "
+                                    f"Continue with your response; do not retry this call. "
+                                    f"Available tools: {available}"
+                                ),
+                            }
+                            for tc in invalid_tcs
+                        ]
+                    else:
+                        # Reset retry counter on successful tool call validation
+                        if hasattr(self, '_invalid_tool_retries'):
+                            self._invalid_tool_retries = 0
                     
                     # Validate tool call arguments are valid JSON
                     # Handle empty strings as empty objects (common model quirk)
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
+                        # B-0512-01: skip invalid tool_calls marked for drop —
+                        # their args won't be dispatched, so JSON validity is
+                        # irrelevant. Without this skip, a mixed turn where the
+                        # invalid call also has malformed JSON args would fall
+                        # into the json-retry path and lose axis C's reply-text
+                        # preservation.
+                        if getattr(tc, "_b0512_dropped", False):
+                            continue
                         args = tc.function.arguments
                         if isinstance(args, (dict, list)):
                             tc.function.arguments = json.dumps(args)
@@ -8811,6 +8871,22 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    # B-0512-01: append "dropped" tool responses for invalid
+                    # tool_calls stashed earlier in the mixed-turn path. The
+                    # persisted assistant message keeps the full tool_calls list
+                    # (including invalid ids) — OpenAI requires every tool
+                    # response to match a tool_call in the immediately-preceding
+                    # assistant message, so we cannot strip invalid ids from the
+                    # persisted message. The `_b0512_dropped` marker lives on
+                    # the live SimpleNamespace tool_call objects only; it
+                    # doesn't reach session jsonl. Session replays therefore
+                    # re-enter the axis C drop path idempotently (drop →
+                    # continue), which is the correct behavior.
+                    pending = getattr(self, "_pending_dropped_tool_responses", None)
+                    if pending:
+                        messages.extend(pending)
+                        self._pending_dropped_tool_responses = None
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because

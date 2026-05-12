@@ -1668,13 +1668,7 @@ def process_job(job: dict, *, store=None, adapters=None, loop=None, verbose: boo
         # Deliver using runtime profile config
         delivery_error = None
         try:
-            _deliver_job_result(
-                job=job,
-                final_response=final_response,
-                output_file=output_file,
-                adapters=adapters,
-                loop=loop,
-            )
+            _deliver_result(job, final_response, adapters=adapters, loop=loop)
         except Exception as de:
             delivery_error = str(de)
             logger.warning("Delivery failed for job %s: %s", job.get("id"), de)
@@ -1780,7 +1774,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
         for job in due_jobs:
-            advance_next_run(job["id"])
+            if job.get("scope") == "global":
+                from cron.jobs import global_store as _gsa
+                advance_next_run(job["id"], store=_gsa())
+            else:
+                advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -1818,16 +1816,24 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             logger.info("Running %d global job(s) via subprocess", len(global_jobs))
         for gj in global_jobs:
             try:
-                from cron.jobs import global_store as _gs
+                from cron.jobs import global_store as _gs, mark_job_run as _mjr
                 gs = _gs()
                 ok, out, resp, err = _run_global_job_subprocess(gj, gs)
-                if verbose:
-                    if ok:
+                if ok:
+                    _mjr(gj["id"], True, store=gs)
+                    if verbose:
                         logger.info("Global job %s completed", gj.get("id"))
-                    else:
+                else:
+                    _mjr(gj["id"], False, err, store=gs)
+                    if verbose:
                         logger.warning("Global job %s failed: %s", gj.get("id"), err)
             except Exception as e:
                 logger.error("Global job %s subprocess error: %s", gj.get("id"), e)
+                try:
+                    from cron.jobs import mark_job_run as _mjr2, global_store as _gs2
+                    _mjr2(gj["id"], False, str(e), store=_gs2())
+                except Exception:
+                    pass
 
         def _process_job(job: dict) -> bool:
             """Run one profile job end-to-end: execute, save, deliver, mark."""

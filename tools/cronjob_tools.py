@@ -360,6 +360,19 @@ def cronjob(
                             success=False,
                         )
 
+            # v1: run_as_profile must match current profile for global jobs
+            if (scope or "profile") == "global" and run_as_profile:
+                import os as _osa
+                chome = _osa.environ.get("HERMES_HOME", "")
+                cprof = chome.split("/")[-1] if chome else ""
+                if cprof and run_as_profile != cprof:
+                    return tool_error(
+                        f"Global cron v1: run_as_profile must match current profile. "
+                        f"Got {run_as_profile!r}, current is {cprof!r}. "
+                        "Cross-profile scheduling requires admin override.",
+                        success=False,
+                    )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,

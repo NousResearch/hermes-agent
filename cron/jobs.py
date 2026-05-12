@@ -740,7 +740,10 @@ def create_job(
 
     # Default delivery to origin if available, otherwise local
     if deliver is None:
-        deliver = "origin" if origin else "local"
+        if _scope == "global":
+            deliver = "local"
+        else:
+            deliver = "origin" if origin else "local"
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -867,6 +870,8 @@ def update_job(job_id: str, updates: Dict[str, Any], store: Optional["CronStore"
         canonical_id = job_id
     if "scope" in updates:
         raise ValueError("Cannot change scope of existing cron job")
+    if "run_as_profile" in updates:
+        raise ValueError("Cannot change run_as_profile of existing cron job. Delete and recreate instead.")
     jobs = load_jobs(store=resolved)
     for i, job in enumerate(jobs):
         if job["id"] != canonical_id:
@@ -1000,8 +1005,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
     """
-    with _jobs_file_lock:
-        jobs = load_jobs()
+    resolved = resolve_store(store=store)
+    with store_lock(resolved):
+        jobs = load_jobs(store=resolved)
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
@@ -1021,7 +1027,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     if times is not None and times > 0 and completed >= times:
                         # Remove the job (limit reached)
                         jobs.pop(i)
-                        save_jobs(jobs)
+                        save_jobs(jobs, store=resolved)
                         return
                 
                 # Compute next run
@@ -1056,7 +1062,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
-                save_jobs(jobs)
+                save_jobs(jobs, store=resolved)
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
@@ -1074,8 +1080,9 @@ def advance_next_run(job_id: str, store: Optional["CronStore"] = None) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    with _jobs_file_lock:
-        jobs = load_jobs()
+    resolved = resolve_store(store=store)
+    with store_lock(resolved):
+        jobs = load_jobs(store=resolved)
         for job in jobs:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
@@ -1085,7 +1092,7 @@ def advance_next_run(job_id: str, store: Optional["CronStore"] = None) -> bool:
                 new_next = compute_next_run(job["schedule"], now)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next
-                    save_jobs(jobs)
+                    save_jobs(jobs, store=resolved)
                     return True
                 return False
         return False
@@ -1099,14 +1106,16 @@ def get_due_jobs(store: Optional["CronStore"] = None) -> List[Dict[str, Any]]:
     the job is fast-forwarded to the next future run instead of firing
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
-    with _jobs_file_lock:
-        return _get_due_jobs_locked()
+    resolved = resolve_store(store=store)
+    with store_lock(resolved):
+        return _get_due_jobs_locked(store=resolved)
 
 
-def _get_due_jobs_locked() -> List[Dict[str, Any]]:
-    """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
+def _get_due_jobs_locked(store: Optional["CronStore"] = None) -> List[Dict[str, Any]]:
+    """Inner implementation of get_due_jobs(); must be called with store_lock held."""
+    resolved = resolve_store(store=store)
     now = _hermes_now()
-    raw_jobs = load_jobs()
+    raw_jobs = load_jobs(store=resolved)
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False

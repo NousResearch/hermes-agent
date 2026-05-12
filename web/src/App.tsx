@@ -477,7 +477,7 @@ export default function App() {
                 "border-b border-current/20",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 pl-4">
                 <PluginSlot name="header-left" />
 
                 <Typography

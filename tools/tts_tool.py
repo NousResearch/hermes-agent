@@ -1108,7 +1108,7 @@ def _generate_openrouter_tts(text: str, output_path: str, tts_config: Dict[str, 
 
     # Use openai package (same as OpenAI provider) with openrouter base URL
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    client = OpenAIClient(api_key=api_key, base_url=base_url, timeout=60.0)
     try:
         create_kwargs: Dict[str, Any] = {
             "model": model,
@@ -1122,6 +1122,11 @@ def _generate_openrouter_tts(text: str, output_path: str, tts_config: Dict[str, 
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)
+
+        # Verify the file was actually written
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise IOError(f"TTS response was empty or file not written (provider: openrouter, model: {model})")
+
         return output_path
     finally:
         close = getattr(client, "close", None)

@@ -1047,6 +1047,22 @@ def _normalize_empty_agent_response(
     return response
 
 
+def _should_suppress_gateway_status(event_type: str, message: str) -> bool:
+    """Return True for backend lifecycle diagnostics chat gateways keep silent.
+
+    Gateway turns can intentionally produce an empty response as a no-op
+    (for example quiet-by-default group bots). Empty-response retry diagnostics
+    are useful in CLI logs but must not leak into user chat channels.
+    """
+    if event_type != "lifecycle" or not isinstance(message, str):
+        return False
+    msg = message.strip()
+    return (
+        msg.startswith("⚠️ Empty response from model — retrying")
+        or msg.startswith("❌ Model returned no content after all retries")
+    )
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -13913,6 +13929,9 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            if _should_suppress_gateway_status(event_type, message):
+                logger.debug("suppressed empty-response lifecycle status for gateway chat")
                 return
             try:
                 _fut = asyncio.run_coroutine_threadsafe(

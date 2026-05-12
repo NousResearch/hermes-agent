@@ -417,6 +417,28 @@ class TestGatewaySurfacesNullResponse:
 
         assert result == "Hello!"
 
+    def test_gateway_suppresses_empty_response_lifecycle_status(self):
+        """Gateway should not leak empty-response retry diagnostics into chat."""
+        from gateway.run import _should_suppress_gateway_status
+
+        assert _should_suppress_gateway_status(
+            "lifecycle", "⚠️ Empty response from model — retrying (1/3)"
+        )
+        assert _should_suppress_gateway_status(
+            "lifecycle",
+            "❌ Model returned no content after all retries. No fallback providers configured.",
+        )
+
+    def test_gateway_keeps_other_status_messages_visible(self):
+        """Only empty-response diagnostics are suppressed."""
+        from gateway.run import _should_suppress_gateway_status
+
+        assert not _should_suppress_gateway_status("lifecycle", "Compacting context…")
+        assert not _should_suppress_gateway_status(
+            "warn", "⚠️ Empty response from model — retrying (1/3)"
+        )
+        assert not _should_suppress_gateway_status("lifecycle", None)
+
 
 # ===========================================================================
 # Prune: finalize_orphaned_compression_sessions

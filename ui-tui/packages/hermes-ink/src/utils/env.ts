@@ -41,7 +41,8 @@ export const env = {
 }
 
 // Terminals known to correctly implement OSC 52 clipboard writes
-// (ESC ] 52 ; c ; <b64> BEL). When detected, setClipboard() skips the
+// (ESC ] 52 ; c ; <b64> BEL/ST — osc() in ink/termio/osc.ts emits BEL
+// for most terminals and ST for kitty). When detected, setClipboard() skips the
 // native-tool safety net entirely — running wl-copy/xclip/pbcopy in
 // parallel with OSC 52 races the terminal's own clipboard write and can
 // corrupt it (e.g. wl-copy on Wayland holds the selection in a background

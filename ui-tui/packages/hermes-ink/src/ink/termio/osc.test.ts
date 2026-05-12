@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { supportsOsc52Clipboard } from '../../utils/env.js'
+import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 
 import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
 
@@ -84,6 +84,7 @@ describe('supportsOsc52Clipboard', () => {
     // know what that is in CI, but the call must return a boolean (not throw)
     // and the result must match calling with env.terminal explicitly.
     expect(typeof supportsOsc52Clipboard()).toBe('boolean')
+    expect(supportsOsc52Clipboard()).toBe(supportsOsc52Clipboard(env.terminal))
   })
 })
 
@@ -180,9 +181,11 @@ describe('shouldUseNativeClipboard', () => {
     )
   })
 
-  it('defaults env to process.env and terminal to null when no args passed', () => {
-    // Smoke test: no args is a valid call shape for the convenience seam,
-    // returns a boolean without throwing.
+  it('defaults env to process.env and terminal to the module-detected terminal when no args passed', () => {
+    // Smoke test: no args is a valid call shape for the convenience seam.
+    // shouldUseNativeClipboard() defaults `terminal` to envModule.terminal
+    // (the module-level detected terminal), not null. Returns a boolean
+    // without throwing.
     expect(typeof shouldUseNativeClipboard()).toBe('boolean')
   })
 })

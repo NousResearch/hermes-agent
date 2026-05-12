@@ -262,6 +262,10 @@ class HermesProviderSetupWebActivity : Activity() {
             if (!canOpen(uri)) {
                 return BrowserLaunchResult(success = false, errorName = "UnsupportedScheme")
             }
+            val external = HermesExternalBrowserLauncher.open(context, uri, title)
+            if (external.success) {
+                return external
+            }
             val appContext = context.applicationContext
             return runCatching {
                 appContext.startActivity(createIntent(appContext, uri, title))

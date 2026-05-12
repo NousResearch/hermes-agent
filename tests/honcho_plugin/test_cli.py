@@ -100,6 +100,88 @@ class TestResolveApiKey:
                 f"expected local sentinel for legacy schemeless {legacy!r}"
 
 
+class TestCmdSetup:
+    def test_cloud_setup_requires_data_flow_confirmation(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        writes = []
+        prompts = iter(["cloud", "n"])
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda cfg: writes.append(cfg))
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(
+            honcho_cli,
+            "_prompt",
+            lambda label, default=None, secret=False: next(prompts),
+        )
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+
+        out = capsys.readouterr().out
+        assert "Honcho cloud privacy notice" in out
+        assert "conversation messages" in out
+        assert "api.honcho.dev" in out
+        assert "backend LLM inference" in out
+        assert "setup canceled" in out
+        assert writes == []
+
+    def test_local_setup_skips_cloud_data_flow_confirmation(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        written = {}
+
+        class FakeConfig:
+            workspace_id = "hermes"
+            peer_name = "test-user"
+            ai_peer = "hermes"
+            observation_mode = "directional"
+            write_frequency = "async"
+            recall_mode = "hybrid"
+            session_strategy = "per-session"
+
+            def resolve_session_name(self):
+                return "hermes"
+
+        def prompt(label, default=None, secret=False):
+            if label == "Cloud or local?":
+                return "local"
+            return default or ""
+
+        def fail_cloud_confirmation():
+            raise AssertionError("local setup should not ask for Honcho cloud consent")
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda cfg: written.setdefault("cfg", cfg))
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_confirm_cloud_data_flow", fail_cloud_confirmation)
+        monkeypatch.setattr(honcho_cli, "_prompt", prompt)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda config: None)
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+        monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda cfg: object())
+        monkeypatch.setattr("plugins.memory.honcho.client.reset_honcho_client", lambda: None)
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+
+        out = capsys.readouterr().out
+        assert "Honcho cloud privacy notice" not in out
+        assert "Honcho is ready." in out
+        assert written["cfg"]["baseUrl"] == "http://localhost:8000"
+        assert written["cfg"]["hosts"]["hermes"]["enabled"] is True
+
+
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli

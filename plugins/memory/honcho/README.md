@@ -16,6 +16,8 @@ hermes honcho setup    # full interactive wizard (cloud or local)
 hermes memory setup    # generic picker, also works
 ```
 
+When you choose Honcho cloud, Hermes sends conversation messages, peer/session identifiers, memory facts/conclusions, and context requests to `api.honcho.dev`. Honcho cloud may run backend LLM inference for observation, summaries, peer representations, and dialectic reasoning. Choose `local` during setup if you want to use a self-hosted Honcho server instead.
+
 Or manually:
 ```bash
 hermes config set memory.provider honcho

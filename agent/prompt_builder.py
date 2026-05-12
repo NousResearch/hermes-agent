@@ -46,20 +46,18 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
 ]
 
-_CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+# Backward-compatible alias — tests and external code may reference this set.
+# The canonical source of truth is agent.unicode_scanner.INVISIBLE_CHARS_BLOCKLIST.
+from agent.unicode_scanner import find_unsafe_invisibles, INVISIBLE_CHARS_BLOCKLIST as _CONTEXT_INVISIBLE_CHARS  # noqa: E402
 
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
     findings = []
 
-    # Check invisible unicode
-    for char in _CONTEXT_INVISIBLE_CHARS:
-        if char in content:
-            findings.append(f"invisible unicode U+{ord(char):04X}")
+    # Check invisible unicode (ZWJ inside emoji clusters is allowed)
+    for _char, cp in find_unsafe_invisibles(content):
+        findings.append(f"invisible unicode U+{cp:04X}")
 
     # Check threat patterns
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:

@@ -104,9 +104,10 @@ fi
 #
 # Toggled by HERMES_DASHBOARD=1 (also accepts "true"/"yes", case-insensitive).
 # Host/port/TUI can be overridden via:
-#   HERMES_DASHBOARD_HOST  (default 0.0.0.0 — exposed outside the container)
-#   HERMES_DASHBOARD_PORT  (default 9119, matches `hermes dashboard` default)
-#   HERMES_DASHBOARD_TUI   (already honored by `hermes dashboard` itself)
+#   HERMES_DASHBOARD_HOST      (default 127.0.0.1; safe loopback-only bind)
+#   HERMES_DASHBOARD_PORT      (default 9119, matches `hermes dashboard` default)
+#   HERMES_DASHBOARD_INSECURE  (set to 1/true/yes to acknowledge public bind risk)
+#   HERMES_DASHBOARD_TUI       (already honored by `hermes dashboard` itself)
 #
 # The dashboard is a long-lived server.  We background it *before* the final
 # `exec hermes "$@"` so the user's chosen foreground command (chat, gateway,
@@ -115,16 +116,16 @@ fi
 # cleanup is needed.
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)
-        dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+        dash_host="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
         dash_port="${HERMES_DASHBOARD_PORT:-9119}"
         dash_args=(--host "$dash_host" --port "$dash_port" --no-open)
-        # Binding to anything other than localhost requires --insecure — the
-        # dashboard refuses otherwise because it exposes API keys.  Inside a
-        # container this is the expected deployment (host reaches it via
-        # published port), so opt in automatically.
-        if [ "$dash_host" != "127.0.0.1" ] && [ "$dash_host" != "localhost" ]; then
-            dash_args+=(--insecure)
-        fi
+        # Public dashboard binds expose secrets and config. Preserve the
+        # dashboard CLI safety gate unless the operator explicitly opts in.
+        case "${HERMES_DASHBOARD_INSECURE:-}" in
+            1|true|TRUE|True|yes|YES|Yes)
+                dash_args+=(--insecure)
+                ;;
+        esac
         echo "Starting hermes dashboard on ${dash_host}:${dash_port} (background)"
         # Prefix dashboard output so it's distinguishable from the main
         # process in `docker logs`.  stdbuf keeps the pipe line-buffered.

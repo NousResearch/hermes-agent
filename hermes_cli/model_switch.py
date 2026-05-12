@@ -1473,7 +1473,25 @@ def list_authenticated_providers(
             # Skip if this slug was already emitted (e.g. canonical provider
             # with the same name) or will be picked up by section 4.
             if ep_name.lower() in seen_slugs:
-                continue
+                # Exception: if the existing canonical entry has no models but
+                # user_providers has models/api_url for this slug, replace the
+                # canonical entry so the picker can surface it.  This fixes
+                # local providers (e.g. unsloth) that are registered as
+                # CANONICAL_PROVIDERS with an empty curated model list.
+                existing_idx = next(
+                    (i for i, r in enumerate(results) if r.get("slug") == ep_name),
+                    None,
+                )
+                if existing_idx is not None:
+                    existing = results[existing_idx]
+                    if not existing.get("models") and not existing.get("is_user_defined"):
+                        # Re-build with user config data (fall through to normal build below)
+                        results.pop(existing_idx)
+                        seen_slugs.discard(ep_name.lower())
+                    else:
+                        continue
+                else:
+                    continue
             display_name = ep_cfg.get("name", "") or ep_name
             # ``base_url`` is Hermes's canonical write key (matches
             # custom_providers and _save_custom_provider); ``api`` / ``url``

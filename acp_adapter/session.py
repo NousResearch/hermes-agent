@@ -620,6 +620,27 @@ class SessionManager:
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
+        acp_skills_env = os.environ.get("HERMES_ACP_SKILLS", "")
+        if acp_skills_env:
+            startup_skills: list[str] = []
+            seen: set[str] = set()
+            for part in acp_skills_env.replace("\n", ",").split(","):
+                item = part.strip()
+                if item and item not in seen:
+                    seen.add(item)
+                    startup_skills.append(item)
+            if startup_skills:
+                from agent.skill_commands import build_preloaded_skills_prompt
+
+                skills_prompt, _loaded, missing = build_preloaded_skills_prompt(
+                    startup_skills,
+                    task_id=session_id,
+                )
+                if missing:
+                    logger.warning("ACP: unknown skill(s): %s", ", ".join(missing))
+                if skills_prompt:
+                    kwargs["ephemeral_system_prompt"] = skills_prompt
+
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.

@@ -11414,6 +11414,16 @@ Examples:
         try:
             from acp_adapter.entry import main as acp_main
 
+            skills = getattr(args, "skills", None)
+            if skills:
+                flattened: list[str] = []
+                for item in skills:
+                    flattened.extend(
+                        part.strip() for part in str(item).split(",") if part.strip()
+                    )
+                if flattened:
+                    os.environ["HERMES_ACP_SKILLS"] = ",".join(flattened)
+
             acp_main()
         except ImportError:
             print("ACP dependencies not installed.")

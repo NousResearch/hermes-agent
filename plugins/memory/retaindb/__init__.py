@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
+_WRITE_REPLAY_BATCH_SIZE = 200
+_WRITE_RETRY_MAX_ATTEMPTS = 6
+_WRITE_RETRY_BASE_DELAY_SECONDS = 2.0
+_WRITE_RETRY_MAX_DELAY_SECONDS = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +338,9 @@ class _WriteQueue:
         self._client = client
         self._db_path = db_path
         self._q: queue.Queue = queue.Queue()
+        self._stopping = threading.Event()
+        self._queued_ids: set[int] = set()
+        self._queued_ids_lock = threading.Lock()
         self._thread = threading.Thread(target=self._loop, name="retaindb-writer", daemon=True)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Thread-local connection cache — one connection per thread, reused.
@@ -341,8 +348,7 @@ class _WriteQueue:
         self._init_db()
         self._thread.start()
         # Replay any rows left from a previous crash
-        for row_id, user_id, session_id, msgs_json in self._pending_rows():
-            self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
+        self._queue_pending_batch()
 
     def _get_conn(self) -> sqlite3.Connection:
         """Return a cached connection for the current thread."""
@@ -358,13 +364,53 @@ class _WriteQueue:
         conn.execute("""CREATE TABLE IF NOT EXISTS pending (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT, session_id TEXT, messages_json TEXT,
-            created_at TEXT, last_error TEXT
+            created_at TEXT, last_error TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0
         )""")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(pending)").fetchall()}
+        if "attempt_count" not in columns:
+            conn.execute("ALTER TABLE pending ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
-    def _pending_rows(self) -> list:
+    def _pending_rows(self, limit: int = _WRITE_REPLAY_BATCH_SIZE) -> list:
         conn = self._get_conn()
-        return conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
+        return conn.execute(
+            """
+            SELECT id, user_id, session_id, messages_json
+            FROM pending
+            WHERE COALESCE(attempt_count, 0) < ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (_WRITE_RETRY_MAX_ATTEMPTS, limit),
+        ).fetchall()
+
+    def _queue_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> bool:
+        with self._queued_ids_lock:
+            if row_id in self._queued_ids:
+                return False
+            self._queued_ids.add(row_id)
+        self._q.put((row_id, user_id, session_id, messages))
+        return True
+
+    def _forget_queued_row(self, row_id: int) -> None:
+        with self._queued_ids_lock:
+            self._queued_ids.discard(row_id)
+
+    def _queue_pending_batch(self, *, force: bool = False) -> bool:
+        if self._stopping.is_set() and not force:
+            return False
+        queued = False
+        for row_id, user_id, session_id, msgs_json in self._pending_rows():
+            queued = self._queue_row(row_id, user_id, session_id, json.loads(msgs_json)) or queued
+        return queued
+
+    def _retry_delay(self, attempt_count: int) -> float:
+        exponent = max(0, attempt_count - 1)
+        return min(
+            _WRITE_RETRY_BASE_DELAY_SECONDS * (2 ** exponent),
+            _WRITE_RETRY_MAX_DELAY_SECONDS,
+        )
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -375,7 +421,7 @@ class _WriteQueue:
         )
         row_id = cur.lastrowid
         conn.commit()
-        self._q.put((row_id, user_id, session_id, messages))
+        self._queue_row(row_id, user_id, session_id, messages)
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
         try:
@@ -383,18 +429,50 @@ class _WriteQueue:
             conn = self._get_conn()
             conn.execute("DELETE FROM pending WHERE id = ?", (row_id,))
             conn.commit()
+            self._forget_queued_row(row_id)
+            self._queue_pending_batch()
         except Exception as exc:
-            logger.warning("RetainDB ingest failed (will retry): %s", exc)
             conn = self._get_conn()
-            conn.execute("UPDATE pending SET last_error = ? WHERE id = ?", (str(exc), row_id))
+            conn.execute(
+                """
+                UPDATE pending
+                SET last_error = ?,
+                    attempt_count = COALESCE(attempt_count, 0) + 1
+                WHERE id = ?
+                """,
+                (str(exc), row_id),
+            )
             conn.commit()
-            time.sleep(2)
+            row = conn.execute("SELECT attempt_count FROM pending WHERE id = ?", (row_id,)).fetchone()
+            attempt_count = int(row["attempt_count"]) if row else _WRITE_RETRY_MAX_ATTEMPTS
+            if attempt_count >= _WRITE_RETRY_MAX_ATTEMPTS:
+                logger.error(
+                    "RetainDB ingest failed after %d attempts; leaving row pending: %s",
+                    attempt_count,
+                    exc,
+                )
+                self._forget_queued_row(row_id)
+                self._queue_pending_batch()
+                return
+            logger.warning(
+                "RetainDB ingest failed (attempt %d/%d; will retry): %s",
+                attempt_count,
+                _WRITE_RETRY_MAX_ATTEMPTS,
+                exc,
+            )
+            if not self._stopping.is_set():
+                time.sleep(self._retry_delay(attempt_count))
+            if not self._stopping.is_set():
+                self._q.put((row_id, user_id, session_id, messages))
 
     def _loop(self) -> None:
         while True:
             try:
                 item = self._q.get(timeout=5)
                 if item is _ASYNC_SHUTDOWN:
+                    if self._queue_pending_batch(force=True):
+                        self._q.put(_ASYNC_SHUTDOWN)
+                        continue
                     break
                 self._flush_row(*item)
             except queue.Empty:
@@ -403,6 +481,7 @@ class _WriteQueue:
                 logger.error("RetainDB writer error: %s", exc)
 
     def shutdown(self) -> None:
+        self._stopping.set()
         self._q.put(_ASYNC_SHUTDOWN)
         self._thread.join(timeout=10)
 

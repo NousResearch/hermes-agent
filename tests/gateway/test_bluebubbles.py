@@ -97,6 +97,90 @@ class TestBlueBubblesHelpers:
         assert result.success is True
         assert sent == ["first thought", "second thought"]
 
+    @pytest.mark.asyncio
+    async def test_send_uses_bluebubbles_message_payload_shape(self, monkeypatch):
+        """BB private API requires message; text is retained for compatibility."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        seen = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            seen["path"] = path
+            seen["payload"] = payload
+            return {"data": {"guid": "MESSAGE-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello", reply_to="REPLY-GUID")
+
+        assert result.success is True
+        assert seen["path"] == "/api/v1/message/text"
+        assert seen["payload"]["chatGuid"] == "iMessage;-;user@example.com"
+        assert seen["payload"]["message"] == "hello"
+        assert seen["payload"]["text"] == "hello"
+        assert seen["payload"]["method"] == "private-api"
+        assert seen["payload"]["selectedMessageGuid"] == "REPLY-GUID"
+        assert seen["payload"]["partIndex"] == 0
+
+    @pytest.mark.asyncio
+    async def test_send_retries_without_reply_metadata_when_reply_send_times_out(self, monkeypatch):
+        import httpx
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        attempts = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            attempts.append(dict(payload))
+            if "selectedMessageGuid" in payload:
+                raise httpx.ReadTimeout("reply target did not resolve")
+            return {"data": {"guid": "PLAIN-MESSAGE-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello", reply_to="MISSING-GUID")
+
+        assert result.success is True
+        assert result.message_id == "PLAIN-MESSAGE-GUID"
+        assert len(attempts) == 2
+        assert attempts[0]["selectedMessageGuid"] == "MISSING-GUID"
+        assert "selectedMessageGuid" not in attempts[1]
+        assert attempts[1]["message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_reports_status_and_body(self, monkeypatch):
+        import httpx
+
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            request = httpx.Request("POST", "http://localhost:1234/api/v1/message/text")
+            response = httpx.Response(500, request=request, text="Message Send Error: Chat does not exist")
+            raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello")
+
+        assert result.success is False
+        assert "HTTP 500" in result.error
+        assert "Message Send Error: Chat does not exist" in result.error
+        assert "/api/v1/message/text" in result.error
+
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"
@@ -555,6 +639,29 @@ class TestBlueBubblesWebhookRegistration:
             adapter._register_webhook()
         )
         assert ok is True
+
+    def test_register_uses_wildcard_events(self, monkeypatch):
+        """Register for all BB events; filter message-like payloads in Hermes."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 200, "data": {"id": 44}},
+        )
+        seen = {}
+
+        async def capture_post(path, payload):
+            seen["path"] = path
+            seen["payload"] = payload
+            return {"status": 200, "data": {"id": 44}}
+
+        adapter._api_post = capture_post
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        assert seen["path"] == "/api/v1/webhook"
+        assert seen["payload"]["events"] == ["*"]
 
     def test_register_accepts_201(self, monkeypatch):
         """BB might return 201 Created — must still succeed."""

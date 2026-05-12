@@ -53,7 +53,10 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
+# Webhook event types that carry user messages. BlueBubbles deployments have
+# not been consistent here, so the adapter registers for all events and only
+# uses this set to fast-ack clearly non-message events after inspecting the
+# payload shape.
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
 # Log redaction patterns
@@ -66,6 +69,22 @@ def _redact(text: str) -> str:
     text = _PHONE_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED]", text)
     return text
+
+
+def _describe_http_error(exc: Exception) -> str:
+    """Return BB REST errors with enough detail to debug endpoint/payload issues."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        request = exc.request
+        body = response.text if response is not None else ""
+        method = request.method if request is not None else "HTTP"
+        url = str(request.url) if request is not None else "<unknown url>"
+        status = response.status_code if response is not None else "?"
+        detail = f"HTTP {status} from {method} {url}"
+        if body:
+            detail += f": {body[:1000]}"
+        return _redact(detail)
+    return _redact(f"{type(exc).__name__}: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +294,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            # BlueBubbles webhook event names vary across server/private-API
+            # versions. Register broadly and filter in _handle_webhook so real
+            # inbound iMessages are not missed because the event label drifted.
+            "events": ["*"],
         }
 
         try:
@@ -437,21 +459,64 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload: Dict[str, Any] = {
                 "chatGuid": guid,
                 "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                # BlueBubbles private API validates and reads `message` for
+                # /api/v1/message/text. Keep `text` too for server-version
+                # compatibility; the live server rejects payloads without
+                # `message` even though some route names/docs say "text".
                 "message": chunk,
+                "text": chunk,
             }
-            if reply_to and self._private_api_enabled and self._helper_connected:
+            if self._private_api_enabled and self._helper_connected:
                 payload["method"] = "private-api"
+            if reply_to and self._private_api_enabled and self._helper_connected:
                 payload["selectedMessageGuid"] = reply_to
                 payload["partIndex"] = 0
             try:
-                res = await self._api_post("/api/v1/message/text", payload)
-                data = res.get("data") or {}
-                msg_id = data.get("guid") or data.get("messageGuid") or "ok"
-                last = SendResult(
-                    success=True, message_id=str(msg_id), raw_response=res
+                logger.debug(
+                    "[bluebubbles] sending text: target=%s guid=%s reply_to=%s payload_keys=%s",
+                    _redact(chat_id),
+                    _redact(guid),
+                    _redact(reply_to or ""),
+                    sorted(payload.keys()),
                 )
+                res = await self._api_post("/api/v1/message/text", payload)
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                error = _describe_http_error(exc)
+                if "selectedMessageGuid" in payload:
+                    logger.warning(
+                        "[bluebubbles] reply send failed, retrying without reply metadata: target=%s guid=%s reply_to=%s error=%s",
+                        _redact(chat_id),
+                        _redact(guid),
+                        _redact(reply_to or ""),
+                        error,
+                    )
+                    payload.pop("selectedMessageGuid", None)
+                    payload.pop("partIndex", None)
+                    try:
+                        res = await self._api_post("/api/v1/message/text", payload)
+                    except Exception as retry_exc:
+                        error = _describe_http_error(retry_exc)
+                        logger.warning(
+                            "[bluebubbles] text send failed after reply fallback: target=%s guid=%s error=%s",
+                            _redact(chat_id),
+                            _redact(guid),
+                            error,
+                        )
+                        return SendResult(success=False, error=error)
+                else:
+                    logger.warning(
+                        "[bluebubbles] text send failed: target=%s guid=%s reply_to=%s error=%s",
+                        _redact(chat_id),
+                        _redact(guid),
+                        _redact(reply_to or ""),
+                        error,
+                    )
+                    return SendResult(success=False, error=error)
+            data = res.get("data") or {}
+            msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+            last = SendResult(
+                success=True, message_id=str(msg_id), raw_response=res
+            )
         return last
 
     # ------------------------------------------------------------------
@@ -798,11 +863,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
-        if event_type and event_type not in _MESSAGE_EVENTS:
-            return web.Response(text="ok")
-
         record = self._extract_payload_record(payload) or {}
+        if event_type and event_type not in _MESSAGE_EVENTS:
+            # BlueBubbles event names have drifted across versions. If the
+            # payload still looks like a message, keep processing; otherwise
+            # acknowledge non-message events without waking the agent.
+            looks_like_message = any(
+                key in record
+                for key in (
+                    "text",
+                    "message",
+                    "body",
+                    "attachments",
+                    "handle",
+                    "chats",
+                    "chatGuid",
+                    "chatIdentifier",
+                )
+            )
+            if not looks_like_message:
+                return web.Response(text="ok")
+            logger.info(
+                "[bluebubbles] processing unknown message-like webhook event type=%s",
+                event_type,
+            )
         is_from_me = bool(
             record.get("isFromMe")
             or record.get("fromMe")

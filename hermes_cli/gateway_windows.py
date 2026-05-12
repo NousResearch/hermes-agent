@@ -110,6 +110,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             [schtasks, *args],
             capture_output=True,
             text=True,
+            encoding="mbcs",  # schtasks outputs in system ANSI code page (e.g. GBK on Chinese Windows)
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the

@@ -754,6 +754,15 @@ def load_gateway_config() -> GatewayConfig:
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
 
+            if "agents" in yaml_cfg:
+                gw_data["agents"] = yaml_cfg["agents"]
+
+            if "routes" in yaml_cfg:
+                gw_data["routes"] = yaml_cfg["routes"]
+
+            if "default_agent" in yaml_cfg:
+                gw_data["default_agent"] = yaml_cfg["default_agent"]
+
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),

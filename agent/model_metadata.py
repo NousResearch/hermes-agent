@@ -1459,9 +1459,6 @@ def get_model_context_length(
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Invalidate stale 32k cache entries for Kimi-family models.
-            # OpenRouter incorrectly reports 32768 for moonshotai/kimi-k2.6 and
-            # similar models; actual context is 262144.  Drop any cached 32k
-            # value so the corrected resolution path can return 262144.
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
@@ -1607,14 +1604,6 @@ def get_model_context_length(
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
             # Guard against stale OpenRouter metadata for Kimi-family models.
-            # OpenRouter reports 32768 for moonshotai/kimi-k2.6, but the model
-            # actually supports 262144 (models.dev + official Kimi docs agree).
-            # Providers that host their own Kimi endpoints (Ollama Cloud, Kimi
-            # Coding, Moonshot) would otherwise trip the 64k minimum-context
-            # guard and reject a perfectly capable model.
-            # The filter is narrow: only reject exactly 32768 for Kimi-named
-            # models.  If OpenRouter ever updates its data, the stale path
-            # becomes dead code with no impact.
             if or_ctx == 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "

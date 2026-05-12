@@ -13,6 +13,64 @@ metadata:
 
 > You're seeing this skill because the Hermes Kanban dispatcher spawned you as a worker with `--skills kanban-worker` — it's loaded automatically for every dispatched worker. The **lifecycle** (6 steps: orient → work → heartbeat → block/complete) also lives in the `KANBAN_GUIDANCE` block that's auto-injected into your system prompt. This skill is the deeper detail: good handoff shapes, retry diagnostics, edge cases.
 
+## Over-communication during dispatch
+
+Operators learn that a dispatch is running by watching the kanban thread (and, where applicable, the Clawta Discord channel). Be louder than feels natural.
+
+**Three required beats every coding-style dispatch must hit:**
+
+1. **Start.** Immediately after `kanban_show` and before any work, post a starting comment:
+
+   ```python
+   kanban_comment(
+       body=(
+           f"🛠 Starting work on this ticket. Workspace: {os.environ.get('HERMES_KANBAN_WORKSPACE')}. "
+           f"Plan: <one-sentence plan>."
+       ),
+   )
+   ```
+
+2. **Finish — push, PR, then complete.** For any task where you commit code, the completion handoff must include a PR. Sequence:
+
+   ```bash
+   # Inside $HERMES_KANBAN_WORKSPACE (a worktree on a feature branch):
+   git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
+   gh pr create --title "<concise title>" --body "Closes t_$HERMES_KANBAN_TASK.
+
+   <1-3 sentence summary>"
+   # Capture the PR url from gh's output.
+   ```
+
+   Then call `kanban_complete` with the PR url in BOTH summary and metadata so downstream graders + dashboards can find it without parsing prose:
+
+   ```python
+   kanban_complete(
+       summary="<what you shipped>. PR: <url>",
+       metadata={
+           "pr_url": "<url>",
+           "pr_number": <int>,
+           "branch": "<branch-name>",
+           "commit": "<sha>",
+           "changed_files": [...],
+           "tests_passed": <int>,
+       },
+   )
+   ```
+
+3. **Broadcast to Clawta's Discord channel (best-effort, never block on failure).**
+
+   ```bash
+   openclaw message send --channel discord --account default \
+     --text "🦞 ${HERMES_KANBAN_TASK}: <one-line status>. PR: <url>" \
+     2>/dev/null || true
+   ```
+
+   This makes the Clawta persona narrate its own dispatches in the operator's chat. Skip on failure — kanban comments are the durable record; Discord is the real-time mouth.
+
+**Why this matters:** dispatchers spend minutes-to-hours running, mostly silently. A worker that ships nothing observable until `kanban_complete` is indistinguishable from a hung worker. Three timestamps (start / PR-open / complete) plus a Discord ping turn invisibility into a clear narrative.
+
+**Anti-pattern:** treating `kanban_complete` as the only message you send. The operator should never have to ask "is it still running?" — the kanban comment timeline answers that.
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:

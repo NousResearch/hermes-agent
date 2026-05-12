@@ -2824,6 +2824,148 @@ class DiscordAdapter(BasePlatformAdapter):
         # Discord markdown is fairly standard, no special escaping needed
         return content
 
+    # ─── /submit slash command — fire a job at the local api_server ──────
+    #
+    # Discord-side counterpart of the laptop-side `hermes submit` CLI.
+    # POSTs the prompt to the api_server adapter on the same box (no
+    # network hop), returns the run_id immediately, and spawns a
+    # background poller that edits the reply when the run finishes.
+    # Lets the user fire jobs from a phone DM and walk away.
+
+    async def _submit_run_via_local_api(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """POST prompt → /v1/runs on localhost. Return parsed body or None on failure."""
+        try:
+            import httpx
+        except ImportError:
+            logger.error("[Discord] /submit needs httpx but it's not installed")
+            return None
+
+        port = os.getenv("API_SERVER_PORT", "8642")
+        api_key = os.getenv("API_SERVER_KEY", "")
+        if not api_key:
+            logger.error("[Discord] /submit: API_SERVER_KEY unset; api_server adapter likely not running")
+            return None
+
+        url = f"http://127.0.0.1:{port}/v1/runs"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {"input": prompt}
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as e:
+            logger.error("[Discord] /submit POST to %s failed: %s", url, e)
+            return None
+
+        if r.status_code >= 400:
+            logger.error("[Discord] /submit got %s from /v1/runs: %s", r.status_code, r.text[:300])
+            return None
+
+        try:
+            return r.json()
+        except Exception as e:
+            logger.error("[Discord] /submit non-JSON response: %s (%s)", r.text[:200], e)
+            return None
+
+    async def _watch_run_and_edit_message(
+        self,
+        message: "DiscordMessage",
+        run_id: str,
+        started_at: float,
+        poll_interval: float = 5.0,
+        max_wait_seconds: float = 3600.0,
+    ) -> None:
+        """Poll /v1/runs/{id} until terminal, then edit `message` with the result.
+
+        Runs as a background asyncio task; never raises — on errors it
+        logs and edits the message with a failure breadcrumb.
+        """
+        try:
+            import httpx
+        except ImportError:
+            return
+
+        port = os.getenv("API_SERVER_PORT", "8642")
+        api_key = os.getenv("API_SERVER_KEY", "")
+        url = f"http://127.0.0.1:{port}/v1/runs/{run_id}"
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        terminal_states = {"completed", "failed", "cancelled", "errored"}
+        deadline = started_at + max_wait_seconds
+        body: Dict[str, Any] = {}
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                while time.time() < deadline:
+                    await asyncio.sleep(poll_interval)
+                    try:
+                        r = await client.get(url, headers=headers)
+                    except httpx.HTTPError as e:
+                        logger.warning("[Discord] /submit poll %s dropped: %s", run_id, e)
+                        continue
+                    if r.status_code >= 400:
+                        logger.warning("[Discord] /submit poll %s got %s", run_id, r.status_code)
+                        continue
+                    try:
+                        body = r.json()
+                    except Exception:
+                        continue
+                    status = (body.get("status") or "").lower()
+                    if status in terminal_states:
+                        break
+                else:
+                    # Timed out without reaching a terminal state.
+                    await self._safe_edit_message(
+                        message,
+                        f"⏱ run `{run_id}` still running after "
+                        f"{int(max_wait_seconds // 60)}m — detaching from polling. "
+                        f"Use `/v1/runs/{run_id}` to check later.",
+                    )
+                    return
+        except Exception as e:
+            logger.exception("[Discord] /submit watch loop crashed for %s: %s", run_id, e)
+            await self._safe_edit_message(
+                message,
+                f"⚠️ run `{run_id}` watcher crashed; check gateway logs.",
+            )
+            return
+
+        # Render the terminal-state result.
+        elapsed = max(0.0, time.time() - started_at)
+        status = (body.get("status") or "unknown").lower()
+        if status == "completed":
+            output = (body.get("output") or "").strip() or "_(no output)_"
+            usage = body.get("usage") or {}
+            tokens = usage.get("total_tokens")
+            footer = f"\n\n— ✅ done in {elapsed:.1f}s"
+            if tokens:
+                footer += f" · {tokens} tokens"
+            footer += f" · run `{run_id}`"
+            # Discord per-message limit is 2000 chars; leave headroom for the
+            # status line and code-fence wrapping.
+            max_body = 2000 - len(footer) - 20
+            if len(output) > max_body:
+                output = output[: max_body - 1] + "…"
+            content = output + footer
+        else:
+            err = body.get("error") or body.get("last_event") or status
+            content = (
+                f"❌ run `{run_id}` ended in `{status}` after {elapsed:.1f}s\n"
+                f"```{str(err)[:1500]}```"
+            )
+
+        await self._safe_edit_message(message, content)
+
+    async def _safe_edit_message(self, message: "DiscordMessage", content: str) -> None:
+        """Edit a discord message; swallow exceptions so callers stay reentrant."""
+        try:
+            await message.edit(content=content)
+        except Exception as e:
+            logger.warning("[Discord] /submit failed to edit message: %s", e)
+
     async def _run_simple_slash(
         self,
         interaction: discord.Interaction,
@@ -2996,6 +3138,58 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(scope="Optional: 'all' to deny all pending commands")
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
+
+        @tree.command(
+            name="submit",
+            description="Submit a fire-and-forget hermes run via the local api_server (returns run_id immediately)",
+        )
+        @discord.app_commands.describe(prompt="Prompt for the hermes run")
+        async def slash_submit(interaction: discord.Interaction, prompt: str):
+            # Reuse the same auth gate the conversational slash commands use.
+            if not await self._check_slash_authorization(interaction, f"/submit {prompt[:60]}"):
+                return
+
+            # Public defer (not ephemeral) so the resulting message lives in
+            # the channel and the watcher can edit it in place.
+            try:
+                await interaction.response.defer(ephemeral=False, thinking=True)
+            except Exception as e:
+                logger.warning("[Discord] /submit defer failed: %s", e)
+                return
+
+            response = await self._submit_run_via_local_api(prompt)
+            if not response:
+                await interaction.edit_original_response(
+                    content="❌ /submit: api_server adapter rejected the request — "
+                            "check that API_SERVER_KEY is set and the platform is enabled."
+                )
+                return
+
+            run_id = response.get("id") or response.get("run_id") or "<unknown>"
+            started_at = time.time()
+            initial = (
+                f"🚀 Submitted run `{run_id}` — working...\n"
+                f"_(prompt: {prompt[:140]}{'…' if len(prompt) > 140 else ''})_"
+            )
+
+            try:
+                message = await interaction.followup.send(initial, wait=True)
+            except Exception as e:
+                logger.warning("[Discord] /submit followup.send failed: %s", e)
+                return
+
+            # Spawn the polling watcher; never await it from here so the slash
+            # interaction returns immediately and the user can keep using
+            # discord while the run completes in the background. Keep a
+            # strong reference on the adapter so asyncio doesn't GC the task
+            # mid-poll (per asyncio.create_task docs).
+            if not hasattr(self, "_submit_watch_tasks"):
+                self._submit_watch_tasks = set()
+            task = asyncio.create_task(
+                self._watch_run_and_edit_message(message, run_id, started_at)
+            )
+            self._submit_watch_tasks.add(task)
+            task.add_done_callback(self._submit_watch_tasks.discard)
 
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 
@@ -37,6 +38,7 @@ def _png_bytes():
 class TestMimeExtension:
     def test_maps_jpeg_variants_to_jpg(self):
         from tools.mcp_tool import _mcp_image_extension_for_mime_type
+
         assert _mcp_image_extension_for_mime_type("image/jpeg") == ".jpg"
         assert _mcp_image_extension_for_mime_type("image/jpg") == ".jpg"
         assert _mcp_image_extension_for_mime_type("IMAGE/JPEG") == ".jpg"
@@ -44,10 +46,12 @@ class TestMimeExtension:
 
     def test_png_falls_through_to_mimetypes(self):
         from tools.mcp_tool import _mcp_image_extension_for_mime_type
+
         assert _mcp_image_extension_for_mime_type("image/png") == ".png"
 
     def test_unknown_defaults_to_png(self):
         from tools.mcp_tool import _mcp_image_extension_for_mime_type
+
         assert _mcp_image_extension_for_mime_type("") == ".png"
         assert _mcp_image_extension_for_mime_type("image/unheard-of-format") == ".png"
 
@@ -67,13 +71,14 @@ class TestCacheMcpImageBlock:
         assert tag.startswith("MEDIA:"), f"expected MEDIA: tag, got {tag!r}"
         # The cached file should be in Hermes' image cache dir
         from gateway.platforms.base import get_image_cache_dir
+
         cache_dir = str(get_image_cache_dir().resolve())
         assert tag.startswith(f"MEDIA:{cache_dir}"), (
             f"cached file not under HERMES_HOME image cache dir. "
             f"tag={tag!r}, cache_dir={cache_dir!r}"
         )
         # And it should exist + have the PNG bytes
-        path = tag[len("MEDIA:"):]
+        path = tag[len("MEDIA:") :]
         with open(path, "rb") as fh:
             assert fh.read() == _png_bytes()
 
@@ -107,7 +112,9 @@ class TestCacheMcpImageBlock:
         )
         assert _cache_mcp_image_block(block) == ""
 
-    def test_returns_empty_when_bytes_dont_look_like_an_image(self, tmp_path, monkeypatch):
+    def test_returns_empty_when_bytes_dont_look_like_an_image(
+        self, tmp_path, monkeypatch
+    ):
         """``cache_image_from_bytes`` has a format sniff; if the claimed
         ``image/png`` is actually an HTML error page, the cache raises and
         we log + drop rather than propagate."""
@@ -134,3 +141,43 @@ class TestCacheMcpImageBlock:
         tag = _cache_mcp_image_block(block)
         assert tag.startswith("MEDIA:")
         assert tag.endswith(".jpg"), f"expected .jpg extension, got {tag!r}"
+
+    def test_skips_oversized_image_before_decoding(self, tmp_path, monkeypatch):
+        """MCP servers should not be able to force huge image decodes/writes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool import _cache_mcp_image_block
+
+        # Starts with a valid PNG signature so this would pass the later
+        # magic-byte sniff if the size guard did not stop it first.
+        payload = b"\x89PNG\r\n\x1a\n" + b"A" * 32
+        block = SimpleNamespace(
+            data=base64.b64encode(payload).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        with (
+            patch("gateway.platforms.base.get_inbound_media_max_bytes", return_value=16),
+            patch("base64.b64decode") as decode_mock,
+            patch("gateway.platforms.base.cache_image_from_bytes") as cache_mock,
+        ):
+            assert _cache_mcp_image_block(block) == ""
+
+        decode_mock.assert_not_called()
+        cache_mock.assert_not_called()
+
+    def test_accepts_image_at_configured_size_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        payload = _png_bytes()
+        from tools.mcp_tool import _cache_mcp_image_block
+
+        block = SimpleNamespace(
+            data=base64.b64encode(payload).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        with patch(
+            "gateway.platforms.base.get_inbound_media_max_bytes",
+            return_value=len(payload),
+        ):
+            tag = _cache_mcp_image_block(block)
+        assert tag.startswith("MEDIA:")

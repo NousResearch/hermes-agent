@@ -661,6 +661,49 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
 # ---------------------------------------------------------------------------
 
 
+class _McpImagePayloadTooLarge(ValueError):
+    """Raised when an MCP ImageContent payload exceeds the media cap."""
+
+    def __init__(self, decoded_upper_bound: int, max_bytes: int):
+        super().__init__(
+            f"decoded payload exceeds limit ({decoded_upper_bound} > {max_bytes} bytes)"
+        )
+        self.decoded_upper_bound = decoded_upper_bound
+        self.max_bytes = max_bytes
+
+
+def _compact_base64_with_decoded_limit(data, max_bytes: int) -> tuple[str, int]:
+    """Normalize base64 whitespace once while bounding decoded size.
+
+    MCP ImageContent carries base64 text.  Do not build a full compact copy of
+    an obviously oversized block before rejecting it: count significant base64
+    characters as we normalize, stop once even the shortest possible decoded
+    payload would exceed the configured inbound-media cap, then perform the
+    precise padding-aware bound on the one compact string we kept.
+    """
+    max_encoded_chars = None
+    if max_bytes > 0:
+        max_encoded_chars = ((max_bytes + 2) // 3) * 4
+
+    compact_chars: list[str] = []
+    significant_chars = 0
+    for char in str(data):
+        if char.isspace():
+            continue
+        significant_chars += 1
+        if max_encoded_chars is not None and significant_chars > max_encoded_chars:
+            decoded_lower_bound = ((significant_chars - 1) // 4) * 3 + 1
+            raise _McpImagePayloadTooLarge(decoded_lower_bound, max_bytes)
+        compact_chars.append(char)
+
+    compact = "".join(compact_chars)
+    padding = len(compact) - len(compact.rstrip("="))
+    decoded_upper_bound = max(0, (len(compact) * 3) // 4 - padding)
+    if max_bytes > 0 and decoded_upper_bound > max_bytes:
+        raise _McpImagePayloadTooLarge(decoded_upper_bound, max_bytes)
+    return compact, decoded_upper_bound
+
+
 def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     """Return a reasonable file extension for an MCP image MIME type."""
     import mimetypes
@@ -689,14 +732,50 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     try:
-        raw_bytes = base64.b64decode(data)
+        from gateway.platforms.base import (
+            cache_image_from_bytes,
+            get_inbound_media_max_bytes,
+        )
+    except ImportError:
+        # gateway.platforms.base not importable in this process (e.g. cron
+        # without gateway deps). Fall back to silently dropping — callers
+        # get any text blocks that did parse.
+        logger.debug("MCP image caching skipped — gateway.platforms.base unavailable")
+        return ""
+
+    max_bytes = get_inbound_media_max_bytes()
+    try:
+        encoded_data, _decoded_upper_bound = _compact_base64_with_decoded_limit(
+            data,
+            max_bytes,
+        )
+    except _McpImagePayloadTooLarge as exc:
+        logger.warning(
+            "MCP image block skipped (%s): decoded payload exceeds limit "
+            "(%d > %d bytes)",
+            normalized_mime,
+            exc.decoded_upper_bound,
+            exc.max_bytes,
+        )
+        return ""
+
+    try:
+        raw_bytes = base64.b64decode(encoded_data, validate=True)
     except (TypeError, ValueError) as exc:
         logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
         return ""
 
-    try:
-        from gateway.platforms.base import cache_image_from_bytes
+    if max_bytes > 0 and len(raw_bytes) > max_bytes:
+        logger.warning(
+            "MCP image block skipped (%s): decoded payload exceeds limit "
+            "(%d > %d bytes)",
+            normalized_mime,
+            len(raw_bytes),
+            max_bytes,
+        )
+        return ""
 
+    try:
         image_path = cache_image_from_bytes(
             raw_bytes,
             ext=_mcp_image_extension_for_mime_type(normalized_mime),

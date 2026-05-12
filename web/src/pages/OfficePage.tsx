@@ -12,11 +12,14 @@ import {
   FileText,
   GitBranch,
   Inbox,
+  LayoutGrid,
+  ListTree,
   Loader2,
   MessageSquare,
   MessageSquarePlus,
   Network,
   RefreshCw,
+  Table2,
   RotateCcw,
   Search,
   Send,
@@ -24,6 +27,8 @@ import {
   Sparkles,
   UserRound,
   Users,
+  Wifi,
+  WifiOff,
   Wrench,
   X,
   Zap,
@@ -78,6 +83,10 @@ type KanbanTask = {
 };
 
 type BoardColumn = { name: string; tasks: KanbanTask[] };
+type BoardLink = { parent_id: string; child_id: string };
+type BoardMeta = { slug: string; name?: string | null; description?: string | null; is_current?: boolean; counts?: Record<string, number>; total?: number };
+type BoardListResponse = { boards: BoardMeta[]; current: string };
+type LiveEvent = { id: number; task_id?: string | null; kind: string; created_at?: number | null; payload?: unknown };
 type OfficeStatus = {
   enabled: boolean;
   board: string;
@@ -95,6 +104,7 @@ type OfficeStatus = {
 type BoardResponse = {
   columns: BoardColumn[];
   assignees: string[];
+  links?: BoardLink[];
   latest_event_id: number;
   now: number;
   office?: OfficeStatus;
@@ -249,10 +259,12 @@ function TaskSummaryCard({ task, now, onOpen, compact = false }: { task: KanbanT
   );
 }
 
-function PersonCard({ role, tasks, now, onOpenTask }: { role: RoleMeta; tasks: KanbanTask[]; now: number; onOpenTask: (id: string) => void }) {
+function PersonCard({ role, tasks, now, office, onOpenTask }: { role: RoleMeta; tasks: KanbanTask[]; now: number; office?: OfficeStatus; onOpenTask: (id: string) => void }) {
   const current = activeTask(tasks);
   const busy = Boolean(current && current.status !== "done");
   const status = current?.status ?? "idle";
+  const installed = office?.profiles?.present?.includes(role.name) ?? true;
+  const stale = current?.status === "running" && taskAgeSeconds(now, current) > 30 * 60;
   const Icon = role.icon;
   const diagnostics = tasks.reduce((sum, task) => sum + (task.diagnostics?.length ?? task.warnings?.count ?? 0), 0);
 
@@ -270,8 +282,8 @@ function PersonCard({ role, tasks, now, onOpenTask }: { role: RoleMeta; tasks: K
               <div className="text-sm font-bold tracking-[0.05em] text-foreground">{role.title}</div>
               <div className="text-[10px] text-muted-foreground">@{role.name} · {role.seat}</div>
             </div>
-            <Badge className={cn("border px-2 py-0 text-[10px] uppercase", taskStatusTone(status))}>
-              {busy ? STATUS_LABELS[status] ?? status : "idle"}
+            <Badge className={cn("border px-2 py-0 text-[10px] uppercase", !installed ? "border-red-300/60 bg-red-300/10 text-red-100" : stale ? "border-amber-300/60 bg-amber-300/10 text-amber-100" : taskStatusTone(status))}>
+              {!installed ? "missing" : stale ? "stale" : busy ? STATUS_LABELS[status] ?? status : "idle"}
             </Badge>
           </div>
           <p className="mt-2 line-clamp-2 text-[11px] normal-case leading-snug text-muted-foreground">{role.description}</p>
@@ -284,6 +296,10 @@ function PersonCard({ role, tasks, now, onOpenTask }: { role: RoleMeta; tasks: K
                 <span>{timeAgo(now, current.started_at || current.created_at)}</span>
               </div>
             </button>
+          ) : !installed ? (
+            <div className="mt-3 rounded-sm border border-red-300/40 bg-red-300/10 p-2 text-[11px] text-red-100">
+              Profile missing on disk. Create or restore this Office profile before dispatching work here.
+            </div>
           ) : (
             <div className="mt-3 rounded-sm border border-dashed border-border/70 bg-muted/5 p-2 text-[11px] text-muted-foreground">
               No assigned work. Available for dispatch.
@@ -295,7 +311,7 @@ function PersonCard({ role, tasks, now, onOpenTask }: { role: RoleMeta; tasks: K
   );
 }
 
-function OfficeRoomCard({ room, roles, assignments, now, onOpenTask }: { room: (typeof ROOMS)[number]; roles: RoleMeta[]; assignments: Map<string, KanbanTask[]>; now: number; onOpenTask: (id: string) => void }) {
+function OfficeRoomCard({ room, roles, assignments, now, office, onOpenTask }: { room: (typeof ROOMS)[number]; roles: RoleMeta[]; assignments: Map<string, KanbanTask[]>; now: number; office?: OfficeStatus; onOpenTask: (id: string) => void }) {
   const roomTasks = roles.flatMap((role) => assignments.get(role.name) ?? []);
   const active = roomTasks.filter((task) => task.status === "running").length;
   const blocked = roomTasks.filter((task) => task.status === "blocked").length;
@@ -313,7 +329,7 @@ function OfficeRoomCard({ room, roles, assignments, now, onOpenTask }: { room: (
       </CardHeader>
       <CardContent className="relative grid gap-3 md:grid-cols-2">
         {roles.map((role) => (
-          <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} onOpenTask={onOpenTask} />
+          <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} office={office} onOpenTask={onOpenTask} />
         ))}
       </CardContent>
     </Card>
@@ -464,7 +480,138 @@ function TaskExplorer({ tasks, now, query, setQuery, status, setStatus, assignee
   );
 }
 
-function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCreated: () => void }) {
+function BoardPicker({ boards, selectedBoard, onSelectBoard, onSwitchCurrent }: { boards: BoardMeta[]; selectedBoard: string; onSelectBoard: (slug: string) => void; onSwitchCurrent: (slug: string) => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <GitBranch className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <CardTitle>Board Selector</CardTitle>
+            <CardDescription>Switch between Office boards without leaving the command center.</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <select value={selectedBoard || boards[0]?.slug || ""} onChange={(e) => onSelectBoard(e.target.value)} className="w-full border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+          {boards.map((board) => <option key={board.slug} value={board.slug}>{board.name || board.slug} · {board.total ?? 0} tasks{board.is_current ? " · current" : ""}</option>)}
+        </select>
+        <div className="grid max-h-40 gap-2 overflow-auto pr-1">
+          {boards.map((board) => (
+            <button key={board.slug} type="button" onClick={() => onSelectBoard(board.slug)} className={cn("border p-2 text-left transition hover:border-midground/60", selectedBoard === board.slug ? "border-midground/70 bg-card/80" : "border-border bg-card/40")}>
+              <div className="flex items-center justify-between gap-2 text-sm normal-case text-foreground">
+                <span>{board.name || board.slug}</span>
+                <Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">{board.total ?? 0}</Badge>
+              </div>
+              <div className="mt-1 text-[10px] normal-case text-muted-foreground">{board.slug}{board.is_current ? " · CLI/gateway current" : ""}</div>
+            </button>
+          ))}
+        </div>
+        <Button ghost onClick={() => onSwitchCurrent(selectedBoard)} className="w-full gap-2"><GitBranch className="h-4 w-4" /> Make current board</Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LiveEventFeed({ events, connected, now, onRefresh }: { events: LiveEvent[]; connected: boolean; now: number; onRefresh: () => void }) {
+  return (
+    <Card className={cn(connected ? "border-emerald-300/25" : "border-amber-300/25")}>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {connected ? <Wifi className="h-5 w-5 text-emerald-100" /> : <WifiOff className="h-5 w-5 text-amber-100" />}
+            <div>
+              <CardTitle>Live Event Feed</CardTitle>
+              <CardDescription>{connected ? "WebSocket connected; board refreshes on new events." : "WebSocket unavailable; polling fallback is active."}</CardDescription>
+            </div>
+          </div>
+          <Button ghost onClick={onRefresh} className="gap-2"><RefreshCw className="h-4 w-4" /> Sync</Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {events.length === 0 ? <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No live events seen in this browser session yet.</div> : events.slice(0, 8).map((event) => (
+          <button key={event.id} type="button" className="w-full border border-border bg-card/40 p-2 text-left text-xs normal-case text-muted-foreground">
+            <div className="flex items-center justify-between gap-2"><span className="text-foreground">{event.kind}</span><span>{timeAgo(now, event.created_at)}</span></div>
+            <div className="mt-1 truncate">{event.task_id || "board"} · event #{event.id}</div>
+          </button>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TaskTableView({ tasks, now, onOpenTask }: { tasks: KanbanTask[]; now: number; onOpenTask: (id: string) => void }) {
+  const [sortKey, setSortKey] = useState<"priority" | "status" | "assignee" | "age">("priority");
+  const sorted = useMemo(() => [...tasks].sort((a, b) => {
+    if (sortKey === "priority") return (b.priority ?? 0) - (a.priority ?? 0) || a.title.localeCompare(b.title);
+    if (sortKey === "status") return a.status.localeCompare(b.status) || a.title.localeCompare(b.title);
+    if (sortKey === "assignee") return (a.assignee ?? "").localeCompare(b.assignee ?? "") || a.title.localeCompare(b.title);
+    return taskAgeSeconds(now, b) - taskAgeSeconds(now, a);
+  }), [now, sortKey, tasks]);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2"><Table2 className="h-5 w-5 text-muted-foreground" /><div><CardTitle>Task Table</CardTitle><CardDescription>Sortable operator table for scanning large boards.</CardDescription></div></div>
+          <select value={sortKey} onChange={(e) => setSortKey(e.target.value as typeof sortKey)} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+            <option value="priority">Sort by priority</option><option value="age">Sort by age</option><option value="status">Sort by status</option><option value="assignee">Sort by assignee</option>
+          </select>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-auto border border-border">
+          <table className="w-full min-w-[900px] border-collapse text-sm normal-case">
+            <thead className="bg-muted/20 text-xs uppercase tracking-[0.12em] text-muted-foreground"><tr><th className="p-2 text-left">Task</th><th className="p-2 text-left">Status</th><th className="p-2 text-left">Assignee</th><th className="p-2 text-left">Priority</th><th className="p-2 text-left">Age</th><th className="p-2 text-left">Signals</th></tr></thead>
+            <tbody>
+              {sorted.map((task) => (
+                <tr key={task.id} onClick={() => onOpenTask(task.id)} className="cursor-pointer border-t border-border/70 transition hover:bg-card/70">
+                  <td className="p-2"><div className="line-clamp-1 text-foreground">{task.title}</div><div className="text-[10px] text-muted-foreground">{task.id}</div></td>
+                  <td className="p-2"><Badge className={cn("border", taskStatusTone(task.status))}>{STATUS_LABELS[task.status] ?? task.status}</Badge></td>
+                  <td className="p-2 text-muted-foreground">{task.assignee ? `@${task.assignee}` : "unassigned"}</td>
+                  <td className="p-2 text-muted-foreground">{task.priority ?? 0}</td>
+                  <td className="p-2 text-muted-foreground">{timeAgo(now, task.started_at || task.created_at)}</td>
+                  <td className="p-2 text-muted-foreground">{task.link_counts ? `${task.link_counts.parents}↑ ${task.link_counts.children}↓` : "0↑ 0↓"}{task.warnings?.count ? ` · ${task.warnings.count} alerts` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DependencyGraph({ tasks, links, onOpenTask }: { tasks: KanbanTask[]; links: BoardLink[]; onOpenTask: (id: string) => void }) {
+  const byId = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const link of links) map.set(link.parent_id, [...(map.get(link.parent_id) ?? []), link.child_id]);
+    return map;
+  }, [links]);
+  const roots = tasks.filter((task) => (task.link_counts?.parents ?? 0) === 0 && ((task.link_counts?.children ?? 0) > 0 || links.length === 0)).slice(0, 12);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2"><ListTree className="h-5 w-5 text-muted-foreground" /><div><CardTitle>Dependency Graph</CardTitle><CardDescription>Parent → child lineage for PM → coder → QA task chains.</CardDescription></div></div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {links.length === 0 ? <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No task dependencies on this board yet.</div> : roots.map((root) => (
+          <div key={root.id} className="border border-border bg-card/35 p-3">
+            <button type="button" onClick={() => onOpenTask(root.id)} className="flex w-full items-center justify-between gap-2 text-left"><span className="line-clamp-1 text-sm text-foreground">{root.title}</span><Badge className={cn("border", taskStatusTone(root.status))}>{STATUS_LABELS[root.status] ?? root.status}</Badge></button>
+            <div className="mt-3 ml-4 space-y-2 border-l border-border pl-3">
+              {(childrenByParent.get(root.id) ?? []).map((childId) => {
+                const child = byId.get(childId);
+                return <button key={childId} type="button" onClick={() => onOpenTask(childId)} className="flex w-full items-center justify-between gap-2 border border-border bg-background/60 p-2 text-left text-xs normal-case"><span className="line-clamp-1 text-foreground">↳ {child?.title ?? childId}</span><span className="text-muted-foreground">{child?.assignee ? `@${child.assignee}` : child?.status ?? "missing"}</span></button>;
+              })}
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TaskCreatePanel({ assignees, board, onCreated }: { assignees: string[]; board: string; onCreated: () => void }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState<"office" | string>("office");
@@ -482,7 +629,7 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
     setSubmitting(true);
     setError(null);
     try {
-      await fetchJSON("/api/plugins/kanban/tasks", {
+      await fetchJSON(`/api/plugins/kanban/tasks?board=${encodeURIComponent(board)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -556,7 +703,7 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
   );
 }
 
-function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { taskId: string | null; assignees: string[]; now: number; onClose: () => void; onChanged: () => void }) {
+function TaskDetailDrawer({ taskId, assignees, board, now, onClose, onChanged }: { taskId: string | null; assignees: string[]; board: string; now: number; onClose: () => void; onChanged: () => void }) {
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -565,12 +712,14 @@ function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { task
   const [comment, setComment] = useState("");
   const [newAssignee, setNewAssignee] = useState("");
 
+  const withBoard = useCallback((path: string) => `${path}${path.includes("?") ? "&" : "?"}board=${encodeURIComponent(board)}`, [board]);
+
   const loadDetail = useCallback(async () => {
     if (!taskId) return;
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchJSON<TaskDetailResponse>(`/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}`);
+      const next = await fetchJSON<TaskDetailResponse>(withBoard(`/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}`));
       setDetail(next);
       setNewAssignee(next.task.assignee ?? "");
     } catch (err) {
@@ -578,7 +727,7 @@ function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { task
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [taskId, withBoard]);
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -638,19 +787,19 @@ function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { task
                 <CardHeader><CardTitle>Operator Actions</CardTitle><CardDescription>Use dashboard-native actions instead of dropping to CLI for routine recovery.</CardDescription></CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex flex-wrap gap-2">
-                    {task.status === "triage" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Specify", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/specify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "dashboard" }) }))} className="gap-2"><Sparkles className="h-4 w-4" /> Specify</Button>}
-                    {(task.status === "blocked" || task.status === "todo" || task.status === "triage") && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Mark ready", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Ready</Button>}
-                    {task.status === "running" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Reclaim", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/reclaim`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "dashboard operator reclaim" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Reclaim</Button>}
-                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Block", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "blocked", block_reason: "blocked from dashboard" }) }))} className="gap-2"><AlertTriangle className="h-4 w-4" /> Block</Button>}
-                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Complete", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "done", summary: "Completed from Office dashboard" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Done</Button>}
-                    <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Archive", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "archived" }) }))} className="gap-2"><Archive className="h-4 w-4" /> Archive</Button>
+                    {task.status === "triage" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Specify", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/specify`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "dashboard" }) }))} className="gap-2"><Sparkles className="h-4 w-4" /> Specify</Button>}
+                    {(task.status === "blocked" || task.status === "todo" || task.status === "triage") && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Mark ready", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Ready</Button>}
+                    {task.status === "running" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Reclaim", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/reclaim`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "dashboard operator reclaim" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Reclaim</Button>}
+                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Block", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "blocked", block_reason: "blocked from dashboard" }) }))} className="gap-2"><AlertTriangle className="h-4 w-4" /> Block</Button>}
+                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Complete", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "done", summary: "Completed from Office dashboard" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Done</Button>}
+                    <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Archive", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "archived" }) }))} className="gap-2"><Archive className="h-4 w-4" /> Archive</Button>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
                     <select value={newAssignee} onChange={(e) => setNewAssignee(e.target.value)} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
                       <option value="">Unassigned / intake</option>
                       {people.map((person) => <option key={person} value={person}>@{person}</option>)}
                     </select>
-                    <Button disabled={Boolean(actionBusy)} onClick={() => runAction("Reassign", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/reassign`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: newAssignee || null, reclaim_first: task.status === "running", reason: "dashboard operator reassign" }) }))}>Reassign</Button>
+                    <Button disabled={Boolean(actionBusy)} onClick={() => runAction("Reassign", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/reassign`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: newAssignee || null, reclaim_first: task.status === "running", reason: "dashboard operator reassign" }) }))}>Reassign</Button>
                   </div>
                   {actionBusy && <div className="flex items-center gap-2 text-xs normal-case text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> {actionBusy} in progress...</div>}
                 </CardContent>
@@ -690,7 +839,7 @@ function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { task
                     )) : <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No comments yet.</div>}
                   </div>
                   <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Add a note for the next worker..." className="w-full resize-none border border-border bg-background px-3 py-2 text-sm normal-case text-foreground outline-none placeholder:text-muted-foreground focus:border-midground" />
-                  <Button disabled={!comment.trim() || Boolean(actionBusy)} onClick={() => runAction("Comment", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: comment.trim(), author: "dashboard" }) }).then(() => setComment("")))} className="gap-2"><MessageSquare className="h-4 w-4" /> Add Comment</Button>
+                  <Button disabled={!comment.trim() || Boolean(actionBusy)} onClick={() => runAction("Comment", () => fetchJSON(withBoard(`/api/plugins/kanban/tasks/${task.id}/comments`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: comment.trim(), author: "dashboard" }) }).then(() => setComment("")))} className="gap-2"><MessageSquare className="h-4 w-4" /> Add Comment</Button>
                 </CardContent>
               </Card>
 
@@ -729,6 +878,11 @@ function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { task
 export default function OfficePage() {
   const { setTitle } = usePageHeader();
   const [data, setData] = useState<BoardResponse | null>(null);
+  const [boards, setBoards] = useState<BoardMeta[]>([]);
+  const [selectedBoard, setSelectedBoardState] = useState(() => window.localStorage.getItem("hermes.office.selectedBoard") || "");
+  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
+  const [liveConnected, setLiveConnected] = useState(false);
+  const [viewMode, setViewMode] = useState<"floor" | "table" | "graph">("floor");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -742,18 +896,40 @@ export default function OfficePage() {
     return () => setTitle(null);
   }, [setTitle]);
 
+  const setSelectedBoard = useCallback((slug: string) => {
+    setSelectedBoardState(slug);
+    window.localStorage.setItem("hermes.office.selectedBoard", slug);
+    setLiveEvents([]);
+  }, []);
+
+  const loadBoards = useCallback(async () => {
+    try {
+      const response = await fetchJSON<BoardListResponse>("/api/plugins/kanban/boards");
+      const nextBoards = response.boards.length ? response.boards : [{ slug: response.current || "inbox", name: response.current || "inbox", total: 0 }];
+      setBoards(nextBoards);
+      if ((!selectedBoard || !nextBoards.some((board) => board.slug === selectedBoard)) && response.current) setSelectedBoard(response.current);
+    } catch {
+      setBoards((prev) => prev.length ? prev : [{ slug: selectedBoard, name: selectedBoard, total: 0 }]);
+    }
+  }, [selectedBoard, setSelectedBoard]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const board = await fetchJSON<BoardResponse>("/api/plugins/kanban/board");
+      const board = await fetchJSON<BoardResponse>(selectedBoard ? `/api/plugins/kanban/board?board=${encodeURIComponent(selectedBoard)}` : "/api/plugins/kanban/board");
       setData(board);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedBoard]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => void loadBoards(), 0);
+    return () => window.clearTimeout(id);
+  }, [loadBoards]);
 
   useEffect(() => {
     const first = window.setTimeout(() => void load(), 0);
@@ -763,6 +939,30 @@ export default function OfficePage() {
       window.clearInterval(id);
     };
   }, [load]);
+
+  useEffect(() => {
+    const token = (window as unknown as { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__;
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const params = new URLSearchParams({ since: String(data?.latest_event_id ?? 0), board: selectedBoard });
+    if (token) params.set("token", token);
+    const ws = new WebSocket(`${proto}://${window.location.host}/api/plugins/kanban/events?${params.toString()}`);
+    ws.onopen = () => setLiveConnected(true);
+    ws.onclose = () => setLiveConnected(false);
+    ws.onerror = () => setLiveConnected(false);
+    ws.onmessage = (message) => {
+      try {
+        const payload = JSON.parse(message.data) as { events?: LiveEvent[]; cursor?: number };
+        if (payload.events?.length) {
+          setLiveEvents((prev) => [...payload.events!.slice().reverse(), ...prev].slice(0, 50));
+          void load();
+          void loadBoards();
+        }
+      } catch {
+        // Ignore malformed event frames; polling remains active.
+      }
+    };
+    return () => ws.close();
+  }, [data?.latest_event_id, load, loadBoards, selectedBoard]);
 
   useEffect(() => {
     const tick = () => setFallbackNow(Math.floor(Date.now() / 1000));
@@ -775,6 +975,7 @@ export default function OfficePage() {
   }, []);
 
   const tasks = useMemo(() => data?.columns.flatMap((column) => column.tasks) ?? [], [data]);
+  const links = data?.links ?? [];
   const now = data?.now ?? fallbackNow;
   const assignees = useMemo(() => Array.from(new Set([...(data?.assignees ?? []), ...OFFICE_ROLES.map((role) => role.name)])).sort(), [data?.assignees]);
   const filteredTasks = useMemo(() => {
@@ -798,8 +999,19 @@ export default function OfficePage() {
   async function dispatchNow() {
     setError(null);
     try {
-      await fetchJSON("/api/plugins/kanban/dispatch", { method: "POST" });
+      await fetchJSON(`/api/plugins/kanban/dispatch?board=${encodeURIComponent(selectedBoard)}`, { method: "POST" });
       await load();
+      await loadBoards();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function switchCurrentBoard(slug: string) {
+    setError(null);
+    try {
+      await fetchJSON(`/api/plugins/kanban/boards/${encodeURIComponent(slug)}/switch`, { method: "POST" });
+      await loadBoards();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -819,6 +1031,8 @@ export default function OfficePage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Badge className="border border-sky-300/60 bg-sky-300/10 px-3 py-1 text-sky-100">board {selectedBoard}</Badge>
+            <Badge className={cn("border px-3 py-1", liveConnected ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-amber-300/60 bg-amber-300/10 text-amber-100")}>live {liveConnected ? "connected" : "polling"}</Badge>
             <Badge className={cn("border px-3 py-1", data?.office?.enabled ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-red-300/60 bg-red-300/10 text-red-100")}>office {data?.office?.enabled ? "enabled" : "disabled"}</Badge>
             <Badge className={cn("border px-3 py-1", data?.office?.gateway_running ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-amber-300/60 bg-amber-300/10 text-amber-100")}>gateway {data?.office?.gateway_running ? "running" : "not running"}</Badge>
             <Button ghost onClick={() => void dispatchNow()} className="gap-2"><Zap className="h-4 w-4" /> Dispatch now</Button>
@@ -842,27 +1056,40 @@ export default function OfficePage() {
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Shown / Total</div><div className="mt-2 text-3xl text-foreground">{filteredTasks.length}/{tasks.length}</div></CardContent></Card>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 border border-border bg-card/30 p-2">
+          <Button ghost onClick={() => setViewMode("floor")} className={cn("gap-2", viewMode === "floor" && "border-midground/70 bg-card/80")}><LayoutGrid className="h-4 w-4" /> Floor</Button>
+          <Button ghost onClick={() => setViewMode("table")} className={cn("gap-2", viewMode === "table" && "border-midground/70 bg-card/80")}><Table2 className="h-4 w-4" /> Table</Button>
+          <Button ghost onClick={() => setViewMode("graph")} className={cn("gap-2", viewMode === "graph" && "border-midground/70 bg-card/80")}><ListTree className="h-4 w-4" /> Dependencies</Button>
+        </div>
+
         <AttentionQueue tasks={tasks} now={now} office={data?.office} onOpenTask={setSelectedTaskId} />
 
         <div className="grid gap-4 xl:grid-cols-[1fr_460px]">
           <div className="space-y-4">
             <FlowMap tasks={tasks} selectedStatus={statusFilter} onSelectStatus={setStatusFilter} />
-            <div className="grid gap-4 lg:grid-cols-12">
-              {ROOMS.map((room) => (
-                <OfficeRoomCard
-                  key={room.id}
-                  room={room}
-                  roles={OFFICE_ROLES.filter((role) => role.room === room.id)}
-                  assignments={assignments}
-                  now={now}
-                  onOpenTask={setSelectedTaskId}
-                />
-              ))}
-            </div>
+            {viewMode === "floor" && (
+              <div className="grid gap-4 lg:grid-cols-12">
+                {ROOMS.map((room) => (
+                  <OfficeRoomCard
+                    key={room.id}
+                    room={room}
+                    roles={OFFICE_ROLES.filter((role) => role.room === room.id)}
+                    assignments={assignments}
+                    now={now}
+                    office={data?.office}
+                    onOpenTask={setSelectedTaskId}
+                  />
+                ))}
+              </div>
+            )}
+            {viewMode === "table" && <TaskTableView tasks={filteredTasks} now={now} onOpenTask={setSelectedTaskId} />}
+            {viewMode === "graph" && <DependencyGraph tasks={tasks} links={links} onOpenTask={setSelectedTaskId} />}
           </div>
           <div className="space-y-4">
+            <BoardPicker boards={boards} selectedBoard={selectedBoard} onSelectBoard={setSelectedBoard} onSwitchCurrent={(slug) => void switchCurrentBoard(slug)} />
+            <LiveEventFeed events={liveEvents} connected={liveConnected} now={now} onRefresh={() => { void load(); void loadBoards(); }} />
             <TaskExplorer tasks={filteredTasks} now={now} query={query} setQuery={setQuery} status={statusFilter} setStatus={setStatusFilter} assignee={assigneeFilter} setAssignee={setAssigneeFilter} assignees={assignees} onOpenTask={setSelectedTaskId} />
-            <TaskCreatePanel assignees={data?.assignees ?? []} onCreated={load} />
+            <TaskCreatePanel assignees={data?.assignees ?? []} board={selectedBoard} onCreated={() => { void load(); void loadBoards(); }} />
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2"><Inbox className="h-5 w-5 text-muted-foreground" /><div><CardTitle>Unassigned / Office Intake</CardTitle><CardDescription>Work not sitting at a named desk yet.</CardDescription></div></div>
@@ -881,7 +1108,8 @@ export default function OfficePage() {
                 <CardDescription>Profiles, board, and dispatcher prerequisites.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm normal-case text-muted-foreground">
-                <div className="flex justify-between gap-3"><span>Board</span><span className="text-foreground">{data?.office?.board ?? "unknown"}</span></div>
+                <div className="flex justify-between gap-3"><span>Board</span><span className="text-foreground">{selectedBoard} / status {data?.office?.board ?? "unknown"}</span></div>
+                <div className="flex justify-between gap-3"><span>Live updates</span><span className="text-foreground">{liveConnected ? "websocket" : "polling fallback"}</span></div>
                 <div className="flex justify-between gap-3"><span>Board exists</span><span className="text-foreground">{data?.office?.board_exists ? "yes" : "no"}</span></div>
                 <div className="flex justify-between gap-3"><span>Profiles present</span><span className="text-foreground">{data?.office?.profiles?.present?.length ?? 0}/{data?.office?.profiles?.expected ?? OFFICE_ROLES.length}</span></div>
                 {(data?.office?.profiles?.missing?.length ?? 0) > 0 && (
@@ -894,7 +1122,7 @@ export default function OfficePage() {
           </div>
         </div>
       </div>
-      <TaskDetailDrawer taskId={selectedTaskId} assignees={assignees} now={now} onClose={() => setSelectedTaskId(null)} onChanged={load} />
+      <TaskDetailDrawer taskId={selectedTaskId} assignees={assignees} board={selectedBoard} now={now} onClose={() => setSelectedTaskId(null)} onChanged={load} />
     </div>
   );
 }

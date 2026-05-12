@@ -363,9 +363,14 @@ def get_board(
         )
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
-        for row in conn.execute(
-            "SELECT parent_id, child_id FROM task_links"
-        ).fetchall():
+        link_rows = conn.execute(
+            "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+        ).fetchall()
+        links = [
+            {"parent_id": row["parent_id"], "child_id": row["child_id"]}
+            for row in link_rows
+        ]
+        for row in link_rows:
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})[
                 "children"
             ] += 1
@@ -458,6 +463,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "links": links,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
             "office": agent_office.status(board or "inbox"),
@@ -483,6 +489,11 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        try:
+            from hermes_cli.office_verifier import latest_verification_summary
+            task_d["verification"] = latest_verification_summary(conn, task_id)
+        except Exception:
+            task_d["verification"] = None
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])

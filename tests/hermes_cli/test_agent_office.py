@@ -172,3 +172,73 @@ def test_tick_honors_auto_route_config(kanban_home, monkeypatch, all_assignees_s
     assert result.dispatched.spawned == []
     assert task.status == "ready"
     assert task.assignee is None
+
+
+def test_route_ready_unassigned_balances_across_configured_role_seats(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    from hermes_cli import agent_office
+
+    monkeypatch.setattr(agent_office, "office_config", lambda: {
+        "enabled": True,
+        "board": "inbox",
+        "auto_specify": True,
+        "auto_route": True,
+        "auto_supervise": True,
+        "default_mode": "yolo",
+        "workspace_root": "/Users/akhilkinnera/Documents/My Workspace",
+        "role_seats": {"coder": ["coder", "coder-1", "coder-2"]},
+    })
+
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="implement feature alpha")
+        second = kb.create_task(conn, title="implement feature beta")
+        third = kb.create_task(conn, title="implement feature gamma")
+        routed = agent_office.route_ready_unassigned(conn)
+        tasks = [kb.get_task(conn, tid) for tid in (first, second, third)]
+        comments = kb.list_comments(conn, first)
+
+    assert routed == [(first, "coder"), (second, "coder-1"), (third, "coder-2")]
+    assert [t.assignee for t in tasks] == ["coder", "coder-1", "coder-2"]
+    assert "Strict route: role=coder" in comments[-1].body
+
+
+def test_office_delegate_assigns_concrete_profile_seats(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    from hermes_cli import agent_office
+    from hermes_cli import office_delegate
+
+    monkeypatch.setattr(agent_office, "office_config", lambda: {
+        "enabled": True,
+        "board": "inbox",
+        "role_seats": {"pm": ["pm", "pm-1"], "coder": ["coder", "coder-1"]},
+    })
+
+    result = office_delegate.create_office_delegation(
+        "pm then coder: build the roadmap exporter",
+        created_by="test",
+    )
+
+    assert result.workflow == ("pm", "coder")
+    assert [t.assignee for t in result.tasks] == ["pm", "coder"]
+    with kb.connect() as conn:
+        shown = [kb.get_task(conn, t.id) for t in result.tasks]
+    assert "This step role: pm" in shown[0].body
+    assert "This step concrete assignee: pm" in shown[0].body
+    assert "This step concrete assignee: coder" in shown[1].body
+    assert "Office quality gate for EVERY task" in shown[0].body
+    assert "SCOPE_CHANGE_REQUEST" in shown[0].body
+    assert "real produced artifacts" in shown[0].body
+
+
+def test_office_status_exposes_every_task_quality_gate_policy(kanban_home, monkeypatch):
+    from hermes_cli import agent_office
+
+    status = agent_office.status(board="inbox")
+
+    assert status["quality_gates"]["enabled"] is True
+    assert status["quality_gates"]["apply_to_every_task"] is True
+    assert status["quality_gates"]["do_not_trust_worker_done_text"] is True
+    assert status["quality_gates"]["forbid_silent_scope_reduction"] is True
+    assert status["quality_gates"]["scope_change_block"] == "SCOPE_CHANGE_REQUEST"

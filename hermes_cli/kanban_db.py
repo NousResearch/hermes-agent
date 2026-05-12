@@ -1632,12 +1632,21 @@ def add_comment(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
+        clean_body = body.strip()
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
-            (task_id, author.strip(), body.strip(), now),
+            (task_id, author.strip(), clean_body, now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        try:
+            from hermes_cli.office_scope import emit_scope_change_events
+
+            emit_scope_change_events(conn, task_id, clean_body, source="comment")
+        except Exception:
+            # Scope-change parsing is an Office hardening hook; comments must
+            # remain backwards-compatible for generic Kanban boards.
+            pass
         return int(cur.lastrowid or 0)
 
 
@@ -1732,6 +1741,20 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
+    existing_meta: dict = {}
+    meta_row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ?", (run_id,),
+    ).fetchone()
+    if meta_row and meta_row["metadata"]:
+        try:
+            parsed = json.loads(meta_row["metadata"])
+            if isinstance(parsed, dict):
+                existing_meta = parsed
+        except Exception:
+            existing_meta = {}
+    final_metadata = dict(existing_meta)
+    if metadata:
+        final_metadata.update(metadata)
     conn.execute(
         """
         UPDATE task_runs
@@ -1752,7 +1775,7 @@ def _end_run(
             outcome,
             summary,
             error,
-            json.dumps(metadata, ensure_ascii=False) if metadata else None,
+            json.dumps(final_metadata, ensure_ascii=False) if final_metadata else None,
             now,
             run_id,
         ),
@@ -2415,6 +2438,71 @@ def complete_task(
     else:
         verified_cards = []
 
+    try:
+        from hermes_cli.office_scope import emit_scope_change_events, parse_scope_change_requests
+
+        completion_text = "\n".join(filter(None, [summary, result]))
+        if parse_scope_change_requests(completion_text):
+            with write_txn(conn):
+                emit_scope_change_events(conn, task_id, completion_text, source="completion", run_id=expected_run_id)
+                _append_event(
+                    conn,
+                    task_id,
+                    "office.completion_blocked_scope_change",
+                    {"reason": "SCOPE_CHANGE_REQUEST must be approved before completion"},
+                    run_id=expected_run_id,
+                )
+            return False
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.office_verifier import final_completion_ready, has_pending_scope_change, task_requires_final_review
+
+        if has_pending_scope_change(conn, task_id):
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "office.completion_blocked_scope_change",
+                    {"reason": "pending SCOPE_CHANGE_REQUEST must be approved before completion"},
+                    run_id=expected_run_id,
+                )
+            return False
+
+        if task_requires_final_review(conn, task_id):
+            ready, reason = final_completion_ready(conn, task_id)
+            if not ready:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        task_id,
+                        "office.completion_blocked_verification",
+                        {
+                            "reason": reason,
+                            "summary_preview": (
+                                (summary or result or "").strip().splitlines()[0][:200]
+                                if (summary or result)
+                                else None
+                            ),
+                        },
+                        run_id=expected_run_id,
+                    )
+                return False
+    except Exception as exc:
+        # Verification enforcement is intentionally fail-closed for tasks whose
+        # metadata/body looks gate-bearing. Legacy tasks with no gate metadata
+        # are unaffected because task_requires_final_review returns False.
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "office.completion_blocked_verification",
+                {"reason": f"verification guard error: {exc}", "fail_closed": True},
+                run_id=expected_run_id,
+            )
+        return False
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -2483,6 +2571,18 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+        try:
+            from hermes_cli.office_scope import emit_scope_change_events
+
+            emit_scope_change_events(
+                conn,
+                task_id,
+                "\n".join(filter(None, [summary, result])),
+                source="completion",
+                run_id=run_id,
+            )
+        except Exception:
+            pass
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -2633,6 +2733,12 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        try:
+            from hermes_cli.office_scope import emit_scope_change_events
+
+            emit_scope_change_events(conn, task_id, reason, source="block", run_id=run_id)
+        except Exception:
+            pass
         return True
 
 

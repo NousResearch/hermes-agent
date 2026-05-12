@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import agent_office
 
 OFFICE_ROLES: tuple[str, ...] = (
     "triage",
@@ -179,6 +180,23 @@ def _title_for(task_text: str, role: str, index: int, total: int) -> str:
     return f"{index}. {role}: {base}"
 
 
+def _requires_approval_mode(text: str) -> bool:
+    cfg = agent_office.office_config()
+    needles = cfg.get("approval_mode_keywords") or [
+        "keep me in the loop", "ask me", "take my permission",
+        "approval required", "do not yolo", "not yolo",
+    ]
+    lowered = text.casefold()
+    return any(str(n).casefold() in lowered for n in needles)
+
+
+def _workflow_with_approval_gate(roles: list[str], original_text: str) -> tuple[list[str], str]:
+    mode = "approval" if _requires_approval_mode(original_text) else "yolo"
+    if mode == "approval" and (not roles or roles[0] != "approval"):
+        roles = ["approval", *roles]
+    return roles, mode
+
+
 def create_office_delegation(
     text: str,
     *,
@@ -187,6 +205,7 @@ def create_office_delegation(
     priority: int = 0,
 ) -> DelegationResult:
     roles, task_text = _parse_role_chain(text)
+    roles, operating_mode = _workflow_with_approval_gate(roles, text)
     if not task_text.strip():
         raise ValueError(
             "usage: /delegate [to <role>|<role> then <role>:] <task>\n"
@@ -201,12 +220,23 @@ def create_office_delegation(
     total = len(roles)
     with kb.connect() as conn:
         for idx, role in enumerate(roles, start=1):
+            assignee = agent_office.resolve_profile_for_role(conn, role)
+            manager = agent_office.ROLE_MANAGERS.get(role, "chief")
             title = _title_for(task_text, role, idx, total)
             body_lines = [
                 "Created by /delegate for Agent Office.",
                 f"Original request: {task_text}",
                 f"Workflow: {' -> '.join(roles)}",
-                f"This step assignee: {role}",
+                f"This step role: {role}",
+                f"This step concrete assignee: {assignee}",
+                f"Reports to: {manager}",
+                f"Operating mode: {operating_mode}. Office default is yolo/hands-free; approval mode is active only because the request explicitly asked for permission/loop.",
+                "If this is an approval step, notify Akhil via Telegram/home channel using `.hermes/scripts/office_approval_notify.py` and wait for approval/deny before downstream work.",
+                "Workspace boundary: /Users/akhilkinnera/Documents/My Workspace. Workers may create/edit/download inside that tree; installation/security scrutiny routes through security/devops hands-free.",
+                "Office quality gate for EVERY task: do not trust agent 'done' prose. End with an evidence-backed gate scorecard listing requested/implicit gates, commands/checks run, exit codes, artifact paths, and pass/fail/partial/blocked/not_applicable verdicts.",
+                "No silent scope reduction: if any spec requirement cannot be satisfied after a serious attempt, stop and emit a parseable SCOPE_CHANGE_REQUEST block that starts with SCOPE_CHANGE_REQUEST, includes requirement_ref, requested_change, reason, attempted_evidence, impact, and options, and ends with END_SCOPE_CHANGE_REQUEST before proceeding.",
+                "Benchmarks/performance claims require real produced artifacts (for example BENCHMARKS.md with numbers, Criterion output, k6 JSON, live-server pytest report, helm kind/minikube install log), not merely scripts or claims that they could be produced later.",
+                "Substantive implementation work must be followed by reviewer/QA evidence review; reviewers must inspect diffs plus programmatic evidence before approving completion.",
             ]
             if parent_ids:
                 body_lines.append(f"Depends on: {', '.join(parent_ids)}")
@@ -214,7 +244,7 @@ def create_office_delegation(
                 conn,
                 title=title,
                 body="\n".join(body_lines),
-                assignee=role,
+                assignee=assignee,
                 created_by=created_by,
                 tenant=tenant,
                 priority=priority,

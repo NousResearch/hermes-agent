@@ -498,6 +498,21 @@ def test_patch_status_triage_works(client):
 # ---------------------------------------------------------------------------
 
 
+def test_board_includes_dependency_edges_for_graph_view(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    links = r.json()["links"]
+    assert {"parent_id": parent["id"], "child_id": child["id"]} in links
+
+
 def test_board_progress_rollup(client):
     parent = client.post(
         "/api/plugins/kanban/tasks", json={"title": "parent"},

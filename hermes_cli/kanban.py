@@ -1155,11 +1155,17 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        try:
+            from hermes_cli.office_verifier import latest_verification_summary
+            verification = latest_verification_summary(conn, args.task_id)
+        except Exception:
+            verification = None
 
     if getattr(args, "json", False):
         payload = {
             "task": _task_to_dict(task),
             "latest_summary": latest_summary,
+            "verification": verification,
             "parents": parents,
             "children": children,
             "comments": [
@@ -1249,6 +1255,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     print(f"       → {a.label}")
     if task.started_at:
         print(f"  started:   {_fmt_ts(task.started_at)}")
+    if verification:
+        print("\n  Verification:")
+        print(f"    status: {verification.get('overall_status')}")
+        print(
+            "    gates:  "
+            f"pass={verification.get('passed', 0)} "
+            f"fail={verification.get('failed', 0)} "
+            f"partial={verification.get('partial', 0)} "
+            f"blocked={verification.get('blocked', 0)} "
+            f"total={verification.get('total', 0)}"
+        )
+        if verification.get("report_path"):
+            print(f"    report: {verification.get('report_path')}")
     if task.completed_at:
         print(f"  completed: {_fmt_ts(task.completed_at)}")
     if parents:

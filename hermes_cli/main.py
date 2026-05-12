@@ -5309,6 +5309,26 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_office(args):
+    """Agent Office utilities."""
+    if getattr(args, "office_action", None) == "verify":
+        from hermes_cli.office_verifier import verify_task
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect() as conn:
+            report = verify_task(
+                conn,
+                args.task_id,
+                run_id=getattr(args, "run_id", None),
+                strict=getattr(args, "strict", False),
+                report_json=getattr(args, "report_json", None),
+            )
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0 if report.get("overall_status") == "pass" else 2
+    print("Unknown office subcommand", file=sys.stderr)
+    return 1
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -9214,7 +9234,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
-        "pairing", "plugins", "profile", "sessions", "setup", "skills",
+        "office", "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10041,6 +10061,25 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # office command — Agent Office verification utilities
+    # =========================================================================
+    office_parser = subparsers.add_parser(
+        "office",
+        help="Agent Office verification utilities",
+        description="Run Agent Office verifier stages such as evidence gate scoring.",
+    )
+    office_subparsers = office_parser.add_subparsers(dest="office_action")
+    office_verify = office_subparsers.add_parser(
+        "verify",
+        help="Execute configured verification gates for a Kanban task",
+    )
+    office_verify.add_argument("task_id", help="Kanban task id to verify")
+    office_verify.add_argument("--run-id", type=int, default=None, help="Specific task run id to attach the report to")
+    office_verify.add_argument("--strict", action="store_true", help="Fail/block when no verification_gates are configured")
+    office_verify.add_argument("--report-json", default=None, help="Optional output path for report.json")
+    office_parser.set_defaults(func=cmd_office)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

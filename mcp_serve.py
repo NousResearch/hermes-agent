@@ -176,9 +176,21 @@ def _extract_attachments(msg: dict) -> List[dict]:
     # MEDIA: tags in text content
     text = _extract_message_content(msg)
     if text:
-        media_pattern = re.compile(r'MEDIA:\s*(\S+)')
+        media_extensions = (
+            r"png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|"
+            r"epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|kmz|kml|"
+            r"json|xml|html?|geojson|gpx"
+        )
+        media_pattern = re.compile(
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+?\.(?:'''
+            + media_extensions
+            + r''')(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+        )
         for match in media_pattern.finditer(text):
-            path = match.group(1)
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             attachments.append({"type": "media", "path": path})
 
     return attachments

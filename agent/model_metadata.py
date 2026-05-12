@@ -1338,16 +1338,37 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     with version normalization (dot↔dash).
     """
     metadata = fetch_model_metadata()  # OpenRouter cache
+
+    def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
+        """Return context length, but reject stale 32k values for Kimi models.
+
+        OpenRouter reports 32768 for moonshotai/kimi-k2.6 and similar Kimi
+        models; the actual supported context is 262144.  Apply the same guard
+        used for the generic OpenRouter path (step 6 in resolve_context_length)
+        so the Nous portal path does not short-circuit it.
+        """
+        ctx = entry.get("context_length")
+        if ctx is None:
+            return None
+        if ctx == 32768 and _model_name_suggests_kimi(or_id):
+            logger.info(
+                "Rejecting OpenRouter metadata context=%s for %r "
+                "(Kimi-family underreport, Nous path); falling through to hardcoded defaults",
+                ctx, or_id,
+            )
+            return None
+        return ctx
+
     # Exact match first
     if model in metadata:
-        return metadata[model].get("context_length")
+        return _safe_ctx(model, metadata[model])
 
     normalized = _normalize_model_version(model).lower()
 
     for or_id, entry in metadata.items():
         bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
         if bare.lower() == model.lower() or _normalize_model_version(bare).lower() == normalized:
-            return entry.get("context_length")
+            return _safe_ctx(or_id, entry)
 
     # Partial prefix match for cases like gemini-3-flash → gemini-3-flash-preview
     # Require match to be at a word boundary (followed by -, :, or end of string)
@@ -1358,7 +1379,7 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
             if candidate.startswith(query) and (
                 len(candidate) == len(query) or candidate[len(query)] in "-:."
             ):
-                return entry.get("context_length")
+                return _safe_ctx(or_id, entry)
 
     return None
 
@@ -1434,6 +1455,17 @@ def get_model_context_length(
                 logger.info(
                     "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
                     "re-resolving via live /models probe",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale 32k cache entries for Kimi-family models.
+            # OpenRouter incorrectly reports 32768 for moonshotai/kimi-k2.6 and
+            # similar models; actual context is 262144.  Drop any cached 32k
+            # value so the corrected resolution path can return 262144.
+            elif cached <= 32768 and _model_name_suggests_kimi(model):
+                logger.info(
+                    "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
+                    "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)

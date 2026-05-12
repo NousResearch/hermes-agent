@@ -66,6 +66,7 @@ git diff --check
 - 2026-05-12 08:24 — review: JEF-224 read-only Codex review passed on commit `14b93331a`; reviewer reran required tests plus isolated `HERMES_HOME` CLI smoke and reported no blocking findings.
 - 2026-05-12 08:28 — done: controller reran required verification on canonical branch, confirmed `git diff --check` clean, and closed Multica parent/child/review issues as complete on the feature branch. No merge to `main` performed.
 - 2026-05-12 08:28 — done: copied plan and ledger backup to `/Users/jeffphoon/mnt/G/project-files/hermes-agent/.hermes/`.
+- 2026-05-12 08:30 — done: contained stale comment-triggered JEF-224 run `7facac46-6584-4b63-b2cc-7ee0b3c71ec8` after closeout comment; canonical review run remains `53e6fb87-8283-4a3a-9b39-95030ffeceeb`.
 
 ## Review evidence
 

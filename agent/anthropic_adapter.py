@@ -1874,24 +1874,20 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
             fixed.append(m)
     return fixed
 
-
 def _manage_thinking_signatures(
     result: List[Dict[str, Any]], base_url: str | None, model: str | None
 ) -> None:
     """Strip or preserve thinking blocks based on endpoint type.
 
-    Anthropic signs thinking blocks against the full turn content.
-    Any upstream mutation (context compression, session truncation, orphan
-    stripping, message merging) invalidates the signature, causing HTTP 400
-    "Invalid signature in thinking block".
+    Anthropic signs thinking blocks against the full turn content. Any upstream
+    mutation (context compression, session truncation, orphan stripping, message
+    merging) invalidates the signature, causing HTTP 400.
 
-    Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
-    Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
-    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
-    hermes-agent#16748 (DeepSeek).
+    Third-party endpoints cannot validate Anthropic signatures, so signed blocks
+    are stripped there. Kimi's /coding and DeepSeek's /anthropic endpoints need
+    unsigned thinking blocks synthesized from ``reasoning_content`` to
+    round-trip. Direct Anthropic requires thinking blocks on assistant tool-use
+    turns to round-trip byte-for-byte under the interleaved-thinking contract.
 
     Mutates ``result`` in place.
     """
@@ -1911,6 +1907,13 @@ def _manage_thinking_signatures(
             last_assistant_idx = i
             break
 
+    def _has_tool_use(blocks: Any) -> bool:
+        if not isinstance(blocks, list):
+            return False
+        return any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks
+        )
+
     for idx, m in enumerate(result):
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
@@ -1927,26 +1930,34 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
-            # Third-party: strip ALL thinking blocks (signatures are proprietary).
-            # Direct Anthropic: strip from non-latest assistant messages only.
+        elif _is_third_party:
+            # Third-party endpoint: strip ALL thinking blocks from every
+            # assistant message — signatures are Anthropic-proprietary.
+            stripped = [
+                b for b in m["content"]
+                if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
+            ]
+            m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
+        elif idx != last_assistant_idx and not _has_tool_use(m["content"]):
+            # Direct Anthropic, non-latest assistant message with NO tool_use:
+            # safe to strip thinking blocks. Pure-text final responses do not
+            # need thinking blocks on replay, and stripping avoids stale
+            # signature errors after upstream context mutation.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
-            # to text so the reasoning isn't lost.
+            # Direct Anthropic, latest assistant message OR any prior assistant
+            # message that contains tool_use: keep signed thinking blocks.
+            # Interleaved thinking requires tool-use turns to round-trip
+            # byte-for-byte. Downgrade unsigned thinking to text.
             #
-            # Exception: if orphan-stripping (or another structural mutation) removed
-            # a tool_use block from THIS turn, every thinking signature on it was
-            # computed against the original turn content and is now dead.  Anthropic
-            # rejects the turn either way — replaying the signed block 400s with
-            # "thinking blocks in the latest assistant message cannot be modified",
-            # and a bare signed block with no following tool_use is also invalid.
-            # Demote ALL thinking blocks on this turn to text so the turn replays
-            # cleanly and the model can re-plan from the surviving tool results.
+            # Exception: if orphan-stripping (or another structural mutation)
+            # removed a tool_use block from THIS turn, every thinking signature
+            # on it was computed against the original turn content and is now
+            # dead. Demote all thinking blocks on this turn to text.
             signature_dead = bool(m.get("_thinking_signature_invalidated"))
             new_content = []
             for b in m["content"]:

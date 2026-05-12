@@ -1585,8 +1585,18 @@ class TestThinkingBlockSignatureManagement:
     """Tests for the thinking block handling strategy:
     strip from old turns, preserve latest signed, downgrade unsigned."""
 
-    def test_thinking_stripped_from_non_last_assistant(self):
-        """Thinking blocks are removed from all assistant messages except the last."""
+    def test_thinking_preserved_on_non_last_assistant_with_tool_use(self):
+        """Thinking blocks on prior assistant turns with tool_use are preserved.
+
+        Regression test for Anthropic's interleaved-thinking contract: when
+        the ``interleaved-thinking-2025-05-14`` beta is enabled (default for
+        Claude 4.x), thinking blocks that precede a ``tool_use`` MUST
+        round-trip byte-for-byte on every subsequent turn, or Anthropic
+        returns HTTP 400 ``messages.N.content.M: thinking or
+        redacted_thinking blocks in the latest assistant message cannot be
+        modified``.  Stripping a prior tool-use turn's thinking block
+        permanently poisons the conversation.
+        """
         messages = [
             {
                 "role": "assistant",
@@ -1613,22 +1623,75 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(messages)
 
-        # Find both assistant messages
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 2
 
-        # First (non-last) assistant: no thinking blocks
+        # First (non-last) assistant with tool_use: thinking block PRESERVED
+        # (Anthropic requires it for interleaved-thinking validation).
+        first_thinking = [
+            b for b in assistants[0]["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(first_thinking) == 1
+        assert first_thinking[0]["thinking"] == "Old reasoning."
+        assert first_thinking[0]["signature"] == "sig_old"
+        # tool_use must still survive on the first turn.
         first_types = [b.get("type") for b in assistants[0]["content"]]
-        assert "thinking" not in first_types
-        assert "redacted_thinking" not in first_types
-        assert "tool_use" in first_types  # tool_use should survive
+        assert "tool_use" in first_types
 
-        # Last assistant: thinking block preserved with signature
+        # Last assistant: thinking block also preserved with signature
         last_blocks = assistants[1]["content"]
         thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "Latest reasoning."
         assert thinking_blocks[0]["signature"] == "sig_new"
+
+    def test_thinking_stripped_from_non_last_pure_text_assistant(self):
+        """Pure-text (no tool_use) prior assistant turns have thinking stripped.
+
+        Once a turn has settled on a text answer (no tool_use), Anthropic
+        no longer requires its thinking block on replay; stripping these
+        avoids stale-signature 400s after upstream context compression.
+        """
+        messages = [
+            {"role": "user", "content": "q1"},
+            {
+                "role": "assistant",
+                "content": "First text answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                ],
+            },
+            {"role": "user", "content": "q2"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_2", "function": {"name": "tool2", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 2
+
+        # First assistant (pure text, no tool_use): thinking stripped.
+        first_types = [b.get("type") for b in assistants[0]["content"]]
+        assert "thinking" not in first_types
+        assert "redacted_thinking" not in first_types
+
+        # Last assistant (has tool_use): thinking preserved.
+        last_thinking = [
+            b for b in assistants[1]["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(last_thinking) == 1
+        assert last_thinking[0]["signature"] == "sig_new"
 
     def test_signed_thinking_preserved_on_last_turn(self):
         """A signed thinking block on the last assistant message is kept."""

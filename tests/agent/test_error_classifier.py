@@ -654,6 +654,27 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.thinking_signature
         assert result.retryable is True
 
+    def test_anthropic_thinking_cannot_be_modified(self):
+        """Anthropic also rejects modified prior thinking blocks with this wording.
+
+        Regression test: when the adapter strips a thinking block from a
+        prior assistant tool-use turn, Anthropic returns
+        ``messages.N.content.M: thinking or redacted_thinking blocks in the
+        latest assistant message cannot be modified`` — NOT the
+        ``invalid signature`` wording.  The classifier must catch both so
+        the recovery path (strip all reasoning_details and retry once)
+        kicks in.
+        """
+        e = MockAPIError(
+            "messages.11.content.1: `thinking` or `redacted_thinking` "
+            "blocks in the latest assistant message cannot be modified. "
+            "These blocks must remain as they were in the original response.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
     def test_non_anthropic_400_with_signature_not_classified_as_thinking(self):
         """400 with 'signature' but from non-Anthropic → format error."""
         e = MockAPIError("invalid signature", status_code=400)

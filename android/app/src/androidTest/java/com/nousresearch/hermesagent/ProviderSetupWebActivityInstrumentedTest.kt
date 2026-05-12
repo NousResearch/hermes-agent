@@ -11,7 +11,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,22 +36,47 @@ class ProviderSetupWebActivityInstrumentedTest {
                 scenario.onActivity { activity ->
                     val root = activity.window.decorView
                     val webView = root.findFirstWebView()
-                    assertNotNull("Expected WebView for $providerId at ${target.url}", webView)
-
-                    val currentUrl = webView?.url.orEmpty().ifBlank { webView?.originalUrl.orEmpty() }
-                    assertTrue(
-                        "Expected $providerId setup WebView to start loading ${target.url}, got '$currentUrl'",
-                        currentUrl.startsWith("http://") || currentUrl.startsWith("https://"),
-                    )
-
                     val toolbarLabels = root.findButtons().map { it.text.toString() }.toSet()
-                    assertTrue("Missing Back button for $providerId: $toolbarLabels", "Back" in toolbarLabels)
-                    assertTrue("Missing Browser button for $providerId: $toolbarLabels", "Browser" in toolbarLabels)
-                    assertTrue("Missing Copy button for $providerId: $toolbarLabels", "Copy" in toolbarLabels)
-                    assertTrue("Missing Close button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                    if (webView != null) {
+                        val currentUrl = webView.url.orEmpty().ifBlank { webView.originalUrl.orEmpty() }
+                        assertTrue(
+                            "Expected $providerId setup WebView to start loading ${target.url}, got '$currentUrl'",
+                            currentUrl.startsWith("http://") || currentUrl.startsWith("https://"),
+                        )
+
+                        assertTrue("Missing Back button for $providerId: $toolbarLabels", "Back" in toolbarLabels)
+                        assertTrue("Missing Browser button for $providerId: $toolbarLabels", "Browser" in toolbarLabels)
+                        assertTrue("Missing Copy button for $providerId: $toolbarLabels", "Copy" in toolbarLabels)
+                        assertTrue("Missing Close button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                    } else {
+                        assertTrue("Missing browser fallback button for $providerId: $toolbarLabels", "Open in browser" in toolbarLabels)
+                        assertTrue("Missing copy fallback button for $providerId: $toolbarLabels", "Copy URL" in toolbarLabels)
+                        assertTrue("Missing close fallback button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                    }
 
                     webView?.stopLoading()
                 }
+            }
+        }
+    }
+
+    @Test
+    fun providerSetupViewerShowsCopyableFallbackForInvalidSetupUrl() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val intent = HermesProviderSetupWebActivity.createIntent(
+            context = context,
+            uri = Uri.parse("https:///missing-host"),
+            title = "Open broken provider setup",
+        )
+
+        ActivityScenario.launch<HermesProviderSetupWebActivity>(intent).use { scenario ->
+            scenario.onActivity { activity ->
+                val root = activity.window.decorView
+                assertNull(root.findFirstWebView())
+                val toolbarLabels = root.findButtons().map { it.text.toString() }.toSet()
+                assertTrue("Missing browser fallback button: $toolbarLabels", "Open in browser" in toolbarLabels)
+                assertTrue("Missing copy fallback button: $toolbarLabels", "Copy URL" in toolbarLabels)
+                assertTrue("Missing close fallback button: $toolbarLabels", "Close" in toolbarLabels)
             }
         }
     }

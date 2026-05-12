@@ -263,6 +263,25 @@ def test_overlay_scene_uses_screen_aware_window_bounds():
     assert "overlaySceneLayoutHandlesPercentPixelAndNarrowScreens" in automation_test
 
 
+def test_provider_setup_webview_errors_show_browser_copy_fallback():
+    activity = (
+        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesProviderSetupWebActivity.kt"
+    ).read_text(encoding="utf-8")
+    activity_test = (
+        REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/ProviderSetupWebActivityInstrumentedTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert "onReceivedError" in activity
+    assert "onReceivedHttpError" in activity
+    assert "request.isForMainFrame" in activity
+    assert "showLoadFailureFallback" in activity
+    assert "showFallback(setupPageTitle" in activity
+    assert "Setup page failed to load; URL copied." in activity
+    assert 'toolbarButton("Open in browser")' in activity
+    assert 'toolbarButton("Copy URL")' in activity
+    assert 'listOf("openrouter", "alibaba", "qwen-oauth", "zai")' in activity_test
+
+
 def test_device_backend_exposes_deeper_radio_control_actions_and_status():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesSystemControlBridge.kt").read_text(encoding="utf-8")
     device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")

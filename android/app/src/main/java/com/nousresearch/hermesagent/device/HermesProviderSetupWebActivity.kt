@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -30,12 +31,15 @@ class HermesProviderSetupWebActivity : Activity() {
     private lateinit var setupUri: Uri
     private lateinit var titleText: TextView
     private lateinit var progressBar: ProgressBar
+    private var fallbackShown = false
+    private var setupPageTitle = "Provider setup"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val requestedUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
         val requestedTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "Provider setup" }
+        setupPageTitle = requestedTitle
         setupUri = Uri.parse(requestedUrl)
         if (!canOpen(setupUri)) {
             showFallback(requestedTitle, requestedUrl, "Provider setup URL must start with https:// or http://")
@@ -152,12 +156,23 @@ class HermesProviderSetupWebActivity : Activity() {
                 error: WebResourceError,
             ) {
                 if (request.isForMainFrame) {
-                    Toast.makeText(
-                        this@HermesProviderSetupWebActivity,
-                        "Setup page failed to load; URL copied.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    copyToClipboard(currentUrl(), showToast = false)
+                    showLoadFailureFallback(
+                        request.url?.toString().orEmpty().ifBlank { currentUrl() },
+                        "Setup page failed to load in Android WebView (${error.description}).",
+                    )
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
+            ) {
+                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+                    showLoadFailureFallback(
+                        request.url?.toString().orEmpty().ifBlank { currentUrl() },
+                        "Setup page returned HTTP ${errorResponse.statusCode} in Android WebView.",
+                    )
                 }
             }
         }
@@ -172,6 +187,14 @@ class HermesProviderSetupWebActivity : Activity() {
     }
 
     private fun showFallback(pageTitle: String, url: String, message: String) {
+        webView?.let { existing ->
+            runCatching { existing.stopLoading() }
+            runCatching { existing.destroy() }
+        }
+        webView = null
+        if (::progressBar.isInitialized) {
+            progressBar.visibility = View.GONE
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(28, 28, 28, 28)
@@ -195,6 +218,21 @@ class HermesProviderSetupWebActivity : Activity() {
         if (url.isNotBlank()) {
             copyToClipboard(url, showToast = false)
         }
+    }
+
+    private fun showLoadFailureFallback(url: String, message: String) {
+        if (fallbackShown) {
+            return
+        }
+        fallbackShown = true
+        val targetUrl = url.ifBlank { setupUri.toString() }
+        copyToClipboard(targetUrl, showToast = false)
+        Toast.makeText(
+            this,
+            "Setup page failed to load; URL copied.",
+            Toast.LENGTH_LONG,
+        ).show()
+        showFallback(setupPageTitle, targetUrl, message)
     }
 
     private fun toolbarButton(label: String, onClick: () -> Unit): Button {

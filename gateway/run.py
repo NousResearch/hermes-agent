@@ -8942,7 +8942,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 

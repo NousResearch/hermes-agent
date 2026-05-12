@@ -3130,7 +3130,14 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text = None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            reply_to_text, reply_media_urls, reply_media_types = await self._fetch_message_context(reply_to_message_id)
+            if reply_media_urls:
+                media_urls.extend(reply_media_urls)
+                media_types.extend(reply_media_types)
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -4023,12 +4030,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
 
-    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+    async def _fetch_message_context(self, message_id: str) -> tuple[Optional[str], List[str], List[str]]:
         if not self._client or not message_id:
-            return None
-        if message_id in self._message_text_cache:
-            self._message_text_cache.move_to_end(message_id)
-            return self._message_text_cache[message_id]
+            return None, [], []
         try:
             request = self._build_get_message_request(message_id)
             response = await asyncio.to_thread(self._client.im.v1.message.get, request)
@@ -4036,25 +4040,39 @@ class FeishuAdapter(BasePlatformAdapter):
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
                 logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
-                return None
+                return None, [], []
             items = getattr(getattr(response, "data", None), "items", None) or []
             parent = items[0] if items else None
             body = getattr(parent, "body", None)
-            msg_type = getattr(parent, "msg_type", "") or ""
-            raw_content = getattr(body, "content", "") or ""
+            msg_type = getattr(parent, "msg_type", "") or getattr(parent, "message_type", "") or ""
+            raw_content = getattr(body, "content", "") or getattr(parent, "content", "") or ""
             parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+                bot=self._bot_identity(),
+            )
+            text = self._extract_text_from_normalized(normalized)
+            media_urls, media_types = await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
             )
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)
-            return text
+            return text, media_urls, media_types
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None, [], []
+
+    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        if not message_id:
             return None
+        if message_id in self._message_text_cache:
+            return self._message_text_cache[message_id]
+        text, _, _ = await self._fetch_message_context(message_id)
+        return text
 
     def _extract_text_from_raw_content(
         self,
@@ -4069,6 +4087,10 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=mentions,
             bot=self._bot_identity(),
         )
+        return self._extract_text_from_normalized(normalized)
+
+    @staticmethod
+    def _extract_text_from_normalized(normalized: FeishuNormalizedMessage) -> Optional[str]:
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None

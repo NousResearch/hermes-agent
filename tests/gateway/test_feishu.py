@@ -1926,7 +1926,9 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_message_context = AsyncMock(
+            return_value=("父消息内容", ["/tmp/doc_123_parent.md"], ["text/markdown"])
+        )
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,
@@ -1951,6 +1953,8 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
+        self.assertEqual(event.media_urls, ["/tmp/doc_123_parent.md"])
+        self.assertEqual(event.media_types, ["text/markdown"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
@@ -4633,6 +4637,38 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         self.assertEqual(result, "@Alice hi")
         # No [Mentioned:] wrapper — reply-context path intentionally skips the hint.
         self.assertNotIn("[Mentioned:", result)
+
+    def test_fetch_message_context_downloads_parent_file_resources(self):
+        adapter = self._build_adapter()
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/tmp/doc_lark-cli-shared-app-setup.md"], ["text/markdown"])
+        )
+        parent = SimpleNamespace(
+            body=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "file_key": "file_doc",
+                        "file_name": "lark-cli-shared-app-setup.md",
+                    }
+                )
+            ),
+            msg_type="file",
+            mentions=None,
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        text, media_urls, media_types = asyncio.run(adapter._fetch_message_context("m_parent"))
+
+        self.assertEqual(text, "[Attachment: lark-cli-shared-app-setup.md]")
+        self.assertEqual(media_urls, ["/tmp/doc_lark-cli-shared-app-setup.md"])
+        self.assertEqual(media_types, ["text/markdown"])
+        adapter._download_feishu_message_resources.assert_awaited_once()
+        kwargs = adapter._download_feishu_message_resources.await_args.kwargs
+        self.assertEqual(kwargs["message_id"], "m_parent")
+        self.assertEqual(kwargs["normalized"].media_refs[0].file_key, "file_doc")
 
     def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter

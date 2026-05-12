@@ -1,7 +1,9 @@
 """Tests for backend-specific bulk download implementations and cleanup() wiring."""
 
 import asyncio
+import io
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -109,6 +111,39 @@ def _make_mock_novita_env():
     env._persistent = True
     env._task_id = "test"
     return env
+
+
+# =====================================================================
+# Novita bulk upload
+# =====================================================================
+
+
+class TestNovitaBulkUpload:
+    """Unit tests for _novita_bulk_upload."""
+
+    def test_novita_bulk_upload_writes_tarball_and_extracts(self, tmp_path):
+        env = _make_mock_novita_env()
+        source = tmp_path / "SKILL.md"
+        source.write_text("hello from skill", encoding="utf-8")
+
+        env._novita_bulk_upload([(str(source), "/home/user/.hermes/skills/demo/SKILL.md")])
+
+        env._sandbox.files.write.assert_called_once()
+        remote_tar, tar_bytes = env._sandbox.files.write.call_args[0]
+        assert remote_tar.startswith("/tmp/.hermes_upload.")
+        assert remote_tar.endswith(".tar.gz")
+
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+            assert names == ["home/user/.hermes/skills/demo/SKILL.md"]
+            extracted = tar.extractfile(names[0])
+            assert extracted is not None
+            assert extracted.read() == b"hello from skill"
+
+        run_calls = [call.args[0] for call in env._sandbox.commands.run.call_args_list]
+        assert any("tar -xzf" in cmd and "-C /" in cmd for cmd in run_calls)
+        assert any("rm -f" in cmd and remote_tar in cmd for cmd in run_calls)
+        env._sandbox.files.write_files.assert_not_called()
 
 
 # =====================================================================

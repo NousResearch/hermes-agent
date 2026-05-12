@@ -8,6 +8,8 @@ and resumed on next creation, preserving the filesystem across sessions.
 import logging
 import os
 import shlex
+import tarfile
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -19,9 +21,7 @@ from tools.environments.base import (
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
-    quoted_mkdir_command,
     quoted_rm_command,
-    unique_parent_dirs,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ class NovitaEnvironment(BaseEnvironment):
     """
 
     _stdin_mode = "heredoc"
+    _sandbox_timeout = 30 * 60
     _snapshot_timeout = 60  # Novita cold-starts may be slower than local
     _cleanup_sync_timeout = 60
     _cleanup_lifecycle_timeout = 15
@@ -88,6 +89,7 @@ class NovitaEnvironment(BaseEnvironment):
         if self._sandbox is None:
             self._sandbox = Sandbox.create(
                 template=template_id,
+                timeout=self._sandbox_timeout,
                 metadata=metadata,
                 secure=True,
             )
@@ -140,21 +142,32 @@ class NovitaEnvironment(BaseEnvironment):
             self._sandbox.files.write(remote_path, f.read())
 
     def _novita_bulk_upload(self, files: list[tuple[str, str]]) -> None:
-        """Upload many files in a single call via Novita SDK."""
-        from novita_sandbox.core.sandbox.filesystem.filesystem import WriteEntry
-
+        """Upload many files as one compressed tarball and extract remotely."""
         if not files:
             return
 
-        parents = unique_parent_dirs(files)
-        if parents:
-            self._novita_run(quoted_mkdir_command(parents))
+        remote_tar = f"/tmp/.hermes_upload.{os.getpid()}.{time.time_ns()}.tar.gz"
+        local_tar = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="hermes-novita-upload-", suffix=".tar.gz", delete=False) as tmp:
+                local_tar = Path(tmp.name)
 
-        write_entries = []
-        for host_path, remote_path in files:
-            with open(host_path, "rb") as f:
-                write_entries.append(WriteEntry(path=remote_path, data=f.read()))
-        self._sandbox.files.write_files(write_entries)
+            with tarfile.open(local_tar, "w:gz") as tar:
+                for host_path, remote_path in files:
+                    tar.add(host_path, arcname=remote_path.lstrip("/"), recursive=False)
+
+            self._sandbox.files.write(remote_tar, local_tar.read_bytes())
+            self._sandbox.commands.run(
+                f"tar -xzf {shlex.quote(remote_tar)} -C /",
+                timeout=120,
+            )
+        finally:
+            if local_tar is not None:
+                local_tar.unlink(missing_ok=True)
+            try:
+                self._novita_run(f"rm -f {shlex.quote(remote_tar)}")
+            except Exception:
+                pass  # best-effort cleanup
 
     def _novita_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""

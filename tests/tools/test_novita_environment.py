@@ -220,6 +220,13 @@ class TestPersistence:
         secure = call_kwargs.kwargs.get("secure")
         assert secure is True
 
+    def test_create_sets_30_minute_sandbox_timeout(self, make_env, novita_sdk):
+        make_env(persistent=False)
+
+        call_kwargs = novita_sdk.Sandbox.create.call_args
+        timeout = call_kwargs.kwargs.get("timeout")
+        assert timeout == 30 * 60
+
     def test_create_passes_none_template_when_empty(self, make_env, novita_sdk):
         make_env(persistent=False, template="")
 

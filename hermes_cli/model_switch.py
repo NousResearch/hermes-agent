@@ -828,6 +828,17 @@ def switch_model(
         is_custom = current_provider in ("custom", "local") or (
             "localhost" in _base or "127.0.0.1" in _base
         )
+        # User-defined providers (not built-in) should not trigger
+        # auto-detection to other providers — the model likely belongs
+        # to the custom provider.  Without this guard, a model name
+        # that coincidentally matches an OpenRouter catalog entry (e.g.
+        # "sensenova-6.7-flash-lite") gets rewritten to the aggregator
+        # slug ("sensenova/sensenova-6.7-flash-lite") and the provider
+        # silently switches away from the user's intended endpoint.
+        if not is_custom:
+            from hermes_cli.providers import get_provider as _get_pdef
+            if _get_pdef(current_provider) is None:
+                is_custom = True
 
         if (
             target_provider == current_provider

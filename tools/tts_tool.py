@@ -80,11 +80,34 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user picked ElevenLabs as their TTS provider but never ran
+    the post-setup hook (e.g. enabled it by editing config.yaml directly).
+    Raises ``ImportError`` on lazy-install failure so existing callers'
+    error-handling paths keep working.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.elevenlabs", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import
+        # so older code paths still get a clean ImportError.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -1662,16 +1685,21 @@ def text_to_speech_tool(
             _generate_xai_tts(text, file_str, tts_config)
 
         elif provider == "mistral":
-            try:
-                _import_mistral_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Mistral Voxtral TTS...")
-            _generate_mistral_tts(text, file_str, tts_config)
+            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
+            # malicious 2.4.6 release. Surface a clear status message instead
+            # of attempting an import that would either fail or pull a stale
+            # cached package.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Mistral Voxtral TTS is temporarily disabled. The "
+                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
+                    "after a malicious 2.4.6 release. Switch tts.provider in "
+                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
+                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
+                    "support will return once PyPI un-quarantines the package."
+                ),
+            }, ensure_ascii=False)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")

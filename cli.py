@@ -4214,12 +4214,34 @@ class HermesCLI:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
     
+    def _show_security_advisories(self):
+        """Show a startup banner if any unacked security advisories match.
+
+        Renders a single bold-red box on stderr (so piped stdout remains
+        clean) listing the worst hit and pointing at ``hermes doctor``.
+        Banner-cache rate-limits this to once per 24h per advisory; full
+        remediation lives behind ``hermes doctor`` so the banner stays
+        small.
+        """
+        try:
+            from hermes_cli.security_advisories import (
+                detect_compromised,
+                startup_banner,
+            )
+            hits = detect_compromised()
+            banner = startup_banner(hits)
+            if banner:
+                # Print to stderr — keeps stdout clean for piped automation,
+                # and Rich's banner rendering already wrote to stdout above.
+                print(banner, file=sys.stderr, flush=True)
+        except Exception:
+            # Never let the security banner block startup. Failures are
+            # logged at DEBUG by the advisory module.
+            pass
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
-
-        # Get context length for display before branching so it remains
-        # available to the low-context warning logic in compact mode too.
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
@@ -11016,10 +11038,9 @@ class HermesCLI:
             pass
 
         self.show_banner()
-
-        # One-line Honcho session indicator (TTY-only, not captured by agent).
-        # Only show when the user explicitly configured Honcho for Hermes
-        # (not auto-enabled from a stray HONCHO_API_KEY env var).
+        # Surface any active supply-chain security advisories right after the
+        # welcome banner. Quiet/single-query paths call this themselves.
+        self._show_security_advisories()
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -13528,6 +13549,9 @@ def main(
             _query_label = query or ("[image attached]" if single_query_images else "")
             if _query_label:
                 cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+            # Surface security advisories before the agent runs — short
+            # banner, doesn't depend on the welcome banner being shown.
+            cli._show_security_advisories()
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
         return

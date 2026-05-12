@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -242,6 +242,30 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_token_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    api_call_index INTEGER NOT NULL,
+    model TEXT,
+    provider TEXT,
+    api_mode TEXT,
+    estimated_input_tokens INTEGER DEFAULT 0,
+    actual_input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    tool_schema_tokens INTEGER DEFAULT 0,
+    system_prompt_tokens INTEGER DEFAULT 0,
+    history_tokens INTEGER DEFAULT 0,
+    current_user_tokens INTEGER DEFAULT 0,
+    tool_result_tokens INTEGER DEFAULT 0,
+    injected_context_tokens INTEGER DEFAULT 0,
+    reasoning_replay_tokens INTEGER DEFAULT 0,
+    breakdown_json TEXT,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -1430,6 +1454,76 @@ class SessionDB:
                 return content
         return content
 
+    def append_token_event(self, session_id: str, event: Dict[str, Any]) -> None:
+        """Append a token tracking event for a specific API call."""
+        def _do(conn: sqlite3.Connection):
+            breakdown_json = event.get("breakdown")
+            if isinstance(breakdown_json, dict):
+                breakdown_json = json.dumps(breakdown_json)
+
+            conn.execute(
+                """
+                INSERT INTO session_token_events (
+                    session_id, created_at, api_call_index, model, provider, api_mode,
+                    estimated_input_tokens, actual_input_tokens, output_tokens,
+                    cache_read_tokens, cache_write_tokens, tool_schema_tokens,
+                    system_prompt_tokens, history_tokens, current_user_tokens,
+                    tool_result_tokens, injected_context_tokens, reasoning_replay_tokens,
+                    breakdown_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    event.get("created_at", time.time()),
+                    event.get("api_call_index", 0),
+                    event.get("model", ""),
+                    event.get("provider", ""),
+                    event.get("api_mode", ""),
+                    event.get("estimated_input_tokens", 0),
+                    event.get("actual_input_tokens", 0),
+                    event.get("output_tokens", 0),
+                    event.get("cache_read_tokens", 0),
+                    event.get("cache_write_tokens", 0),
+                    event.get("tool_schema_tokens", 0),
+                    event.get("system_prompt_tokens", 0),
+                    event.get("history_tokens", 0),
+                    event.get("current_user_tokens", 0),
+                    event.get("tool_result_tokens", 0),
+                    event.get("injected_context_tokens", 0),
+                    event.get("reasoning_replay_tokens", 0),
+                    breakdown_json
+                )
+            )
+
+        try:
+            self._execute_write(_do)
+        except Exception as e:
+            logger.warning("Failed to record token event for session %s: %s", session_id, str(e))
+
+    def get_token_events(self, session_id: str) -> List[Dict[str, Any]]:
+        """Retrieve token tracking events for a session."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM session_token_events
+                WHERE session_id = ?
+                ORDER BY api_call_index ASC
+                """,
+                (session_id,)
+            )
+            rows = cursor.fetchall()
+
+        events = []
+        for row in rows:
+            d = dict(row)
+            if d.get("breakdown_json"):
+                try:
+                    d["breakdown"] = json.loads(d["breakdown_json"])
+                except json.JSONDecodeError:
+                    pass
+            events.append(d)
+        return events
+
     def append_message(
         self,
         session_id: str,
@@ -2299,6 +2393,10 @@ class SessionDB:
                 (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "DELETE FROM session_token_events WHERE session_id = ?",
+                (session_id,),
+            )
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
 
@@ -2352,6 +2450,10 @@ class SessionDB:
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute(
+                    "DELETE FROM session_token_events WHERE session_id = ?",
+                    (sid,),
+                )
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
                 removed_ids.append(sid)
             return len(session_ids)

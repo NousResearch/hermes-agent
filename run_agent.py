@@ -149,6 +149,7 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     build_nous_subscription_prompt,
 )
+from agent.token_accounting import estimate_request_breakdown
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
@@ -12180,6 +12181,7 @@ class AIAgent:
                 )
 
             api_messages = []
+            _injected_chars = 0
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
@@ -12199,7 +12201,9 @@ class AIAgent:
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            _joined = "\n\n".join(_injections)
+                            api_msg["content"] = _base + "\n\n" + _joined
+                            _injected_chars = len(_joined)
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -12355,6 +12359,17 @@ class AIAgent:
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
             
+            try:
+                _last_request_breakdown = estimate_request_breakdown(
+                    api_messages,
+                    self.tools or [],
+                    current_turn_user_idx=current_turn_user_idx,
+                    injected_context_chars=_injected_chars
+                )
+            except Exception as e:
+                logger.warning("Failed to estimate request breakdown: %s", e)
+                _last_request_breakdown = None
+
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
             
@@ -13088,6 +13103,38 @@ class AIAgent:
                                     "Token persistence failed (session=%s, tokens=%d): %s",
                                     self.session_id, total_tokens, e,
                                 )
+
+                            # Record granular token tracking event
+                            try:
+                                if _last_request_breakdown:
+                                    event = {
+                                        "created_at": time.time(),
+                                        "api_call_index": api_call_count,
+                                        "model": self.model,
+                                        "provider": self.provider,
+                                        "api_mode": self.api_mode,
+                                        "estimated_input_tokens": _last_request_breakdown.total_estimated_tokens,
+                                        "actual_input_tokens": canonical_usage.input_tokens,
+                                        "output_tokens": canonical_usage.output_tokens,
+                                        "cache_read_tokens": canonical_usage.cache_read_tokens,
+                                        "cache_write_tokens": canonical_usage.cache_write_tokens,
+                                        "tool_schema_tokens": _last_request_breakdown.buckets.get("tool_schemas", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "system_prompt_tokens": _last_request_breakdown.buckets.get("system_prompt", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "history_tokens": (
+                                            _last_request_breakdown.buckets.get("conversation_history_user", type("obj", (object,), {"tokens": 0})).tokens +
+                                            _last_request_breakdown.buckets.get("conversation_history_assistant", type("obj", (object,), {"tokens": 0})).tokens +
+                                            _last_request_breakdown.buckets.get("conversation_history_tool_result", type("obj", (object,), {"tokens": 0})).tokens +
+                                            _last_request_breakdown.buckets.get("tool_call_arguments", type("obj", (object,), {"tokens": 0})).tokens
+                                        ),
+                                        "current_user_tokens": _last_request_breakdown.buckets.get("current_user_turn", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "tool_result_tokens": _last_request_breakdown.buckets.get("conversation_history_tool_result", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "injected_context_tokens": _last_request_breakdown.buckets.get("injected_context", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "reasoning_replay_tokens": _last_request_breakdown.buckets.get("assistant_reasoning_replay", type("obj", (object,), {"tokens": 0})).tokens,
+                                        "breakdown": {k: v.tokens for k, v in _last_request_breakdown.buckets.items()}
+                                    }
+                                    self._session_db.append_token_event(self.session_id, event)
+                            except Exception as e:
+                                logger.debug("Token event persistence failed: %s", e)
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

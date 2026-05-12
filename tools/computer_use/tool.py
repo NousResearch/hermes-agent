@@ -463,7 +463,11 @@ def _maybe_follow_capture(
     if not do_capture:
         return _text_response(res)
     try:
-        cap = backend.capture(mode="som")
+        # Preserve the app context established by the preceding capture/focus_app so
+        # that capture_after=True re-captures the same app rather than the frontmost
+        # window (which may have changed if the action caused a focus shift).
+        last_app = getattr(backend, "_last_app", None)
+        cap = backend.capture(mode="som", app=last_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

@@ -463,6 +463,51 @@ class TestReadmeNoLongerSaysWindowsUnsupported:
 
 
 # ---------------------------------------------------------------------------
+# install.ps1 — Microsoft Store python.exe app-execution alias is skipped
+# ---------------------------------------------------------------------------
+
+
+class TestInstallPs1SkipsStorePythonStub:
+    """`Test-Python` in scripts/install.ps1 must not invoke the Windows Store
+    app-execution alias for ``python.exe``.
+
+    On a fresh Windows 11, ``Get-Command python`` returns
+    ``%LOCALAPPDATA%\\Microsoft\\WindowsApps\\python.exe`` even when no real
+    Python is installed.  Invoking that stub prints "Python was not found;
+    run without arguments to install from the Microsoft Store..." and exits
+    non-zero — and because install.ps1 sets ``$ErrorActionPreference = 'Stop'``,
+    that surfaces as ``✗ Installation failed: Python was not found...``, which
+    is reproducible from #24424.
+    """
+
+    def _source(self) -> str:
+        root = Path(__file__).resolve().parents[2]
+        return (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+
+    def test_test_python_skips_windowsapps_alias(self):
+        source = self._source()
+        # The fallback that calls `Get-Command python` must check the resolved
+        # Source path against `\WindowsApps\` and skip the alias rather than
+        # invoking it.
+        assert "WindowsApps" in source, (
+            "scripts/install.ps1 must detect the Microsoft Store python.exe "
+            "app-execution alias (under %LOCALAPPDATA%\\Microsoft\\WindowsApps\\) "
+            "and skip invoking it — otherwise a fresh Windows 11 install fails "
+            "with the stub's 'Python was not found' message (see #24424)."
+        )
+
+    def test_test_python_invokes_resolved_source_not_bare_python(self):
+        source = self._source()
+        # Bare `python --version` re-resolves PATH (which would re-pick the
+        # stub) and is wrapped in a try/catch in the patched code.  The
+        # resolved-Source invocation is the marker that the guard landed.
+        assert "$pythonCmd.Source --version" in source, (
+            "scripts/install.ps1 should invoke the resolved Get-Command Source "
+            "path (after filtering out WindowsApps) rather than bare `python`."
+        )
+
+
+# ---------------------------------------------------------------------------
 # pty_bridge graceful import on Windows
 # ---------------------------------------------------------------------------
 

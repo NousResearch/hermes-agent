@@ -175,16 +175,34 @@ function Test-Python {
         } catch { }
     }
 
-    # Fallback: try system python
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $sysVer = python --version 2>$null
+    # Fallback: try system python.  Skip the Microsoft Store app-execution
+    # alias (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`) — on fresh
+    # Windows 11 it sits in PATH but is not a real interpreter; invoking it
+    # prints "Python was not found; run without arguments to install from the
+    # Microsoft Store..." and exits non-zero.  Under this script's
+    # `$ErrorActionPreference = "Stop"`, that turns into a terminating
+    # NativeCommandError whose message replaces the script's own friendlier
+    # one, surfacing as `Installation failed: Python was not found...` (#24424).
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd -and ($pythonCmd.Source -notmatch '\\WindowsApps\\')) {
+        try {
+            $sysVer = & $pythonCmd.Source --version 2>&1
+        } catch {
+            $sysVer = ""
+        }
         if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
             Write-Success "Using system Python: $sysVer"
             return $true
         }
     }
-    
+
     Write-Err "Failed to install Python $PythonVersion"
+    if ($pythonCmd -and ($pythonCmd.Source -match '\\WindowsApps\\')) {
+        Write-Info "The 'python.exe' on your PATH is the Microsoft Store app-execution"
+        Write-Info "alias, not a real Python install. Disable it under Settings >"
+        Write-Info "Apps > Advanced app settings > App execution aliases, or install"
+        Write-Info "Python directly using one of the options below."
+    }
     Write-Info "Install Python 3.11 manually, then re-run this script:"
     Write-Info "  https://www.python.org/downloads/"
     Write-Info "  Or: winget install Python.Python.3.11"

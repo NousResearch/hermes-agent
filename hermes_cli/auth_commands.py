@@ -110,6 +110,26 @@ def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
+def _suppression_source_family(provider: str, source: str) -> tuple[str, ...]:
+    if provider == "openai-codex" and source in {"device_code", "manual:device_code"}:
+        return ("device_code", "manual:device_code")
+    return (source,)
+
+
+def _source_family_still_in_use(provider: str, source: str, entries) -> bool:
+    return any(getattr(entry, "source", None) == source for entry in entries)
+
+
+def _filter_skipped_suppression_hints(lines: list[str]) -> list[str]:
+    filtered = []
+    for line in lines:
+        lowered = line.lower()
+        if "re-seeded" in lowered or "re-enable" in lowered:
+            continue
+        filtered.append(line)
+    return filtered
+
+
 def _classify_exhausted_status(entry) -> tuple[str, bool]:
     code = getattr(entry, "last_error_code", None)
     reason = str(getattr(entry, "last_error_reason", "") or "").strip().lower()
@@ -441,6 +461,7 @@ def auth_remove_command(args) -> None:
     if removed is None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
+    source_family_still_in_use = _source_family_still_in_use(provider, removed.source, pool.entries())
 
     # Unified removal dispatch.  Every credential source Hermes reads from
     # (env vars, external OAuth files, auth.json blocks, custom config)
@@ -458,9 +479,13 @@ def auth_remove_command(args) -> None:
         return
 
     result = step.remove_fn(provider, removed)
+    if source_family_still_in_use:
+        for suppressed_source in _suppression_source_family(provider, removed.source):
+            auth_mod.unsuppress_credential_source(provider, suppressed_source)
+        result.hints = _filter_skipped_suppression_hints(result.hints)
     for line in result.cleaned:
         print(line)
-    if result.suppress:
+    if result.suppress and not source_family_still_in_use:
         suppress_credential_source(provider, removed.source)
     for line in result.hints:
         print(line)

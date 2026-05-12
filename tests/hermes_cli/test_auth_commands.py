@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -407,6 +408,62 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     entries = payload["credential_pool"]["openai-codex"]
     assert len(entries) == 1
     assert entries[0]["label"] == "work-account"
+
+
+def test_auth_remove_codex_shared_manual_source_skips_suppression(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "tok-a",
+                        "refresh_token": "ref-a",
+                    },
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "account-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-a",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "account-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tok-b",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="account-a"))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    labels = [entry["label"] for entry in payload["credential_pool"]["openai-codex"]]
+    assert labels == ["account-b"]
+    assert not is_source_suppressed("openai-codex", "manual:device_code")
+    assert not is_source_suppressed("openai-codex", "device_code")
+
+    out = capsys.readouterr().out
+    assert "will not be re-seeded" not in out
 
 
 def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):

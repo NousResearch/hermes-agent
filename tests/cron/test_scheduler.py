@@ -775,6 +775,77 @@ class TestDeliverResultWrapping:
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
 
+class TestSlackThreadedDelivery:
+    def _mock_slack_config(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        return Platform, mock_cfg
+
+    def test_slack_thread_posts_anchor_then_report_reply(self, monkeypatch):
+        Platform, mock_cfg = self._mock_slack_config()
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123456789")
+
+        send_mock = AsyncMock(
+            side_effect=[
+                {"success": True, "message_id": "ts-1"},
+                {"success": True, "message_id": "ts-2"},
+            ]
+        )
+
+        job = {
+            "id": "ed752022f2c5",
+            "name": "kb-hermes-daily-self-improvement",
+            "deliver": "slack",
+            "delivery_mode": "slack_thread",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            result = _deliver_result(job, "Detailed cron report body.")
+
+        assert result is None
+        assert send_mock.await_count == 2
+
+        anchor_call, reply_call = send_mock.await_args_list
+        assert anchor_call.args[:3] == (Platform.SLACK, mock_cfg.platforms[Platform.SLACK], "C123456789")
+        assert anchor_call.args[3] == "kb-hermes-daily-self-improvement (job_id: ed752022f2c5)"
+        assert anchor_call.kwargs["thread_id"] is None
+
+        assert reply_call.args[:3] == (Platform.SLACK, mock_cfg.platforms[Platform.SLACK], "C123456789")
+        assert reply_call.kwargs["thread_id"] == "ts-1"
+        assert "Detailed cron report body." in reply_call.args[3]
+        assert "To stop or manage this job" in reply_call.args[3]
+        assert "Cronjob Response" not in reply_call.args[3]
+
+    def test_default_slack_delivery_stays_single_message_without_thread_id(self, monkeypatch):
+        Platform, mock_cfg = self._mock_slack_config()
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123456789")
+
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "ts-1"})
+
+        job = {
+            "id": "daily",
+            "name": "daily-report",
+            "deliver": "slack",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "Plain Slack report.")
+
+        assert result is None
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.args[:3] == (Platform.SLACK, mock_cfg.platforms[Platform.SLACK], "C123456789")
+        assert send_mock.await_args.args[3] == "Plain Slack report."
+        assert send_mock.await_args.kwargs["thread_id"] is None
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 

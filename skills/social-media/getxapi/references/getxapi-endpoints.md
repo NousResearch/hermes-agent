@@ -2,7 +2,7 @@
 
 Base URL: `https://api.getxapi.com`
 Auth: `Authorization: Bearer <api-key>` (all endpoints)
-Post auth: `auth_token` cookie in JSON body (create endpoint)
+Post auth: value of the X `auth_token` cookie, passed as an `auth_token` field in the JSON body (create endpoint)
 
 ## Account
 

@@ -455,7 +455,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         try:
             payload = await self._api_post(
                 "/api/v1/chat/query",
-                {"limit": 100, "offset": 0, "with": ["participants"]},
+                {"limit": 100, "offset": 0},
             )
             for chat in payload.get("data", []) or []:
                 guid = chat.get("guid") or chat.get("chatGuid")

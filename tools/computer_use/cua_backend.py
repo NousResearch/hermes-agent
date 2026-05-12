@@ -393,11 +393,27 @@ class CuaDriverBackend(ComputerUseBackend):
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
         # Filter by app name (case-insensitive substring) if requested.
+        # When the filter matches nothing, surface that explicitly instead of
+        # silently capturing the frontmost window — on macOS the `app_name`
+        # returned by list_windows is the localized name (e.g. "計算機"), so
+        # `app="Calculator"` legitimately matches no windows on a non-English
+        # system and the caller needs to retry with the localized name.
         if app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
-            if filtered:
-                windows = filtered
+            if not filtered:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=(
+                        f"<no on-screen window matched app={app!r}; "
+                        f"call list_apps to see available app names "
+                        f"(macOS reports localized names, e.g. '計算機' "
+                        f"instead of 'Calculator')>"
+                    ),
+                    png_bytes_len=0,
+                )
+            windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
@@ -658,7 +674,11 @@ class CuaDriverBackend(ComputerUseBackend):
 
         app_lower = app.lower()
         matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        target = matched[0] if matched else (windows[0] if windows else None)
+        # Don't silently fall back to the frontmost window when the filter
+        # matches nothing — that hides the real failure (often a localized
+        # macOS app name mismatch, e.g. caller passed "Calculator" but
+        # list_windows returns "計算機").
+        target = matched[0] if matched else None
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]

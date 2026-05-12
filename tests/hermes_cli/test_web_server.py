@@ -1364,22 +1364,27 @@ class TestModelAssignmentEndpoint:
         assert saved["config"]["model"]["provider"] == "custom:company-model"
         assert saved["config"]["model"]["default"] == "acme-coder"
 
-    def test_bare_custom_requires_base_url(self, monkeypatch):
+    def test_bare_custom_provider_persists_for_unnamed_custom_endpoint(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(
-            ws,
-            "load_config",
-            lambda: {"model": {"default": "old-model", "provider": "openrouter", "base_url": ""}},
-        )
+        cfg = {"model": {"default": "old-model", "provider": "openrouter", "base_url": ""}}
+        saved = {}
+
+        monkeypatch.setattr(ws, "load_config", lambda: cfg)
+
+        def _save_config(next_cfg):
+            saved["config"] = next_cfg
+
+        monkeypatch.setattr(ws, "save_config", _save_config)
 
         resp = self.client.post(
             "/api/model/set",
             json={"scope": "main", "provider": "custom", "model": "local-model"},
         )
 
-        assert resp.status_code == 400
-        assert "bare 'custom'" in resp.json()["detail"]
+        assert resp.status_code == 200
+        assert saved["config"]["model"]["provider"] == "custom"
+        assert saved["config"]["model"]["default"] == "local-model"
 
 
 class TestProbeGatewayHealth:

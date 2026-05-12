@@ -110,26 +110,6 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
-def _validate_provider_id(provider_id: str, *, base_url: str = "") -> str:
-    """Guard persisted provider identity writes.
-
-    Bare ``custom`` is only valid for unnamed custom endpoints when the same
-    write also sets a concrete base URL. Named custom providers must preserve
-    their ``custom:<name>`` identity instead of collapsing to the transport
-    family string.
-    """
-    normalized = (provider_id or "").strip()
-    if normalized == "custom" and not (base_url or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Refusing to persist bare 'custom' without base_url. "
-                "If this is a named custom provider, use its full custom:<name> id."
-            ),
-        )
-    return normalized
-
-
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
 
@@ -1107,10 +1087,10 @@ async def set_model_assignment(body: ModelAssignment):
             model_cfg = cfg.get("model", {})
             if not isinstance(model_cfg, dict):
                 model_cfg = {}
-            model_cfg["provider"] = _validate_provider_id(
-                provider,
-                base_url=str(model_cfg.get("base_url", "") or ""),
-            )
+            # Bare `custom` remains valid for unnamed custom endpoints.
+            # The actual named-provider fix is preserving `provider_id`
+            # upstream so we do not collapse `custom:<name>` to `custom`.
+            model_cfg["provider"] = provider
             model_cfg["default"] = model
             # Clear stale base_url so the resolver picks the provider's own default.
             if "base_url" in model_cfg and model_cfg.get("base_url"):

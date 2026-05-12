@@ -119,22 +119,6 @@ _REASONING_TAGS = (
 )
 
 
-def _validate_provider_id_for_save(provider_id: str, *, base_url: str = "") -> str:
-    """Guard persisted provider identity writes.
-
-    Bare ``custom`` is only safe when the same write also carries a concrete
-    ``base_url`` for an unnamed custom endpoint. Named custom providers must
-    preserve their ``custom:<name>`` identity.
-    """
-    normalized = (provider_id or "").strip()
-    if normalized == "custom" and not (base_url or "").strip():
-        raise ValueError(
-            "Refusing to persist bare 'custom' without base_url. "
-            "Named custom providers must preserve their custom:<name> identity."
-        )
-    return normalized
-
-
 def _strip_reasoning_tags(text: str) -> str:
     """Remove reasoning/thinking blocks from displayed text.
 
@@ -5990,12 +5974,12 @@ class HermesCLI:
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
+                # Bare `custom` remains valid for unnamed custom endpoints.
+                # The actual named-provider fix is preserving `provider_id`
+                # upstream so we do not collapse `custom:<name>` to `custom`.
                 save_config_value(
                     "model.provider",
-                    _validate_provider_id_for_save(
-                        result.target_provider,
-                        base_url=result.base_url or "",
-                    ),
+                    result.target_provider,
                 )
             _cprint("    Saved to config.yaml (--global)")
         else:
@@ -6229,12 +6213,12 @@ class HermesCLI:
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
+                # Bare `custom` remains valid for unnamed custom endpoints.
+                # The actual named-provider fix is preserving `provider_id`
+                # upstream so we do not collapse `custom:<name>` to `custom`.
                 save_config_value(
                     "model.provider",
-                    _validate_provider_id_for_save(
-                        result.target_provider,
-                        base_url=result.base_url or "",
-                    ),
+                    result.target_provider,
                 )
             _cprint("    Saved to config.yaml (--global)")
         else:

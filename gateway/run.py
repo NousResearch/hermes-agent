@@ -16828,7 +16828,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         pass
 
     if runner.exit_code is not None:
-        raise SystemExit(runner.exit_code)
+        sys.exit(runner.exit_code)
 
     # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
     # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's

@@ -689,4 +689,13 @@ def restart() -> None:
     stop()
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
+    # Clear stale lock file — a zombie process may still hold the handle,
+    # but writing empty content effectively releases the lock for the new
+    # gateway process (see GitHub PR #24417).
+    from hermes_cli.config import get_hermes_home
+    lock_path = Path(get_hermes_home()) / "gateway.lock"
+    try:
+        lock_path.write_text("")
+    except Exception:
+        pass
     start()

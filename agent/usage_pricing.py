@@ -370,7 +370,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-03-16",
     ),
-    # Standard list prices (excludes 75% promo through 2026-05-31).
     (
         "deepseek",
         "deepseek-v4-pro",

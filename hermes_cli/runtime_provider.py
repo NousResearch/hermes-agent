@@ -229,6 +229,20 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+        # Exchange the raw GitHub OAuth token (gho_/ghu_) for a short-lived
+        # Copilot API Bearer (tid=...).  Without this, sending the raw token to
+        # /chat/completions makes GitHub map it to whatever integrator the
+        # originating OAuth app declared as default — typically
+        # ``copilot-language-server`` for Business seats — which has a
+        # restricted model allowlist that excludes Claude.  The sibling
+        # ``resolve_api_key_provider_credentials("copilot")`` path does this
+        # exchange; the pool path was the only one skipping it.
+        if api_key and not api_key.startswith("tid="):
+            try:
+                from hermes_cli.copilot_auth import get_copilot_api_token
+                api_key = get_copilot_api_token(api_key)
+            except Exception:
+                pass
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

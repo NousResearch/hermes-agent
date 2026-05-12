@@ -481,7 +481,9 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            creationflags=(
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+            ) if _IS_WINDOWS else 0,
             cwd=_popen_cwd,
         )
         if not _IS_WINDOWS:

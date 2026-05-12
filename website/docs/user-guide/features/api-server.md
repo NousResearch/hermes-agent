@@ -112,6 +112,41 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
+#### Multi-user identity headers
+
+When one Hermes process serves multiple end-users (Open WebUI multi-user, chat-bot bridges, multi-tenant deployments), clients can pass per-request identity via the following optional headers.  They mirror the `SessionSource` fields that native gateway adapters (Telegram, Discord, Slack, …) thread to `AIAgent` for the same purpose — driving Honcho's per-user peer cards, per-user memory directories, session attribution, etc.
+
+| Header | Purpose |
+|---|---|
+| `X-Hermes-User-Id` | Stable per-user identifier (the speaker) |
+| `X-Hermes-User-Name` | Human-readable display name |
+| `X-Hermes-Chat-Id` | Chat / room / group identifier |
+| `X-Hermes-Chat-Name` | Chat / room display name |
+| `X-Hermes-Chat-Type` | `"dm"`, `"group"`, `"channel"`, or `"thread"` |
+| `X-Hermes-Thread-Id` | Sub-thread within a chat (e.g. Telegram forum topic, Discord thread) |
+
+All six are optional and independent — send only the ones your client has. Values are bounded at 256 characters; control-character values are silently dropped. Headers are echoed back on the response so clients can confirm what the server saw.
+
+OpenAI clients that already populate the standard top-level `user` body field for abuse-monitoring get the same effect for free: `user` is used as a fallback for `X-Hermes-User-Id` when the header is absent (header wins when both are set).
+
+Headers require an authenticated request (i.e. `API_SERVER_KEY` configured and `Authorization: Bearer …` sent); on an unauthenticated local-only server they are silently ignored, matching the posture of `X-Hermes-Session-Key`.
+
+Example: a chat-bot bridge proxying many users in a group:
+
+```bash
+curl http://localhost:8642/v1/chat/completions \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "X-Hermes-Session-Key: agent:main:nonebot-onebot11:group:12345" \
+  -H "X-Hermes-User-Id: user-42" \
+  -H "X-Hermes-User-Name: Alice" \
+  -H "X-Hermes-Chat-Id: 12345" \
+  -H "X-Hermes-Chat-Name: Product Discussion" \
+  -H "X-Hermes-Chat-Type: group" \
+  -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "..."}]}'
+```
+
+Subsequent requests from the same `user-42` in the same group land on the same per-user peer in Honcho; requests from `user-43` in the same group share the group-scoped `Session-Key` but accumulate their own peer card. See [Multi-User Setup](#multi-user-setup) below for the full picture.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.
@@ -214,10 +249,21 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "session_continuity_header": "X-Hermes-Session-Id",
+    "session_key_header": "X-Hermes-Session-Key",
+    "user_id_header": "X-Hermes-User-Id",
+    "user_name_header": "X-Hermes-User-Name",
+    "chat_id_header": "X-Hermes-Chat-Id",
+    "chat_name_header": "X-Hermes-Chat-Name",
+    "chat_type_header": "X-Hermes-Chat-Type",
+    "thread_id_header": "X-Hermes-Thread-Id",
+    "user_body_fallback": "user"
   }
 }
 ```
+
+The `*_header` fields advertise the multi-user identity header set so clients can feature-detect support without parsing version strings. `user_body_fallback: "user"` indicates the server accepts OpenAI's standard top-level `user` body field as a fallback for `X-Hermes-User-Id`.
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
@@ -472,9 +518,50 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 | OpenAI Python SDK | — | `OpenAI(base_url="http://localhost:8642/v1")` |
 | curl | — | Direct HTTP requests |
 
-## Multi-User Setup with Profiles
+## Multi-User Setup
 
-To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/user-guide/profiles):
+The API server supports two complementary multi-user strategies. Pick the one that matches your isolation requirements and operational cost tolerance.
+
+### Strategy A — Per-request identity headers (shared process)
+
+One Hermes process serves many users distinguished per-request via the [identity headers](#multi-user-identity-headers) (`X-Hermes-User-Id`, `X-Hermes-Chat-Id`, …) on `/v1/chat/completions`, `/v1/responses`, and `/v1/runs`.
+
+**Best for**:
+- chat-bot bridges (multiple end-users sharing one bot infrastructure)
+- multi-tenant SaaS deployments
+- gateway proxy mode (a native adapter on one host forwarding to a shared remote api_server — identity is preserved across the proxy boundary)
+- Open WebUI / LobeChat / LibreChat shared-instance deployments
+
+**Trade-offs**:
+- One LLM context budget shared across all users (no per-user `~/.hermes` separation)
+- All users share the same memory provider workspace — per-user scoping happens *inside* the provider (e.g. Honcho `peer` cards) rather than via process isolation
+- Lower operational cost than per-user processes
+
+Configure once, then pass identity headers per request:
+
+```bash
+hermes profile create main
+cat >> ~/.hermes/profiles/main/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+API_SERVER_KEY=shared-secret
+EOF
+hermes -p main gateway &
+
+# Each request carries the per-user identity in headers:
+curl http://localhost:8642/v1/chat/completions \
+  -H "Authorization: Bearer shared-secret" \
+  -H "X-Hermes-User-Id: alice" \
+  -H "X-Hermes-Chat-Id: dm-alice" \
+  -H "X-Hermes-Chat-Type: dm" \
+  -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "..."}]}'
+```
+
+Memory providers that honor `runtime_user_peer_name` (Honcho is the reference implementation) build separate peer representations per `X-Hermes-User-Id` value, so each user gets a distinct picture across shared sessions. Native gateway adapters (Telegram, Discord, …) drive the same provider-side scoping; this is what makes a single Hermes process work as a multi-user chat bot today.
+
+### Strategy B — Profile-per-user (full process isolation)
+
+Each user gets a separate Hermes process — separate config, separate memory directory, separate skills — distinguished by port and API key:
 
 ```bash
 # Create a profile per user
@@ -505,7 +592,16 @@ Each profile's API server automatically advertises the profile name as the model
 - `http://localhost:8643/v1/models` → model `alice`
 - `http://localhost:8644/v1/models` → model `bob`
 
-In Open WebUI, add each as a separate connection. The model dropdown shows `alice` and `bob` as distinct models, each backed by a fully isolated Hermes instance. See the [Open WebUI guide](/user-guide/messaging/open-webui#multi-user-setup-with-profiles) for details.
+**Best for**:
+- strong isolation requirements (e.g. each user runs different skills / config)
+- few users at large scale per user (each gets full single-user resources)
+- legacy frontends that can't send custom headers
+
+In Open WebUI, add each as a separate connection. The model dropdown shows `alice` and `bob` as distinct models, each backed by a fully isolated Hermes instance. See the [Open WebUI multi-user guide](/user-guide/messaging/open-webui#strategy-b--profile-per-user-full-process-isolation) for details.
+
+### Mixing strategies
+
+Strategy A (per-request) and Strategy B (per-process) compose: a tenant boundary can be a profile while users within the tenant are distinguished by header. Useful for multi-tenant SaaS where each tenant gets a sandboxed `~/.hermes` but the tenant's own users share the in-tenant process.
 
 ## Limitations
 

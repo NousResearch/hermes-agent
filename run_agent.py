@@ -13924,6 +13924,11 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": str(api_error),
+                            "failure_type": classified.reason.value,
+                            "failure_retryable": bool(classified.retryable),
+                            "failure_status_code": status_code,
+                            "failure_provider": _provider,
+                            "failure_model": _model,
                         }
 
                     if retry_count >= max_retries:
@@ -14007,6 +14012,11 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": _final_summary,
+                            "failure_type": classified.reason.value,
+                            "failure_retryable": bool(classified.retryable),
+                            "failure_status_code": status_code,
+                            "failure_provider": _provider,
+                            "failure_model": _model,
                         }
 
                     # For rate limits, respect the Retry-After header if present

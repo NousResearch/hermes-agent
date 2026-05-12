@@ -479,3 +479,188 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         assert kb.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_notifier_replays_pending_outbox_after_claimed_cursor(kanban_home):
+    """Crash window: cursor advanced but pending outbox row must still deliver."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="outbox task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+        sub = kb.list_notify_subs(conn, tid)[0]
+        _old, cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="",
+            kinds=("completed",),
+        )
+        assert events
+        kb.enqueue_notify_outbox(conn, sub=sub, events=events)
+        assert kb.list_notify_subs(conn, tid)[0]["last_event_id"] == cursor
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    assert "done" in fake_adapter.send.call_args[0][1]
+    conn = kb.connect()
+    try:
+        rows = conn.execute("SELECT status FROM kanban_notify_outbox WHERE task_id = ?", (tid,)).fetchall()
+    finally:
+        conn.close()
+    assert [r["status"] for r in rows] == ["delivered"]
+
+
+def test_notify_outbox_reclaims_stale_sending_rows(kanban_home):
+    """A gateway crash after marking sending should not leave rows stuck."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stale outbox", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+        sub = kb.list_notify_subs(conn, tid)[0]
+        _old, _cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="",
+            kinds=("completed",),
+        )
+        ids = kb.enqueue_notify_outbox(conn, sub=sub, events=events)
+        due = kb.claim_due_notify_outbox(conn, now=1000)
+        assert [r["id"] for r in due] == ids
+        assert kb.claim_due_notify_outbox(conn, now=1001) == []
+        reclaimed = kb.claim_due_notify_outbox(conn, now=1061)
+        assert [r["id"] for r in reclaimed] == ids
+    finally:
+        conn.close()
+
+
+def test_claim_to_outbox_rolls_back_cursor_if_enqueue_fails(kanban_home):
+    """Cursor advance and outbox enqueue must be one transaction."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="atomic outbox", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+        sub = kb.list_notify_subs(conn, tid)[0]
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated enqueue crash")
+
+        with patch("hermes_cli.kanban_db._insert_notify_outbox_rows", side_effect=_boom):
+            with pytest.raises(RuntimeError, match="simulated enqueue crash"):
+                kb.claim_unseen_events_for_sub_to_outbox(conn, sub=sub, kinds=("completed",))
+
+        sub_after = kb.list_notify_subs(conn, tid)[0]
+        rows = conn.execute("SELECT * FROM kanban_notify_outbox WHERE task_id = ?", (tid,)).fetchall()
+        assert int(sub_after["last_event_id"]) == 0
+        assert rows == []
+
+        old_cursor, new_cursor, outbox_ids = kb.claim_unseen_events_for_sub_to_outbox(
+            conn, sub=sub, kinds=("completed",)
+        )
+        assert old_cursor == 0
+        assert new_cursor > 0
+        assert len(outbox_ids) == 1
+    finally:
+        conn.close()
+
+
+def test_retry_notify_outbox_does_not_persist_raw_adapter_error(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    marker = "REDACTME12345"
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry secret", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+        sub = kb.list_notify_subs(conn, tid)[0]
+        _old, _cursor, ids = kb.claim_unseen_events_for_sub_to_outbox(
+            conn, sub=sub, kinds=("completed",)
+        )
+        assert ids
+        kb.retry_notify_outbox(conn, ids, error=f"adapter failed marker={marker}")
+        rows = conn.execute(
+            "SELECT last_error FROM kanban_notify_outbox WHERE task_id = ?",
+            (tid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows
+    assert all(marker not in (r["last_error"] or "") for r in rows)
+    assert all("adapter failed" not in (r["last_error"] or "") for r in rows)
+
+
+def test_gc_events_preserves_pending_outbox_event_rows(kanban_home):
+    import time
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="gc outbox", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="done")
+        sub = kb.list_notify_subs(conn, tid)[0]
+        _old, _cursor, ids = kb.claim_unseen_events_for_sub_to_outbox(
+            conn, sub=sub, kinds=("completed",)
+        )
+        assert ids
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (int(time.time()) - 10_000, tid),
+        )
+        before = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ?",
+            (tid,),
+        ).fetchone()["n"]
+        deleted = kb.gc_events(conn, older_than_seconds=1)
+        after = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ?",
+            (tid,),
+        ).fetchone()["n"]
+        due = kb.claim_due_notify_outbox(conn, now=int(time.time()))
+    finally:
+        conn.close()
+
+    assert before > 0
+    assert deleted < before
+    assert after > 0
+    assert due

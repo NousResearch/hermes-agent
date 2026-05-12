@@ -63,6 +63,49 @@ ROLE_MANAGERS: dict[str, str] = {
     "demo": "pm",
 }
 
+_APPROVAL_REQUIRED_MARKERS: tuple[str, ...] = (
+    "human_review_required: true",
+    "approval_required: true",
+    "human review required",
+    "requires human review",
+    "need human review",
+    "needs human review",
+    "human approval required",
+    "requires human approval",
+    "explicit approval",
+    "approval required",
+    "requires approval",
+    "need approval",
+    "needs approval",
+    "get approval",
+    "obtain approval",
+    "must approve",
+    "must be approved",
+    "approved by",
+    "ask akhil",
+    "ask the user",
+    "user approval",
+    "manual approval",
+    "sign-off",
+    "sign off",
+    "signoff",
+    "user sign-off",
+    "user sign off",
+    "user signoff",
+    "security approval",
+    "legal approval",
+    "compliance approval",
+    "before merge",
+    "before deploy",
+    "production deploy",
+    "prod deploy",
+)
+
+
+def _requires_explicit_approval(reason: str) -> bool:
+    reason_cf = reason.casefold()
+    return any(marker in reason_cf for marker in _APPROVAL_REQUIRED_MARKERS)
+
 
 def office_config() -> dict[str, Any]:
     """Return merged Agent Office config with safe defaults.
@@ -464,10 +507,11 @@ def route_ready_unassigned(conn, *, limit: Optional[int] = None) -> list[tuple[s
                 body=(
                     f"Strict route: role={decision.role or assignee}, assignee=@{assignee}, "
                     f"reports_to={manager}, mode={default_mode}, workspace_root={workspace_root}. "
-                    "Quality gates apply to every Office task: provide an evidence-backed "
-                    "gate scorecard, no silent scope reduction, real benchmark artifacts "
-                    "when benchmark/performance is claimed, and reviewer/QA evidence review "
-                    "for substantive work. "
+                    "Quality gates apply to every Office task: provide a token-efficient "
+                    "evidence-backed gate scorecard, no silent scope reduction, real "
+                    "benchmark artifacts when benchmark/performance is claimed, and "
+                    "reviewer/QA evidence review for substantive work. Prefer artifact "
+                    "paths and concise excerpts over pasted logs. "
                     f"Reason: {decision.reason}."
                 ),
             )
@@ -492,6 +536,63 @@ def route_ready_unassigned(conn, *, limit: Optional[int] = None) -> list[tuple[s
     return routed
 
 
+def _latest_block_reason(conn, task_id: str) -> str:
+    row = conn.execute(
+        "SELECT summary, error FROM task_runs WHERE task_id = ? "
+        "AND outcome = 'blocked' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["summary"] or row["error"] or "")
+
+
+def _auto_route_review_required_block(conn, task: kb.Task) -> bool:
+    """In yolo mode, turn human-review blocks into reviewer handoffs.
+
+    Workers must be honest and evidence-backed, but they should not stop the
+    whole Office on generic human review. Route the card to the reviewer seat;
+    real external blockers and explicit human approval still remain blocked.
+    """
+    cfg = office_config()
+    if str(cfg.get("default_mode") or "yolo").casefold() != "yolo":
+        return False
+    reason = _latest_block_reason(conn, task.id)
+    reason_cf = reason.casefold()
+    if "review-required" not in reason_cf:
+        return False
+    if _requires_explicit_approval(reason):
+        return False
+    reviewer_role = str((cfg.get("quality_gates") or {}).get("default_reviewer") or "reviewer")
+    reviewer = resolve_profile_for_role(conn, reviewer_role)
+    if not kb.assign_task(conn, task.id, reviewer):
+        return False
+    if not kb.unblock_task(conn, task.id):
+        return False
+    kb.add_comment(
+        conn,
+        task.id,
+        author="agent-office-supervisor",
+        body=(
+            "Auto-routed review-required block to reviewer in yolo mode. "
+            "Worker honesty is preserved by requiring evidence and routing to "
+            f"@{reviewer}; this is not treated as final user-visible success. "
+            f"Original block reason: {reason}"
+        ),
+    )
+    try:
+        with kb.write_txn(conn):
+            _append_office_event(
+                conn,
+                task.id,
+                "office.review_routed",
+                {"assignee": reviewer, "source_reason": reason, "mode": "yolo"},
+            )
+    except Exception:
+        pass
+    return True
+
+
 def supervise(conn, *, stale_seconds: int = 30 * 60) -> list[str]:
     """Lightweight supervisor pass that annotates stale/blocked work."""
     now = int(time.time())
@@ -502,6 +603,9 @@ def supervise(conn, *, stale_seconds: int = 30 * 60) -> list[str]:
     for row in rows:
         task = kb.Task.from_row(row)
         reasons: list[str] = []
+        if task.status == "blocked" and _auto_route_review_required_block(conn, task):
+            touched.append(task.id)
+            continue
         if task.status == "running" and task.started_at and now - int(task.started_at) >= stale_seconds:
             reasons.append("running task is stale")
         if task.status == "blocked":

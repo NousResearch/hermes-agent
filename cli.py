@@ -10102,6 +10102,7 @@ class HermesCLI:
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        self._last_chat_result = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -10466,6 +10467,7 @@ class HermesCLI:
             time.sleep(0.15)
 
             # Update history with full conversation
+            self._last_chat_result = result
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
@@ -10484,6 +10486,8 @@ class HermesCLI:
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            if result and result.get("failed"):
+                _maybe_block_current_kanban_task_on_agent_failure(result.get("error"), result)
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
@@ -13127,6 +13131,53 @@ class HermesCLI:
 # Main Entry Point
 # ============================================================================
 
+def _single_query_exit_code(result) -> int:
+    """Return the process exit code for non-interactive single-query runs."""
+    if not isinstance(result, dict):
+        return 1 if result is None else 0
+    return 1 if result.get("failed") else 0
+
+
+def _safe_kanban_failure_reason(result: dict | None = None) -> str:
+    """Build a durable/user-visible failure reason without raw provider errors."""
+    reason = "infrastructure-failure: agent runtime failed"
+    if isinstance(result, dict) and result.get("failure_type"):
+        provider = result.get("failure_provider") or "unknown-provider"
+        model = result.get("failure_model") or "unknown-model"
+        status = result.get("failure_status_code")
+        reason = f"{reason}: {result['failure_type']} provider={provider} model={model}"
+        if status:
+            reason += f" status={status}"
+    return reason
+
+
+def _maybe_block_current_kanban_task_on_agent_failure(error: str | None, result: dict | None = None) -> bool:
+    """Best-effort fail-safe terminal event for Kanban workers."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return False
+    reason = _safe_kanban_failure_reason(result)
+    try:
+        from hermes_cli import kanban_db as _kb
+        with _kb.connect() as _conn:
+            _kb.add_comment(
+                _conn,
+                task_id,
+                author="hermes-cli-failsafe",
+                body=(
+                    "Runtime fail-safe blocked this task because the agent "
+                    "returned a failed result before it could call "
+                    "kanban_complete or kanban_block. This is an "
+                    "infrastructure/provider failure, not a verified task "
+                    f"outcome. Reason: {reason}"
+                ),
+            )
+            return bool(_kb.block_task(_conn, task_id, reason=reason))
+    except Exception as exc:
+        logging.warning("kanban failure fail-safe could not block task %s: %s", task_id, exc)
+        return False
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -13409,8 +13460,9 @@ def main(
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+                    if isinstance(result, dict) and result.get("failed"):
+                        _maybe_block_current_kanban_task_on_agent_failure(result.get("error"), result)
+                    sys.exit(_single_query_exit_code(result))
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)
@@ -13433,6 +13485,7 @@ def main(
                 cli.console.print(f"[bold blue]Query:[/] {_query_label}")
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
+            sys.exit(_single_query_exit_code(getattr(cli, "_last_chat_result", None)))
         return
     
     # Run interactive mode

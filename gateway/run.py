@@ -4208,28 +4208,46 @@ class GatewayRunner:
                                         sub.get("task_id"), platform or "<missing>",
                                     )
                                     continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                old_cursor, cursor, outbox_ids = _kb.claim_unseen_events_for_sub_to_outbox(
                                     conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
+                                    sub=sub,
                                     kinds=TERMINAL_KINDS,
                                 )
-                                if not events:
+                                if not outbox_ids:
                                     continue
-                                task = _kb.get_task(conn, sub["task_id"])
                                 logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    "kanban notifier: claimed %d outbox row(s) for %s on board %s cursor %s→%s",
+                                    len(outbox_ids), sub["task_id"], slug, old_cursor, cursor,
                                 )
+                            for row in _kb.claim_due_notify_outbox(conn, limit=100):
+                                ev_payload = None
+                                try:
+                                    ev_payload = json.loads(row["payload"]) if row.get("payload") else None
+                                except Exception:
+                                    ev_payload = None
+                                ev = _kb.Event(
+                                    id=row["event_id"],
+                                    task_id=row["task_id"],
+                                    kind=row["kind"],
+                                    payload=ev_payload,
+                                    created_at=row["event_created_at"],
+                                    run_id=(int(row["run_id"]) if row.get("run_id") is not None else None),
+                                )
+                                task = _kb.get_task(conn, row["task_id"])
                                 deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
+                                    "sub": {
+                                        "task_id": row["task_id"],
+                                        "platform": row["platform"],
+                                        "chat_id": row["chat_id"],
+                                        "thread_id": row.get("thread_id") or "",
+                                        "user_id": row.get("user_id"),
+                                        "notifier_profile": row.get("notifier_profile"),
+                                    },
+                                    "cursor": int(row["event_id"]),
+                                    "events": [ev],
                                     "task": task,
                                     "board": slug,
+                                    "outbox_ids": [int(row["id"])],
                                 })
                         finally:
                             conn.close()
@@ -4247,7 +4265,9 @@ class GatewayRunner:
                         # Unknown platform string; skip and advance cursor so
                         # we don't replay forever.
                         await asyncio.to_thread(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
+                            self._kanban_outbox_delivered,
+                            d.get("outbox_ids") or [],
+                            board_slug,
                         )
                         continue
                     adapter = self.adapters.get(plat)
@@ -4257,11 +4277,10 @@ class GatewayRunner:
                             platform_str, sub["task_id"],
                         )
                         await asyncio.to_thread(
-                            self._kanban_rewind,
-                            sub,
-                            d["cursor"],
-                            d.get("old_cursor", 0),
+                            self._kanban_outbox_retry,
+                            d.get("outbox_ids") or [],
                             board_slug,
+                            "adapter disconnected before delivery",
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
@@ -4353,25 +4372,30 @@ class GatewayRunner:
                                     sub["task_id"], platform_str, fails,
                                 )
                                 await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                await asyncio.to_thread(
+                                    self._kanban_outbox_delivered,
+                                    d.get("outbox_ids") or [],
+                                    board_slug,
+                                )
                                 sub_fail_counts.pop(sub_key, None)
                             else:
                                 await asyncio.to_thread(
-                                    self._kanban_rewind,
-                                    sub,
-                                    d["cursor"],
-                                    d.get("old_cursor", 0),
+                                    self._kanban_outbox_retry,
+                                    d.get("outbox_ids") or [],
                                     board_slug,
+                                    str(exc),
                                 )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
+                            # The durable outbox preserves delivery intent across
+                            # crashes and transient adapter failures. The event
+                            # cursor was advanced during claim; pending/retry
+                            # outbox rows, not cursor rewinds, drive redelivery.
                             break
                     else:
-                        # All events delivered; advance cursor. The cursor
-                        # is the dedup mechanism — it prevents re-delivery
-                        # of the same event on subsequent ticks.
+                        # All events delivered; mark durable outbox rows done.
                         await asyncio.to_thread(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
+                            self._kanban_outbox_delivered,
+                            d.get("outbox_ids") or [],
+                            board_slug,
                         )
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
@@ -4449,6 +4473,35 @@ class GatewayRunner:
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
             )
+        finally:
+            conn.close()
+
+    def _kanban_outbox_delivered(
+        self, outbox_ids: list[int], board: Optional[str] = None,
+    ) -> None:
+        """Sync helper: mark durable notification outbox rows delivered."""
+        if not outbox_ids:
+            return
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.mark_notify_outbox_delivered(conn, outbox_ids)
+        finally:
+            conn.close()
+
+    def _kanban_outbox_retry(
+        self,
+        outbox_ids: list[int],
+        board: Optional[str] = None,
+        error: str = "delivery failed",
+    ) -> None:
+        """Sync helper: release notification outbox rows for later retry."""
+        if not outbox_ids:
+            return
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.retry_notify_outbox(conn, outbox_ids, error=error)
         finally:
             conn.close()
 

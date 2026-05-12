@@ -867,6 +867,29 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable delivery outbox for Kanban notifications. The notifier first
+-- claims events by advancing kanban_notify_subs.last_event_id, then records
+-- a pending outbox row before attempting adapter.send(). If the gateway dies
+-- after the claim but before the send, the pending row is replayed on restart
+-- instead of the event being silently lost.
+CREATE TABLE IF NOT EXISTS kanban_notify_outbox (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id          TEXT NOT NULL,
+    event_id         INTEGER NOT NULL,
+    platform         TEXT NOT NULL,
+    chat_id          TEXT NOT NULL,
+    thread_id        TEXT NOT NULL DEFAULT '',
+    user_id          TEXT,
+    notifier_profile TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  INTEGER NOT NULL DEFAULT 0,
+    last_error       TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE(task_id, event_id, platform, chat_id, thread_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
@@ -879,6 +902,7 @@ CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notify_outbox_due     ON kanban_notify_outbox(status, next_attempt_at, id);
 """
 
 
@@ -4674,6 +4698,190 @@ def rewind_notify_cursor(
     return cur.rowcount > 0
 
 
+def _insert_notify_outbox_rows(
+    conn: sqlite3.Connection,
+    *,
+    sub: dict,
+    events: Iterable[Event],
+    now: int,
+) -> list[int]:
+    """Insert notification outbox rows on the caller's transaction."""
+    outbox_ids: list[int] = []
+    for ev in events:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_notify_outbox
+               (task_id, event_id, platform, chat_id, thread_id, user_id,
+                notifier_profile, status, attempts, next_attempt_at,
+                created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+            """,
+            (
+                sub["task_id"], int(ev.id), sub["platform"], sub["chat_id"],
+                sub.get("thread_id") or "", sub.get("user_id"),
+                sub.get("notifier_profile"), now, now,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT id FROM kanban_notify_outbox
+             WHERE task_id = ? AND event_id = ? AND platform = ?
+               AND chat_id = ? AND thread_id = ?
+            """,
+            (
+                sub["task_id"], int(ev.id), sub["platform"], sub["chat_id"],
+                sub.get("thread_id") or "",
+            ),
+        ).fetchone()
+        if row:
+            outbox_ids.append(int(row["id"]))
+    return outbox_ids
+
+
+def enqueue_notify_outbox(
+    conn: sqlite3.Connection,
+    *,
+    sub: dict,
+    events: Iterable[Event],
+) -> list[int]:
+    """Persist pending notification deliveries for already-claimed events."""
+    now = int(time.time())
+    with write_txn(conn):
+        return _insert_notify_outbox_rows(conn, sub=sub, events=events, now=now)
+
+
+def claim_unseen_events_for_sub_to_outbox(
+    conn: sqlite3.Connection,
+    *,
+    sub: dict,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[int]]:
+    """Atomically claim unseen events and persist delivery intent.
+
+    This closes the crash window between advancing ``last_event_id`` and
+    writing the durable outbox row: either both happen in the same SQLite
+    transaction, or neither happens.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        new_cursor, events = unseen_events_for_sub(
+            conn,
+            task_id=sub["task_id"],
+            platform=sub["platform"],
+            chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+            kinds=kinds,
+        )
+        if not events:
+            return old_cursor, old_cursor, []
+        outbox_ids = _insert_notify_outbox_rows(
+            conn, sub=sub, events=events, now=int(time.time())
+        )
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (
+                int(new_cursor), sub["task_id"], sub["platform"], sub["chat_id"],
+                sub.get("thread_id") or "", int(old_cursor),
+            ),
+        )
+        return old_cursor, new_cursor, outbox_ids
+
+
+def claim_due_notify_outbox(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Claim due notification outbox rows for delivery.
+
+    Returns joined event/task data. Rows are marked ``sending`` and attempts are
+    incremented inside the same transaction so multiple gateways do not deliver
+    the same pending row concurrently.
+    """
+    ts = int(time.time()) if now is None else int(now)
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT o.*, e.kind, e.payload, e.created_at AS event_created_at,
+                   e.run_id, t.title, t.assignee, t.status AS task_status,
+                   t.result AS task_result
+              FROM kanban_notify_outbox o
+              JOIN task_events e ON e.id = o.event_id AND e.task_id = o.task_id
+              LEFT JOIN tasks t ON t.id = o.task_id
+             WHERE (
+                    o.status IN ('pending', 'retry')
+                    OR (o.status = 'sending' AND o.updated_at <= ?)
+                   )
+               AND o.next_attempt_at <= ?
+             ORDER BY o.id ASC
+             LIMIT ?
+            """,
+            (ts - 60, ts, int(limit)),
+        ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if ids:
+            conn.executemany(
+                """
+                UPDATE kanban_notify_outbox
+                   SET status = 'sending', attempts = attempts + 1,
+                       updated_at = ?
+                 WHERE id = ? AND status IN ('pending', 'retry', 'sending')
+                """,
+                [(ts, oid) for oid in ids],
+            )
+    return [dict(r) for r in rows]
+
+
+def mark_notify_outbox_delivered(
+    conn: sqlite3.Connection, outbox_ids: Iterable[int]
+) -> int:
+    ids = [int(i) for i in outbox_ids]
+    if not ids:
+        return 0
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.executemany(
+            "UPDATE kanban_notify_outbox SET status = 'delivered', updated_at = ? WHERE id = ?",
+            [(now, oid) for oid in ids],
+        )
+    return int(cur.rowcount or 0)
+
+
+def retry_notify_outbox(
+    conn: sqlite3.Connection,
+    outbox_ids: Iterable[int],
+    *,
+    error: str,
+    delay_seconds: int = 30,
+) -> int:
+    ids = [int(i) for i in outbox_ids]
+    if not ids:
+        return 0
+    now = int(time.time())
+    next_at = now + max(1, int(delay_seconds))
+    err = "delivery failed"
+    with write_txn(conn):
+        cur = conn.executemany(
+            """
+            UPDATE kanban_notify_outbox
+               SET status = 'retry', next_attempt_at = ?, last_error = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            [(next_at, err, now, oid) for oid in ids],
+        )
+    return int(cur.rowcount or 0)
+
+
 # ---------------------------------------------------------------------------
 # Retention + garbage collection
 # ---------------------------------------------------------------------------
@@ -4688,8 +4896,15 @@ def gc_events(
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events WHERE created_at < ? AND task_id IN "
-            "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))",
+            """
+            DELETE FROM task_events
+             WHERE created_at < ?
+               AND task_id IN (SELECT id FROM tasks WHERE status IN ('done', 'archived'))
+               AND id NOT IN (
+                   SELECT event_id FROM kanban_notify_outbox
+                    WHERE status IN ('pending', 'retry', 'sending')
+               )
+            """,
             (cutoff,),
         )
     return int(cur.rowcount or 0)

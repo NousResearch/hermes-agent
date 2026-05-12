@@ -608,6 +608,96 @@ def test_create_rejects_no_title(worker_env):
     assert json.loads(kt._handle_create({"title": "   ", "assignee": "x"})).get("error")
 
 
+def test_create_auto_subscribes_when_in_gateway_session(worker_env, monkeypatch):
+    """When kanban_create runs inside a gateway-bound session (the LLM was
+    invoked from a chat message on Telegram/Feishu/Discord/...), the new
+    task should automatically register a notify subscription so the user
+    is pinged when it reaches done/blocked. Mirrors the auto-subscribe
+    behavior of the /kanban create slash command."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(
+        kt,
+        "_capture_origin_from_session",
+        lambda: {
+            "platform": "telegram",
+            "chat_id": "-100123",
+            "thread_id": "42",
+            "user_id": "u_abc",
+        },
+    )
+
+    out = kt._handle_create({"title": "ping me when done", "assignee": "peer"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["notify_subscribed"] == "telegram"
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id=d["task_id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub["platform"] == "telegram"
+    assert sub["chat_id"] == "-100123"
+    assert sub["thread_id"] == "42"
+    assert sub["user_id"] == "u_abc"
+
+
+def test_create_skips_subscription_when_no_gateway_session(worker_env, monkeypatch):
+    """When kanban_create runs in CLI / cron / any non-gateway context where
+    HERMES_SESSION_PLATFORM isn't bound, no subscription is created (there
+    is no inbox to notify). Task creation itself still succeeds."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(kt, "_capture_origin_from_session", lambda: None)
+
+    out = kt._handle_create({"title": "cli task", "assignee": "peer"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d.get("notify_subscribed") is None
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id=d["task_id"])
+    finally:
+        conn.close()
+    assert subs == []
+
+
+def test_create_subscription_failure_does_not_break_task(worker_env, monkeypatch):
+    """Auto-subscribe is best-effort: if writing the subscription row throws
+    (e.g. schema drift, locked DB), task creation must still succeed and
+    return a usable task_id. The subscription error gets logged."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(
+        kt,
+        "_capture_origin_from_session",
+        lambda: {
+            "platform": "discord",
+            "chat_id": "999",
+            "thread_id": None,
+            "user_id": None,
+        },
+    )
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated subscription failure")
+
+    monkeypatch.setattr(kb, "add_notify_sub", _boom)
+
+    out = kt._handle_create({"title": "resilient", "assignee": "peer"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["task_id"]
+    assert d.get("notify_subscribed") is None
+
+
 def test_create_rejects_no_assignee(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"title": "t"})).get("error")

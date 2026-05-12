@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 
@@ -551,6 +551,32 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _capture_origin_from_session() -> Optional[Dict[str, Any]]:
+    """Capture the gateway source (platform/chat/thread/user) of the current
+    LLM call, mirroring the pattern used by cronjob_tools._origin_from_env.
+
+    Returns None when running outside a gateway context (e.g. CLI chat or
+    cron-spawned worker without bound session env), in which case there is
+    no inbox to notify and the caller should skip auto-subscription.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip()
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    if not platform or not chat_id:
+        return None
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip() or None
+    user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip() or None
+    return {
+        "platform": platform.lower(),
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
+    }
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -614,9 +640,35 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
+            # Auto-subscribe the originating gateway session to terminal-state
+            # notifications for this task, so the user (in their original
+            # chat/thread) receives a ping when the task reaches done/blocked.
+            # Mirrors the auto-subscribe behavior the gateway already applies
+            # to /kanban create slash commands. Best-effort: any failure is
+            # logged and swallowed — task creation has already succeeded.
+            origin = _capture_origin_from_session()
+            subscribed_to: Optional[str] = None
+            if origin:
+                try:
+                    kb.add_notify_sub(
+                        conn,
+                        task_id=new_tid,
+                        platform=origin["platform"],
+                        chat_id=origin["chat_id"],
+                        thread_id=origin["thread_id"],
+                        user_id=origin["user_id"],
+                        notifier_profile=os.environ.get("HERMES_PROFILE") or None,
+                    )
+                    subscribed_to = origin["platform"]
+                except Exception as _sub_exc:
+                    logger.warning(
+                        "kanban_create: auto-subscribe failed for task %s: %s",
+                        new_tid, _sub_exc,
+                    )
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                notify_subscribed=subscribed_to,
             )
         finally:
             conn.close()

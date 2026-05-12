@@ -663,6 +663,30 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _max_iterations_env(default: int = 90) -> int:
+    """Read ``HERMES_MAX_ITERATIONS`` safely for long-lived gateway paths.
+
+    The gateway re-reads runtime environment/config state in several places.
+    A malformed env value must not crash startup logging, background tasks,
+    or foreground message handling.
+    """
+    raw = os.environ.get("HERMES_MAX_ITERATIONS")
+    if raw is None:
+        return int(default)
+    text = str(raw).strip()
+    if not text:
+        return int(default)
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid HERMES_MAX_ITERATIONS=%r; using default %d",
+            raw,
+            int(default),
+        )
+        return int(default)
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -3231,15 +3255,12 @@ class GatewayRunner:
         # Log the resolved max_iterations budget so operators can verify the
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
-        try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            logger.info(
-                "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 90)",
-                _effective_max_iter,
-            )
-        except Exception:
-            pass
+        _effective_max_iter = _max_iterations_env()
+        logger.info(
+            "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
+            "or HERMES_MAX_ITERATIONS from .env, or default 90)",
+            _effective_max_iter,
+        )
         # Redaction status: ON by default (#17691). Surface a prominent
         # warning if an operator has explicitly opted out so they don't
         # forget the downgrade is active — the redactor snapshots its
@@ -10207,7 +10228,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _max_iterations_env()
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -14650,7 +14671,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _max_iterations_env()
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

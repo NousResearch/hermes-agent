@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -51,3 +52,22 @@ def test_reload_runtime_env_keeps_env_max_iterations_when_config_omits_key(
     gateway_run._reload_runtime_env_preserving_config_authority()
 
     assert os.environ["HERMES_MAX_ITERATIONS"] == "123"
+
+
+def test_max_iterations_env_invalid_value_falls_back_to_default(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "not-a-number")
+
+    with patch.object(gateway_run.logger, "warning") as warning:
+        assert gateway_run._max_iterations_env() == 90
+
+    warning.assert_called_once()
+    assert "Invalid HERMES_MAX_ITERATIONS" in warning.call_args[0][0]
+
+
+def test_max_iterations_env_strips_whitespace_and_uses_valid_value(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", " 42 ")
+
+    with patch.object(gateway_run.logger, "warning") as warning:
+        assert gateway_run._max_iterations_env() == 42
+
+    warning.assert_not_called()

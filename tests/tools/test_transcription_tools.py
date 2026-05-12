@@ -49,6 +49,9 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_STT_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -1346,3 +1349,251 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# _transcribe_gemini
+# ============================================================================
+
+class TestTranscribeGemini:
+    """Gemini STT provider tests."""
+
+    def test_no_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_STT_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        from tools.transcription_tools import _transcribe_gemini
+        result = _transcribe_gemini("/tmp/test.ogg", "gemini-3.1-flash-lite")
+        assert result["success"] is False
+        assert "Gemini STT requires an API key" in result["error"]
+
+    def test_successful_transcription(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        fake_response = {
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "hello world"}],
+                },
+            }],
+        }
+
+        class FakeResponse:
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        class FakeUrlopen:
+            def __enter__(self):
+                return FakeResponse()
+            def __exit__(self, *args):
+                return False
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("urllib.request.urlopen", return_value=FakeUrlopen()) as mock_urlopen:
+            from tools.transcription_tools import _transcribe_gemini
+            result = _transcribe_gemini(sample_ogg, "gemini-3.1-flash-lite")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello world"
+        assert result["provider"] == "gemini"
+
+        # Verify the URL contains the model and key
+        call_args = mock_urlopen.call_args
+        req = call_args[0][0]
+        assert "gemini-3.1-flash-lite" in req.full_url
+        assert "gemini-test-key" in req.full_url
+
+    def test_empty_candidates(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-test-key")
+
+        fake_response = {
+            "candidates": [],
+            "promptFeedback": {"blockReason": "SAFETY"},
+        }
+
+        class FakeResponse:
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        class FakeUrlopen:
+            def __enter__(self):
+                return FakeResponse()
+            def __exit__(self, *args):
+                return False
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("urllib.request.urlopen", return_value=FakeUrlopen()):
+            from tools.transcription_tools import _transcribe_gemini
+            result = _transcribe_gemini(sample_ogg, "gemini-3.1-flash-lite")
+
+        assert result["success"] is False
+        assert "SAFETY" in result["error"]
+
+    def test_http_error(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("GEMINI_STT_API_KEY", "gemini-test-key")
+
+        import urllib.error
+        import io
+
+        error_body = b'{"error": {"message": "rate limit exceeded"}}'
+        fake_fp = io.BytesIO(error_body)
+        http_error = urllib.error.HTTPError(
+            "url", 429, "Too Many Requests", {}, fake_fp
+        )
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("urllib.request.urlopen", side_effect=http_error):
+            from tools.transcription_tools import _transcribe_gemini
+            result = _transcribe_gemini(sample_ogg, "gemini-3.1-flash-lite")
+
+        assert result["success"] is False
+        assert "rate limit exceeded" in result["error"]
+
+    def test_language_hint_from_config(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        fake_response = {
+            "candidates": [{"content": {"parts": [{"text": "hola mundo"}]}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        class FakeUrlopen:
+            def __enter__(self):
+                return FakeResponse()
+            def __exit__(self, *args):
+                return False
+
+        config = {"gemini": {"language": "es"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("urllib.request.urlopen", return_value=FakeUrlopen()) as mock_urlopen:
+            from tools.transcription_tools import _transcribe_gemini
+            _transcribe_gemini(sample_ogg, "gemini-3.1-flash-lite")
+
+        req = mock_urlopen.call_args[0][0]
+        body = req.data.decode("utf-8")
+        assert "es" in body
+
+    def test_custom_base_url(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+        monkeypatch.setenv("GEMINI_STT_BASE_URL", "https://custom.gemini.com/v1")
+
+        fake_response = {
+            "candidates": [{"content": {"parts": [{"text": "test"}]}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        class FakeUrlopen:
+            def __enter__(self):
+                return FakeResponse()
+            def __exit__(self, *args):
+                return False
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("urllib.request.urlopen", return_value=FakeUrlopen()) as mock_urlopen:
+            from tools.transcription_tools import _transcribe_gemini
+            _transcribe_gemini(sample_ogg, "gemini-3.1-flash-lite")
+
+        req = mock_urlopen.call_args[0][0]
+        assert "custom.gemini.com" in req.full_url
+
+    def test_fallback_keys(self, monkeypatch):
+        """GEMINI_STT_API_KEY > GEMINI_API_KEY > GOOGLE_API_KEY."""
+        from tools.transcription_tools import _resolve_gemini_stt_api_key
+
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+        assert _resolve_gemini_stt_api_key() == "google-key"
+
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+        assert _resolve_gemini_stt_api_key() == "gemini-key"
+
+        monkeypatch.setenv("GEMINI_STT_API_KEY", "stt-key")
+        assert _resolve_gemini_stt_api_key() == "stt-key"
+
+
+# ============================================================================
+# _get_provider — Gemini
+# ============================================================================
+
+class TestGetProviderGemini:
+    """Gemini-specific provider selection tests."""
+
+    def test_gemini_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "gemini"}) == "gemini"
+
+    def test_gemini_explicit_no_key_returns_none(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_STT_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "gemini"}) == "none"
+
+    def test_auto_detect_gemini_before_groq(self, monkeypatch):
+        """Auto-detect: gemini (free) is preferred over groq (free tier)."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "gemini"
+
+    def test_auto_detect_groq_when_no_gemini_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "groq"
+
+
+# ============================================================================
+# transcribe_audio — Gemini dispatch
+# ============================================================================
+
+class TestTranscribeAudioGeminiDispatch:
+    def test_dispatches_to_gemini(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "gemini"}), \
+             patch("tools.transcription_tools._get_provider", return_value="gemini"), \
+             patch("tools.transcription_tools._transcribe_gemini",
+                   return_value={"success": True, "transcript": "hi", "provider": "gemini"}) as mock_gemini:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "gemini"
+        mock_gemini.assert_called_once()
+
+    def test_model_default_from_config(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "gemini", "gemini": {"model": "gemini-3.1-flash-lite"}}), \
+             patch("tools.transcription_tools._get_provider", return_value="gemini"), \
+             patch("tools.transcription_tools._transcribe_gemini",
+                   return_value={"success": True, "transcript": "hi"}) as mock_gemini:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_gemini.call_args[0][1] == "gemini-3.1-flash-lite"
+
+    def test_model_override_passed_to_gemini(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="gemini"), \
+             patch("tools.transcription_tools._transcribe_gemini",
+                   return_value={"success": True, "transcript": "hi"}) as mock_gemini:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="custom-gemini-model")
+
+        assert mock_gemini.call_args[0][1] == "custom-gemini-model"
+

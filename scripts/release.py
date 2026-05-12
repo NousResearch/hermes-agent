@@ -148,6 +148,8 @@ AUTHOR_MAP = {
     "270097726+hookinglau@users.noreply.github.com": "hookinglau",
     "5029547+AllynSheep@users.noreply.github.com": "AllynSheep",
     "allyn0306@gmail.com": "AllynSheep",
+    "46887634+aqilaziz@users.noreply.github.com": "aqilaziz",
+    "gonzes7@gmail.com": "aqilaziz",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",

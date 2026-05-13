@@ -2132,6 +2132,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        profile_env = f'Environment="HERMES_PROFILE={profile_arg.split(" ", 1)[1]}"\n' if profile_arg else ""
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -2163,7 +2164,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{profile_env}Restart=always
 RestartSec=60
 RestartMaxDelaySec=300
 RestartSteps=5
@@ -2181,6 +2182,7 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    profile_env = f'Environment="HERMES_PROFILE={profile_arg.split(" ", 1)[1]}"\n' if profile_arg else ""
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -2198,7 +2200,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{profile_env}Restart=always
 RestartSec=60
 RestartMaxDelaySec=300
 RestartSteps=5

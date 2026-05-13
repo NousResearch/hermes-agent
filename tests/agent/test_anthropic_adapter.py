@@ -1,6 +1,8 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -8,6 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent import anthropic_adapter
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
@@ -54,6 +57,36 @@ class TestIsOAuthToken:
 
     def test_empty(self):
         assert _is_oauth_token("") is False
+
+
+class TestClaudeCodeVersionCache:
+    def test_concurrent_calls_share_one_detection(self, monkeypatch):
+        monkeypatch.setattr(anthropic_adapter, "_claude_code_version_cache", None)
+        call_count = 0
+        call_count_lock = threading.Lock()
+        start_barrier = threading.Barrier(8)
+
+        def fake_detect():
+            nonlocal call_count
+            with call_count_lock:
+                call_count += 1
+            # Hold the first detector briefly so concurrent callers have a real
+            # chance to race on the cache check.
+            threading.Event().wait(0.1)
+            return "9.9.9"
+
+        monkeypatch.setattr(anthropic_adapter, "_detect_claude_code_version", fake_detect)
+
+        def worker():
+            start_barrier.wait(timeout=5)
+            return anthropic_adapter._get_claude_code_version()
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: worker(), range(8)))
+
+        assert results == ["9.9.9"] * 8
+        assert call_count == 1
+        assert anthropic_adapter._claude_code_version_cache == "9.9.9"
 
 
 class TestBuildAnthropicClient:

@@ -1249,29 +1249,26 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
-        if backend == "searxng":
-            from tools.web_providers.searxng import SearXNGSearchProvider
-            response_data = SearXNGSearchProvider().search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+        # Plugin-backed providers (brave-free, ddgs, searxng) — dispatched
+        # through agent.web_search_registry. Inline providers (parallel,
+        # exa, tavily, firecrawl) keep their own branches below until they
+        # too migrate to plugins. Spike scope: only the three providers
+        # already living in tools/web_providers/ are moved to plugins; the
+        # rest follow in the real migration PR.
+        if backend in {"brave-free", "ddgs", "searxng"}:
+            from agent.web_search_registry import get_provider as _wsp_get_provider
 
-        if backend == "brave-free":
-            from tools.web_providers.brave_free import BraveFreeSearchProvider
-            response_data = BraveFreeSearchProvider().search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "ddgs":
-            from tools.web_providers.ddgs import DDGSSearchProvider
-            response_data = DDGSSearchProvider().search(query, limit)
+            provider = _wsp_get_provider(backend)
+            if provider is None or not provider.supports_search():
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"Web search provider '{backend}' is not registered. "
+                        "Run `hermes tools` to set up a provider."
+                    ),
+                }
+            else:
+                response_data = provider.search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)

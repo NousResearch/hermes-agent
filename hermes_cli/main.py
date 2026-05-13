@@ -5622,15 +5622,16 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    allow_install_fallback: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
-    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
-    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
-    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
-    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``hermes update`` to stash the
-    lockfile — repeatedly.
+    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present.
+    The optional ``npm install`` fallback is useful for WIP checkouts with stale
+    lockfiles, but update paths disable it because ``npm install`` on npm >= 10
+    can silently rewrite committed lockfiles (stripping ``"peer": true`` etc.),
+    leaving the working tree dirty and causing repeated ``[REDACTED_INTERNAL_IP] update``
+    stashes.
     """
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
@@ -5644,7 +5645,7 @@ def _run_npm_install_deterministic(
             errors="replace",
             check=False,
         )
-        if ci_result.returncode == 0:
+        if ci_result.returncode == 0 or not allow_install_fallback:
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
@@ -6992,6 +6993,7 @@ def _update_node_dependencies() -> None:
             npm,
             path,
             extra_args=("--silent", "--no-fund", "--no-audit", "--progress=false"),
+            allow_install_fallback=False,
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")

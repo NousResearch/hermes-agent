@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import PROJECT_ROOT, cmd_update, _run_npm_install_deterministic
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -86,6 +86,59 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 1
         assert "main" in pull_cmds[0]
+
+    @patch("subprocess.run")
+    def test_deterministic_npm_install_can_disable_install_fallback(
+        self, mock_run, tmp_path
+    ):
+        (tmp_path / "package-lock.json").write_text("{}")
+        ci_result = subprocess.CompletedProcess(
+            ["/usr/bin/npm", "ci"], 1, stdout="", stderr="lockfile mismatch"
+        )
+        mock_run.return_value = ci_result
+
+        result = _run_npm_install_deterministic(
+            "/usr/bin/npm",
+            tmp_path,
+            extra_args=("--silent",),
+            allow_install_fallback=False,
+        )
+
+        assert result is ci_result
+        mock_run.assert_called_once_with(
+            ["/usr/bin/npm", "ci", "--silent"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+
+    @patch("subprocess.run")
+    def test_deterministic_npm_install_keeps_fallback_for_wip_checkouts(
+        self, mock_run, tmp_path
+    ):
+        (tmp_path / "package-lock.json").write_text("{}")
+        ci_result = subprocess.CompletedProcess(
+            ["/usr/bin/npm", "ci"], 1, stdout="", stderr="lockfile mismatch"
+        )
+        install_result = subprocess.CompletedProcess(
+            ["/usr/bin/npm", "install"], 0, stdout="", stderr=""
+        )
+        mock_run.side_effect = [ci_result, install_result]
+
+        result = _run_npm_install_deterministic(
+            "/usr/bin/npm",
+            tmp_path,
+            extra_args=("--silent",),
+        )
+
+        assert result is install_result
+        assert [call.args[0] for call in mock_run.call_args_list] == [
+            ["/usr/bin/npm", "ci", "--silent"],
+            ["/usr/bin/npm", "install", "--silent"],
+        ]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

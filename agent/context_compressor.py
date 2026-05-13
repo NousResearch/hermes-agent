@@ -381,6 +381,7 @@ class ContextCompressor(ContextEngine):
         api_key: str = "",
         provider: str = "",
         api_mode: str = "",
+        threshold_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
@@ -389,10 +390,16 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        if threshold_tokens is not None:
+            self.threshold_tokens = max(
+                threshold_tokens,
+                MINIMUM_CONTEXT_LENGTH,
+            )
+        else:
+            self.threshold_tokens = max(
+                int(context_length * self.threshold_percent),
+                MINIMUM_CONTEXT_LENGTH,
+            )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -405,6 +412,7 @@ class ContextCompressor(ContextEngine):
         self,
         model: str,
         threshold_percent: float = 0.50,
+        threshold_tokens: int | None = None,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
@@ -432,14 +440,22 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
+        # Resolve threshold_tokens: if an absolute value is given, use it
+        # directly; otherwise derive from threshold_percent × context_length.
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        if threshold_tokens is not None:
+            self.threshold_tokens = max(
+                threshold_tokens,
+                MINIMUM_CONTEXT_LENGTH,
+            )
+        else:
+            self.threshold_tokens = max(
+                int(self.context_length * threshold_percent),
+                MINIMUM_CONTEXT_LENGTH,
+            )
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -450,12 +466,16 @@ class ContextCompressor(ContextEngine):
         )
 
         if not quiet_mode:
+            if threshold_tokens is not None:
+                _pct_display = "fixed"
+            else:
+                _pct_display = f"{threshold_percent * 100:.0f}%"
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "threshold=%d (%s) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                _pct_display, self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )
@@ -1426,9 +1446,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self.threshold_tokens,
             )
             logger.info(
-                "Model context limit: %d tokens (%.0f%% = %d)",
+                "Model context limit: %d tokens (threshold=%d)",
                 self.context_length,
-                self.threshold_percent * 100,
                 self.threshold_tokens,
             )
             tail_msgs = n_messages - compress_end

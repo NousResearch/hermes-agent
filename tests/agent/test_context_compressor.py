@@ -38,6 +38,71 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=50000) is False
 
 
+class TestThresholdTokens:
+    """Tests for threshold_tokens parameter (absolute token threshold)."""
+
+    def test_threshold_tokens_used_when_given(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="deepseek-chat",
+                threshold_percent=0.50,
+                threshold_tokens=120000,
+                quiet_mode=True,
+            )
+        assert c.threshold_tokens == 120000
+        assert c.should_compress(prompt_tokens=100000) is False
+        assert c.should_compress(prompt_tokens=120000) is True
+        assert c.should_compress(prompt_tokens=150000) is True
+
+    def test_threshold_tokens_falls_back_to_percent_when_none(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="claude-sonnet-4",
+                threshold_percent=0.75,
+                threshold_tokens=None,
+                quiet_mode=True,
+            )
+        assert c.threshold_tokens == 150000
+
+    def test_threshold_tokens_with_minimum_floor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="deepseek-chat",
+                threshold_percent=0.50,
+                threshold_tokens=1000,
+                quiet_mode=True,
+            )
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        assert c.threshold_tokens >= MINIMUM_CONTEXT_LENGTH
+
+    def test_update_model_respects_threshold_tokens(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="deepseek-chat",
+                threshold_percent=0.50,
+                threshold_tokens=120000,
+                quiet_mode=True,
+            )
+        c.update_model(
+            model="deepseek-chat",
+            context_length=1_000_000,
+            threshold_tokens=80000,
+        )
+        assert c.threshold_tokens == 80000
+
+    def test_update_model_falls_back_to_percent_when_no_threshold_tokens(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="claude-sonnet-4",
+                threshold_percent=0.50,
+                quiet_mode=True,
+            )
+        c.update_model(
+            model="claude-sonnet-4",
+            context_length=200_000,
+        )
+        assert c.threshold_tokens == 100000
+
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):

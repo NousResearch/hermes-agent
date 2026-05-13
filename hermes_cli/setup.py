@@ -1747,18 +1747,67 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
 
+    # Ask about percentage threshold or fixed token threshold
     current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
-    try:
-        threshold = float(threshold_str)
-        if 0.5 <= threshold <= 0.95:
-            config["compression"]["threshold"] = threshold
-    except ValueError:
-        pass
-
-    print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
+    current_tt = config.get("compression", {}).get("threshold_tokens")
+    use_fixed = current_tt is not None
+    threshold_type = prompt(
+        "Threshold type: (p)ercentage of context or (f)ixed token count",
+        "f" if use_fixed else "p",
     )
+    if threshold_type.lower().startswith("f"):
+        current_tt_str = str(current_tt) if current_tt else ""
+        tt_str = prompt("Fixed threshold in tokens (e.g. 120000)", current_tt_str)
+        try:
+            tt_val = int(tt_str)
+            if tt_val > 0:
+                config["compression"]["threshold_tokens"] = tt_val
+                # Clear percentage-based threshold to avoid confusion
+                config["compression"].pop("threshold", None)
+        except (ValueError, TypeError):
+            pass
+    else:
+        threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
+        try:
+            threshold = float(threshold_str)
+            if 0.5 <= threshold <= 0.95:
+                config["compression"]["threshold"] = threshold
+                # Clear fixed token threshold
+                config["compression"].pop("threshold_tokens", None)
+        except ValueError:
+            pass
+
+    print_success("Compression threshold configured")
+
+    # Ask about per-model overrides
+    per_model_config = config.setdefault("compression", {}).setdefault("per_model", {})
+    add_per_model = prompt("Add per-model compression overrides? (y/N)", "n")
+    if add_per_model.lower().startswith("y"):
+        while True:
+            model_name = prompt("Model name (e.g. deepseek-chat) or empty to finish", "")
+            if not model_name:
+                break
+            model_entry = {}
+            tt_str = prompt("Fixed token threshold (e.g. 120000, or empty to skip)", "")
+            try:
+                tt_val = int(tt_str)
+                if tt_val > 0:
+                    model_entry["threshold_tokens"] = tt_val
+            except (ValueError, TypeError):
+                pass
+            if "threshold_tokens" not in model_entry:
+                pct_str = prompt("Percentage threshold (e.g. 0.75, or empty to skip)", "")
+                try:
+                    pct_val = float(pct_str)
+                    if 0.0 < pct_val <= 1.0:
+                        model_entry["threshold"] = pct_val
+                except (ValueError, TypeError):
+                    pass
+            if model_entry:
+                per_model_config[model_name] = model_entry
+                print_success(f"  Added override for {model_name}")
+            else:
+                print_warning("  No valid settings provided, skipped")
 
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")

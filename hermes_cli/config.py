@@ -728,6 +728,8 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold_tokens": None,     # optional absolute token threshold (overrides threshold %)
+        "per_model": {},              # per-model overrides: {"model-name": {"threshold": 0.75} or {"threshold_tokens": 120000}}
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
@@ -4800,7 +4802,21 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _threshold_tokens = compression.get('threshold_tokens')
+        _threshold_pct = compression.get('threshold', 0.50)
+        if _threshold_tokens:
+            print(f"  Threshold:    {_threshold_tokens:,} tokens (fixed)")
+        else:
+            print(f"  Threshold:    {_threshold_pct * 100:.0f}% of context")
+        _per_model = compression.get('per_model', {})
+        if _per_model:
+            for _mname, _mcfg in _per_model.items():
+                _mt = _mcfg.get('threshold_tokens')
+                _mp = _mcfg.get('threshold')
+                if _mt:
+                    print(f"    ├ {_mname}: {_mt:,} tokens (fixed)")
+                elif _mp:
+                    print(f"    ├ {_mname}: {_mp * 100:.0f}% of context")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})

@@ -2116,6 +2116,7 @@ class AIAgent:
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_threshold_tokens: int | None = None
         try:
             from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
             _model_cthresh = _cthresh_fn(self.model)
@@ -2123,6 +2124,34 @@ class AIAgent:
                 compression_threshold = _model_cthresh
         except Exception:
             pass
+
+        # Per-model compression overrides from config.yaml
+        _per_model_cfg: dict = _compression_cfg.get("per_model", {}) or {}
+        if isinstance(_per_model_cfg, dict) and self.model in _per_model_cfg:
+            _model_override = _per_model_cfg[self.model]
+            if isinstance(_model_override, dict):
+                _mt = _model_override.get("threshold_tokens")
+                if _mt is not None:
+                    try:
+                        compression_threshold_tokens = int(_mt)
+                    except (TypeError, ValueError):
+                        pass
+                _mp = _model_override.get("threshold")
+                if _mp is not None:
+                    try:
+                        compression_threshold = float(_mp)
+                    except (TypeError, ValueError):
+                        pass
+
+        # Global threshold_tokens overrides the percentage when per-model doesn't specify
+        if compression_threshold_tokens is None:
+            _global_tt = _compression_cfg.get("threshold_tokens")
+            if _global_tt is not None:
+                try:
+                    compression_threshold_tokens = int(_global_tt)
+                except (TypeError, ValueError):
+                    pass
+
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -2319,6 +2348,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
+                threshold_tokens=compression_threshold_tokens,
             )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
@@ -2326,6 +2356,7 @@ class AIAgent:
             self.context_compressor = ContextCompressor(
                 model=self.model,
                 threshold_percent=compression_threshold,
+                threshold_tokens=compression_threshold_tokens,
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
@@ -2750,6 +2781,32 @@ class AIAgent:
                 config_context_length=getattr(self, "_config_context_length", None),
                 custom_providers=_sm_custom_providers,
             )
+            # Re-resolve threshold_tokens for the new model (per-model config)
+            _sm_threshold_tokens: int | None = None
+            try:
+                from hermes_cli.config import load_config
+                _sm_cfg = load_config()
+                _sm_comp_cfg = _sm_cfg.get("compression", {}) if isinstance(_sm_cfg, dict) else {}
+                if isinstance(_sm_comp_cfg, dict):
+                    _sm_per_model = _sm_comp_cfg.get("per_model", {}) or {}
+                    if isinstance(_sm_per_model, dict) and self.model in _sm_per_model:
+                        _sm_mo = _sm_per_model[self.model]
+                        if isinstance(_sm_mo, dict):
+                            _sm_mt = _sm_mo.get("threshold_tokens")
+                            if _sm_mt is not None:
+                                try:
+                                    _sm_threshold_tokens = int(_sm_mt)
+                                except (TypeError, ValueError):
+                                    pass
+                    if _sm_threshold_tokens is None:
+                        _sm_global_tt = _sm_comp_cfg.get("threshold_tokens")
+                        if _sm_global_tt is not None:
+                            try:
+                                _sm_threshold_tokens = int(_sm_global_tt)
+                            except (TypeError, ValueError):
+                                pass
+            except Exception:
+                pass
             self.context_compressor.update_model(
                 model=self.model,
                 context_length=new_context_length,
@@ -2757,6 +2814,7 @@ class AIAgent:
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
                 api_mode=self.api_mode,
+                threshold_tokens=_sm_threshold_tokens,
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──

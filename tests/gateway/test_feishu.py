@@ -4517,3 +4517,208 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestFeishuThreading(unittest.TestCase):
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+        from unittest.mock import AsyncMock, Mock
+        from types import SimpleNamespace
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Topic Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._dispatch_inbound_event = AsyncMock()
+        return adapter
+
+    def test_inbound_message_uses_root_id_as_thread_id(self):
+        import json, asyncio
+        from types import SimpleNamespace
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "hello"}),
+            message_type="text",
+            message_id="m1",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_topic_root",
+            thread_id="om_topic_root",
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m1",
+            )
+        )
+        _, kwargs = adapter.build_source.call_args
+        self.assertEqual(kwargs["thread_id"], "om_topic_root")
+
+    def test_inbound_message_falls_back_to_message_id_when_no_root_id(self):
+        import json, asyncio
+        from types import SimpleNamespace
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "hello"}),
+            message_type="text",
+            message_id="m_reply_123",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        # Omit root_id — Lark message objects may lack this attr
+        # The production code uses getattr(message, "root_id", None) safely
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply_123",
+            )
+        )
+        _, kwargs = adapter.build_source.call_args
+        self.assertEqual(kwargs["thread_id"], "m_reply_123")
+
+    def test_inbound_message_no_thread_id_when_neither_root_nor_message_id(self):
+        import json, asyncio
+        from types import SimpleNamespace
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "hello"}),
+            message_type="text",
+            message_id=None,
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        # Omit root_id on purpose
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id=None,
+            )
+        )
+        _, kwargs = adapter.build_source.call_args
+        self.assertIsNone(kwargs["thread_id"])
+
+    def test_send_raw_message_replies_into_thread_when_metadata_has_thread_id(self):
+        import json, asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, Mock, patch
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        reply=Mock(return_value=SimpleNamespace(
+                            success=lambda: True,
+                            data=SimpleNamespace(message_id="replied_in_thread"),
+                        )),
+                        create=Mock(return_value=SimpleNamespace(
+                            success=lambda: True,
+                            data=SimpleNamespace(message_id="created_outside"),
+                        )),
+                    )
+                )
+            )
+        )
+        adapter._build_reply_message_body = Mock(
+            return_value={"content": "test", "msg_type": "text", "reply_in_thread": True}
+        )
+        adapter._build_reply_message_request = Mock(return_value="reply_request")
+        adapter._build_create_message_body = Mock(
+            return_value={"content": "test", "msg_type": "text"}
+        )
+        adapter._build_create_message_request = Mock(return_value="create_request")
+
+        with patch(
+            "gateway.platforms.feishu.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as mock_to_thread:
+            mock_to_thread.side_effect = (
+                lambda fn, *a, **kw: fn(*a, **kw) if callable(fn) else fn
+            )
+            result = asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload=json.dumps({"text": "thinking..."}),
+                    reply_to=None,
+                    metadata={"thread_id": "om_topic_root"},
+                )
+            )
+
+        adapter._client.im.v1.message.reply.assert_called_once()
+        adapter._client.im.v1.message.create.assert_not_called()
+        self.assertEqual(result.data.message_id, "replied_in_thread")
+
+    def test_send_raw_message_creates_when_no_reply_to_and_no_thread_id_in_metadata(self):
+        import json, asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, Mock, patch
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        reply=Mock(return_value=SimpleNamespace(
+                            success=lambda: True,
+                            data=SimpleNamespace(message_id="replied"),
+                        )),
+                        create=Mock(return_value=SimpleNamespace(
+                            success=lambda: True,
+                            data=SimpleNamespace(message_id="created"),
+                        )),
+                    )
+                )
+            )
+        )
+        adapter._build_reply_message_body = Mock(
+            return_value={"content": "test", "msg_type": "text", "reply_in_thread": True}
+        )
+        adapter._build_reply_message_request = Mock(return_value="reply_request")
+        adapter._build_create_message_body = Mock(
+            return_value={"content": "test", "msg_type": "text"}
+        )
+        adapter._build_create_message_request = Mock(return_value="create_request")
+
+        with patch(
+            "gateway.platforms.feishu.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as mock_to_thread:
+            mock_to_thread.side_effect = (
+                lambda fn, *a, **kw: fn(*a, **kw) if callable(fn) else fn
+            )
+            result = asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload=json.dumps({"text": "hello"}),
+                    reply_to=None,
+                    metadata=None,
+                )
+            )
+
+        adapter._client.im.v1.message.create.assert_called_once()
+        adapter._client.im.v1.message.reply.assert_not_called()
+        self.assertEqual(result.data.message_id, "created")
+

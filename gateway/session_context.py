@@ -56,6 +56,14 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_GIT_AUTHOR_NAME: ContextVar = ContextVar("GIT_AUTHOR_NAME", default=_UNSET)
+_GIT_AUTHOR_EMAIL: ContextVar = ContextVar("GIT_AUTHOR_EMAIL", default=_UNSET)
+_GIT_COMMITTER_NAME: ContextVar = ContextVar("GIT_COMMITTER_NAME", default=_UNSET)
+_GIT_COMMITTER_EMAIL: ContextVar = ContextVar("GIT_COMMITTER_EMAIL", default=_UNSET)
+_HERMES_REQUESTER_GITHUB_LOGIN: ContextVar = ContextVar("HERMES_REQUESTER_GITHUB_LOGIN", default=_UNSET)
+_HERMES_REQUESTER_NAME: ContextVar = ContextVar("HERMES_REQUESTER_NAME", default=_UNSET)
+_HERMES_REQUESTER_EMAIL: ContextVar = ContextVar("HERMES_REQUESTER_EMAIL", default=_UNSET)
+_HERMES_BOT_GIT_EMAIL: ContextVar = ContextVar("HERMES_BOT_GIT_EMAIL", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -72,6 +80,14 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
+    "GIT_AUTHOR_NAME": _GIT_AUTHOR_NAME,
+    "GIT_AUTHOR_EMAIL": _GIT_AUTHOR_EMAIL,
+    "GIT_COMMITTER_NAME": _GIT_COMMITTER_NAME,
+    "GIT_COMMITTER_EMAIL": _GIT_COMMITTER_EMAIL,
+    "HERMES_REQUESTER_GITHUB_LOGIN": _HERMES_REQUESTER_GITHUB_LOGIN,
+    "HERMES_REQUESTER_NAME": _HERMES_REQUESTER_NAME,
+    "HERMES_REQUESTER_EMAIL": _HERMES_REQUESTER_EMAIL,
+    "HERMES_BOT_GIT_EMAIL": _HERMES_BOT_GIT_EMAIL,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -86,6 +102,7 @@ def set_session_vars(
     user_id: str = "",
     user_name: str = "",
     session_key: str = "",
+    requester_env: dict[str, str] | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -104,6 +121,10 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
     ]
+    for name, value in (requester_env or {}).items():
+        var = _VAR_MAP.get(name)
+        if var is not None:
+            tokens.append(var.set(str(value)))
     return tokens
 
 
@@ -126,6 +147,14 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _GIT_AUTHOR_NAME,
+        _GIT_AUTHOR_EMAIL,
+        _GIT_COMMITTER_NAME,
+        _GIT_COMMITTER_EMAIL,
+        _HERMES_REQUESTER_GITHUB_LOGIN,
+        _HERMES_REQUESTER_NAME,
+        _HERMES_REQUESTER_EMAIL,
+        _HERMES_BOT_GIT_EMAIL,
     ):
         var.set("")
 

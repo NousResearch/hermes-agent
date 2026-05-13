@@ -7036,6 +7036,20 @@ class GatewayRunner:
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
+        # Fail fast for human Slack sessions that would otherwise create PRs
+        # with bot-only attribution. Cron/unattended jobs have no Slack requester.
+        requester_identity = None
+        if source.platform.value == "slack" and source.user_id:
+            from gateway.requester_identity import (
+                format_missing_identity_message,
+                resolve_slack_requester_identity,
+                should_require_requester_identity,
+            )
+            requester_identity = resolve_slack_requester_identity(str(source.user_id))
+            if requester_identity is None and should_require_requester_identity(source.platform, source.user_id):
+                slack_handle = source.user_name or f"<@{source.user_id}>"
+                return format_missing_identity_message(slack_handle)
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
@@ -7049,6 +7063,13 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        if requester_identity is not None:
+            from gateway.requester_identity import requester_identity_prompt
+            context_prompt = (
+                context_prompt
+                + "\n\n"
+                + requester_identity_prompt(requester_identity, self._bot_git_email())
+            )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -12909,7 +12930,15 @@ class GatewayRunner:
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
+        from gateway.requester_identity import resolve_slack_requester_identity
         from gateway.session_context import set_session_vars
+
+        requester_env = None
+        identity = resolve_slack_requester_identity(
+            str(context.source.user_id) if context.source.user_id else None
+        ) if context.source.platform.value == "slack" else None
+        if identity is not None:
+            requester_env = identity.as_env(bot_email=self._bot_git_email())
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -12918,7 +12947,17 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            requester_env=requester_env,
         )
+
+    def _bot_git_email(self) -> str:
+        """Return the bot email to use in Co-Authored-By trailers."""
+
+        return (
+            os.environ.get("HERMES_BOT_GIT_EMAIL")
+            or os.environ.get("GIT_COMMITTER_EMAIL")
+            or "claw@citizen.com"
+        ).strip()
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

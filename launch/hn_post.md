@@ -1,7 +1,10 @@
 # HN Post Draft
 
-**Title:**
+**Title (use after DWG hard gate passes — see TODOS.md):**
 Show HN: DeepParser – parse DWG/CAD drawings and Excel-embedded PDFs without OCR
+
+**Title (use for initial launch if DWG gate not yet confirmed):**
+Show HN: DeepParser – parse Excel-embedded PDFs and scanned documents via a REST API + Python SDK
 
 ---
 

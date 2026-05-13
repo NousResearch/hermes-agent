@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import aiosqlite
@@ -45,15 +46,19 @@ async def admin_stats(request: Request) -> AdminStatsResponse:
             conn, "SELECT COUNT(*) FROM request_log WHERE status_code >= 500 AND ts >= datetime('now', '-1 day')"
         ) or (0,))
 
-    # Disk usage of upload dir
-    storage_bytes = 0
-    if os.path.isdir(UPLOAD_DIR):
-        for dirpath, _, filenames in os.walk(UPLOAD_DIR):
-            for fname in filenames:
-                try:
-                    storage_bytes += os.path.getsize(os.path.join(dirpath, fname))
-                except OSError:
-                    pass
+    # Disk usage of upload dir (run synchronous os.walk in a thread to avoid blocking event loop)
+    def _disk_usage() -> int:
+        total = 0
+        if os.path.isdir(UPLOAD_DIR):
+            for dirpath, _, filenames in os.walk(UPLOAD_DIR):
+                for fname in filenames:
+                    try:
+                        total += os.path.getsize(os.path.join(dirpath, fname))
+                    except OSError:
+                        pass
+        return total
+
+    storage_bytes = await asyncio.to_thread(_disk_usage)
 
     activation_rate = (
         round(keys_activated / keys_registered, 4) if keys_registered else 0.0

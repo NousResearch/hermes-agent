@@ -32,10 +32,15 @@ async def run_parse_task(
     from ..config import PARSE_TIMEOUT_SECS, SEMAPHORE_TIMEOUT_SECS
 
     sem = get_semaphore()
+    # Track whether we successfully acquired the semaphore so we only release if we did.
+    # asyncio.wait_for() may cancel the acquire coroutine after the internal counter was
+    # already decremented, which would cause sem.release() in the finally block to inflate
+    # the semaphore count above SEMAPHORE_SIZE if we released unconditionally.
+    _acquired = False
     try:
-        # Acquire semaphore with timeout → 503 if all slots busy
         try:
             await asyncio.wait_for(sem.acquire(), timeout=SEMAPHORE_TIMEOUT_SECS)
+            _acquired = True
         except asyncio.TimeoutError:
             async with db.connect() as conn:
                 await conn.execute(
@@ -95,7 +100,8 @@ async def run_parse_task(
             logger.error("parse FAILED job=%s err=%s", job_id, detail)
 
     finally:
-        sem.release()
+        if _acquired:
+            sem.release()
         # Always delete the uploaded file after parse attempt
         try:
             if os.path.exists(file_path):

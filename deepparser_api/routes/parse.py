@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import uuid
 from pathlib import Path
 from typing import Annotated
+
+logger = logging.getLogger(__name__)
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
@@ -83,10 +86,9 @@ async def submit_parse(
     # Save with UUID filename (security: original filename never reaches subprocess)
     job_id = str(uuid.uuid4())
     stored_name = f"{uuid.uuid4()}.{ext}"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    await asyncio.to_thread(os.makedirs, UPLOAD_DIR, exist_ok=True)
     stored_path = os.path.join(UPLOAD_DIR, stored_name)
-    with open(stored_path, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(Path(stored_path).write_bytes, content)
 
     async with db.connect() as conn:
         await conn.execute(
@@ -101,10 +103,17 @@ async def submit_parse(
         run_parse_task(job_id, key_row["id"], stored_path)
     )
 
+    def _log_task_error(t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("parse task failed job=%s", job_id, exc_info=t.exception())
+
+    task.add_done_callback(_log_task_error)
+
     if mode == "sync" and len(content) < 5 * 1024 * 1024:
         # Wait briefly; if done return inline, otherwise fall through to QUEUED
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=SYNC_WAIT_SECS)
+            # _log_task_error already attached above handles post-timeout exceptions.
             async with db.connect() as conn:
                 conn.row_factory = aiosqlite.Row
                 row = await db.fetchone(conn, "SELECT * FROM parse_jobs WHERE id=?", (job_id,))

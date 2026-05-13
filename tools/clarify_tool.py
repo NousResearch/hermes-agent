@@ -98,6 +98,8 @@ CLARIFY_SCHEMA = {
         "- You want post-task feedback ('How did that work out?')\n"
         "- You want to offer to save a skill or update memory\n"
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
+        "If the user does not respond (timeout), treat the result as a "
+        "refusal — do NOT proceed with destructive or irreversible actions. "
         "Do NOT use this tool for simple yes/no confirmation of dangerous "
         "commands (the terminal tool handles that). Prefer making a reasonable "
         "default choice yourself when the decision is low-stakes."

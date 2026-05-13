@@ -156,6 +156,26 @@ class TestClarifyToolCallbackHandling:
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
 
+    def test_timeout_refusal_response_passed_through(self):
+        """When callback returns a timeout refusal, it should be passed through unchanged.
+
+        Regression test for #24912: clarify timeout must not instruct
+        the agent to proceed with destructive actions.
+        """
+        def timeout_callback(question, choices):
+            return (
+                "The user did not provide a response within the time limit. "
+                "Treat this as a refusal — do NOT proceed with any pending "
+                "destructive or irreversible action. Ask again or wait for "
+                "explicit confirmation."
+            )
+
+        result = json.loads(clarify_tool("Delete .git folder?", callback=timeout_callback))
+        response = result["user_response"]
+        assert "refusal" in response.lower() or "do not proceed" in response.lower()
+        assert "best judgement" not in response.lower()
+        assert "best judgment" not in response.lower()
+
 
 class TestCheckClarifyRequirements:
     """Tests for the requirements check function."""

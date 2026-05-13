@@ -56,10 +56,12 @@ def clarify_callback(cli, question, choices):
     cli._clarify_deadline = 0
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
-    cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+    cprint(f"\n{_DIM}(clarify timed out after {timeout}s — treating as refusal){_RST}")
     return (
         "The user did not provide a response within the time limit. "
-        "Use your best judgement to make the choice and proceed."
+        "Treat this as a refusal — do NOT proceed with any pending "
+        "destructive or irreversible action. Ask again or wait for "
+        "explicit confirmation."
     )
 
 

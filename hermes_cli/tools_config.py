@@ -1586,7 +1586,9 @@ def _plugin_video_gen_providers() -> list[dict]:
 # removed and this helper becomes the sole source of web-provider picker
 # rows (matching how Spotify / Google Meet are surfaced today purely from
 # their plugins).
-_WEB_PLUGIN_SKIPLIST = frozenset({"brave-free", "ddgs", "searxng", "exa", "parallel", "tavily"})
+_WEB_PLUGIN_SKIPLIST = frozenset({
+    "brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl",
+})
 
 
 def _plugin_web_search_providers() -> list[dict]:

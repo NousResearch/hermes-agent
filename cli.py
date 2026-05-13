@@ -7993,7 +7993,11 @@ class HermesCLI:
             return
 
         if lower == "resume":
-            state = mgr.resume()
+            state = mgr.resume(
+                pending_input=self._pending_input,
+                is_idle=lambda: not getattr(self, "_agent_running", False),
+                on_message=lambda msg: _cprint(f"  {msg}"),
+            )
             if state is None:
                 _cprint(f"  {_DIM}No loop to resume.{_RST}")
             else:
@@ -8036,15 +8040,21 @@ class HermesCLI:
             return
 
         try:
-            state = mgr.set(prompt, interval_seconds=interval_seconds)
+            state = mgr.set(
+                prompt,
+                interval_seconds=interval_seconds,
+                pending_input=self._pending_input,
+                is_idle=lambda: not getattr(self, "_agent_running", False),
+                on_message=lambda msg: _cprint(f"  {msg}"),
+            )
         except ValueError as exc:
             _cprint(f"  Invalid loop: {exc}")
             return
 
-        _cprint(f"  ⊙ Loop set ({state.interval_seconds}s interval, {mgr.default_max_turns}-turn budget): {state.prompt}")
+        _cprint(f"  ⊙ Loop set ({state.interval_seconds}s interval, scheduler running): {state.prompt}")
         _cprint(
-            f"  {_DIM}After each turn, if {state.interval_seconds}s have elapsed, "
-            f"the prompt will repeat. Use /loop status, /loop pause, /loop resume, /loop clear.{_RST}"
+            f"  {_DIM}The prompt will fire every {state.interval_seconds}s when idle. "
+            f"Use /loop status, /loop pause, /loop resume, /loop clear.{_RST}"
         )
         # Kick off immediately so the user doesn't have to send a separate message
         try:
@@ -9378,82 +9388,14 @@ class HermesCLI:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
     def _maybe_continue_loop_after_turn(self) -> None:
-        """Hook run after every CLI turn.  If a loop is active and the
-        interval has elapsed, re-queue the prompt.
+        """No-op — loop is driven by background scheduler, not post‑turn hook.
 
-        Same preemption rules as /goal:
-        - Skip if real user message already in _pending_input
-        - Skip if turn was interrupted (Ctrl+C)
-        - Skip on empty responses
-        - Goal takes priority over loop (check goal first)
+        The LoopScheduler daemon thread ticks every second, checks
+        ``_agent_running``, and injects the prompt only when the agent
+        is idle.  This method exists only to keep the import/attribute
+        contract stable for gateway and tests.
         """
-        # Goal takes priority — if goal is active, let it drive
-        try:
-            goal_mgr = self._get_goal_manager()
-            if goal_mgr is not None and goal_mgr.is_active():
-                return
-        except Exception:
-            pass
-
-        mgr = self._get_loop_manager()
-        if mgr is None or not mgr.is_active():
-            return
-
-        # Preemption: real user message queued
-        try:
-            if getattr(self, "_pending_input", None) is not None \
-                    and not self._pending_input.empty():
-                return
-        except Exception:
-            pass
-
-        # Interrupt guard
-        if getattr(self, "_last_turn_interrupted", False):
-            try:
-                mgr.pause(reason="user-interrupted (Ctrl+C)")
-            except Exception as exc:
-                logging.debug("loop pause-on-interrupt failed: %s", exc)
-            _cprint(
-                f"  {_DIM}⏸ Loop paused — turn was interrupted. "
-                f"Use /loop resume to continue, or /loop clear to stop.{_RST}"
-            )
-            return
-
-        # Empty response guard
-        last_response = ""
-        try:
-            hist = self.conversation_history or []
-            for msg in reversed(hist):
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        parts = [
-                            p.get("text", "")
-                            for p in content
-                            if isinstance(p, dict) and p.get("type") in {"text", "output_text"}
-                        ]
-                        last_response = "\n".join(t for t in parts if t)
-                    else:
-                        last_response = str(content or "")
-                    break
-        except Exception:
-            last_response = ""
-
-        if not last_response.strip():
-            return
-
-        decision = mgr.evaluate_after_turn(user_initiated=True)
-        msg = decision.get("message") or ""
-        if msg:
-            _cprint(f"  {msg}")
-
-        if decision.get("should_continue"):
-            prompt = decision.get("continuation_prompt")
-            if prompt:
-                try:
-                    self._pending_input.put(prompt)
-                except Exception as exc:
-                    logging.debug("loop continuation enqueue failed: %s", exc)
+        pass
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
@@ -14376,10 +14318,8 @@ class HermesCLI:
                         except Exception as _goal_exc:
                             logging.debug("goal continuation hook failed: %s", _goal_exc)
 
-                        try:
-                            self._maybe_continue_loop_after_turn()
-                        except Exception as _loop_exc:
-                            logging.debug("loop continuation hook failed: %s", _loop_exc)
+                        # Loop is now driven by a background scheduler thread,
+                        # not a post-turn hook — no blocking continuation here.
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and
@@ -14684,6 +14624,13 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            # Stop loop scheduler if running
+            try:
+                loop_mgr = self._get_loop_manager()
+                if loop_mgr is not None:
+                    loop_mgr.shutdown()
+            except Exception:
+                pass
             _run_cleanup()
             self._print_exit_summary()
 

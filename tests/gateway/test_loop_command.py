@@ -272,10 +272,12 @@ class TestLoopCommandGateway:
 # ------------------------------------------------------------------
 
 class TestLoopContinuationHook:
+    """_post_turn_loop_continuation is now a no-op — loop is driven by
+    the LoopScheduler background daemon thread, not a gateway hook."""
 
     @pytest.mark.asyncio
-    async def test_post_turn_loop_continuation_enqueues_event(self, hermes_home):
-        """_post_turn_loop_continuation enqueues a continuation event when interval elapsed."""
+    async def test_no_op_never_enqueues(self, hermes_home):
+        """No-op hook never calls _enqueue_fifo."""
         runner = _make_runner()
         session_entry = MagicMock()
         session_entry.session_id = "hook-gw-sid-1"
@@ -283,39 +285,8 @@ class TestLoopContinuationHook:
         runner._enqueue_fifo = MagicMock()
         runner._session_key_for_source = lambda _s: "key-hook-1"
 
-        # Set up an active loop
         from hermes_cli.loop import LoopManager
         loop_mgr = LoopManager(session_id="hook-gw-sid-1")
-        loop_mgr.set("check deployment")
-
-        await runner._post_turn_loop_continuation(
-            session_entry=session_entry,
-            source=_make_source(),
-            final_response="all good",
-        )
-
-        runner._enqueue_fifo.assert_called_once()
-        args, _ = runner._enqueue_fifo.call_args
-        assert "[Loop check] check deployment" in args[1].text
-
-    @pytest.mark.asyncio
-    async def test_goal_priority_over_loop(self, hermes_home):
-        """When goal is active, loop continuation is skipped."""
-        runner = _make_runner()
-        session_entry = MagicMock()
-        session_entry.session_id = "hook-gw-sid-2"
-        runner.session_store.get_or_create_session.return_value = session_entry
-        runner._enqueue_fifo = MagicMock()
-        runner._session_key_for_source = lambda _s: "key-hook-2"
-
-        # Set an active goal
-        from hermes_cli.goals import GoalManager
-        goal_mgr = GoalManager(session_id="hook-gw-sid-2")
-        goal_mgr.set("do the thing")
-
-        # Set an active loop
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-gw-sid-2")
         loop_mgr.set("check deployment")
 
         await runner._post_turn_loop_continuation(
@@ -327,14 +298,37 @@ class TestLoopContinuationHook:
         runner._enqueue_fifo.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_loop_skips_when_interval_not_elapsed(self, hermes_home):
-        """Loop continuation skips when interval hasn't elapsed."""
+    async def test_no_op_does_not_error(self, hermes_home):
+        """No-op hook doesn't raise with empty session."""
+        runner = _make_runner()
+        session_entry = MagicMock()
+        session_entry.session_id = "hook-gw-sid-2"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner._enqueue_fifo = MagicMock()
+        runner._session_key_for_source = lambda _s: "key-hook-2"
+
+        # No loop set — should still not error
+        await runner._post_turn_loop_continuation(
+            session_entry=session_entry,
+            source=_make_source(),
+            final_response="all good",
+        )
+
+        runner._enqueue_fifo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_op_with_goal_active(self, hermes_home):
+        """No-op hook doesn't error with active goal."""
         runner = _make_runner()
         session_entry = MagicMock()
         session_entry.session_id = "hook-gw-sid-3"
         runner.session_store.get_or_create_session.return_value = session_entry
         runner._enqueue_fifo = MagicMock()
         runner._session_key_for_source = lambda _s: "key-hook-3"
+
+        from hermes_cli.goals import GoalManager
+        goal_mgr = GoalManager(session_id="hook-gw-sid-3")
+        goal_mgr.set("do the thing")
 
         from hermes_cli.loop import LoopManager, save_loop
         loop_mgr = LoopManager(session_id="hook-gw-sid-3")

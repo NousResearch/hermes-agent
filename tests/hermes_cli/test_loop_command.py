@@ -25,6 +25,10 @@ def _make_cli():
     cli._pending_input.empty.return_value = True
     cli.conversation_history = []
     cli._last_turn_interrupted = False
+    # Patch _cprint to plain print() so capsys captures output and
+    # prompt_toolkit does not try to flush to a closed stdout.
+    import cli as _cli_mod
+    _cli_mod._cprint = print
     return cli
 
 
@@ -214,33 +218,19 @@ class TestLoopCommandCLI:
 # ------------------------------------------------------------------
 # _maybe_continue_loop_after_turn hook tests
 # ------------------------------------------------------------------
-
 class TestLoopContinuationHook:
+    """_maybe_continue_loop_after_turn is now a no-op — loop is driven by
+    the LoopScheduler background daemon thread, not a post-turn hook."""
 
-    def test_goal_takes_priority(self, hermes_home):
-        """When goal is active, loop hook skips."""
+    def test_no_op_does_not_error(self, hermes_home):
+        """No-op hook doesn't raise on any state."""
         from cli import HermesCLI
         cli = _make_cli()
         cli.session_id = "hook-sid-1"
-
-        # Set a goal (active)
-        from hermes_cli.goals import GoalManager
-        goal_mgr = GoalManager(session_id="hook-sid-1")
-        goal_mgr.set("do the thing")
-        cli._goal_manager = goal_mgr
-
-        # Set a loop (also active)
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-1")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-
-        # Goal takes priority — loop should not enqueue
         cli._maybe_continue_loop_after_turn()
-        cli._pending_input.put.assert_not_called()
 
-    def test_loop_continues_when_interval_elapsed(self, hermes_home):
-        """Loop hook enqueues continuation when interval elapsed."""
+    def test_no_op_never_enqueues(self, hermes_home):
+        """No-op hook never calls _pending_input.put."""
         from cli import HermesCLI
         cli = _make_cli()
         cli.session_id = "hook-sid-2"
@@ -249,76 +239,40 @@ class TestLoopContinuationHook:
         loop_mgr = LoopManager(session_id="hook-sid-2")
         loop_mgr.set("check deployment")
         cli._loop_manager = loop_mgr
-
-        # Give it a non-empty last response
-        cli.conversation_history = [{"role": "assistant", "content": "all good"}]
-
-        cli._maybe_continue_loop_after_turn()
-        # First call: interval always passes (last_fired_at=0)
-        cli._pending_input.put.assert_called_once()
-        args, _ = cli._pending_input.put.call_args
-        assert "[Loop check] check deployment" in args[0]
-
-    def test_loop_skips_when_interval_not_elapsed(self, hermes_home):
-        """Loop hook skips when interval hasn't elapsed."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-3"
-
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-3")
-        loop_mgr.set("check deployment", interval_seconds=300)
-        loop_mgr.state.last_fired_at = __import__("time").time()
-        cli._loop_manager = loop_mgr
-
         cli.conversation_history = [{"role": "assistant", "content": "all good"}]
 
         cli._maybe_continue_loop_after_turn()
         cli._pending_input.put.assert_not_called()
 
-    def test_loop_skips_on_empty_response(self, hermes_home):
-        """Loop hook skips when last response is empty."""
+    def test_no_op_never_pauses(self, hermes_home):
+        """No-op hook does not pause loop on interrupt."""
+        from cli import HermesCLI
+        cli = _make_cli()
+        cli.session_id = "hook-sid-3"
+        cli._last_turn_interrupted = True
+
+        from hermes_cli.loop import LoopManager
+        loop_mgr = LoopManager(session_id="hook-sid-3")
+        loop_mgr.set("check deployment")
+        cli._loop_manager = loop_mgr
+
+        cli._maybe_continue_loop_after_turn()
+        assert loop_mgr.state.status == "active"
+
+    def test_no_op_with_goal_active(self, hermes_home):
+        """No-op hook doesn't error even with active goal."""
         from cli import HermesCLI
         cli = _make_cli()
         cli.session_id = "hook-sid-4"
+
+        from hermes_cli.goals import GoalManager
+        goal_mgr = GoalManager(session_id="hook-sid-4")
+        goal_mgr.set("do the thing")
+        cli._goal_manager = goal_mgr
 
         from hermes_cli.loop import LoopManager
         loop_mgr = LoopManager(session_id="hook-sid-4")
         loop_mgr.set("check deployment")
         cli._loop_manager = loop_mgr
 
-        cli.conversation_history = [{"role": "assistant", "content": ""}]
-
         cli._maybe_continue_loop_after_turn()
-        cli._pending_input.put.assert_not_called()
-
-    def test_loop_skips_on_interrupt(self, hermes_home):
-        """Loop hook pauses loop on interrupt."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-5"
-        cli._last_turn_interrupted = True
-
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-5")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-
-        cli._maybe_continue_loop_after_turn()
-        cli._pending_input.put.assert_not_called()
-        assert loop_mgr.state.status == "paused"
-
-    def test_loop_skips_when_user_message_queued(self, hermes_home):
-        """Loop hook skips when real user message is already queued."""
-        from cli import HermesCLI
-        cli = _make_cli()
-        cli.session_id = "hook-sid-6"
-        cli._pending_input.empty.return_value = False
-
-        from hermes_cli.loop import LoopManager
-        loop_mgr = LoopManager(session_id="hook-sid-6")
-        loop_mgr.set("check deployment")
-        cli._loop_manager = loop_mgr
-
-        cli._maybe_continue_loop_after_turn()
-        cli._pending_input.put.assert_not_called()

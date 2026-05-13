@@ -1,11 +1,15 @@
-"""Tests for hermes_cli/loop.py — persistent timer-driven loops."""
+"""Tests for hermes_cli/loop.py — background non‑blocking loop scheduler."""
 
 from __future__ import annotations
 
+import queue
 import time
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
+
+# Convenience imports for scheduler tests
+from hermes_cli.loop import save_loop, load_loop
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -198,108 +202,248 @@ class TestLoopManager:
         mgr = LoopManager(session_id="empty-sid")
         assert "No active loop" in mgr.status_line()
 
-
-# ──────────────────────────────────────────────────────────────────────
-# evaluate_after_turn
-# ──────────────────────────────────────────────────────────────────────
-
-
-class TestEvaluateAfterTurn:
-    def test_inactive_no_state(self, hermes_home):
+    def test_shutdown_stops_scheduler(self, hermes_home):
         from hermes_cli.loop import LoopManager
 
-        mgr = LoopManager(session_id="eval-sid-1")
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["verdict"] == "inactive"
-        assert d["should_continue"] is False
+        pq = queue.Queue()
+        mgr = LoopManager(session_id="shutdown-sid")
+        mgr.set("test", pending_input=pq, is_idle=lambda: True)
+        assert mgr.is_running()
 
-    def test_inactive_when_paused(self, hermes_home):
+        mgr.shutdown()
+        assert not mgr.is_running()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LoopScheduler
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestLoopScheduler:
+    """Tests for the non‑blocking background scheduler.
+
+    The scheduler replaces the old blocking evaluate_after_turn().
+    It runs a daemon thread that only injects prompts when the agent
+    is idle (is_idle() returns True).
+    """
+
+    def test_start_and_stop(self, hermes_home):
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        state = LoopState(prompt="test", interval_seconds=60)
+        sched = LoopScheduler(
+            "sid-1", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        assert not sched.running
+        sched.start()
+        assert sched.running
+        sched.stop()
+        # Give the thread a moment to exit
+        time.sleep(0.05)
+        assert not sched.running
+
+    def test_stop_is_idempotent(self, hermes_home):
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        state = LoopState(prompt="test", interval_seconds=60)
+        sched = LoopScheduler(
+            "sid-2", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        sched.start()
+        sched.stop()
+        sched.stop()  # idempotent
+        time.sleep(0.05)
+        assert not sched.running
+
+    def test_first_tick_fires_when_idle(self, hermes_home):
+        """First tick: last_fired_at=0, so interval always 'elapsed'.
+        With is_idle=True, prompt should be injected."""
+        from hermes_cli.loop import LoopScheduler, LoopState, save_loop
+
+        pq = queue.Queue()
+        state = LoopState(prompt="check deploy", interval_seconds=300,
+                          last_fired_at=0.0, status="active")
+        save_loop("sid-3", state)
+
+        sched = LoopScheduler(
+            "sid-3", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        sched._tick()  # manual tick — bypasses sleep
+        sched.stop()
+
+        # Prompt should have been injected
+        try:
+            msg = pq.get(timeout=1)
+        except queue.Empty:
+            msg = None
+        assert msg is not None
+        assert "[Loop check] check deploy" == msg
+
+    def test_tick_skips_when_busy(self, hermes_home):
+        """When is_idle returns False, no prompt should be injected."""
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        state = LoopState(prompt="check deploy", interval_seconds=300,
+                          last_fired_at=0.0, status="active")
+        save_loop("sid-4", state)
+
+        sched = LoopScheduler(
+            "sid-4", state,
+            pending_input=pq,
+            is_idle=lambda: False,  # agent is BUSY
+        )
+        sched._tick()
+
+        # Nothing should be in the queue
+        assert pq.empty()
+        sched.stop()
+
+    def test_tick_skips_when_interval_not_elapsed(self, hermes_home):
+        """When last_fired_at is recent, prompt should NOT fire."""
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        state = LoopState(prompt="check deploy", interval_seconds=300,
+                          last_fired_at=time.time(),  # just fired
+                          status="active")
+        save_loop("sid-5", state)
+
+        sched = LoopScheduler(
+            "sid-5", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        sched._tick()
+
+        assert pq.empty()
+        sched.stop()
+
+    def test_tick_updates_fire_time_and_turns(self, hermes_home):
+        from hermes_cli.loop import LoopScheduler, LoopState, load_loop
+
+        pq = queue.Queue()
+        state = LoopState(prompt="test", interval_seconds=60,
+                          last_fired_at=0.0, turns_completed=0,
+                          status="active")
+        save_loop("sid-6", state)
+
+        sched = LoopScheduler(
+            "sid-6", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        before = time.time()
+        sched._tick()
+        after = time.time()
+        sched.stop()
+
+        # Reload from DB to verify persistence
+        reloaded = load_loop("sid-6")
+        assert reloaded is not None
+        assert reloaded.turns_completed == 1
+        assert reloaded.last_fired_at >= before
+        assert reloaded.last_fired_at <= after
+
+    def test_tick_skips_paused(self, hermes_home):
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        state = LoopState(prompt="test", interval_seconds=60,
+                          last_fired_at=0.0, status="paused")
+        save_loop("sid-7", state)
+
+        sched = LoopScheduler(
+            "sid-7", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+        )
+        sched._tick()
+        assert pq.empty()
+        sched.stop()
+
+    def test_on_message_callback(self, hermes_home):
+        from hermes_cli.loop import LoopScheduler, LoopState
+
+        pq = queue.Queue()
+        messages = []
+
+        state = LoopState(prompt="test", interval_seconds=60,
+                          last_fired_at=0.0, status="active")
+        save_loop("sid-8", state)
+
+        sched = LoopScheduler(
+            "sid-8", state,
+            pending_input=pq,
+            is_idle=lambda: True,
+            on_message=lambda msg: messages.append(msg),
+        )
+        sched._tick()
+        sched.stop()
+
+        assert len(messages) == 1
+        assert "Loop check" in messages[0]
+        assert "test" in messages[0]
+
+    def test_scheduler_integrated_via_loop_manager(self, hermes_home):
+        """LoopManager.set() with callbacks starts the scheduler."""
         from hermes_cli.loop import LoopManager
 
-        mgr = LoopManager(session_id="eval-sid-2")
-        mgr.set("test")
+        pq = queue.Queue()
+        mgr = LoopManager(session_id="int-sid")
+        assert not mgr.is_running()
+
+        mgr.set("check", pending_input=pq, is_idle=lambda: True)
+        assert mgr.is_running()
+
+        mgr.shutdown()
+        assert not mgr.is_running()
+
+    def test_pause_stops_scheduler(self, hermes_home):
+        from hermes_cli.loop import LoopManager
+
+        pq = queue.Queue()
+        mgr = LoopManager(session_id="pause-sid")
+        mgr.set("test", pending_input=pq, is_idle=lambda: True)
+        assert mgr.is_running()
+
         mgr.pause()
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["verdict"] == "inactive"
-        assert d["should_continue"] is False
-
-    def test_interval_not_elapsed(self, hermes_home):
-        from hermes_cli.loop import LoopManager
-
-        mgr = LoopManager(session_id="eval-sid-3")
-        mgr.set("test", interval_seconds=300)
-        # Simulate a recent fire
-        mgr.state.last_fired_at = time.time()
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["should_continue"] is False
-        assert d["verdict"] == "fired"
-        assert "interval not elapsed" in d["reason"]
-
-    def test_interval_elapsed_first_fire(self, hermes_home):
-        """First fire: last_fired_at is 0, so interval is always 'elapsed'."""
-        from hermes_cli.loop import LoopManager
-
-        mgr = LoopManager(session_id="eval-sid-4", default_max_turns=5)
-        mgr.set("check deployment")
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["should_continue"] is True
-        assert d["verdict"] == "fired"
-        assert "[Loop check] check deployment" == d["continuation_prompt"]
-        assert mgr.state.turns_completed == 1
-        assert mgr.state.last_fired_at > 0
-
-    def test_interval_elapsed_subsequent_fire(self, hermes_home):
-        from hermes_cli.loop import LoopManager
-
-        mgr = LoopManager(session_id="eval-sid-5", default_max_turns=5)
-        mgr.set("check deployment", interval_seconds=300)
-        # First fire
-        mgr.evaluate_after_turn(user_initiated=True)
-        assert mgr.state.turns_completed == 1
-        # Reset last_fired_at to simulate interval elapsed
-        mgr.state.last_fired_at = 0
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["should_continue"] is True
-        assert d["verdict"] == "fired"
-        assert mgr.state.turns_completed == 2
-
-    def test_budget_exhausted(self, hermes_home):
-        from hermes_cli.loop import LoopManager
-
-        mgr = LoopManager(session_id="eval-sid-6", default_max_turns=3)
-        mgr.set("hard loop")
-        # Call 1: turns_completed 0→1, interval passes, fire
-        mgr.evaluate_after_turn(user_initiated=True)
-        mgr.state.last_fired_at = 0
-        # Call 2: turns_completed 1→2, interval passes, fire
-        mgr.evaluate_after_turn(user_initiated=True)
-        mgr.state.last_fired_at = 0
-        # Call 3: turns_completed 2→3, budget 3 >= 3 → pause
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["should_continue"] is False
-        assert d["verdict"] == "budget"
+        assert not mgr.is_running()
         assert mgr.state.status == "paused"
-        assert "turns used" in d["message"]
 
-    def test_user_initiated_false_increments_turns(self, hermes_home):
+    def test_clear_stops_scheduler(self, hermes_home):
         from hermes_cli.loop import LoopManager
 
-        mgr = LoopManager(session_id="eval-sid-7", default_max_turns=10)
-        mgr.set("test")
-        d = mgr.evaluate_after_turn(user_initiated=False)
-        assert d["should_continue"] is True
-        # All turns increment turns_completed
-        assert mgr.state.turns_completed == 1
+        pq = queue.Queue()
+        mgr = LoopManager(session_id="clear-sid")
+        mgr.set("test", pending_input=pq, is_idle=lambda: True)
+        assert mgr.is_running()
 
-    def test_message_on_fired(self, hermes_home):
+        mgr.clear()
+        assert not mgr.is_running()
+        assert mgr.state is None
+
+    def test_resume_restarts_scheduler(self, hermes_home):
         from hermes_cli.loop import LoopManager
 
-        mgr = LoopManager(session_id="eval-sid-8", default_max_turns=5)
-        mgr.set("check logs")
-        d = mgr.evaluate_after_turn(user_initiated=True)
-        assert d["message"] != ""
-        assert "Loop check" in d["message"]
-        assert "check logs" in d["message"]
+        pq = queue.Queue()
+        mgr = LoopManager(session_id="resume-sid")
+        mgr.set("test", pending_input=pq, is_idle=lambda: True)
+        mgr.pause()
+        assert not mgr.is_running()
+
+        mgr.resume(pending_input=pq, is_idle=lambda: True)
+        assert mgr.is_running()
+
+        mgr.shutdown()
 
 
 # ──────────────────────────────────────────────────────────────────────

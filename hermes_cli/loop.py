@@ -1,9 +1,10 @@
-"""Persistent session loops — timer-driven same-session continuation.
+"""Persistent session loops — background idle‑aware scheduler.
 
-A loop is a prompt that repeats at a user-specified interval across turns.
-After each turn completes, if the interval has elapsed and the loop is
-active, the prompt is fed back into the same session as a normal user
-message.  No judge, no system-prompt mutation — prompt caching stays intact.
+A loop is a prompt that repeats at a user‑specified interval.  A background
+daemon thread ticks every second, checks whether the agent is idle (not
+mid‑turn), and injects the loop prompt into the session's pending‑input
+queue.  This matches Claude Code's /loop behaviour: non‑blocking, fires
+only between turns, user can type at any time.
 
 State is persisted in SessionDB's ``state_meta`` table keyed by
 ``loop:<session_id>`` so ``/loop resume`` picks it up.
@@ -13,10 +14,12 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -168,15 +171,18 @@ def _parse_interval(token: str) -> Optional[int]:
 
 
 class LoopManager:
-    """Per-session loop state + timer-driven continuation decisions.
+    """Per-session loop state + background scheduler.
 
     The CLI and gateway each hold one ``LoopManager`` per live session.
+    When a loop is set, a background daemon thread starts ticking every
+    second.  It only injects the loop prompt when the agent is idle.
     """
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[LoopState] = load_loop(session_id)
+        self._scheduler: Optional[LoopScheduler] = None
 
     # --- introspection ------------------------------------------------
 
@@ -187,23 +193,32 @@ class LoopManager:
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
 
+    def is_running(self) -> bool:
+        return self._scheduler is not None and self._scheduler.running
+
     def status_line(self) -> str:
         s = self._state
         if s is None or s.status == "done":
             return "No active loop. Set one with /loop <prompt>."
+        running = "running" if self.is_running() else "stopped"
         turns = f"{s.turns_completed}/{self.default_max_turns} turns"
         if s.status == "active":
-            return f"⊙ Loop (active, {turns}): {s.prompt}"
+            return f"⊙ Loop (active, {running}, {turns}): {s.prompt}"
         if s.status == "paused":
-            return f"⏸ Loop (paused, {turns}): {s.prompt}"
-        return f"Loop ({s.status}, {turns}): {s.prompt}"
+            return f"⏸ Loop (paused, {running}, {turns}): {s.prompt}"
+        return f"Loop ({s.status}, {running}, {turns}): {s.prompt}"
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, prompt: str, *, interval_seconds: Optional[int] = None) -> LoopState:
+    def set(self, prompt: str, *,
+            interval_seconds: Optional[int] = None,
+            pending_input: Optional[queue.Queue] = None,
+            is_idle: Optional[Callable[[], bool]] = None,
+            on_message: Optional[Callable[[str], None]] = None) -> LoopState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("loop prompt is empty")
+        self._stop_scheduler()
         state = LoopState(
             prompt=prompt,
             interval_seconds=int(interval_seconds) if interval_seconds else 300,
@@ -214,6 +229,14 @@ class LoopManager:
         )
         self._state = state
         save_loop(self.session_id, state)
+        if pending_input is not None and is_idle is not None:
+            self._scheduler = LoopScheduler(
+                self.session_id, state,
+                pending_input=pending_input,
+                is_idle=is_idle,
+                on_message=on_message,
+            )
+            self._scheduler.start()
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[LoopState]:
@@ -221,99 +244,166 @@ class LoopManager:
             return None
         self._state.status = "paused"
         save_loop(self.session_id, self._state)
+        self._stop_scheduler()
         return self._state
 
-    def resume(self) -> Optional[LoopState]:
+    def resume(self, *,
+               pending_input: Optional[queue.Queue] = None,
+               is_idle: Optional[Callable[[], bool]] = None,
+               on_message: Optional[Callable[[str], None]] = None) -> Optional[LoopState]:
         if not self._state:
             return None
         self._state.status = "active"
         save_loop(self.session_id, self._state)
+        if pending_input is not None and is_idle is not None:
+            self._scheduler = LoopScheduler(
+                self.session_id, self._state,
+                pending_input=pending_input,
+                is_idle=is_idle,
+                on_message=on_message,
+            )
+            self._scheduler.start()
         return self._state
 
     def clear(self) -> None:
         if self._state is None:
             return
+        self._stop_scheduler()
         self._state.status = "done"
         save_loop(self.session_id, self._state)
         self._state = None
 
-    # --- core driver — called after every turn ------------------------
+    def shutdown(self) -> None:
+        """Stop scheduler — called on CLI exit."""
+        self._stop_scheduler()
 
-    def evaluate_after_turn(self, *, user_initiated: bool = True) -> Dict[str, Any]:
-        """Check interval and budget.  Return a decision dict.
+    # --- internal -----------------------------------------------------
 
-        ``user_initiated`` distinguishes a real user prompt (True) from a
-        continuation prompt we fed ourselves (False).
+    def _stop_scheduler(self) -> None:
+        if self._scheduler is not None:
+            try:
+                self._scheduler.stop()
+            except Exception as exc:
+                logger.debug("LoopManager: scheduler stop failed: %s", exc)
+            self._scheduler = None
 
-        Decision keys:
-          - ``status``: current loop status after update
-          - ``should_continue``: bool — caller should fire another turn
-          - ``continuation_prompt``: str or None
-          - ``verdict``: "fired" | "paused" | "inactive" | "budget"
-          - ``reason``: str
-          - ``message``: user-visible one-liner
+
+# ──────────────────────────────────────────────────────────────────────
+# Background scheduler
+# ──────────────────────────────────────────────────────────────────────
+
+
+class LoopScheduler:
+    """Background daemon thread that ticks every second.
+
+    On each tick:
+    1. Checks ``is_idle()`` — if agent is busy, skip
+    2. Computes elapsed since last fire
+    3. If interval elapsed, injects loop prompt into ``pending_input``
+    4. Updates state and persists
+
+    This is the Claude Code ``createCronScheduler`` equivalent:
+    non‑blocking, idle‑gated, cooperative.
+    """
+
+    TICK_INTERVAL = 1.0  # seconds — Claude Code uses 1s
+
+    def __init__(
+        self,
+        session_id: str,
+        state: LoopState,
+        *,
+        pending_input: queue.Queue,
+        is_idle: Callable[[], bool],
+        on_message: Optional[Callable[[str], None]] = None,
+    ):
+        self._session_id = session_id
+        self._state = state
+        self._pending_input = pending_input
+        self._is_idle = is_idle
+        self._on_message = on_message
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._tick_loop,
+                name=f"loop-scheduler-{self._session_id[:8]}",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._running = False
+
+    def _tick_loop(self) -> None:
+        """Main scheduler loop — runs in daemon thread."""
+        while self._running:
+            time.sleep(self.TICK_INTERVAL)
+            try:
+                self._tick()
+            except Exception as exc:
+                logger.debug("LoopScheduler tick error: %s", exc)
+
+    def _tick(self) -> None:
+        """One tick of the scheduler.
+
+        Claude Code equivalent: the ``v()`` function in ``createCronScheduler``.
         """
-        state = self._state
-        if state is None or state.status != "active":
-            return {
-                "status": state.status if state else None,
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "inactive",
-                "reason": "no active loop",
-                "message": "",
-            }
+        # 1. Idle gate — skip if agent is busy (equivalent: isLoading())
+        if not self._is_idle():
+            return
 
-        # Count the turn that just finished.
-        state.turns_completed += 1
+        # 2. Reload state — might have been modified externally
+        state = load_loop(self._session_id)
+        if state is None:
+            self._running = False
+            return
+        if state.status != "active":
+            return
+        self._state = state
 
-        # Check interval
+        # 3. Interval check — has enough time elapsed?
         now = time.time()
         elapsed = now - state.last_fired_at
         if state.last_fired_at > 0 and elapsed < state.interval_seconds:
-            return {
-                "status": "active",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "fired",
-                "reason": f"interval not elapsed ({int(elapsed)}s / {state.interval_seconds}s)",
-                "message": "",
-            }
+            return
 
-        # Budget check
-        if state.turns_completed >= self.default_max_turns:
-            state.status = "paused"
-            save_loop(self.session_id, state)
-            return {
-                "status": "paused",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "budget",
-                "reason": f"turn budget exhausted ({state.turns_completed}/{self.default_max_turns})",
-                "message": (
-                    f"⏸ Loop paused — {state.turns_completed}/{self.default_max_turns} turns used. "
-                    "Use /loop resume to keep going, or /loop clear to stop."
-                ),
-            }
-
-        # Fire!
+        # 4. Fire!
         state.last_fired_at = now
-        save_loop(self.session_id, state)
-        return {
-            "status": "active",
-            "should_continue": True,
-            "continuation_prompt": f"[Loop check] {state.prompt}",
-            "verdict": "fired",
-            "reason": f"interval elapsed ({int(elapsed)}s / {state.interval_seconds}s)",
-            "message": (
-                f"↻ Loop check ({state.turns_completed}/{self.default_max_turns}): {state.prompt}"
-            ),
-        }
+        state.turns_completed += 1
+        save_loop(self._session_id, state)
+
+        prompt = f"[Loop check] {state.prompt}"
+        try:
+            self._pending_input.put(prompt)
+        except Exception as exc:
+            logger.debug("LoopScheduler: failed to enqueue prompt: %s", exc)
+            return
+
+        if self._on_message is not None:
+            try:
+                self._on_message(
+                    f"↻ Loop check ({state.turns_completed}): {state.prompt}"
+                )
+            except Exception:
+                pass
 
 
 __all__ = [
     "LoopState",
     "LoopManager",
+    "LoopScheduler",
     "DEFAULT_MAX_TURNS",
     "load_loop",
     "save_loop",

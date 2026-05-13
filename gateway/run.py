@@ -3100,15 +3100,57 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _is_synthetic_empty_terminal_response(agent_result: dict, response: str) -> bool:
+    """True when ``response == "(empty)"`` is Hermes' terminal sentinel."""
+    if response != "(empty)" or not isinstance(agent_result, dict):
+        return False
+
+    messages = agent_result.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return bool(msg.get("_empty_terminal_sentinel"))
+    return False
+
+
+def _is_literal_empty_model_text(agent_result: dict, response: str) -> bool:
+    """True when the model literally output ``(empty)`` rather than Hermes' sentinel."""
+    if response != "(empty)" or not isinstance(agent_result, dict):
+        return False
+
+    messages = agent_result.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return not msg.get("_empty_terminal_sentinel")
+    return False
+
+
+def _empty_sentinel_user_message(agent_result: dict, response: str) -> str | None:
+    """Shared explainer for Hermes' ``(empty)`` sentinel; ``None`` for literal model text."""
+    if response != "(empty)" or _is_literal_empty_model_text(agent_result, response):
+        return None
+
+    from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+
+    model = str(agent_result.get("model") or "").strip() or "The model"
+    return "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=model)
+
+
 def _normalize_empty_agent_response(
     agent_result: dict, response: str, *, history_len: int = 0) -> str:
     """Normalize empty/None agent responses into user-facing messages.
     Covers ``failed``, work done (api_calls > 0) with no text, and never-ran (api_calls == 0, the
     post-/stop silent-drop from a stale generation token) with a retry hint.
 
-    Consolidates the existing ``failed`` handler and adds a catch-all for the case where the agent did work
-    (api_calls > 0) but returned no text. Fix for #18765 — except intentional ``end_turn_tool_batch``
-    completions (tool-only exits), which remain silent for the messaging layer.
+    Consolidates the existing ``failed`` handler and catch-all handling for
+    empty / synthetic-empty replies when the agent did work but produced no
+    user-visible text. Intentional ``end_turn_tool_batch`` completions remain
+    silent for the messaging layer.
     Also surfaces a retry hint when the agent never ran at all (api_calls == 0) for a non-interrupted,
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
@@ -3119,7 +3161,11 @@ def _normalize_empty_agent_response(
     generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
     is_overflow = is_context_overflow_failure_result(agent_result, history_len)
-    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
+    synthetic_empty = _is_synthetic_empty_terminal_response(agent_result, response)
+    empty_sentinel_message = _empty_sentinel_user_message(agent_result, response)
+
+    if (response and not empty_sentinel_message
+            and not (is_overflow and _looks_like_gateway_provider_error(response))):
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -3193,6 +3239,8 @@ def _normalize_empty_agent_response(
                 "if this conversation has grown very long.")
         if agent_result.get("turn_exit_reason") == "end_turn_tool_batch":
             return ""
+        if empty_sentinel_message:
+            return empty_sentinel_message
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again.")
@@ -3202,6 +3250,9 @@ def _normalize_empty_agent_response(
         return (
             "⚠️ Your message wasn't processed (the previous turn was still "
             "being cleaned up). Please send it again.")
+
+    if synthetic_empty:
+        return ""
 
     return response
 

@@ -2,6 +2,7 @@
 
 > **Self-maintaining memory for Hermes.** Canonicalizes duplicates, surfaces contradictions, ranks with recency awareness, and explains recall — instead of behaving like an append-only vector index.
 
+> Installing standalone (until upstream review lands)? See **[../README.md](../README.md)** for the one-liner drop-in install.
 
 ## Why YantrikDB?
 

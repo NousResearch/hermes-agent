@@ -39,8 +39,33 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
+try:
+    from agent.memory_provider import MemoryProvider
+    from tools.registry import tool_error
+    _HERMES_AVAILABLE = True
+except ImportError:
+    # Plugin is being imported outside a Hermes runtime — typically because
+    # `yantrikdb-hermes-plugin` was pip-installed and the user is invoking
+    # the CLI installer (`yantrikdb-hermes install <hermes_root>`). The
+    # provider class never runs in this path; we just need module load to
+    # succeed so the CLI's `from yantrikdb_hermes_plugin.cli import main`
+    # works. Inside Hermes, the real imports take over.
+    _HERMES_AVAILABLE = False
+
+    class MemoryProvider:  # type: ignore[no-redef]
+        """Stub used only when the plugin is imported outside Hermes.
+
+        Real `agent.memory_provider.MemoryProvider` is an ABC; this stub is
+        a plain class so the YantrikDBMemoryProvider subclass below still
+        defines successfully when Hermes isn't on the import path. Hermes
+        instantiates the provider via filesystem-loaded source (a fresh
+        import from `plugins/memory/yantrikdb/`), so this stub is never
+        the one Hermes sees in practice.
+        """
+
+    def tool_error(message: str) -> str:  # type: ignore[no-redef]
+        import json
+        return json.dumps({"error": message})
 
 from .client import (
     DEFAULT_NAMESPACE,
@@ -52,6 +77,7 @@ from .client import (
     YantrikDBServerError,
     YantrikDBTransientError,
 )
+from .embedded import make_backend
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +293,150 @@ STATS_SCHEMA = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+# -- Skills (v0.3.0+) -------------------------------------------------
+#
+# Skills are procedural memory: reusable patterns the agent distills
+# from observed success and pulls back next session. They live in the
+# shared ``skill_substrate`` namespace alongside skills authored by
+# other YantrikDB consumers — Hermes-authored entries are tagged
+# ``metadata.source=hermes`` so any consumer can filter Hermes-authored
+# skills in or out cleanly. Outcomes are append-only; success/failure
+# rollup is the agent's pedagogy decision, not the substrate's.
+#
+# Note: this is a peer surface to the filesystem skills Hermes already
+# has at $HERMES_HOME/skills/. Filesystem = human-authored, durable,
+# version-controlled. YantrikDB skills = agent-authored, runtime-
+# evolving, semantic-search-queryable. Different kinds of canonical;
+# the model picks the right substrate by lifecycle, not by competition.
+
+SKILL_SEARCH_SCHEMA = {
+    "name": "yantrikdb_skill_search",
+    "description": (
+        "Semantic search over agent-authored skills in the shared "
+        "skill_substrate. Use to find a procedural pattern relevant to "
+        "the current task before acting — agent-authored skills capture "
+        "what worked in previous similar situations. Distinct from "
+        "yantrikdb_recall (episodic/semantic memory): skills are "
+        "procedures, memories are facts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language description of the task or pattern.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Max results (default 10).",
+            },
+            "applies_to": {
+                "type": "string",
+                "description": (
+                    "Optional filter: only return skills tagged for this "
+                    "context (e.g. 'git', 'deploy', 'pgsql')."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+SKILL_DEFINE_SCHEMA = {
+    "name": "yantrikdb_skill_define",
+    "description": (
+        "Distill a procedural pattern into a reusable skill. Use when "
+        "you've observed a sequence that worked and want it findable next "
+        "session. The body should be a self-contained instruction — "
+        "future you (or another agent) reads it and follows it. Skill "
+        "naming convention: dot-separated lowercase, e.g. "
+        "'git.commit_clean', 'deploy.rolling_restart'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill_id": {
+                "type": "string",
+                "description": (
+                    "Dot-separated lowercase identifier matching "
+                    "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$, length 4-200. "
+                    "First segment is the broad category, later segments "
+                    "narrow it (e.g. 'workflow.git.commit_clean')."
+                ),
+            },
+            "body": {
+                "type": "string",
+                "description": (
+                    "The procedural instructions, 50-5000 chars. Self-"
+                    "contained — assume the reader has no prior context."
+                ),
+            },
+            "skill_type": {
+                "type": "string",
+                "enum": ["procedure", "reference", "lesson", "pattern", "rule"],
+                "description": (
+                    "procedure: do these steps. reference: information to "
+                    "consult. lesson: things to remember from a past mistake. "
+                    "pattern: recognizable shape. rule: invariant to maintain."
+                ),
+            },
+            "applies_to": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Tags identifying when this skill is relevant. Lowercase "
+                    "+ digits + underscores ONLY (no hyphens, no dots, no "
+                    "spaces): each entry must match ^[a-z][a-z0-9_]*$. "
+                    "Max 10 entries. Examples: ['git', 'commit'], "
+                    "['postgres', 'migration', 'rollback']."
+                ),
+            },
+            "triggers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional natural-language phrases that should activate this skill.",
+            },
+            "version": {
+                "type": "string",
+                "description": "Optional version string (e.g. '1.0.0').",
+            },
+            "supersedes_skill_id": {
+                "type": "string",
+                "description": "Optional skill_id this skill replaces.",
+            },
+        },
+        "required": ["skill_id", "body", "skill_type", "applies_to"],
+    },
+}
+
+SKILL_OUTCOME_SCHEMA = {
+    "name": "yantrikdb_skill_outcome",
+    "description": (
+        "Record whether a skill succeeded when used. Append-only: each "
+        "call adds an event to the outcome log; success/failure rollup "
+        "is the agent's call, not the substrate's. Use after attempting "
+        "a skill to feed back signal for future search ranking."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill_id": {
+                "type": "string",
+                "description": "The skill_id that was applied.",
+            },
+            "succeeded": {
+                "type": "boolean",
+                "description": "True if the skill produced the intended outcome.",
+            },
+            "note": {
+                "type": "string",
+                "description": "Optional context — what worked, what didn't, what to adjust.",
+            },
+        },
+        "required": ["skill_id", "succeeded"],
+    },
+}
+
 ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     REMEMBER_SCHEMA,
     RECALL_SCHEMA,
@@ -276,6 +446,9 @@ ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     RESOLVE_CONFLICT_SCHEMA,
     RELATE_SCHEMA,
     STATS_SCHEMA,
+    SKILL_SEARCH_SCHEMA,
+    SKILL_DEFINE_SCHEMA,
+    SKILL_OUTCOME_SCHEMA,
 ]
 
 
@@ -377,8 +550,19 @@ class YantrikDBMemoryProvider(MemoryProvider):
     # -- Setup / config ---------------------------------------------------
 
     def is_available(self) -> bool:
-        """Ready iff a token is configured. No network call."""
-        return bool(YantrikDBConfig.load().token)
+        """Ready when the configured backend can be reached. No network call.
+
+        - embedded mode: available iff `yantrikdb` Python package is importable.
+        - http mode: available iff a token is configured.
+        """
+        cfg = YantrikDBConfig.load()
+        if cfg.mode == "embedded":
+            try:
+                import yantrikdb._yantrikdb_rust  # noqa: F401
+                return True
+            except ImportError:
+                return False
+        return bool(cfg.token)
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -440,19 +624,30 @@ class YantrikDBMemoryProvider(MemoryProvider):
         hermes_home = Path(hermes_home_raw) if hermes_home_raw else None
         self._config = YantrikDBConfig.load(hermes_home)
 
-        if not self._config.token:
-            logger.debug("YantrikDB not configured (no token) — plugin inactive")
+        # Embedded mode is self-contained (`pip install` and go); HTTP mode
+        # requires a token. is_available() short-circuits at the provider
+        # level, but be defensive here too.
+        if self._config.mode == "http" and not self._config.token:
+            logger.debug("YantrikDB http mode but no token — plugin inactive")
             return
 
         self._namespace = _derive_namespace(self._config.namespace, kwargs)
+        try:
+            backend = make_backend(self._config)
+        except YantrikDBError as e:
+            logger.warning("YantrikDB %s mode init failed: %s", self._config.mode, e)
+            return
         with self._client_lock:
-            self._client = YantrikDBClient(self._config)
+            self._client = backend
 
         try:
             self._client.health()
+            target = self._config.url if self._config.mode == "http" else (
+                self._config.db_path or "default"
+            )
             logger.info(
-                "YantrikDB connected: %s (namespace: %s)",
-                self._config.url, self._namespace,
+                "YantrikDB connected: mode=%s target=%s namespace=%s",
+                self._config.mode, target, self._namespace,
             )
         except YantrikDBError as e:
             logger.warning(
@@ -590,9 +785,23 @@ class YantrikDBMemoryProvider(MemoryProvider):
         # tool names → provider for routing. Must return the static schema
         # list regardless of client state; runtime readiness is enforced
         # in handle_tool_call().
+        #
+        # Skills are opt-in (YANTRIKDB_SKILLS_ENABLED=true). When the flag
+        # is off, the three skill schemas are filtered out so the model
+        # never sees them — keeping the tool surface minimal for users who
+        # don't need the agentic skill loop. When `_config` is None (we
+        # haven't initialized yet), expose all schemas so register-time
+        # routing has every tool indexed; runtime check below short-
+        # circuits if skills are disabled at call time.
         if self._cron_skipped:
             return []
-        return list(ALL_TOOL_SCHEMAS)
+        skills_enabled = bool(
+            self._config.skills_enabled if self._config else
+            YantrikDBConfig.load().skills_enabled
+        )
+        if skills_enabled:
+            return list(ALL_TOOL_SCHEMAS)
+        return [s for s in ALL_TOOL_SCHEMAS if not s["name"].startswith("yantrikdb_skill_")]
 
     def handle_tool_call(
         self,
@@ -625,6 +834,18 @@ class YantrikDBMemoryProvider(MemoryProvider):
                 return self._do_relate(args)
             if tool_name == "yantrikdb_stats":
                 return self._do_stats()
+            if tool_name.startswith("yantrikdb_skill_"):
+                if not (self._config and self._config.skills_enabled):
+                    return tool_error(
+                        "Skills are disabled. Set YANTRIKDB_SKILLS_ENABLED=true "
+                        "to enable yantrikdb_skill_search / _define / _outcome."
+                    )
+                if tool_name == "yantrikdb_skill_search":
+                    return self._do_skill_search(args)
+                if tool_name == "yantrikdb_skill_define":
+                    return self._do_skill_define(args)
+                if tool_name == "yantrikdb_skill_outcome":
+                    return self._do_skill_outcome(args)
             return tool_error(f"Unknown tool: {tool_name}")
         except YantrikDBAuthError as e:
             self._record_failure()
@@ -766,6 +987,76 @@ class YantrikDBMemoryProvider(MemoryProvider):
             "operations": resp.get("operations", 0),
             "open_conflicts": resp.get("open_conflicts", 0),
             "pending_triggers": resp.get("pending_triggers", 0),
+        })
+
+    def _do_skill_search(self, args: dict[str, Any]) -> str:
+        query = (args.get("query") or "").strip()
+        if not query:
+            return tool_error("Missing required parameter: query")
+        default_top_k = self._config.top_k if self._config else 10
+        top_k = min(_coerce_int(args.get("top_k"), default_top_k), 50)
+        resp = self._require_client().skill_search(
+            query, top_k=top_k, applies_to=args.get("applies_to"),
+        )
+        self._record_success()
+        skills = resp.get("skills") or resp.get("results") or []
+        compact = [
+            {
+                "rid": s.get("rid"),
+                "skill_id": (s.get("metadata") or {}).get("skill_id"),
+                "skill_type": (s.get("metadata") or {}).get("skill_type"),
+                "applies_to": (s.get("metadata") or {}).get("applies_to", []),
+                "body": s.get("text"),
+                "score": s.get("score"),
+                "source": (s.get("metadata") or {}).get("source"),
+                "why_retrieved": s.get("why_retrieved") or [],
+            }
+            for s in skills
+        ]
+        return json.dumps({"count": len(compact), "skills": compact})
+
+    def _do_skill_define(self, args: dict[str, Any]) -> str:
+        skill_id = (args.get("skill_id") or "").strip()
+        body = args.get("body") or ""
+        skill_type = (args.get("skill_type") or "").strip()
+        applies_to = args.get("applies_to") or []
+        if not skill_id or not body or not skill_type or not applies_to:
+            return tool_error(
+                "Missing required parameters: skill_id, body, skill_type, applies_to"
+            )
+        resp = self._require_client().skill_define(
+            skill_id=skill_id,
+            body=body,
+            skill_type=skill_type,
+            applies_to=applies_to,
+            triggers=args.get("triggers"),
+            on_conflict=args.get("on_conflict", "reject"),
+            version=args.get("version"),
+            supersedes_skill_id=args.get("supersedes_skill_id"),
+        )
+        self._record_success()
+        return json.dumps({
+            "rid": resp.get("rid"),
+            "skill_id": resp.get("skill_id", skill_id),
+            "stored": bool(resp.get("stored", True)),
+        })
+
+    def _do_skill_outcome(self, args: dict[str, Any]) -> str:
+        skill_id = (args.get("skill_id") or "").strip()
+        if not skill_id:
+            return tool_error("Missing required parameter: skill_id")
+        if "succeeded" not in args:
+            return tool_error("Missing required parameter: succeeded")
+        resp = self._require_client().skill_outcome(
+            skill_id,
+            bool(args.get("succeeded")),
+            note=args.get("note"),
+        )
+        self._record_success()
+        return json.dumps({
+            "rid": resp.get("rid"),
+            "skill_id": resp.get("skill_id", skill_id),
+            "recorded": bool(resp.get("recorded", True)),
         })
 
     # -- Optional hooks ---------------------------------------------------

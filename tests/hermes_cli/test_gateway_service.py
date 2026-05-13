@@ -580,9 +580,15 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_self_request_waits_then_kickstarts(self, monkeypatch):
+        """When the gateway is our ancestor, SIGUSR1 → drain → `launchctl
+        kickstart -k`. Returning immediately after SIGUSR1 leaves the
+        gateway dead because launchd does not always relaunch after the
+        in-process-tree exit (#11932)."""
         calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -593,15 +599,29 @@ class TestLaunchdServiceRecovery:
             lambda pid: calls.append(("self", pid)) or True,
         )
         monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda timeout, force_after=None: calls.append(("wait", timeout, force_after)) or True,
         )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: (_ for _ in ()).throw(AssertionError("SIGTERM should not run when SIGUSR1 succeeded")),
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert calls == [
+            ("self", 321),
+            ("wait", 12.0, None),
+            ["launchctl", "kickstart", "-k", target],
+        ]
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

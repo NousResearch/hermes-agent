@@ -2996,14 +2996,21 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
         if pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
+            # Prefer SIGUSR1 (graceful drain → exit 75) when the gateway is
+            # an ancestor of this process, otherwise SIGTERM. Either way we
+            # MUST fall through to `_wait_for_gateway_exit` + `launchctl
+            # kickstart -k`: when the gateway exits inside its own process
+            # tree (e.g. `hermes update` invoked by the agent via the
+            # terminal tool), launchd has been observed to leave the domain
+            # in "on-demand-only mode" and never issue WILL_SPAWN, so an
+            # explicit kickstart is required to actually relaunch the
+            # service. See #11932.
+            if not _request_gateway_self_restart(pid):
+                try:
+                    terminate_pid(pid, force=False)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pid = None
             if pid is not None:
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:

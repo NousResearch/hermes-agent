@@ -1,7 +1,7 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
-import { LONG_MSG } from '../config/limits.js'
+import { LONG_MSG, SYSTEM_COLLAPSE_CHARS } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
@@ -21,9 +21,6 @@ import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
-
-// Collapse threshold for long system messages (system prompt etc.)
-const SYSTEM_COLLAPSE_CHARS = 400
 
 export const MessageLine = memo(function MessageLine({
   cols,

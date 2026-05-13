@@ -533,6 +533,62 @@ class TestMattermostFileUpload:
         assert result.success is True
         assert result.message_id == "post_with_file"
 
+    @pytest.mark.asyncio
+    async def test_send_image_blocks_private_redirect_target(self):
+        redirect_resp = AsyncMock()
+        redirect_resp.status = 302
+        redirect_resp.headers = {"Location": "http://169.254.169.254/latest/meta-data"}
+        redirect_resp.read = AsyncMock(return_value=b"metadata")
+        redirect_resp.content_type = "text/plain"
+        redirect_resp.url = "https://img.example.com/cat.png"
+        redirect_resp.__aenter__ = AsyncMock(return_value=redirect_resp)
+        redirect_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock(return_value=redirect_resp)
+        self.adapter._upload_file = AsyncMock(return_value="file_abc123")
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_with_file"})
+        self.adapter.send = AsyncMock(return_value=type("Result", (), {"success": True, "message_id": "fallback"})())
+
+        def fake_is_safe_url(url):
+            return url == "https://img.example.com/cat.png"
+
+        with patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url):
+            result = await self.adapter.send_image(
+                "channel_1", "https://img.example.com/cat.png", caption="A cat"
+            )
+
+        assert result.message_id == "fallback"
+        assert self.adapter._session.get.call_args.kwargs["allow_redirects"] is False
+        self.adapter._upload_file.assert_not_awaited()
+        self.adapter._api_post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_multiple_images_blocks_private_redirect_target(self):
+        redirect_resp = AsyncMock()
+        redirect_resp.status = 302
+        redirect_resp.headers = {"Location": "http://169.254.169.254/latest/meta-data"}
+        redirect_resp.read = AsyncMock(return_value=b"metadata")
+        redirect_resp.content_type = "text/plain"
+        redirect_resp.url = "https://img.example.com/cat.png"
+        redirect_resp.__aenter__ = AsyncMock(return_value=redirect_resp)
+        redirect_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock(return_value=redirect_resp)
+        self.adapter._upload_file = AsyncMock(return_value="file_abc123")
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_with_file"})
+
+        def fake_is_safe_url(url):
+            return url == "https://img.example.com/cat.png"
+
+        with patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url):
+            await self.adapter.send_multiple_images(
+                "channel_1", [("https://img.example.com/cat.png", "A cat")]
+            )
+
+        assert self.adapter._session.get.call_args.kwargs["allow_redirects"] is False
+        self.adapter._upload_file.assert_not_awaited()
+        self.adapter._api_post.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Dedup cache

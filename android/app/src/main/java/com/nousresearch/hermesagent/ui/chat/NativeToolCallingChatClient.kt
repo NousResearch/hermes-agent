@@ -39,6 +39,7 @@ class NativeToolCallingChatClient(
     data class Result(
         val content: String,
         val executedToolCalls: Int,
+        val lastToolResult: String = "",
     )
 
     fun send(
@@ -87,7 +88,11 @@ class NativeToolCallingChatClient(
                 val content = assistant.content.ifBlank {
                     latestToolResult.ifBlank { "Done." }
                 }
-                return Result(content = content, executedToolCalls = executedToolCalls)
+                return Result(
+                    content = content,
+                    executedToolCalls = executedToolCalls,
+                    lastToolResult = latestToolResult,
+                )
             }
 
             messages.put(assistant.toJsonMessage())
@@ -113,6 +118,7 @@ class NativeToolCallingChatClient(
                 return Result(
                     content = toolCompletionReply(latestToolResult),
                     executedToolCalls = executedToolCalls,
+                    lastToolResult = latestToolResult,
                 )
             }
 
@@ -128,6 +134,7 @@ class NativeToolCallingChatClient(
                 return Result(
                     content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
                     executedToolCalls = executedToolCalls,
+                    lastToolResult = latestToolResult,
                 )
             }
             assistant = followUp
@@ -135,6 +142,7 @@ class NativeToolCallingChatClient(
         return Result(
             content = toolCompletionReply(latestToolResult),
             executedToolCalls = executedToolCalls,
+            lastToolResult = latestToolResult,
         )
     }
 
@@ -152,6 +160,7 @@ class NativeToolCallingChatClient(
             return Result(
                 content = toolCompletionReply(toolResult),
                 executedToolCalls = 1,
+                lastToolResult = toolResult,
             )
         }
 
@@ -166,6 +175,7 @@ class NativeToolCallingChatClient(
             return Result(
                 content = toolCompletionReply(toolResult),
                 executedToolCalls = 1,
+                lastToolResult = toolResult,
             )
         }
 
@@ -182,6 +192,7 @@ class NativeToolCallingChatClient(
         return Result(
             content = toolCompletionReply(toolResult),
             executedToolCalls = 1,
+            lastToolResult = toolResult,
         )
     }
 
@@ -237,7 +248,11 @@ class NativeToolCallingChatClient(
         )
         val writeJson = runCatching { JSONObject(writeResult) }.getOrDefault(JSONObject())
         if (!writeJson.optBoolean("success", writeJson.optInt("exit_code", 0) == 0)) {
-            return Result(content = toolCompletionReply(writeResult), executedToolCalls = 1)
+            return Result(
+                content = toolCompletionReply(writeResult),
+                executedToolCalls = 1,
+                lastToolResult = writeResult,
+            )
         }
 
         val openResult = executeAndroidAutomationTool(
@@ -252,6 +267,7 @@ class NativeToolCallingChatClient(
         return Result(
             content = toolCompletionReply(openResult),
             executedToolCalls = 2,
+            lastToolResult = openResult,
         )
     }
 

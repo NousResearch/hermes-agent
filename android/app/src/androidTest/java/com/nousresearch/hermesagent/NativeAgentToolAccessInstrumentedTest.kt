@@ -92,13 +92,15 @@ class NativeAgentToolAccessInstrumentedTest {
             )
 
             assertEquals(2, result.executedToolCalls)
-            assertTrue(result.content, result.content.contains("flappy html opened"))
+            assertTrue(result.content, result.content.contains("Started Android intent"))
+            val openResult = JSONObject(result.lastToolResult)
+            assertTrue(openResult.toString(), openResult.optBoolean("success"))
+            assertTrue(openResult.toString(), openResult.optBoolean("external_activity_handoff"))
             assertTrue("Expected ${htmlFile.absolutePath}", htmlFile.isFile)
             assertTrue(htmlFile.readText(), htmlFile.readText().contains("<canvas id=\"game\""))
-            assertEquals(3, server.requests.size)
+            assertEquals(2, server.requests.size)
             assertTrue(server.requests[1].toString(), server.requests[1].toString().contains("hermes-sequential-flappy.html"))
             assertTrue(server.requests[1].toString(), server.requests[1].toString().contains("android_automation_tool"))
-            assertTrue(server.requests[2].toString(), server.requests[2].toString().contains("Started Android intent"))
         } finally {
             server.stop()
         }

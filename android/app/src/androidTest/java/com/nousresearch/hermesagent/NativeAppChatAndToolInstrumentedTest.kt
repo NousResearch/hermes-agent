@@ -119,6 +119,12 @@ class NativeAppChatAndToolInstrumentedTest {
 
         assertTrue("Expected Gemma 4 native chat to execute file and browser tools: ${result.content}", result.executedToolCalls >= 2)
         assertFalse("Expected a nonblank Gemma 4 browser automation reply", result.content.isBlank())
+        val openResult = JSONObject(result.lastToolResult)
+        assertTrue("Expected successful browser handoff result: $openResult", openResult.optBoolean("success"))
+        assertTrue(
+            "Expected browser handoff marker from android_automation_tool: $openResult",
+            openResult.optBoolean("external_activity_handoff"),
+        )
         assertTrue("Expected Gemma 4 native chat tool call to create ${htmlFile.absolutePath}", htmlFile.isFile)
         val html = htmlFile.readText()
         assertTrue(html, html.contains("<canvas id=\"game\"") || html.contains("<canvas id='game'"))

@@ -1276,6 +1276,8 @@ def execute_code(
         _profile_home = get_subprocess_home()
         if _profile_home:
             child_env["HOME"] = _profile_home
+            from hermes_constants import get_real_home
+            child_env["HERMES_REAL_HOME"] = get_real_home()
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).

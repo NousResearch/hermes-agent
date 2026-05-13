@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -69,22 +70,32 @@ _CRON_INVISIBLE_CHARS = {
 }
 
 
+def _sanitize_cron_prompt_text(prompt: str) -> str:
+    """Remove Unicode format-control characters before cron prompt scanning/use.
+
+    Cron prompts frequently include untrusted web/script output. Benign emoji
+    sequences from sources like X/Twitter can contain ZERO WIDTH JOINER (U+200D),
+    while malicious prompts can use the same class of invisible characters to
+    hide or split instructions. Stripping all Unicode Cf controls preserves the
+    visible text, prevents false-positive blocks, and makes hidden threat
+    patterns visible to the regex scanner below.
+    """
+    return "".join(ch for ch in str(prompt or "") if unicodedata.category(ch) != "Cf")
+
+
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+    prompt_to_scan = _sanitize_cron_prompt_text(prompt)
     github_auth_header = re.search(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',
-        prompt,
+        prompt_to_scan,
         re.IGNORECASE,
     )
-    prompt_to_scan = prompt
     if github_auth_header:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_to_scan:
-            return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+        prompt_to_scan = prompt_to_scan.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
@@ -330,6 +341,7 @@ def cronjob(
             elif not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
             if prompt:
+                prompt = _sanitize_cron_prompt_text(prompt)
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
                     return tool_error(scan_error, success=False)
@@ -432,6 +444,7 @@ def cronjob(
         if normalized == "update":
             updates: Dict[str, Any] = {}
             if prompt is not None:
+                prompt = _sanitize_cron_prompt_text(prompt)
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
                     return tool_error(scan_error, success=False)

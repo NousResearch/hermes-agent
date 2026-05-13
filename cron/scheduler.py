@@ -996,9 +996,10 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
     (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate.
     """
-    from tools.cronjob_tools import _scan_cron_prompt
+    from tools.cronjob_tools import _sanitize_cron_prompt_text, _scan_cron_prompt
 
-    scan_error = _scan_cron_prompt(assembled)
+    sanitized = _sanitize_cron_prompt_text(assembled)
+    scan_error = _scan_cron_prompt(sanitized)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(
@@ -1007,7 +1008,7 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
             scan_error,
         )
         raise CronPromptInjectionBlocked(scan_error)
-    return assembled
+    return sanitized
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:

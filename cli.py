@@ -1473,6 +1473,7 @@ def _replay_output_history() -> None:
         return
     _OUTPUT_HISTORY_REPLAYING = True
     try:
+        rendered_lines = []
         for entry in tuple(_OUTPUT_HISTORY):
             if callable(entry):
                 try:
@@ -1483,8 +1484,15 @@ def _replay_output_history() -> None:
                     lines = lines.splitlines()
             else:
                 lines = [entry]
-            for line in lines:
-                _pt_print(_PT_ANSI(str(line)))
+            rendered_lines.extend(str(line) for line in lines)
+        if rendered_lines:
+            # Replay after resize can contain hundreds of history lines. A
+            # per-line prompt_toolkit print forces one synchronous terminal I/O
+            # and redraw cycle per line, which users perceive as a waterfall of
+            # old output. Keep the existing history contents unchanged, but
+            # emit the replay as one ANSI payload so resize recovery does a
+            # single prompt_toolkit print/redraw.
+            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
     except Exception:
         pass
     finally:

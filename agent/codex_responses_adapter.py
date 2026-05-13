@@ -903,7 +903,15 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
+                # Codex Responses may emit assistant ``message`` items in a
+                # ``commentary``/``analysis`` phase immediately before tool
+                # calls.  Those items are provider state, not user-visible
+                # assistant output.  Keep them in codex_message_items for
+                # exact replay, but do not promote them to Chat Completions
+                # ``content`` where gateway interim-message delivery can leak
+                # them as chat bubbles like "Need read docs.".
+                if normalized_phase not in {"commentary", "analysis"}:
+                    content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
@@ -985,7 +993,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
+    if not final_text and hasattr(response, "output_text") and not message_items_raw:
         out_text = getattr(response, "output_text", "")
         if isinstance(out_text, str):
             final_text = out_text.strip()

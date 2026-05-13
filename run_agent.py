@@ -6844,6 +6844,53 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    @staticmethod
+    def _codex_stream_event_value(event: Any, name: str, default: Any = None) -> Any:
+        if isinstance(event, dict):
+            return event.get(name, default)
+        return getattr(event, name, default)
+
+    @staticmethod
+    def _codex_stream_item_value(item: Any, name: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(name, default)
+        return getattr(item, name, default)
+
+    def _record_hidden_codex_stream_item(
+        self,
+        event: Any,
+        hidden_item_ids: set[str],
+        hidden_output_indices: set[int],
+    ) -> None:
+        item = self._codex_stream_event_value(event, "item")
+        phase = self._codex_stream_item_value(item, "phase")
+        if not isinstance(phase, str) or phase.strip().lower() not in {"commentary", "analysis"}:
+            return
+        item_type = self._codex_stream_item_value(item, "type")
+        if item_type != "message":
+            return
+        item_id = self._codex_stream_item_value(item, "id") or self._codex_stream_event_value(event, "item_id")
+        if isinstance(item_id, str) and item_id:
+            hidden_item_ids.add(item_id)
+        output_index = self._codex_stream_event_value(event, "output_index")
+        if isinstance(output_index, int):
+            hidden_output_indices.add(output_index)
+
+    def _is_hidden_codex_stream_delta(
+        self,
+        event: Any,
+        hidden_item_ids: set[str],
+        hidden_output_indices: set[int],
+    ) -> bool:
+        phase = self._codex_stream_event_value(event, "phase")
+        if isinstance(phase, str) and phase.strip().lower() in {"commentary", "analysis"}:
+            return True
+        item_id = self._codex_stream_event_value(event, "item_id")
+        if isinstance(item_id, str) and item_id in hidden_item_ids:
+            return True
+        output_index = self._codex_stream_event_value(event, "output_index")
+        return isinstance(output_index, int) and output_index in hidden_output_indices
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -6852,6 +6899,8 @@ class AIAgent:
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
+        hidden_message_item_ids: set[str] = set()
+        hidden_message_output_indices: set[int] = set()
         # Accumulate streamed text so we can recover if get_final_response()
         # returns empty output (e.g. chatgpt.com backend-api sends
         # response.incomplete instead of response.completed).
@@ -6867,9 +6916,24 @@ class AIAgent:
                         if self._interrupt_requested:
                             break
                         event_type = getattr(event, "type", "")
-                        # Fire callbacks on text content deltas (suppress during tool calls)
+                        # Track provider-state commentary/analysis messages so their
+                        # text deltas do not become visible chat content before a tool call.
+                        if event_type in {"response.output_item.added", "response.output_item.done"}:
+                            self._record_hidden_codex_stream_item(
+                                event,
+                                hidden_message_item_ids,
+                                hidden_message_output_indices,
+                            )
+                        # Fire callbacks on text content deltas (suppress during tool calls
+                        # and provider-state commentary/analysis messages)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
+                            if self._is_hidden_codex_stream_delta(
+                                event,
+                                hidden_message_item_ids,
+                                hidden_message_output_indices,
+                            ):
+                                continue
                             if delta_text:
                                 self._codex_streamed_text_parts.append(delta_text)
                             if delta_text and not has_tool_calls:
@@ -6986,6 +7050,8 @@ class AIAgent:
         terminal_response = None
         collected_output_items: list = []
         collected_text_deltas: list = []
+        hidden_message_item_ids: set[str] = set()
+        hidden_message_output_indices: set[int] = set()
         try:
             for event in stream_or_response:
                 self._touch_activity("receiving stream response")
@@ -6994,6 +7060,12 @@ class AIAgent:
                     event_type = event.get("type")
 
                 # Collect output items and text deltas for backfill
+                if event_type in {"response.output_item.added", "response.output_item.done"}:
+                    self._record_hidden_codex_stream_item(
+                        event,
+                        hidden_message_item_ids,
+                        hidden_message_output_indices,
+                    )
                 if event_type == "response.output_item.done":
                     done_item = getattr(event, "item", None)
                     if done_item is None and isinstance(event, dict):
@@ -7001,6 +7073,12 @@ class AIAgent:
                     if done_item is not None:
                         collected_output_items.append(done_item)
                 elif event_type in {"response.output_text.delta",}:
+                    if self._is_hidden_codex_stream_delta(
+                        event,
+                        hidden_message_item_ids,
+                        hidden_message_output_indices,
+                    ):
+                        continue
                     delta = getattr(event, "delta", "")
                     if not delta and isinstance(event, dict):
                         delta = event.get("delta", "")

@@ -157,9 +157,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -168,7 +169,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -485,6 +486,95 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_suppresses_commentary_phase_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed = []
+    agent.stream_delta_callback = streamed.append
+    final_response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_plan",
+                phase="commentary",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Need inspect files.")],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="message", id="msg_plan", phase="commentary"),
+        ),
+        SimpleNamespace(
+            type="response.output_text.delta",
+            output_index=0,
+            item_id="msg_plan",
+            delta="Need inspect files.",
+        ),
+        SimpleNamespace(type="response.output_item.added", output_index=1, item=SimpleNamespace(type="function_call")),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(final_response=final_response, events=events),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response is final_response
+    assert streamed == []
+    assert agent._codex_streamed_text_parts == []
+
+
+def test_run_codex_create_stream_fallback_does_not_synthesize_commentary_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal_response = SimpleNamespace(
+        output=[],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    create_stream = _FakeCreateStream(
+        [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "message", "id": "msg_plan", "phase": "commentary"},
+            },
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "item_id": "msg_plan",
+                "delta": "Need inspect files.",
+            },
+            {"type": "response.completed", "response": terminal_response},
+        ]
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+
+    assert response is terminal_response
+    assert response.output == []
+    assert create_stream.closed is True
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -704,7 +794,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -872,7 +962,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -907,7 +997,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -932,7 +1022,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
+def test_normalize_codex_response_keeps_commentary_out_of_visible_content(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
@@ -940,7 +1030,80 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     )
 
     assert finish_reason == "incomplete"
-    assert "inspect the repository" in (assistant_message.content or "")
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+    assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
+
+
+def test_normalize_codex_response_does_not_resurrect_commentary_from_output_text(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = _codex_commentary_message_response("Need locate files.")
+    response.output_text = "Need locate files."
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.codex_message_items[0]["content"][0]["text"] == "Need locate files."
+
+
+
+def test_codex_commentary_before_tool_call_is_not_emitted_as_interim(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    emitted = []
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: emitted.append(text)
+
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_commentary_tool_plan",
+                    phase="commentary",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Need read docs.")],
+                ),
+                SimpleNamespace(
+                    type="function_call",
+                    id="fc_1",
+                    call_id="call_1",
+                    name="terminal",
+                    arguments="{}",
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+            status="completed",
+            model="gpt-5-codex",
+        ),
+        _codex_message_response("done"),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": '{"ok":true}',
+                }
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("inspect the docs")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "done"
+    assert emitted == []
+    tool_turn = next(
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant" and msg.get("tool_calls")
+    )
+    assert (tool_turn.get("content") or "") == ""
+    assert tool_turn["codex_message_items"][0]["content"][0]["text"] == "Need read docs."
 
 
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
@@ -1259,7 +1422,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1275,12 +1438,13 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
 
     assert result["completed"] is True
     assert result["final_response"] == "Architecture summary complete."
-    assert any(
-        msg.get("role") == "assistant"
+    interim_msg = next(
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
-        and "inspect the repo structure" in (msg.get("content") or "")
-        for msg in result["messages"]
     )
+    assert (interim_msg.get("content") or "") == ""
+    assert "inspect the repo structure" in interim_msg["codex_message_items"][0]["content"][0]["text"]
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
@@ -1295,7 +1459,7 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1336,7 +1500,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {

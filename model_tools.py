@@ -831,9 +831,10 @@ def handle_function_call(
         return result
 
     except Exception as e:
-        error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.exception(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        from agent.provider_error_mapping import format_tool_boundary_error
+
+        logger.error("Error executing %s", function_name, exc_info=True)
+        return format_tool_boundary_error(function_name, e)
 
 
 # =============================================================================

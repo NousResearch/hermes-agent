@@ -13,6 +13,22 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _deep_redact_trajectory(obj: Any) -> Any:
+    """Apply ``redact_sensitive_text`` to all string leaves (JSONL export)."""
+    if isinstance(obj, dict):
+        return {k: _deep_redact_trajectory(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_deep_redact_trajectory(v) for v in obj]
+    if isinstance(obj, str):
+        try:
+            from agent.redact import redact_sensitive_text
+
+            return redact_sensitive_text(obj)
+        except Exception:
+            return obj
+    return obj
+
+
 def convert_scratchpad_to_think(content: str) -> str:
     """Convert <REASONING_SCRATCHPAD> tags to <think> tags."""
     if not content or "<REASONING_SCRATCHPAD>" not in content:
@@ -47,6 +63,7 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
         "model": model,
         "completed": completed,
     }
+    entry = _deep_redact_trajectory(entry)
 
     try:
         with open(filename, "a", encoding="utf-8") as f:

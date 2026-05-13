@@ -8600,6 +8600,14 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    # Circuit-breaker thresholds: prevent tight fallback-switch loops when
+    # every provider in the chain fails back-to-back (incident: depleted
+    # primary credits + rate-limited fallback A + 400-rejected fallback B
+    # caused hundreds of activations per second and host swap exhaustion).
+    _FALLBACK_THROTTLE_INTERVAL_S = 2.0
+    _FALLBACK_BREAKER_WINDOW_S = 60.0
+    _FALLBACK_BREAKER_LIMIT = 5
+
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -8612,6 +8620,33 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        # Circuit-breaker: throttle consecutive activations and trip the
+        # breaker (returning False, which existing call sites already handle
+        # as "chain exhausted") if too many fire in a short window.
+        if not hasattr(self, "_fallback_activations"):
+            self._fallback_activations: list[float] = []
+        now = time.monotonic()
+        self._fallback_activations = [
+            t for t in self._fallback_activations
+            if now - t < self._FALLBACK_BREAKER_WINDOW_S
+        ]
+        if len(self._fallback_activations) >= self._FALLBACK_BREAKER_LIMIT:
+            self._emit_status(
+                f"🛑 Circuit-breaker tripped: {self._FALLBACK_BREAKER_LIMIT} fallback "
+                f"activations in {int(self._FALLBACK_BREAKER_WINDOW_S)}s. "
+                f"Aborting to prevent retry storm."
+            )
+            return False
+        if self._fallback_activations:
+            elapsed = now - self._fallback_activations[-1]
+            if elapsed < self._FALLBACK_THROTTLE_INTERVAL_S:
+                wait = self._FALLBACK_THROTTLE_INTERVAL_S - elapsed
+                self._emit_status(
+                    f"⏸️ Circuit-breaker: sleeping {wait:.1f}s before fallback switch"
+                )
+                time.sleep(wait)
+        self._fallback_activations.append(time.monotonic())
+
         if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
             # Only start cooldown when leaving the primary provider.  If we're
             # already on a fallback and chain-switching, the primary wasn't the

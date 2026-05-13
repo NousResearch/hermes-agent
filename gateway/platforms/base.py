@@ -1644,11 +1644,119 @@ class BasePlatformAdapter(ABC):
         after sending the completed reply as a fresh message so the
         platform's visible timestamp reflects completion time.
 
+        Also used by ``/rewind`` v2 (#21910) to best-effort delete the
+        bot's outbound messages in the rewound range so a public
+        wrong-channel post can be retracted alongside the in-memory
+        truncation.  Failures (permissions, expired delete window,
+        rate limiting) are swallowed by the caller — degrade gracefully.
+
         Returns ``True`` on successful deletion, ``False`` otherwise.
         Subclasses should override for platforms with a deletion API
-        (e.g. Telegram ``deleteMessage``).
+        (e.g. Telegram ``deleteMessage``, Discord ``messages.delete``).
         """
         return False
+
+    async def can_delete_messages(self, chat_id: str) -> Optional[bool]:
+        """Best-effort permission probe for ``delete_message`` in *chat_id*.
+
+        Used by ``/rewind`` v2 (#21910) so the gateway can surface
+        "rewound context but couldn't delete N messages — platform X is
+        missing perms" instead of failing silently.  Three return values:
+
+        - ``True``   — the bot has (or, for permissionless platforms,
+                       has the API surface for) deletion in this chat.
+        - ``False``  — known not to have permission / no delete API.
+        - ``None``   — unknown.  Treat optimistically: try the delete
+                       and report failures after the fact.
+
+        Default implementation returns ``None`` — adapters that can
+        cheaply probe permissions (Discord: check the bot member's
+        ``manage_messages`` flag in the target channel; Telegram: the
+        bot can always delete its own messages within 48h, so just
+        return ``True``) should override.
+
+        Callers must accept either a sync ``bool``/``None`` or an
+        awaitable returning one (some probe APIs are async).
+        """
+        return None
+
+    def _record_outbound_ids_for_send(
+        self,
+        event: "MessageEvent",
+        result: "SendResult",
+    ) -> None:
+        """Stamp outbound message coordinates onto the latest assistant row.
+
+        Called from ``_process_message_background``'s ``_record_delivery``
+        seam after every successful ``send_with_retry``.  Looks up the
+        most recent assistant row for the session via SessionDB and
+        writes ``(platform, chat_id, thread_id, message_id)`` into the
+        v13 outbound columns so a later ``/rewind`` can attempt to
+        delete the bot's public messages (see #21910).
+
+        Best-effort.  Returns silently if any of the dependencies are
+        unavailable: no session store, no SessionDB, no successful send,
+        no message_id on the result, or no recent assistant row to
+        stamp.  Multi-bubble responses (continuation_message_ids) stamp
+        the last-visible id onto the same row — the loss of the earlier
+        bubble ids is acceptable for v2 since the rewind UI is binary
+        (delete-attempted vs. not).
+        """
+        if result is None or not getattr(result, "success", False):
+            return
+        message_id = getattr(result, "message_id", None)
+        if not message_id:
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        db = getattr(store, "_db", None)
+        if db is None:
+            return
+        try:
+            entry = store.get_or_create_session(event.source)
+            session_id = getattr(entry, "session_id", None)
+        except Exception:
+            return
+        if not session_id:
+            return
+
+        # Find the most recent assistant row in this session.  We use a
+        # tight read on the underlying connection rather than a public
+        # API to keep this fast on the hot delivery path.
+        try:
+            with db._lock:  # type: ignore[attr-defined]
+                row = db._conn.execute(  # type: ignore[attr-defined]
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND role = 'assistant' "
+                    "AND active = 1 "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+        except Exception:
+            return
+        if row is None:
+            return
+        row_id = row[0] if not isinstance(row, dict) else row["id"]
+        # SQLite Row supports both index and key access; tolerate either.
+        try:
+            row_id = int(row_id)
+        except Exception:
+            return
+
+        platform = getattr(event.source.platform, "value", None) or getattr(self, "name", None)
+        chat_id = getattr(event.source, "chat_id", None)
+        thread_id = getattr(event.source, "thread_id", None)
+        try:
+            db.set_outbound_ids(
+                row_id,
+                platform=str(platform) if platform else None,
+                chat_id=str(chat_id) if chat_id is not None else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+                message_id=str(message_id),
+            )
+        except Exception:
+            return
 
     def _get_ephemeral_system_ttl_default(self) -> int:
         """Read ``display.ephemeral_system_ttl`` from config.
@@ -2902,6 +3010,17 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+                # /rewind v2 (#21910): stamp the platform's message id onto
+                # the most recent persisted assistant row so a later rewind
+                # in this thread can best-effort delete it.  Wrapped in a
+                # broad try so a SessionDB error never breaks delivery.
+                try:
+                    self._record_outbound_ids_for_send(event, result)
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] outbound-id recording failed (non-fatal): %s",
+                        self.name, exc,
+                    )
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).

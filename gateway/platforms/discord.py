@@ -692,6 +692,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(),
+                # Explicitly publish native slash commands for guild installs.
+                # Without this, discord.py can inherit the application's
+                # user-install default and register commands with
+                # integration_types=[1], which makes them invisible in guilds
+                # even though the bot itself can read/send messages there.
+                allowed_installs=discord.app_commands.AppInstallationType(
+                    guild=True,
+                    user=True,
+                ),
+                allowed_contexts=discord.app_commands.AppCommandContext(
+                    guild=True,
+                    dm_channel=True,
+                    private_channel=True,
+                ),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure

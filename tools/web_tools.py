@@ -1618,22 +1618,26 @@ async def web_crawl_tool(
 
         crawl_provider = _wsp_get_provider(backend) if backend else None
         if crawl_provider is not None and not crawl_provider.supports_crawl():
-            # Configured name IS registered but doesn't support crawl
-            # (search-only providers like brave-free / ddgs / searxng).
-            # Surface a typed error rather than silently switching to a
-            # different crawl backend.
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"{crawl_provider.display_name} is a search-only "
-                        "backend and cannot crawl URLs. "
-                        "Set FIRECRAWL_API_KEY for crawling, or use "
-                        "web_search instead."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            # When the configured provider is search-only AND cannot
+            # extract URLs either (brave-free / ddgs / searxng), surface a
+            # typed "search-only" error rather than silently switching to
+            # a different crawl backend. When the provider supports extract
+            # but not crawl (e.g. firecrawl), fall through to the legacy
+            # firecrawl-via-extract path below.
+            if not crawl_provider.supports_extract():
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"{crawl_provider.display_name} is a search-only "
+                            "backend and cannot crawl URLs. "
+                            "Set FIRECRAWL_API_KEY for crawling, or use "
+                            "web_search instead."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            crawl_provider = None  # let legacy firecrawl path handle it
         if crawl_provider is None:
             crawl_provider = get_active_crawl_provider()
 

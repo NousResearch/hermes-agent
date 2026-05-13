@@ -14743,6 +14743,29 @@ class AIAgent:
                         messages.append({"role": "assistant", "content": final_response})
                         break
 
+                    # Exit early if any terminal tool call was blocked by the user.
+                    # A blocked result carries {"status": "blocked"} in its JSON content.
+                    # Continuing the loop after a user denial is unhelpful and keeps the
+                    # agent alive during gateway drain, delaying clean shutdown.
+                    _num_tool_calls = len(assistant_message.tool_calls) if assistant_message.tool_calls else 0
+                    _recent_tool_msgs = messages[-_num_tool_calls:] if _num_tool_calls else []
+                    _blocked_error: str | None = None
+                    for _tm in _recent_tool_msgs:
+                        if _tm.get("role") == "tool" and _tm.get("name") == "terminal":
+                            try:
+                                _tm_parsed = json.loads(_tm.get("content", "{}"))
+                                if _tm_parsed.get("status") == "blocked":
+                                    _blocked_error = _tm_parsed.get("error", "Command blocked by user")
+                                    break
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                    if _blocked_error is not None:
+                        _turn_exit_reason = "terminal_blocked"
+                        final_response = f"The command was blocked by the user and will not be retried: {_blocked_error}"
+                        self._emit_status(f"🚫 Terminal command blocked — stopping agent: {_blocked_error}")
+                        messages.append({"role": "assistant", "content": final_response})
+                        break
+
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
                     # entire conversation.

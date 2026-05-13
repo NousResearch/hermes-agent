@@ -9,6 +9,7 @@ import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { openExternalUrl } from './lib/openExternalUrl.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -85,4 +86,14 @@ const onFrame =
       }
     : undefined
 
-ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })
+ink.render(<App gw={gw} />, {
+  exitOnCtrlC: false,
+  onFrame,
+  // Open URLs in the user's default browser when a link cell is clicked.
+  // The TUI's mouse tracking captures click events before Terminal.app's
+  // own URL detection can fire, so without this hook clicks on `<Link>`
+  // do nothing in any terminal where mouseTracking is on.
+  onHyperlinkClick: url => {
+    openExternalUrl(url)
+  }
+})

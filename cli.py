@@ -13351,7 +13351,8 @@ class HermesCLI:
                 pasted_text = _sanitize_surrogates(pasted_text)
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                threshold = self.config.get("paste_collapse_threshold", 5)
+                if threshold > 0 and line_count >= threshold and not buf.text.strip().startswith('/'):
                     _paste_counter[0] += 1
                     paste_dir = _hermes_home / "pastes"
                     paste_dir.mkdir(parents=True, exist_ok=True)
@@ -13520,7 +13521,8 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            threshold = self.config.get("paste_collapse_threshold_fallback", 0)
+            if threshold > 0 and line_count >= threshold and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
                 paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)

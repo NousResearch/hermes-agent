@@ -1008,7 +1008,11 @@ KANBAN_CREATE_SCHEMA = {
                     "context — e.g. ['translation'] for a translation "
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
-                    "assignee's profile."
+                    "assignee's profile. Call ``capabilities_list`` "
+                    "(when available in your toolset) at the start of "
+                    "every routing decision to discover which skills "
+                    "each sibling profile has — don't cache the result, "
+                    "sibling skills can change between tasks."
                 ),
             },
         },

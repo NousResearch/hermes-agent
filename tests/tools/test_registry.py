@@ -294,6 +294,7 @@ class TestBuiltinDiscovery:
             "tools.browser_cdp_tool",
             "tools.browser_dialog_tool",
             "tools.browser_tool",
+            "tools.capabilities_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
             "tools.computer_use_tool",

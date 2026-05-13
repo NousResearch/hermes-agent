@@ -68,6 +68,11 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
+    # Cross-profile skill discovery for orchestrator routing — only in
+    # schema when the current profile enables the capabilities toolset
+    # AND is not a dispatched kanban worker. Gated via check_fn in
+    # tools/capabilities_tool.py.
+    "capabilities_list",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
@@ -244,6 +249,20 @@ TOOLSETS = {
             "kanban_create", "kanban_link",
             "kanban_unblock",
         ],
+        "includes": [],
+    },
+
+    "capabilities": {
+        "description": (
+            "Cross-profile skill discovery for orchestrator routing. "
+            "Enumerates the enabled skills installed on every Hermes "
+            "profile on this host so an orchestrator can route work via "
+            "kanban_create(assignee=<profile>, skills=[<skill>]) without "
+            "a hand-edited specialist roster. Pair with the kanban "
+            "toolset — disabled for dispatched workers via check_fn in "
+            "tools/capabilities_tool.py."
+        ),
+        "tools": ["capabilities_list"],
         "includes": [],
     },
 

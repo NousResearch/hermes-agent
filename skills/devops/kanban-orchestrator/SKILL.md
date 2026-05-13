@@ -17,17 +17,41 @@ metadata:
 
 Hermes setups vary widely. Some users run a single profile that does everything; some run a small fleet (`docker-worker`, `cron-worker`); some run a curated specialist team they've named themselves. There is **no default specialist roster** — the orchestrator skill does not know what profiles exist on this machine.
 
-Before fanning out, you must ground the decomposition in the profiles that actually exist. The dispatcher silently fails to spawn unknown assignee names — it doesn't autocorrect, doesn't suggest, doesn't fall back. So a card assigned to `researcher` on a setup that only has `docker-worker` just sits in `ready` forever.
+Before fanning out, you must ground the decomposition in the profiles that actually exist *and* in the skills each one knows. The dispatcher silently fails to spawn unknown assignee names — it doesn't autocorrect, doesn't suggest, doesn't fall back. So a card assigned to `researcher` on a setup that only has `docker-worker` just sits in `ready` forever. And a `kanban_create(skills=["live-fully"])` aimed at a profile that doesn't have that skill installed loads no extra context.
 
-**Step 0: discover available profiles before planning.**
+**Step 0: call `capabilities_list` before every routing decision.**
 
-Use one of these:
+If your toolset includes `capabilities_list`, that is the canonical discovery primitive. It returns a flat list of `{profile, name, description, category}` for every enabled skill on every profile on this host, with disabled skills filtered out and symlink-reached SKILL.md entries dropped. Read the descriptions, match the work to a profile, and pass the matching skill names into `kanban_create(skills=[...])` so the worker spawns with the right specialist context preloaded.
+
+**Do not cache the result across turns.** Sibling profiles can install or remove skills between tasks, and a stale cache routes work to a profile that no longer has the skill loaded. Call `capabilities_list` again at the start of every routing decision; it is cheap (single filesystem walk, in-process).
+
+Worked example — the orchestrator decides who handles a "two Live Fully illustrations of cows" request:
+
+```python
+caps = capabilities_list()
+# caps is JSON like:
+# [
+#   {"profile": "creative", "name": "live-fully",
+#    "description": "Brand voice + visual identity for Live Fully…",
+#    "category": "brand"},
+#   {"profile": "creative", "name": "image-gen-prompt-engineer", ...},
+#   {"profile": "researcher", "name": "deep-web-research", ...},
+# ]
+
+# Match: "Live Fully illustrations" → profile=creative with skills=[live-fully, image-gen-prompt-engineer]
+t1 = kanban_create(
+    title="illustration 1: Live Fully cow",
+    assignee="creative",
+    skills=["live-fully", "image-gen-prompt-engineer"],
+    body="One illustration of a cow in the Live Fully brand voice. See live-fully skill.",
+)["task_id"]
+```
+
+If `capabilities_list` is not in your toolset (older Hermes profile, or operator hasn't enabled the `capabilities` toolset), fall back to:
 
 - `hermes profile list` — prints the table of profiles configured on this machine. Run it through your terminal tool if you have one; otherwise ask the user.
 - `kanban_list(assignee="<some-name>")` — sanity-check a single name. Returns an empty list (rather than an error) for an unknown assignee, so this only confirms a name you're already considering.
 - **Just ask the user.** "What profiles do you have set up?" is a fine first turn when the goal needs more than one specialist.
-
-Cache the result in your working memory for the rest of the conversation. Re-asking every turn wastes a tool call.
 
 ## When to use the board (vs. just doing the work)
 

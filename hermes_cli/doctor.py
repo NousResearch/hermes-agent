@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -163,6 +164,122 @@ def check_fail(text: str, detail: str = ""):
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+
+
+@dataclass(frozen=True)
+class _MemoryFileStatus:
+    path: Path
+    description: str
+    store_name: str
+    exists: bool
+    readable: bool
+    char_count: int | None = None
+    error: str = ""
+
+    @property
+    def filename(self) -> str:
+        return self.path.name
+
+    @property
+    def populated(self) -> bool:
+        return self.readable and self.char_count is not None and self.char_count > 0
+
+    @property
+    def empty(self) -> bool:
+        return self.readable and self.char_count == 0
+
+
+def _memory_file_status(path: Path, description: str, store_name: str) -> _MemoryFileStatus:
+    if not path.exists():
+        return _MemoryFileStatus(
+            path=path,
+            description=description,
+            store_name=store_name,
+            exists=False,
+            readable=False,
+        )
+
+    try:
+        char_count = len(path.read_text(encoding="utf-8").strip())
+    except (OSError, UnicodeDecodeError) as exc:
+        return _MemoryFileStatus(
+            path=path,
+            description=description,
+            store_name=store_name,
+            exists=True,
+            readable=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    return _MemoryFileStatus(
+        path=path,
+        description=description,
+        store_name=store_name,
+        exists=True,
+        readable=True,
+        char_count=char_count,
+    )
+
+
+def _report_builtin_memory_files(memories_dir: Path, issues: list[str]) -> None:
+    statuses = [
+        _memory_file_status(
+            memories_dir / "MEMORY.md",
+            "agent personal notes",
+            "agent personal notes store",
+        ),
+        _memory_file_status(
+            memories_dir / "USER.md",
+            "user profile",
+            "user profile store",
+        ),
+    ]
+    populated_files = [status.filename for status in statuses if status.populated]
+    unreadable_files = [status for status in statuses if status.exists and not status.readable]
+
+    if populated_files:
+        check_ok(f"Built-in memory data present ({', '.join(populated_files)})")
+    elif unreadable_files:
+        check_warn(
+            "Built-in memory files exist but could not be read",
+            "(check permissions or file encoding)",
+        )
+    elif any(status.exists for status in statuses):
+        check_info(
+            "Built-in memory files exist but are empty; each file is populated only "
+            "after Hermes saves that kind of memory"
+        )
+    else:
+        check_info(
+            "Built-in memory files not created yet; each file is created only after "
+            "Hermes saves that kind of memory"
+        )
+
+    for status in statuses:
+        if status.populated or status.empty:
+            empty_suffix = "; empty" if status.empty else ""
+            check_ok(
+                f"{status.filename} exists "
+                f"({status.char_count} chars; {status.description}{empty_suffix})"
+            )
+        elif status.exists:
+            check_warn(f"{status.filename} exists but could not be read", f"({status.error})")
+            issues.append(f"{status.filename} could not be read — check permissions or encoding")
+        else:
+            other = next(
+                (candidate for candidate in statuses if candidate.filename != status.filename),
+                None,
+            )
+            if other and other.populated:
+                check_info(
+                    f"{status.filename} not created yet ({status.store_name}; "
+                    f"{other.filename} already contains {other.description})"
+                )
+            else:
+                check_info(
+                    f"{status.filename} not created yet "
+                    f"(created when Hermes saves {status.description})"
+                )
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -859,18 +976,7 @@ def run_doctor(args):
     memories_dir = hermes_home / "memories"
     if memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
-        memory_file = memories_dir / "MEMORY.md"
-        user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
-        else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+        _report_builtin_memory_files(memories_dir, issues)
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:

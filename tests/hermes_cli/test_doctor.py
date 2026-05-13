@@ -300,9 +300,11 @@ class TestDoctorMemoryProviderSection:
         (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider="", prepare_home=None):
         """Run doctor and capture stdout."""
         home = self._make_hermes_home(tmp_path, provider)
+        if prepare_home is not None:
+            prepare_home(home)
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -323,7 +325,6 @@ class TestDoctorMemoryProviderSection:
         except Exception:
             pass
 
-        import io, contextlib
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             doctor_mod.run_doctor(Namespace(fix=False))
@@ -336,6 +337,49 @@ class TestDoctorMemoryProviderSection:
         # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
+
+    def test_user_profile_memory_is_reported_separately(self, monkeypatch, tmp_path):
+        def prepare_home(home):
+            memories = home / "memories"
+            memories.mkdir()
+            (memories / "USER.md").write_text(
+                "User prefers concise answers",
+                encoding="utf-8",
+            )
+
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="",
+            prepare_home=prepare_home,
+        )
+
+        assert "Built-in memory data present (USER.md)" in out
+        assert "USER.md exists" in out
+        assert "user profile" in out
+        assert (
+            "MEMORY.md not created yet (agent personal notes store; "
+            "USER.md already contains user profile)"
+        ) in out
+        assert "will be created when the agent first writes a memory" not in out
+
+    def test_unreadable_builtin_memory_file_warns(self, monkeypatch, tmp_path):
+        def prepare_home(home):
+            memories = home / "memories"
+            memories.mkdir()
+            (memories / "MEMORY.md").write_bytes(b"\xff\xfe\xff")
+
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="",
+            prepare_home=prepare_home,
+        )
+
+        assert "Built-in memory files exist but could not be read" in out
+        assert "MEMORY.md exists but could not be read" in out
+        assert "UnicodeDecodeError" in out
+        assert "MEMORY.md could not be read" in out
 
     def test_honcho_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make honcho import fail

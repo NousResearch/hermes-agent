@@ -157,11 +157,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val runtime = HermesRuntimeManager.currentState()
-        val endpoint = resolveChatEndpoint(runtime)
-        if (!runtime.started || endpoint == null) {
-            _uiState.update { it.copy(error = runtime.error ?: "Hermes runtime is not ready") }
-            return
+        _uiState.update {
+            it.copy(
+                isSending = true,
+                error = "",
+                status = "Starting Hermes runtime…",
+                isShowingHistory = false,
+            )
         }
 
         val sessionId = conversationStore.currentSessionId()
@@ -170,24 +172,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val userMessage = ChatUiMessage(UUID.randomUUID().toString(), "user", persistedUserText, now)
         val assistantMessageId = UUID.randomUUID().toString()
         val assistantPlaceholder = ChatUiMessage(assistantMessageId, "assistant", "", now + 1)
-        persistMessages(sessionId, userMessage, assistantPlaceholder)
-
-        _uiState.update {
-            it.copy(
-                activeConversationId = sessionId,
-                activeConversationTitle = conversationStore.currentConversation().title,
-                conversationSummaries = loadSummaries(),
-                messages = conversationStore.currentConversationMessages().toUiMessages(),
-                input = "",
-                attachments = emptyList(),
-                isSending = true,
-                error = "",
-                status = if (attachments.isEmpty()) "Hermes is replying…" else "Hermes is reading the image…",
-                isShowingHistory = false,
-            )
-        }
 
         viewModelScope.launch(Dispatchers.IO) {
+            val runtime = ensureRuntimeReady()
+            val endpoint = resolveChatEndpoint(runtime)
+            if (!runtime.started || endpoint == null) {
+                _uiState.update {
+                    it.copy(
+                        isSending = false,
+                        error = runtime.error ?: "Hermes runtime is not ready",
+                        status = "",
+                    )
+                }
+                return@launch
+            }
+
             val userContentParts = runCatching { buildUserContentParts(text, attachments) }.getOrElse { error ->
                 _uiState.update {
                     it.copy(
@@ -198,6 +197,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
+
+            persistMessages(sessionId, userMessage, assistantPlaceholder)
+
+            _uiState.update {
+                it.copy(
+                    activeConversationId = sessionId,
+                    activeConversationTitle = conversationStore.currentConversation().title,
+                    conversationSummaries = loadSummaries(),
+                    messages = conversationStore.currentConversationMessages().toUiMessages(),
+                    input = "",
+                    attachments = emptyList(),
+                    isSending = true,
+                    error = "",
+                    status = if (attachments.isEmpty()) "Hermes is replying…" else "Hermes is reading the image…",
+                    isShowingHistory = false,
+                )
+            }
+
             if (endpoint.nativeToolCalling) {
                 runCatching {
                     val result = NativeToolCallingChatClient(getApplication<Application>()).send(
@@ -322,6 +339,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             apiKey = runtime.apiKey,
             modelName = runtime.modelName ?: "hermes-agent-android",
         )
+    }
+
+    private fun ensureRuntimeReady(): HermesRuntimeManager.RuntimeState {
+        val current = HermesRuntimeManager.currentState()
+        if (current.started && resolveChatEndpoint(current) != null) {
+            return current
+        }
+        return HermesRuntimeManager.ensureStarted(getApplication())
     }
 
     private fun buildState(

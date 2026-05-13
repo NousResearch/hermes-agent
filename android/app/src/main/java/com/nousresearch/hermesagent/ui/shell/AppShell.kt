@@ -125,30 +125,17 @@ fun AppShellScreen(
                 ) {
                     when (currentSection) {
                     AppSection.Hermes -> {
-                        if (bootUiState.ready) {
-                            val authViewModel: AuthViewModel = viewModel()
-                            val chatViewModel: ChatViewModel = viewModel()
-                            ChatScreen(
-                                modifier = Modifier.fillMaxSize(),
-                                viewModel = chatViewModel,
-                                settingsViewModel = settingsViewModel,
-                                authViewModel = authViewModel,
-                                onNavigateToSection = ::navigateToSection,
-                                onContextActionsChanged = ::setActions,
-                                onOpenContextActions = { showActionSheet = true },
-                            )
-                        } else {
-                            HermesSetupScreen(
-                                uiState = bootUiState,
-                                onRetry = onRetryHermes,
-                                onOpenAccounts = { navigateToSection(AppSection.Accounts) },
-                                onOpenPortal = { navigateToSection(AppSection.NousPortal) },
-                                onOpenDevice = { navigateToSection(AppSection.Device) },
-                                onOpenSettings = { navigateToSection(AppSection.Settings) },
-                                onContextActionsChanged = ::setActions,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
+                        val authViewModel: AuthViewModel = viewModel()
+                        val chatViewModel: ChatViewModel = viewModel()
+                        ChatScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            viewModel = chatViewModel,
+                            settingsViewModel = settingsViewModel,
+                            authViewModel = authViewModel,
+                            onNavigateToSection = ::navigateToSection,
+                            onContextActionsChanged = ::setActions,
+                            onOpenContextActions = { showActionSheet = true },
+                        )
                     }
 
                     AppSection.Accounts -> {

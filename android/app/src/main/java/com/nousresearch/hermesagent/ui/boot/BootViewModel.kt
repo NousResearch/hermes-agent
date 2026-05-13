@@ -29,7 +29,7 @@ class BootViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refresh() {
         _uiState.value = BootUiState(status = "Booting Hermes runtime…")
-        val startupDelayMillis = if (firstRefresh) 1000L else 0L
+        val startupDelayMillis = if (firstRefresh) FIRST_LAUNCH_RUNTIME_WARMUP_DELAY_MS else 0L
         firstRefresh = false
         viewModelScope.launch {
             if (startupDelayMillis > 0L) {
@@ -95,6 +95,8 @@ class BootViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 }
+
+private const val FIRST_LAUNCH_RUNTIME_WARMUP_DELAY_MS = 30_000L
 
 internal fun hermesHealthUrl(baseUrl: String): String {
     return baseUrl.trimEnd('/').removeSuffix("/v1") + "/health"

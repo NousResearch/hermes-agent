@@ -35,7 +35,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -69,10 +71,12 @@ fun ChatScreen(
     val strings = LocalHermesStrings.current
     val context = LocalContext.current
     val listState = rememberLazyListState()
-    val ttsController = remember(context) { HermesTtsController(context) }
+    var ttsController by remember(context) { mutableStateOf<HermesTtsController?>(null) }
 
-    DisposableEffect(ttsController) {
-        onDispose { ttsController.shutdown() }
+    DisposableEffect(context) {
+        onDispose {
+            ttsController?.shutdown()
+        }
     }
 
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -115,7 +119,8 @@ fun ChatScreen(
     }
 
     fun speak(text: String): Boolean {
-        val worked = ttsController.speak(text)
+        val controller = ttsController ?: HermesTtsController(context).also { ttsController = it }
+        val worked = controller.speak(text)
         if (!worked) {
             viewModel.setStatus("Speech playback is not ready yet")
         }

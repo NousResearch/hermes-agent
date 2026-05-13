@@ -3369,6 +3369,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     discovered_models: list[str] = list(detection.models)
     api_mode: str = detection.api_mode or ""
 
+    api_mode_explicit = False
     if api_mode:
         mode_label = (
             "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
@@ -3398,6 +3399,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             print("\nCancelled.")
             return
         api_mode = "anthropic_messages" if mode_choice == "2" else "chat_completions"
+        api_mode_explicit = True
 
     # ── Step 4: model name ───────────────────────────────────────────
     print()
@@ -3457,6 +3459,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["provider"] = "azure-foundry"
     model["base_url"] = effective_url
     model["api_mode"] = api_mode
+    model["api_mode_explicit"] = api_mode_explicit
     model["default"] = effective_model
     if ctx_len:
         model["context_length"] = ctx_len

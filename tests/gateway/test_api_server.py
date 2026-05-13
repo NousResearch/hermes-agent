@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    NO_RESPONSE_GENERATED_FALLBACK,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
@@ -1351,6 +1352,29 @@ class TestChatCompletionsEndpoint:
             assert "usage" in data
 
     @pytest.mark.asyncio
+    async def test_empty_agent_response_uses_japanese_fallback(self, adapter):
+        """Empty agent results should not expose the old English sentinel."""
+        mock_result = {"final_response": "", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        content = data["choices"][0]["message"]["content"]
+        assert content == NO_RESPONSE_GENERATED_FALLBACK
+        assert "No response generated" not in content
+
+    @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):
         """System messages from the client are passed as ephemeral_system_prompt."""
         mock_result = {
@@ -1576,6 +1600,26 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_empty_response_uses_japanese_fallback(self, adapter):
+        """Responses API should share the user-facing empty-response fallback."""
+        mock_result = {"final_response": "", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        text = data["output"][0]["content"][0]["text"]
+        assert text == NO_RESPONSE_GENERATED_FALLBACK
+        assert "No response generated" not in text
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):

@@ -62,7 +62,7 @@ class TestHandleBackgroundCommand:
         runner = _make_runner()
         event = _make_event(text="/background")
         result = await runner._handle_background_command(event)
-        assert "Usage:" in result
+        assert "使い方:" in result
         assert "/background" in result
 
     @pytest.mark.asyncio
@@ -71,7 +71,7 @@ class TestHandleBackgroundCommand:
         runner = _make_runner()
         event = _make_event(text="/bg")
         result = await runner._handle_background_command(event)
-        assert "Usage:" in result
+        assert "使い方:" in result
 
     @pytest.mark.asyncio
     async def test_empty_prompt_shows_usage(self):
@@ -79,7 +79,7 @@ class TestHandleBackgroundCommand:
         runner = _make_runner()
         event = _make_event(text="/background   ")
         result = await runner._handle_background_command(event)
-        assert "Usage:" in result
+        assert "使い方:" in result
 
     @pytest.mark.asyncio
     async def test_valid_prompt_starts_task(self):
@@ -102,7 +102,7 @@ class TestHandleBackgroundCommand:
             result = await runner._handle_background_command(event)
 
         assert "🔄" in result
-        assert "Background task started" in result
+        assert "バックグラウンド作業を開始しました" in result
         assert "bg_" in result  # task ID starts with bg_
         assert "Summarize the top HN stories" in result
         assert len(created_tasks) == 1  # background task was created
@@ -135,7 +135,7 @@ class TestHandleBackgroundCommand:
         with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
             result = await runner._handle_background_command(event)
 
-        assert "Background task started" in result
+        assert "バックグラウンド作業を開始しました" in result
         runner._run_background_task.assert_called_once()
         assert runner._run_background_task.call_args.kwargs["event_message_id"] == "463"
 
@@ -182,7 +182,7 @@ class TestHandleBackgroundCommand:
                     platform=platform,
                 )
                 result = await runner._handle_background_command(event)
-                assert "Background task started" in result
+                assert "バックグラウンド作業を開始しました" in result
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ class TestRunBackgroundTask:
         # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+        assert "失敗しました" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -262,7 +262,7 @@ class TestRunBackgroundTask:
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
-        assert "Background task complete" in content
+        assert "バックグラウンド作業が完了しました" in content
         assert "Hello from background!" in content
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()

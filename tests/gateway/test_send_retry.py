@@ -204,7 +204,7 @@ class TestSendWithRetryNetworkRetry:
         assert result.success
         # 3 calls: initial (network) + 1 retry (non-network, breaks loop) + plain-text fallback
         assert len(adapter._send_calls) == 3
-        assert "plain text" in adapter._send_calls[-1][1].lower()
+        assert "プレーンテキスト" in adapter._send_calls[-1][1]
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ class TestSendWithRetryExhausted:
         assert len(adapter._send_calls) == 4
         # The notice content should mention delivery failure
         notice_content = adapter._send_calls[-1][1]
-        assert "delivery failed" in notice_content.lower() or "Message delivery failed" in notice_content
+        assert "返信の送信に複数回失敗しました" in notice_content
 
     @pytest.mark.asyncio
     async def test_notice_send_exception_doesnt_propagate(self):
@@ -269,7 +269,7 @@ class TestSendWithRetryFallback:
         assert result.success
         assert len(adapter._send_calls) == 2
         # Fallback content should be plain-text notice
-        assert "plain text" in adapter._send_calls[1][1].lower()
+        assert "プレーンテキスト" in adapter._send_calls[1][1]
 
     @pytest.mark.asyncio
     async def test_fallback_failure_logged_but_not_raised(self):

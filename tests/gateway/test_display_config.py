@@ -149,6 +149,14 @@ class TestYAMLNormalisation:
         config = {"display": {"tool_progress": True}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_tool_progress_string_sentinels_normalised(self):
+        """String sentinels like 'none' and 'false' really disable gateway progress."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in ("off", "none", "false", "no", "0"):
+            config = {"display": {"tool_progress": value}}
+            assert resolve_display_setting(config, "discord", "tool_progress") == "off"
+
     def test_show_reasoning_string_true(self):
         """String 'true' is normalised to bool True."""
         from gateway.display_config import resolve_display_setting

@@ -3913,10 +3913,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_queue(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
-        @tree.command(name="background", description="Run a prompt in the background")
-        @discord.app_commands.describe(prompt="The prompt to run in the background")
+        @tree.command(name="background", description="プロンプトをバックグラウンドで実行します")
+        @discord.app_commands.describe(prompt="バックグラウンドで実行する内容")
         async def slash_background(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+            await self._run_simple_slash(interaction, f"/background {prompt}", "バックグラウンド作業を開始しました~")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

@@ -254,7 +254,12 @@ def _normalise(setting: str, value: Any) -> Any:
             return "off"
         if value is True:
             return "all"
-        return str(value).lower()
+        lowered = str(value).strip().lower()
+        if lowered in {"off", "none", "false", "no", "0"}:
+            return "off"
+        if lowered in {"on", "true", "yes", "1"}:
+            return "all"
+        return lowered
     if setting == "tool_progress_tools":
         return _normalise_tool_progress_tools(value)
     if setting in {

@@ -1937,23 +1937,30 @@ def _normalize_empty_agent_response(
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
+                "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+                "/compact で圧縮するか、/reset で新しく始めてください。"
             )
+        logger.warning(
+            "Agent failed with empty response; hiding raw error from gateway user: %s",
+            str(error_detail)[:1000],
+        )
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            "⚠️ 処理中に一時的なエラーが発生しました。もう一度送ってください。\n"
+            "続く場合は /reset で新しい会話に切り替えてください。"
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            logger.warning(
+                "Agent stopped with partial response; hiding raw error from gateway user: %s",
+                str(err)[:1000],
+            )
+            return "⚠️ 処理が途中で止まりました。もう一度送ってください。"
         return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
+            "⚠️ 処理は完了しましたが、返信文を生成できませんでした。"
+            "一時的な可能性があるので、もう一度送ってください。"
         )
 
     return response
@@ -8724,9 +8731,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
                 response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                    "⚠️ モデルが返信文を生成できませんでした。"
+                    "もう一度送るか、少し言い換えて試してください。"
                 )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
@@ -8931,9 +8937,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
                 response = (response or "") + (
-                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
-                    "Your next message will start a fresh session."
+                    "\n\n🔄 会話がコンテキスト上限を超え、圧縮もできなかったため、"
+                    "セッションを自動でリセットしました。次のメッセージから新しい会話になります。"
                 )
 
             ts = datetime.now().isoformat()
@@ -9121,9 +9126,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+                status_hint = " APIキーまたはOAuth認証を確認してください。"
             elif status_code == 402:
-                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
+                status_hint = " APIの残高または利用枠が不足しています。プロバイダ側の設定を確認してください。"
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -9140,30 +9145,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = f" 利用上限に達しました。約{_hours}時間後にリセットされます。"
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " 利用上限に達しました。リセットまで少し待ってください。"
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " レート制限中です。少し待ってからもう一度送ってください。"
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " APIが一時的に混み合っています。少し待ってからもう一度送ってください。"
             elif status_code in {400, 500}:
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+                        "/compact で圧縮するか、/reset で新しく始めてください。"
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " APIにリクエストが拒否されました。"
+            logger.warning(
+                "Gateway handler error hidden from user response: type=%s detail=%s hint=%s",
+                error_type, str(error_detail)[:1000], status_hint.strip(),
+            )
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
-                f"{error_detail}\n"
-                f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                f"⚠️ 処理中にエラーが発生しました（{error_type}）。\n"
+                f"{status_hint.strip()}\n"
+                "もう一度送るか、続く場合は /reset で新しく始めてください。"
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -10150,6 +10157,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Post-stream media extraction failed: %s", e)
 
 
+    async def _handle_background_command(self, event: MessageEvent) -> str:
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, sends the result back to the same chat without
+        modifying the active session's conversation history.
+        """
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return (
+                "使い方: /background <依頼内容>\n"
+                "例: /background 今日のHNトップ記事を要約して\n\n"
+                "別セッションで実行します。このまま会話でき、完了したらここに結果を送ります。"
+            )
+
+        source = event.source
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+
+        event_message_id = self._reply_anchor_for_event(event)
+
+        # Fire-and-forget the background task
+        _task = asyncio.create_task(
+            self._run_background_task(
+                prompt,
+                source,
+                task_id,
+                event_message_id=event_message_id,
+            )
+        )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        return f'🔄 バックグラウンド作業を開始しました: "{preview}"\nTask ID: {task_id}\nこのまま会話できます。完了したら結果を送ります。'
 
     async def _run_background_task(
         self,
@@ -10182,7 +10223,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    f"❌ バックグラウンド作業 {task_id} に失敗しました: モデルAPIの認証情報が設定されていません。",
                     metadata=_thread_metadata,
                 )
                 return
@@ -10260,7 +10301,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
+                logger.warning(
+                    "Background task %s returned error without response; hiding raw error: %s",
+                    task_id, str(result.get("error"))[:1000],
+                )
+                response = "⚠️ バックグラウンド作業中にエラーが発生しました。もう一度試してください。"
             if result:
                 response = _format_provider_api_failure_for_gateway(result, response)
 
@@ -10272,7 +10317,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = f'✅ バックグラウンド作業が完了しました\n依頼: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
@@ -10283,7 +10328,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 elif not images and not media_files:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=header + "(返信なし)",
                         metadata=_thread_metadata,
                     )
 
@@ -10340,7 +10385,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=f'✅ バックグラウンド作業が完了しました\n依頼: "{preview}"\n\n(返信なし)',
                     metadata=_thread_metadata,
                 )
 

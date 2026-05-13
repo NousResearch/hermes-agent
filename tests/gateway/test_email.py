@@ -706,6 +706,44 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_send_voice_attaches_audio_file(self):
+        """send_voice should attach audio files instead of leaking paths as text."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 bytes")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                result = asyncio.run(
+                    adapter.send_voice("user@test.com", tmp_path, "Here is the audio")
+                )
+
+                self.assertTrue(result.success)
+                mock_server.send_message.assert_called_once()
+                sent_msg = mock_server.send_message.call_args[0][0]
+                parts = list(sent_msg.walk())
+                attachments = [
+                    p for p in parts
+                    if "attachment" in str(p.get("Content-Disposition", ""))
+                ]
+                self.assertEqual(len(attachments), 1)
+                self.assertIn(".mp3", attachments[0].get_filename())
+                text_parts = [
+                    p.get_payload(decode=True).decode(p.get_content_charset() or "utf-8")
+                    for p in parts
+                    if p.get_content_type() == "text/plain"
+                ]
+                self.assertIn("Here is the audio", "\n".join(text_parts))
+        finally:
+            os.unlink(tmp_path)
+
     def test_send_typing_is_noop(self):
         """send_typing should do nothing for email."""
         import asyncio

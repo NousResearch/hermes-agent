@@ -684,6 +684,30 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as an email attachment.
+
+        The shared media router sends recognized audio extensions through
+        ``send_voice`` on non-Telegram platforms. Email has no native voice
+        primitive, so preserve the file by attaching it as a regular MIME
+        document instead of falling back to the base text-only implementation.
+        """
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=audio_path,
+            caption=caption,
+            reply_to=reply_to,
+            **kwargs,
+        )
+
     async def send_document(
         self,
         chat_id: str,

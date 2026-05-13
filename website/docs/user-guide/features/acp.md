@@ -63,6 +63,26 @@ python -m acp_adapter
 
 Hermes logs to stderr so stdout remains reserved for ACP JSON-RPC traffic.
 
+## External orchestration helper
+
+Hermes also ships a small reference client for driving ACP sessions from shell
+scripts, CI, or another agent process:
+
+```bash
+python scripts/hermes-session-client.py researcher new "$PWD"
+python scripts/hermes-session-client.py researcher prompt "<SESSION_ID>" "Summarize this repo"
+python scripts/hermes-session-client.py researcher list
+```
+
+The helper:
+
+- launches `hermes -p <profile> acp`
+- auto-detects and acknowledges the auth method advertised by `initialize`
+- supports `new`, `load`, `resume`, `fork`, `prompt`, `list`, and `cancel`
+
+This is useful when you want one Hermes profile to orchestrate another via ACP
+instead of using in-process `delegate_task`.
+
 ## Editor setup
 
 ### VS Code

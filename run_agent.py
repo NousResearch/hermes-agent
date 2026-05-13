@@ -2647,6 +2647,11 @@ class AIAgent:
         old_model = self.model
         old_provider = self.provider
 
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        self._config_context_length = None
+
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
@@ -8824,6 +8829,11 @@ class AIAgent:
                 fb_api_mode = "bedrock_converse"
 
             old_model = self.model
+
+            # Clear the per-config context_length override so the fallback
+            # model's actual context window is resolved instead of inheriting
+            # the stale value from the previous model.  See #22387.
+            self._config_context_length = None
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url

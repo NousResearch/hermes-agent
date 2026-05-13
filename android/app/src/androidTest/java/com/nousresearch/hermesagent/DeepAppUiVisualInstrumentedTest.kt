@@ -128,7 +128,7 @@ class DeepAppUiVisualInstrumentedTest {
     }
 
     @Test
-    fun signinOpenRouterCommandOpensOpenRouterOAuthPage() {
+    fun signinOpenRouterCommandOpensOpenRouterOAuthHelperPage() {
         AppSettingsStore(app).save(
             AppSettings(
                 provider = "openrouter",
@@ -159,15 +159,17 @@ class DeepAppUiVisualInstrumentedTest {
 
             override fun matchesSafely(intent: Intent): Boolean {
                 val chooserTarget = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                val uri = intent.data ?: chooserTarget?.data ?: return false
+                val uri = intent.data ?: chooserTarget?.data ?: intent.getStringExtra(PROVIDER_SETUP_URL_EXTRA)?.let(Uri::parse)
+                    ?: return false
                 val callbackUrl = Uri.parse(uri.getQueryParameter("callback_url").orEmpty())
-                val matches = intent.action in setOf(Intent.ACTION_VIEW, Intent.ACTION_CHOOSER) &&
+                val openedInAppHelper = intent.component?.className == HermesProviderSetupWebActivity::class.java.name
+                val matches = (intent.action in setOf(Intent.ACTION_VIEW, Intent.ACTION_CHOOSER) || openedInAppHelper) &&
                     uri.scheme == "https" &&
                     uri.host == "openrouter.ai" &&
                     uri.path == "/auth" &&
                     uri.getQueryParameter("code_challenge_method") == "S256" &&
                     callbackUrl.scheme == "http" &&
-                    callbackUrl.host == "127.0.0.1" &&
+                    callbackUrl.host == "localhost" &&
                     callbackUrl.port == OpenRouterLoopbackOAuthServer.DEFAULT_PORT &&
                     callbackUrl.path == "/hermes/openrouter/callback" &&
                     callbackUrl.getQueryParameter("method") == "openrouter"

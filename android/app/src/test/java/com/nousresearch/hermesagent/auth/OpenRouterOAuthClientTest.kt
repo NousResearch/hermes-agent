@@ -58,7 +58,7 @@ class OpenRouterOAuthClientTest {
         val callbackUri = Uri.parse(request.startUri.getQueryParameter("callback_url"))
 
         assertEquals("http", callbackUri.scheme)
-        assertEquals("127.0.0.1", callbackUri.host)
+        assertEquals("localhost", callbackUri.host)
         assertEquals(3000, callbackUri.port)
         assertEquals("/hermes/openrouter/callback", callbackUri.path)
         assertEquals("openrouter", callbackUri.getQueryParameter("method"))

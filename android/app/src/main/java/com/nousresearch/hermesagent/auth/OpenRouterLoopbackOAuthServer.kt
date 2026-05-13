@@ -23,7 +23,7 @@ data class OpenRouterLoopbackServerStart(
 
 object OpenRouterLoopbackOAuthServer {
     const val DEFAULT_PORT = 3000
-    private const val CALLBACK_HOST = "127.0.0.1"
+    private const val CALLBACK_HOST = "localhost"
     private const val CALLBACK_PATH = "/hermes/openrouter/callback"
     private const val SERVER_TIMEOUT_MS = 5 * 60 * 1000
 

@@ -56,6 +56,26 @@ def test_sync_cron_templates_creates_job(tmp_path, monkeypatch):
     assert stored[0]["thread_title_template"] == "Repo improvement - {date}"
 
 
+def test_sync_cron_templates_expands_profile_workdir(tmp_path, monkeypatch):
+    hermes_home, jobs, job_templates = _load_modules(tmp_path, monkeypatch)
+    _write_template(
+        hermes_home,
+        "repo-self-improvement.json",
+        template_key="repo-self-improvement",
+        version="1",
+        name="Repo self improvement",
+        schedule="every 1h",
+        prompt="Review the repository and suggest one improvement.",
+        workdir="${HERMES_HOME}",
+    )
+
+    result = job_templates.sync_cron_templates()
+
+    assert result["created"] == ["repo-self-improvement"]
+    stored = jobs.list_jobs(include_disabled=True)
+    assert stored[0]["workdir"] == str(hermes_home.resolve())
+
+
 def test_sync_cron_templates_updates_prompt_but_preserves_runtime_state(tmp_path, monkeypatch):
     hermes_home, jobs, job_templates = _load_modules(tmp_path, monkeypatch)
     existing = jobs.create_job(

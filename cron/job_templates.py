@@ -95,7 +95,7 @@ def _create_kwargs(template: Dict[str, Any]) -> Dict[str, Any]:
         "script": template.get("script"),
         "context_from": template.get("context_from"),
         "enabled_toolsets": template.get("enabled_toolsets"),
-        "workdir": template.get("workdir"),
+        "workdir": _expand_template_workdir(template.get("workdir")),
         "no_agent": bool(template.get("no_agent", False)),
         "delivery_mode": template.get("delivery_mode"),
         "thread_title_template": template.get("thread_title_template"),
@@ -111,6 +111,20 @@ def _optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Optiona
     if strip_trailing_slash:
         text = text.rstrip("/")
     return text or None
+
+
+def _expand_template_workdir(value: Any) -> Any:
+    """Expand profile-local placeholders in distribution-owned cron templates."""
+    if value is None:
+        return None
+    text = str(value)
+    hermes_home = str(get_hermes_home())
+    return (
+        text.replace("${HERMES_HOME}", hermes_home)
+        .replace("$HERMES_HOME", hermes_home)
+        .replace("{HERMES_HOME}", hermes_home)
+        .replace("{hermes_home}", hermes_home)
+    )
 
 
 def _normalize_context_from(value: Any) -> Optional[List[str]]:
@@ -175,7 +189,7 @@ def _apply_template_update(job: Dict[str, Any], template: Dict[str, Any]) -> Non
                 if str(item).strip()
             ]
             or None,
-            "workdir": _normalize_workdir(template.get("workdir")),
+            "workdir": _normalize_workdir(_expand_template_workdir(template.get("workdir"))),
             "delivery_mode": _optional_text(template.get("delivery_mode")),
             "thread_title_template": _optional_text(template.get("thread_title_template")),
             "template_key": template["template_key"],

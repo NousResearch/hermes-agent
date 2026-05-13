@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 
 
+from typing import Optional
+
 def _default_wiki_path() -> str:
     env = os.environ.get("WIKI_PATH", "")
     if env:
@@ -43,7 +45,7 @@ def _extract_wikilinks(body: str) -> list[str]:
     return [m.strip().lower().replace(" ", "-") for m in matches]
 
 
-def wiki_scan(wiki_path: str | None = None) -> dict:
+def wiki_scan(wiki_path: Optional[str] = None) -> dict:
     """Scan wiki directory and return graph structure."""
     wiki = Path(wiki_path or _default_wiki_path())
     if not wiki.exists():
@@ -113,7 +115,7 @@ def wiki_scan(wiki_path: str | None = None) -> dict:
     return {"pages": pages, "links": links}
 
 
-def wiki_page(path: str, wiki_path: str | None = None) -> dict | None:
+def wiki_page(path: str, wiki_path: Optional[str] = None) -> Optional[dict]:
     """Read a single wiki page by relative path (e.g. 'entities/dflash-mlx.md')."""
     wiki = Path(wiki_path or _default_wiki_path())
     target = wiki / path

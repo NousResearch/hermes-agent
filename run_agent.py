@@ -10687,8 +10687,16 @@ class AIAgent:
 
         # ── Logging / callbacks ──────────────────────────────────────────
         tool_names_str = ", ".join(name for _, name, _, _, _ in parsed_calls)
+        tool_activity_labels = []
+        for _, name, args, _, _ in parsed_calls:
+            try:
+                preview = _build_tool_preview(name, args)
+            except Exception:
+                preview = None
+            tool_activity_labels.append(f"{name}: {preview}" if preview else name)
+        tool_activity_str = ", ".join(tool_activity_labels)
         if not self.quiet_mode:
-            print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
+            print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_activity_str}")
             for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
@@ -10726,8 +10734,8 @@ class AIAgent:
 
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
-        self._current_tool = tool_names_str
-        self._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+        self._current_tool = tool_activity_str
+        self._touch_activity(f"executing {num_tools} tools concurrently: {tool_activity_str}")
 
         # Capture CLI callbacks from the agent thread so worker threads can
         # register them locally.  Without this, _get_approval_callback() in

@@ -104,6 +104,22 @@ class TestBuildToolPreview:
         assert result is not None
         assert "find something" in result
 
+    def test_delegate_task_batch_preview_uses_task_goals(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {
+                "tasks": [
+                    {"goal": "Fix QuoteDeck reminder dispatch worker"},
+                    {"goal": "Add global command palette"},
+                ]
+            },
+        )
+
+        assert result is not None
+        assert "Fix QuoteDeck reminder dispatch worker" in result
+        assert "Add global command palette" in result
+        assert result != "delegate_task"
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None

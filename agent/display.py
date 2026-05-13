@@ -177,6 +177,24 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            goals = []
+            for task in tasks[:3]:
+                if isinstance(task, dict):
+                    goal = _oneline(str(task.get("goal") or task.get("context") or ""))
+                    if goal:
+                        goals.append(goal)
+            if goals:
+                preview = "; ".join(goals)
+                if len(tasks) > len(goals):
+                    preview += f"; +{len(tasks) - len(goals)} more"
+                if max_len > 0 and len(preview) > max_len:
+                    preview = preview[:max_len - 3] + "..."
+                return preview
+
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",

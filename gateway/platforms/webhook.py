@@ -229,6 +229,17 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
+        # Suppress delivery when the agent returned the [SILENT] marker —
+        # mirrors the cron scheduler's SILENT_MARKER check so webhook-triggered
+        # agents (e.g. gmail-triage skip cases) don't post "[SILENT]" to
+        # Telegram/Slack/etc.
+        if content and "[SILENT]" in content.strip().upper():
+            logger.info(
+                "[webhook] Agent returned [SILENT] for %s — skipping delivery",
+                chat_id,
+            )
+            return SendResult(success=True)
+
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)

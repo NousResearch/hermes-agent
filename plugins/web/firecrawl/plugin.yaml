@@ -1,0 +1,7 @@
+name: web-firecrawl
+version: 1.0.0
+description: "Firecrawl web search + content extraction. Supports direct API and Nous-hosted tool-gateway routing for subscribers. Requires FIRECRAWL_API_KEY (or FIRECRAWL_API_URL for self-hosted), or an active Nous subscription with FIRECRAWL_GATEWAY_URL."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - firecrawl

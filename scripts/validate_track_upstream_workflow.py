@@ -26,6 +26,7 @@ def load_workflow():
 
 
 def main() -> None:
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
     workflow = load_workflow()
     steps = workflow["jobs"]["rebase-onto-upstream"]["steps"]
 
@@ -42,6 +43,10 @@ def main() -> None:
         raise SystemExit("track-upstream must pass GH_TOKEN to GitHub CLI steps")
     if any(token != SYNC_TOKEN_EXPR for token in gh_token_envs):
         raise SystemExit("track-upstream GH_TOKEN envs must use UPSTREAM_SYNC_TOKEN fallback")
+    if 'git push origin "$BRANCH" 2>/tmp/push_err' not in workflow_text:
+        raise SystemExit("track-upstream must capture conflict-branch push failures")
+    if "Could not push conflict branch" not in workflow_text:
+        raise SystemExit("track-upstream must explain conflict-branch push failures")
 
 
 if __name__ == "__main__":

@@ -113,7 +113,27 @@ jobs:
             fi
           done
 
-          git push origin "$BRANCH"
+          if ! git push origin "$BRANCH" 2>/tmp/push_err; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## ⚠ Upstream sync conflict branch could not be pushed
+
+          Daily \`track-upstream\` found $BEHIND new upstream commits and created
+          local conflict-resolution branch \`$BRANCH\`, but GitHub rejected the
+          push.
+
+          This usually means the branch contains workflow-file changes and the
+          run is using the default GitHub Actions token. Configure repo secret
+          \`UPSTREAM_SYNC_TOKEN\` with contents/write, pull-requests/write, and
+          workflows/write scopes, then re-run this workflow.
+
+          Error from \`git push\`:
+          \`\`\`
+          $(cat /tmp/push_err 2>/dev/null || echo '(none)')
+          \`\`\`
+          SUMMARY
+            echo "::error::Could not push conflict branch $BRANCH. Configure UPSTREAM_SYNC_TOKEN with workflows/write scope and re-run."
+            exit 1
+          fi
 
           CONFLICTED=$(cat /tmp/conflicted_files.txt 2>/dev/null | tr '\n' ' ')
 

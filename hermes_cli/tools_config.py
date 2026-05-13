@@ -1576,6 +1576,60 @@ def _plugin_video_gen_providers() -> list[dict]:
     return rows
 
 
+# Mirror of _plugin_image_gen_providers for web search backends. Surfaces
+# plugin-registered web providers (brave-free / ddgs / searxng during the
+# spike) so they appear in the "Web Search & Extract" picker row. While
+# the legacy TOOL_CATEGORIES entries still cover those names, this helper
+# skip-lists them to avoid duplicate rows.
+#
+# When the migration PR drops the hardcoded entries, the skip-list can be
+# removed and this helper becomes the sole source of web-provider picker
+# rows (matching how Spotify / Google Meet are surfaced today purely from
+# their plugins).
+_WEB_PLUGIN_SKIPLIST = frozenset({"brave-free", "ddgs", "searxng"})
+
+
+def _plugin_web_search_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered web search providers.
+
+    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
+    row but carries a ``web_search_plugin_name`` marker so downstream
+    code can route through ``agent.web_search_registry`` instead of the
+    legacy hardcoded dispatch. Names already covered by hardcoded picker
+    rows during the spike are skipped via :data:`_WEB_PLUGIN_SKIPLIST`.
+    """
+    try:
+        from agent.web_search_registry import list_providers as _list_web_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = _list_web_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name or name in _WEB_PLUGIN_SKIPLIST:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        rows.append(
+            {
+                "name": schema.get("name", provider.display_name),
+                "badge": schema.get("badge", ""),
+                "tag": schema.get("tag", ""),
+                "env_vars": schema.get("env_vars", []),
+                "web_search_plugin_name": name,
+            }
+        )
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1596,6 +1650,14 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # video_gen has NO hardcoded providers — every backend is a plugin.
     if cat.get("name") == "Video Generation":
         visible.extend(_plugin_video_gen_providers())
+
+    # Inject plugin-registered web search backends. During the spike the
+    # three migrated providers (brave-free, ddgs, searxng) still have
+    # hardcoded TOOL_CATEGORIES entries — the helper skips them so the
+    # picker doesn't show duplicates. When the migration PR deletes those
+    # hardcoded rows, this injection becomes the sole source of truth.
+    if cat.get("name") == "Web Search & Extract":
+        visible.extend(_plugin_web_search_providers())
 
     return visible
 

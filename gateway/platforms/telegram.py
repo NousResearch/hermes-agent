@@ -4212,7 +4212,7 @@ class TelegramAdapter(BasePlatformAdapter):
         elif msg.video:
             msg_type = MessageType.VIDEO
         elif msg.audio:
-            msg_type = MessageType.AUDIO
+            msg_type = MessageType.DOCUMENT
         elif msg.voice:
             msg_type = MessageType.VOICE
         elif msg.document:
@@ -4264,7 +4264,9 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
 
-        # Download voice/audio messages to cache for STT transcription
+        # Download voice messages to cache for STT transcription.
+        # Telegram message.audio represents an attached audio/music file, not
+        # a voice note, so keep it as a document for the agent/transcribe skill.
         if msg.voice:
             try:
                 file_obj = await msg.voice.get_file()
@@ -4279,10 +4281,22 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                original_filename = getattr(msg.audio, "file_name", None) or "audio"
+                _, ext = os.path.splitext(original_filename)
+                ext = ext.lower()
+                audio_mime = (getattr(msg.audio, "mime_type", None) or "").lower()
+                if not ext and audio_mime:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(audio_mime, "")
+                if not ext:
+                    ext = ".mp3"
+                if not original_filename.lower().endswith(ext):
+                    original_filename = f"{original_filename}{ext}"
+                cached_path = cache_document_from_bytes(bytes(audio_bytes), original_filename)
                 event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
-                logger.info("[Telegram] Cached user audio at %s", cached_path)
+                event.media_types = [audio_mime or SUPPORTED_DOCUMENT_TYPES.get(ext, "audio/mpeg")]
+                event.message_type = MessageType.DOCUMENT
+                logger.info("[Telegram] Cached user audio attachment at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 

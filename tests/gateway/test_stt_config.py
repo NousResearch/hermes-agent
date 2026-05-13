@@ -114,3 +114,45 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_keeps_audio_document_as_file(tmp_path):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {}
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._has_setup_skill = lambda: False
+
+    audio_path = tmp_path / "lecture.mp3"
+    audio_path.write_bytes(b"ID3 fake audio")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="please save this",
+        message_type=MessageType.DOCUMENT,
+        source=source,
+        media_urls=[str(audio_path)],
+        media_types=["audio/mpeg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        side_effect=AssertionError("audio document should not be auto-transcribed"),
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is not None
+    assert "audio file" in result.lower()
+    assert "lecture.mp3" in result
+    assert "please save this" in result

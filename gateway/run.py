@@ -7141,7 +7141,10 @@ class GatewayRunner:
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                if event.message_type != MessageType.DOCUMENT and (
+                    mtype.startswith("audio/")
+                    or event.message_type in {MessageType.VOICE, MessageType.AUDIO}
+                ):
                     audio_paths.append(path)
 
             if image_paths:
@@ -7218,7 +7221,7 @@ class GatewayRunner:
                         guessed, _ = _mimetypes.guess_type(path)
                         if guessed:
                             mtype = guessed
-                if not mtype.startswith(("application/", "text/")):
+                if not mtype.startswith(("application/", "text/", "audio/")):
                     continue
 
                 basename = os.path.basename(path)
@@ -7236,6 +7239,13 @@ class GatewayRunner:
                         f"[The user sent a text document: '{display_name}'. "
                         f"Its content has been included below. "
                         f"The file is also saved at: {agent_path}]"
+                    )
+                elif mtype.startswith("audio/"):
+                    context_note = (
+                        f"[The user sent an audio file: '{display_name}'. "
+                        f"The file is saved at: {agent_path}. "
+                        f"Use the file path if the user asks for transcription "
+                        f"or audio analysis.]"
                     )
                 else:
                     context_note = (

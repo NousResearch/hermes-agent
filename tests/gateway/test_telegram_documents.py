@@ -124,6 +124,14 @@ def _make_video(file_obj=None):
     return video
 
 
+def _make_audio(file_name="song.mp3", mime_type="audio/mpeg", file_obj=None):
+    audio = MagicMock()
+    audio.file_name = file_name
+    audio.mime_type = mime_type
+    audio.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"audio-bytes"))
+    return audio
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -146,6 +154,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +172,21 @@ class TestDocumentTypeDetection:
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
+
+    @pytest.mark.asyncio
+    async def test_audio_attachment_is_document_not_voice(self, adapter):
+        """Telegram message.audio is a file attachment, not a voice message."""
+        audio = _make_audio(file_name="song.mp3", mime_type="audio/mpeg")
+        msg = _make_message(document=None)
+        msg.audio = audio
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["audio/mpeg"]
+        assert len(event.media_urls) == 1
 
     @pytest.mark.asyncio
     async def test_fallback_is_document(self, adapter):
@@ -197,6 +223,28 @@ class TestDocumentDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_audio_document_is_cached_as_file(self, adapter):
+        audio_bytes = b"ID3 fake audio"
+        file_obj = _make_file_obj(audio_bytes)
+        doc = _make_document(
+            file_name="lecture.mp3",
+            mime_type="audio/mpeg",
+            file_size=len(audio_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["audio/mpeg"]
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith("lecture.mp3")
+        assert os.path.exists(event.media_urls[0])
 
     @pytest.mark.asyncio
     async def test_supported_txt_injects_content(self, adapter):

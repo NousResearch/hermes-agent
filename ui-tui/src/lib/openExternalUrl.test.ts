@@ -1,10 +1,11 @@
+import type { ChildProcess, spawn as SpawnFn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-
-import type { ChildProcess } from 'node:child_process'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import { openCommand, openExternalUrl, parseSafeUrl } from './openExternalUrl.js'
+
+type SpawnLike = typeof SpawnFn
 
 describe('parseSafeUrl', () => {
   it('accepts http and https URLs', () => {
@@ -74,7 +75,7 @@ describe('openCommand', () => {
 
 describe('openExternalUrl on unsupported platforms', () => {
   it('returns false without spawning when the platform has no known opener', () => {
-    const spawn = vi.fn() as unknown as typeof import('node:child_process').spawn
+    const spawn = vi.fn() as unknown as SpawnLike
 
     expect(openExternalUrl('https://example.com/', { spawn, platform: () => 'aix' })).toBe(false)
     expect(spawn).not.toHaveBeenCalled()
@@ -89,7 +90,7 @@ describe('openExternalUrl', () => {
   type FakeChild = EventEmitter & { unref: () => void }
 
   function mockSpawn(): {
-    spawn: typeof import('node:child_process').spawn
+    spawn: SpawnLike
     calls: Array<{ command: string; args: readonly string[] }>
     lastChild: () => FakeChild | undefined
   } {
@@ -104,11 +105,12 @@ describe('openExternalUrl', () => {
       // test. The cast is the same one Node uses internally — ChildProcess
       // extends EventEmitter.
       const child = new EventEmitter() as FakeChild
+
       child.unref = () => {}
       lastChild = child
 
       return child as unknown as ChildProcess
-    }) as unknown as typeof import('node:child_process').spawn
+    }) as unknown as SpawnLike
 
     return { spawn, calls, lastChild: () => lastChild }
   }
@@ -187,7 +189,7 @@ describe('openExternalUrl', () => {
   it('returns false on synchronous spawn failure', () => {
     const spawn = vi.fn(() => {
       throw new Error('ENOENT')
-    }) as unknown as typeof import('node:child_process').spawn
+    }) as unknown as SpawnLike
 
     expect(openExternalUrl('https://example.com/', { spawn, platform: () => 'linux' })).toBe(false)
   })

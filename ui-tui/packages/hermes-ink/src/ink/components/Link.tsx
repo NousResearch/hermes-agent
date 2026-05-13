@@ -5,10 +5,16 @@ import Text from './Text.js'
 export type Props = {
   readonly children?: ReactNode
   readonly url: string
+  // Kept for backwards-compat: prior versions rendered `fallback` instead of
+  // the linked content on terminals where supportsHyperlinks() was false. We
+  // now always emit the hyperlink metadata so the in-process click/hover
+  // dispatcher can act on it regardless of the terminal's own OSC 8 support
+  // (see comment in the function body), so `fallback` is no longer wired up.
+  // Leaving the prop on the interface keeps existing call sites compiling.
   readonly fallback?: ReactNode
 }
 
-export default function Link({ children, url, fallback }: Props): React.ReactNode {
+export default function Link({ children, url }: Props): React.ReactNode {
   // Always emit <ink-link>: the renderer stores `hyperlink` per cell in the
   // screen buffer, which the click dispatcher (Ink.getHyperlinkAt →
   // onHyperlinkClick) reads on mouseup to open URLs externally. Gating this
@@ -30,7 +36,3 @@ export default function Link({ children, url, fallback }: Props): React.ReactNod
     </Text>
   )
 }
-
-// Kept for API stability — `fallback` was the non-supporting-terminal
-// rendering, now unused since we always emit the hyperlink metadata.
-void (null as unknown as Props['fallback'])

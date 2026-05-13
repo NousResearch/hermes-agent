@@ -24,6 +24,7 @@ import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { dispatchClick, dispatchHover, dispatchMouse } from './hit-test.js'
+import { applyHyperlinkHoverHighlight } from './hyperlinkHover.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
@@ -51,7 +52,6 @@ import {
   StylePool
 } from './screen.js'
 import { applySearchHighlight } from './searchHighlight.js'
-import { applyHyperlinkHoverHighlight } from './hyperlinkHover.js'
 import {
   applySelectionOverlay,
   captureScrolledRows,

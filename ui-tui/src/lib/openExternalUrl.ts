@@ -122,6 +122,11 @@ type OpenCommand = { command: string; args: readonly string[] }
  * query strings. `explorer.exe <url>` is the safe, non-shell alternative —
  * it invokes the registered protocol handler for http(s) without going
  * through cmd. Linux/BSD use `xdg-open` directly with no shell wrapping.
+ *
+ * Returns null for platforms where we don't know a safe opener (e.g. `aix`,
+ * `sunos`, `cygwin`). The caller's `if (!command) return false` path then
+ * surfaces "no opener" instead of optimistically trying `xdg-open` on a
+ * platform that probably doesn't have it.
  */
 export function openCommand(platformId: string): OpenCommand | null {
   if (platformId === 'darwin') {
@@ -132,5 +137,14 @@ export function openCommand(platformId: string): OpenCommand | null {
     return { command: 'explorer.exe', args: [] }
   }
 
-  return { command: 'xdg-open', args: [] }
+  // Linux + the BSD family ship xdg-open via xdg-utils. Everything else
+  // (aix, sunos, cygwin, haiku, etc.) returns null so openExternalUrl's
+  // command-not-found fallback fires honestly.
+  const XDG_OPEN_PLATFORMS = new Set(['linux', 'freebsd', 'openbsd', 'netbsd', 'dragonfly'])
+
+  if (XDG_OPEN_PLATFORMS.has(platformId)) {
+    return { command: 'xdg-open', args: [] }
+  }
+
+  return null
 }

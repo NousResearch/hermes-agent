@@ -256,6 +256,11 @@ export default class Ink {
   // cursor-changes-on-hover affordance — terminals don't expose cursor
   // shape control to applications.
   private hoveredHyperlink: string | undefined = undefined
+
+  // Last value of hoveredHyperlink that we actually painted. Compared in
+  // onRender so we can scope full-screen damage to enter/leave/change
+  // transitions, not every steady-state hover frame.
+  private lastRenderedHoveredHyperlink: string | undefined = undefined
   // Set by <AlternateScreen> via setAltScreenActive(). Controls the
   // renderer's cursor.y clamping (keeps cursor in-viewport to avoid
   // LF-induced scroll when screen.height === terminalRows) and gates
@@ -804,8 +809,22 @@ export default class Ink {
       // Hyperlink hover overlay: inverts every cell of the link currently
       // under the pointer. Cheap-ish (linear scan of the visible buffer),
       // only fires when hoveredHyperlink is set.
+      //
+      // hlActive controls full-screen damage (used by selection/search to
+      // make sure the previous frame's inverted cells get re-diffed when
+      // the highlight set changes). For hover, the *transition* is what
+      // needs the full-damage hammer — enter / leave / change-to-other-link.
+      // During steady-state hover the painted cells don't change and the
+      // ordinary per-cell diff handles the no-op. Folding the steady-state
+      // case into hlActive would burn full-screen diffs every frame while
+      // the pointer just sits on the link.
       const hoverApplied = applyHyperlinkHoverHighlight(frame.screen, this.hoveredHyperlink, this.stylePool)
-      hlActive = hlActive || hoverApplied
+      const hoverTransition = this.hoveredHyperlink !== this.lastRenderedHoveredHyperlink
+      this.lastRenderedHoveredHyperlink = this.hoveredHyperlink
+
+      if (hoverApplied && hoverTransition) {
+        hlActive = true
+      }
 
       // Position-based CURRENT: write yellow at positions[currentIdx] +
       // rowOffset. No scanning — positions came from a prior scan when
@@ -1219,6 +1238,16 @@ export default class Ink {
 
     this.altScreenActive = active
     this.altScreenMouseTracking = active && mouseTracking
+
+    // Hover state is alt-screen-scoped: dispatchHover is gated on
+    // altScreenActive, so once we leave the alt screen there's no path to
+    // clear it on our own. Without this reset, remounting <AlternateScreen>
+    // would render a phantom hover highlight from the previous session
+    // until the next mouse-move event arrived. Clear both the live value
+    // and the last-rendered tracker so the next onRender sees no transition
+    // and no overlay.
+    this.hoveredHyperlink = undefined
+    this.lastRenderedHoveredHyperlink = undefined
 
     if (active) {
       this.resetFramesForAltScreen()

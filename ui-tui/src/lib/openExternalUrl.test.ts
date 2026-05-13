@@ -59,6 +59,26 @@ describe('openCommand', () => {
     expect(openCommand('freebsd')).toEqual({ command: 'xdg-open', args: [] })
     expect(openCommand('openbsd')).toEqual({ command: 'xdg-open', args: [] })
   })
+
+  it('returns null for unknown platforms (aix, sunos, cygwin, etc.)', () => {
+    // Avoid optimistically dispatching xdg-open on platforms where it
+    // probably isn't installed — the caller's `if (!command) return false`
+    // path surfaces "no opener" honestly instead.
+    expect(openCommand('aix')).toBeNull()
+    expect(openCommand('sunos')).toBeNull()
+    expect(openCommand('cygwin')).toBeNull()
+    expect(openCommand('haiku')).toBeNull()
+    expect(openCommand('')).toBeNull()
+  })
+})
+
+describe('openExternalUrl on unsupported platforms', () => {
+  it('returns false without spawning when the platform has no known opener', () => {
+    const spawn = vi.fn() as unknown as typeof import('node:child_process').spawn
+
+    expect(openExternalUrl('https://example.com/', { spawn, platform: () => 'aix' })).toBe(false)
+    expect(spawn).not.toHaveBeenCalled()
+  })
 })
 
 describe('openExternalUrl', () => {

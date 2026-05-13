@@ -210,6 +210,19 @@ class TestFormatMessageBoldItalic:
         assert "*bold*" in result
         assert "_italic_" in result
 
+    def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
+        content = (
+            "🔄 **MCP Servers Reloaded**\n"
+            "♻️ Reconnected: agent_one, tool[beta]\n"
+            "➕ Added: alpha*prod\n"
+            "🔧 3 tool(s) available from 2 server(s)"
+        )
+        result = adapter.format_message(content)
+        assert "*MCP Servers Reloaded*" in result
+        assert "agent\\_one" in result
+        assert "tool\\[beta\\]" in result
+        assert "alpha\\*prod" in result
+
 
 # =========================================================================
 # format_message - headers

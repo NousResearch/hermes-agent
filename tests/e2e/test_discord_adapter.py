@@ -11,6 +11,7 @@ import pytest
 
 from tests.e2e.conftest import (
     BOT_USER_ID,
+    DiscordAdapter,
     E2E_MESSAGE_SETTLE_DELAY,
     get_response_text,
     make_discord_message,
@@ -77,6 +78,48 @@ class TestMentionStrippedCommandDispatch:
         response = get_response_text(discord_adapter)
         assert response is not None
         assert "/new" in response
+
+
+class TestPresetThreadNaming:
+    async def test_explicit_task_becomes_human_readable_suffix(self):
+        name, starter = DiscordAdapter._build_preset_thread(
+            object.__new__(DiscordAdapter),
+            "kody-backend",
+            task="orders api",
+            message="Please inspect the shipment flow.",
+        )
+
+        assert name == "kody-backend · orders api"
+        assert "Initial request:\nPlease inspect the shipment flow." in starter
+
+    async def test_initial_message_supplies_suffix_when_task_is_empty(self):
+        name, _starter = DiscordAdapter._build_preset_thread(
+            object.__new__(DiscordAdapter),
+            "hermes-core",
+            message="Improve Discord thread names from the first request and target metadata.",
+        )
+
+        assert name == "hermes-core · Improve Discord thread names from the first request"
+        assert len(name) <= 100
+
+    async def test_korean_initial_message_is_preserved_and_trimmed(self):
+        name, _starter = DiscordAdapter._build_preset_thread(
+            object.__new__(DiscordAdapter),
+            "general",
+            message="쓰레드 기능을 사용해서 만들어지는 이름이 단순히 레포 이름이라 구분이 어려워",
+        )
+
+        assert name.startswith("general · 쓰레드 기능을 사용해서")
+        assert len(name) <= 100
+
+    async def test_secret_like_initial_message_does_not_leak_into_thread_name(self):
+        name, _starter = DiscordAdapter._build_preset_thread(
+            object.__new__(DiscordAdapter),
+            "general",
+            message="Use API_KEY=DUMMY_VALUE to debug the gateway",
+        )
+
+        assert name == "general"
 
 
 class TestAutoThreadingPreservesCommand:

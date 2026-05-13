@@ -550,6 +550,9 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
 
+    # Interval (seconds) for the periodic Discord gateway health log line.
+    HEALTH_LOG_INTERVAL = 60
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
@@ -582,6 +585,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        # Periodic gateway-health logger (diagnostics for silent disconnects).
+        self._discord_health_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -709,6 +714,59 @@ class DiscordAdapter(BasePlatformAdapter):
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
+                )
+
+                # (Re)start the periodic gateway-health diagnostic log. Cancel
+                # any previous instance from an earlier ready cycle first so
+                # we never run more than one health task at a time.
+                if (
+                    adapter_self._discord_health_task is not None
+                    and not adapter_self._discord_health_task.done()
+                ):
+                    adapter_self._discord_health_task.cancel()
+                adapter_self._discord_health_task = asyncio.create_task(
+                    adapter_self._discord_health_loop()
+                )
+
+            @self._client.event
+            async def on_disconnect():
+                client = adapter_self._client
+                try:
+                    latency = client.latency if client is not None else None
+                except Exception:
+                    latency = None
+                logger.warning(
+                    "[%s] Discord gateway on_disconnect "
+                    "(latency=%s closed=%s running=%s ready=%s)",
+                    adapter_self.name,
+                    latency,
+                    client.is_closed() if client is not None else None,
+                    adapter_self._running,
+                    adapter_self._ready_event.is_set(),
+                )
+
+            @self._client.event
+            async def on_resumed():
+                client = adapter_self._client
+                try:
+                    latency = client.latency if client is not None else None
+                except Exception:
+                    latency = None
+                logger.info(
+                    "[%s] Discord gateway on_resumed (latency=%s running=%s)",
+                    adapter_self.name,
+                    latency,
+                    adapter_self._running,
+                )
+
+            @self._client.event
+            async def on_error(event_method, *args, **kwargs):
+                # discord.py invokes this for any unhandled exception in an
+                # event handler; sys.exc_info() is set inside the call.
+                logger.exception(
+                    "[%s] Discord gateway on_error in event %s",
+                    adapter_self.name,
+                    event_method,
                 )
 
             @self._client.event
@@ -885,14 +943,60 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._discord_health_task and not self._discord_health_task.done():
+            self._discord_health_task.cancel()
+            try:
+                await self._discord_health_task
+            except asyncio.CancelledError:
+                pass
+
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._discord_health_task = None
 
         self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
+
+    async def _discord_health_loop(self) -> None:
+        """Emit a single-line gateway health log once per ``HEALTH_LOG_INTERVAL`` seconds.
+
+        Diagnoses silent-disconnect scenarios where Discord stops delivering
+        events but the bot believes it is still connected. Logs no secrets and
+        is always cancellable.
+        """
+        try:
+            while True:
+                client = self._client
+                try:
+                    latency = client.latency if client is not None else None
+                except Exception:
+                    latency = None
+                try:
+                    is_closed = client.is_closed() if client is not None else None
+                except Exception:
+                    is_closed = None
+                try:
+                    guild_count = len(client.guilds) if client is not None else 0
+                except Exception:
+                    guild_count = 0
+                logger.info(
+                    "[%s] Discord gateway health "
+                    "latency=%s closed=%s running=%s ready=%s guilds=%s",
+                    self.name,
+                    latency,
+                    is_closed,
+                    self._running,
+                    self._ready_event.is_set(),
+                    guild_count,
+                )
+                await asyncio.sleep(self.HEALTH_LOG_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("[%s] Discord health loop crashed", self.name)
 
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home
@@ -3021,21 +3125,60 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
 
-        @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
+        @tree.command(name="thread", description="Create a repo/general thread and start a Hermes session in it")
         @discord.app_commands.describe(
-            name="Thread name",
-            message="Optional first message to send to Hermes in the thread",
+            target="Thread preset",
+            task="Optional task suffix for the thread name, e.g. orders-api",
+            message="Optional initial request to append after the preset starter",
             auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
         )
+        @discord.app_commands.choices(target=[
+            discord.app_commands.Choice(name="general", value="general"),
+            discord.app_commands.Choice(name="kody-workspace", value="kody-workspace"),
+            discord.app_commands.Choice(name="kody-frontend", value="kody-frontend"),
+            discord.app_commands.Choice(name="kody-backend", value="kody-backend"),
+            discord.app_commands.Choice(name="divebase", value="divebase"),
+            discord.app_commands.Choice(name="honbabseoul", value="honbabseoul"),
+            discord.app_commands.Choice(name="nexus", value="nexus"),
+            discord.app_commands.Choice(name="bestst", value="bestst"),
+            discord.app_commands.Choice(name="hermes-core", value="hermes-core"),
+        ])
         async def slash_thread(
             interaction: discord.Interaction,
-            name: str,
+            target: str,
+            task: str = "",
             message: str = "",
             auto_archive_duration: int = 1440,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
-            await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+            #
+            # Diagnostic: log the invocation envelope (preset metadata + ids
+            # only — no message body, to avoid leaking user content/secrets).
+            try:
+                _ch = getattr(interaction, "channel", None)
+                _gu = getattr(interaction, "guild", None)
+                _us = getattr(interaction, "user", None)
+                logger.info(
+                    "[%s] /thread invoked target=%s task=%s "
+                    "channel=%s(%s) guild=%s(%s) user=%s(%s) "
+                    "auto_archive=%s message_provided=%s",
+                    self.name,
+                    target,
+                    task,
+                    getattr(_ch, "id", None),
+                    getattr(_ch, "name", None),
+                    getattr(_gu, "id", None),
+                    getattr(_gu, "name", None),
+                    getattr(_us, "id", None),
+                    getattr(_us, "name", None),
+                    auto_archive_duration,
+                    bool(message),
+                )
+            except Exception:
+                logger.debug("[%s] /thread invocation log failed", self.name, exc_info=True)
+            name, starter = self._build_preset_thread(target, task, message)
+            await self._handle_thread_create_slash(interaction, name, starter, auto_archive_duration)
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
@@ -3446,6 +3589,181 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Thread creation helpers
     # ------------------------------------------------------------------
+
+    _THREAD_PRESETS: Dict[str, Dict[str, str]] = {
+        "general": {
+            "name": "general",
+            "starter": """This thread is for general Hermes conversation.
+
+No repo is anchored for this thread.
+Treat repo-specific work as ambiguous and ask for the target repo path before reading, editing, testing, or running repo-specific commands.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kody-workspace": {
+            "name": "kody-workspace",
+            "starter": """This thread is for KODY orchestration root.
+Repo path: /Users/qnb/dev/workouts/kody-workspace
+
+Use this repo for planning, cross-repo gates, routing, and closeout only.
+Route product implementation to kody-backend or kody-frontend threads.
+Reply to me in Korean.""",
+        },
+        "kody-frontend": {
+            "name": "kody-frontend",
+            "starter": """This thread is for kody-frontend.
+Repo path: /Users/qnb/dev/workouts/kody-workspace/kody-frontend
+
+Use this repo as cwd for frontend inspection, tests, and implementation.
+Preserve prototype/mock-data discipline unless integration work is explicitly approved.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "kody-backend": {
+            "name": "kody-backend",
+            "starter": """This thread is for kody-backend.
+Repo path: /Users/qnb/dev/workouts/kody-workspace/kody-backend
+
+Use this repo as cwd for backend inspection, tests, and implementation.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Do not run Prisma schema/migration commands unless explicitly approved.
+Reply to me in Korean.""",
+        },
+        "divebase": {
+            "name": "divebase",
+            "starter": """This thread is for divebase.
+Repo path: /Users/qnb/dev/workouts/divebase
+
+Use this repo as cwd for DiveBase inspection, Flutter analysis, tests, and implementation.
+Do not print secrets, .env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "honbabseoul": {
+            "name": "honbabseoul",
+            "starter": """This thread is for honbabseoul.
+Repo path: /Users/qnb/dev/workouts/honbabseoul
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, .env.local contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "nexus": {
+            "name": "nexus",
+            "starter": """This thread is for nexus.
+Repo path: /Users/qnb/dev/workouts/nexus
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "bestst": {
+            "name": "bestst",
+            "starter": """This thread is for bestst.
+Repo path: /Users/qnb/dev/workouts/beststcad
+
+Use this repo as cwd for repo-specific inspection, tests, and implementation.
+Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+        "hermes-core": {
+            "name": "hermes-core",
+            "starter": """This thread is for hermes-core.
+Repo path: /Users/qnb/dev/templates/hermes-core
+
+Treat this as Hermes operating-layer template work, not product work.
+Do not change policy/workflow artifacts without explicit scoped approval.
+Do not print secrets, env contents, auth tokens, or API keys.
+Reply to me in Korean.""",
+        },
+    }
+
+    _THREAD_TITLE_MAX = 100
+    _THREAD_TITLE_SUFFIX_MAX = 60
+    _THREAD_TITLE_SEPARATOR = " · "
+
+    def _build_preset_thread(self, target: str, task: str = "", message: str = "") -> Tuple[str, str]:
+        """Return the thread name and starter prompt for a preset Discord thread.
+
+        The preset name stays as the stable prefix, while an explicit ``task``
+        or the optional initial request supplies a short, human-readable suffix
+        so multiple threads for the same repo are distinguishable at a glance.
+        """
+        key = (target or "").strip().lower()
+        preset = self._THREAD_PRESETS.get(key)
+        if not preset:
+            allowed = ", ".join(sorted(self._THREAD_PRESETS))
+            raise ValueError(f"Unknown thread preset '{target}'. Choose one of: {allowed}")
+
+        base_name = preset["name"]
+        suffix = self._summarize_thread_title_suffix(task or message)
+        name = self._format_preset_thread_name(base_name, suffix)
+
+        starter = preset["starter"].strip()
+        extra = (message or "").strip()
+        if extra:
+            starter = f"{starter}\n\nInitial request:\n{extra}"
+        return name, starter
+
+    @classmethod
+    def _format_preset_thread_name(cls, base_name: str, suffix: str = "") -> str:
+        """Compose a Discord thread title from a preset prefix and optional suffix."""
+        base = (base_name or "Hermes").strip() or "Hermes"
+        suffix = (suffix or "").strip()
+        if not suffix:
+            return base[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or base
+
+        name = f"{base}{cls._THREAD_TITLE_SEPARATOR}{suffix}"
+        if len(name) <= cls._THREAD_TITLE_MAX:
+            return name
+
+        available = cls._THREAD_TITLE_MAX - len(base) - len(cls._THREAD_TITLE_SEPARATOR)
+        if available < 8:
+            return base[: cls._THREAD_TITLE_MAX].rstrip(" -._·") or base
+        shortened = suffix[: max(0, available - 1)].rstrip(" -._·")
+        return f"{base}{cls._THREAD_TITLE_SEPARATOR}{shortened}…"
+
+    @classmethod
+    def _summarize_thread_title_suffix(cls, text: str) -> str:
+        """Derive a safe short suffix from a user-provided task or message.
+
+        This intentionally uses deterministic cleanup/truncation rather than an
+        LLM call: slash-command registration and thread creation should stay
+        fast, predictable, and offline. If the input looks like it may contain
+        secrets, return an empty suffix rather than exposing the content in a
+        public Discord thread title.
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+
+        if re.search(
+            r"(?i)(api[_-]?key|auth[_-]?token|bearer\s+|password|passwd|secret|\.env|sk-[A-Za-z0-9])",
+            raw,
+        ):
+            return ""
+
+        # Drop code blocks/inline code and platform markup that make poor
+        # titles. Keep normal Korean/English text readable.
+        cleaned = re.sub(r"```.*?```", " ", raw, flags=re.DOTALL)
+        cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+        cleaned = re.sub(r"<@[!&]?\d+>", " ", cleaned)
+        cleaned = re.sub(r"<#\d+>", " ", cleaned)
+        cleaned = re.sub(r"https?://\S+", " link ", cleaned)
+        cleaned = re.sub(r"(?im)^\s*(initial request|request|task|repo path)\s*:\s*", "", cleaned)
+
+        # Prefer the first meaningful line; starter prompts often contain
+        # multiple instruction lines before/after the actual request.
+        lines = [re.sub(r"\s+", " ", line).strip(" \t-–—:;,.!?/\\") for line in cleaned.splitlines()]
+        line = next((part for part in lines if part), "")
+        if not line:
+            return ""
+
+        words = line.split()
+        if len(words) > 8:
+            line = " ".join(words[:8])
+        if len(line) > cls._THREAD_TITLE_SUFFIX_MAX:
+            line = line[: cls._THREAD_TITLE_SUFFIX_MAX - 1].rstrip(" -._·") + "…"
+        return line
 
     async def _handle_thread_create_slash(
         self,

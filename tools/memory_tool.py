@@ -113,23 +113,27 @@ class MemoryStore:
         Never mutated mid-session. Keeps prefix cache stable.
       - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
         Tool responses always reflect this live state.
+
+    When user_id is provided (gateway mode with multiple users), each user gets
+    an isolated pair of memory files under memories/users/{hashed_id}/
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, user_id: str = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._user_id = user_id  # Isolate per-user memory when provided
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        get_memory_dir().mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.memory_entries = self._read_file(self._path_for("memory"))
+        self.user_entries = self._read_file(self._path_for("user"))
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -178,12 +182,23 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        """Get the path for the memory file, supports per-user isolation."""
+        base_dir = get_memory_dir()
+        if self._user_id:
+            # Hash the user_id to get a safe directory name
+            # We use hash for privacy (avoid exposing raw user IDs in filesystem)
+            import hashlib
+            user_hash = hashlib.sha256(self._user_id.encode("utf-8")).hexdigest()[:16]
+            user_dir = base_dir / "users" / user_hash
+            user_dir.mkdir(parents=True, exist_ok=True)
+            if target == "user":
+                return user_dir / "USER.md"
+            return user_dir / "MEMORY.md"
+        # Global shared memory when no user_id (CLI case)
         if target == "user":
-            return mem_dir / "USER.md"
-        return mem_dir / "MEMORY.md"
+            return base_dir / "USER.md"
+        return base_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.

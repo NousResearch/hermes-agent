@@ -99,8 +99,8 @@ class MemoryStore:
     def __init__(
         self,
         session_db,
-        memory_char_limit: int = 2200,
-        user_char_limit: int = 1375,
+        memory_char_limit: int = 3000,
+        user_char_limit: int = 2000,
     ):
         self._db = session_db
         self.memory_char_limit = memory_char_limit
@@ -209,6 +209,15 @@ class MemoryStore:
         limit = self._char_limit(target)
         new_chars = len(content)
 
+        # Reject entries that exceed the limit by themselves.
+        # No point inserting something that will immediately violate capacity.
+        if new_chars > limit:
+            return {
+                "success": False,
+                "error": f"Entry ({new_chars} chars) exceeds section limit ({limit} chars).",
+                "usage": f"{int(new_chars/limit*100)}% — {new_chars}/{limit} chars",
+            }
+
         with self._db_lock():
             # Deduplicate at DB level: check if an active entry with the same
             # value already exists before inserting. This guards against
@@ -217,12 +226,15 @@ class MemoryStore:
             if any(r["value"] == content for r in existing):
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Evict lowest-value entries until we have room
-            evicted = self._db.memory_evict_for_section(target, new_chars, limit)
-            if evicted > 0:
-                logger.debug("memory add: evicted %d entries from %s", evicted, target)
+            # Evict lowest-value entries until we have room.
+            # Order: INSERT new entry FIRST, then evict with exclude_id=new_id.
+            # Rationale: new entries (access_count=0) are excluded from eviction so they
+            # don't evict themselves. High-value memories (high access_count) are also
+            # skipped — eviction targets only the lowest-value existing entries.
+            # If space is still insufficient after evicting all lower-priority entries,
+            # the new entry remains but is oversized (size check should have prevented this).
 
-            # Persist new entry
+            # Persist new entry first
             entry_id = str(uuid.uuid4())
             self._db.memory_upsert(
                 id=entry_id,
@@ -235,11 +247,20 @@ class MemoryStore:
             # Update live state directly (no DB re-read)
             self._live_entries[target].append(content)
 
-        self._refresh_snapshot()
+            # Evict to bring total within limit
+            evicted_rows = self._db.memory_evict_for_section(target, new_chars, limit, exclude_id=entry_id)
+            if evicted_rows:
+                logger.debug("memory add: evicted %d entries from %s", len(evicted_rows), target)
+                # Live entries may be stale after eviction — rebuild from DB
+                self._live_entries[target] = [
+                    r["value"] for r in self._db.memory_get_active(target)
+                ]
+                # Auto-backup evicted entries to memo.txt
+                if memo_append_memory is not None:
+                    for row in evicted_rows:
+                        memo_append_memory("evict", row["value"], target)
 
-        # Auto-append to memo.txt for ultra-long-term backup
-        if memo_append_memory is not None:
-            memo_append_memory("add", content, target)
+        self._refresh_snapshot()
 
         return self._success_response(target, "Entry added.")
 
@@ -306,10 +327,6 @@ class MemoryStore:
 
         self._refresh_snapshot()
 
-        # Auto-append to memo.txt for ultra-long-term backup
-        if memo_append_memory is not None:
-            memo_append_memory("replace", new_content, target)
-
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
@@ -350,10 +367,6 @@ class MemoryStore:
                     break
 
         self._refresh_snapshot()
-
-        # Auto-append removal to memo.txt for ultra-long-term backup
-        if memo_append_memory is not None:
-            memo_append_memory("remove", old_value, target)
 
         return self._success_response(target, "Entry removed.")
 

@@ -3275,6 +3275,30 @@ class GatewayRunner:
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+
+        # Log any active supply-chain security advisories. Operators see this
+        # in gateway.log and `hermes status` surfaces it; we do NOT block
+        # startup or surface it inline to user messages, since the gateway
+        # operator is the one who can act on it (uninstall the package,
+        # rotate credentials).  See hermes_cli/security_advisories.py.
+        try:
+            from hermes_cli.security_advisories import (
+                detect_compromised,
+                gateway_log_message,
+            )
+            _adv_hits = detect_compromised()
+            _adv_msg = gateway_log_message(_adv_hits)
+            if _adv_msg:
+                logger.warning("%s", _adv_msg)
+                logger.warning(
+                    "Run `hermes doctor` on the gateway host for full "
+                    "remediation steps."
+                )
+        except Exception:
+            logger.debug(
+                "security advisory check failed at gateway startup",
+                exc_info=True,
+            )
         
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
@@ -4039,56 +4063,6 @@ class GatewayRunner:
                         )
                 except Exception as _e:
                     logger.debug("Idle agent sweep failed: %s", _e)
-
-                # ── Memory health check (叠加在 session expiry watcher 上) ──
-                # 每 interval 秒检查一次，memory_chars 超 2000 则归档最旧 sections 到 ARCHIVE.md
-                try:
-                    from pathlib import Path as _Path
-                    _mem_path = _Path.home() / ".hermes" / "memories" / "memory.md"
-                    _archive_path = _Path.home() / ".hermes" / "memories" / "ARCHIVE.md"
-                    if _mem_path.exists():
-                        _now_ts = int(time.time())
-                        _raw = _mem_path.read_text()
-                        _chars = len(_raw)
-                        _THRESHOLD = 2000
-                        if _chars > _THRESHOLD:
-                            _sections = _raw.split("§")
-                            # 保留最后 50% sections（最新的）
-                            _keep_count = max(1, len(_sections) // 2)
-                            _to_archive = _sections[:-(_keep_count)]
-                            _kept = _sections[-(_keep_count):]
-                            if _to_archive:
-                                _archived_content = "§".join(_to_archive)
-                                _existing_archive = _archive_path.read_text() if _archive_path.exists() else ""
-                                _archive_path.write_text(
-                                    _archived_content + "\n§\n" + _existing_archive
-                                )
-                                _new_mem = "§".join(_kept)
-                                _mem_path.write_text(_new_mem)
-                                logger.info(
-                                    "Memory archive: %d sections (%.0f chars) → ARCHIVE.md, "
-                                    "kept %d sections in memory.md",
-                                    len(_to_archive), len(_archived_content), _keep_count,
-                                )
-                                _chars = len(_new_mem)
-                        # 更新 DB（只更新当前活跃 session）
-                        _active_sid = getattr(self, "_current_session_id", None)
-                        if _active_sid:
-                            try:
-                                import sqlite3 as _sqlite3
-                                _db_path = _Path.home() / ".hermes" / "state.db"
-                                _conn = _sqlite3.connect(str(_db_path))
-                                _conn.execute(
-                                    "UPDATE sessions SET memory_chars = ?, last_memory_check = ? "
-                                    "WHERE id = ?",
-                                    (_chars, _now_ts, _active_sid),
-                                )
-                                _conn.commit()
-                                _conn.close()
-                            except Exception:
-                                pass
-                except Exception as _e:
-                    logger.debug("Memory health check failed: %s", _e)
 
                 # Periodically prune stale SessionStore entries.  The
                 # in-memory dict (and sessions.json) would otherwise grow
@@ -4907,8 +4881,6 @@ class GatewayRunner:
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
             )
-
-
             _stop_started_at = time.monotonic()
 
             def _phase_elapsed() -> float:
@@ -5112,28 +5084,25 @@ class GatewayRunner:
             remove_pid_file()
             release_gateway_runtime_lock()
 
-            # Always write .clean_shutdown — even after drain timeout.
-            #
-            # When drain times out, mark_resume_pending() was already called
-            # on each running agent's session (line 3778), setting the
-            # resume_pending flag.  On next startup, get_or_create_session()
-            # checks resume_pending first and returns the old entry with the
-            # original session_id, preserving the full transcript.
-            #
-            # If .clean_shutdown were NOT written after drain timeout,
-            # suspend_recently_active() would run on startup.  While it does
-            # skip resume_pending=True entries, it could still catch sessions
-            # that finished normally just before the restart window (updated
-            # within max_age_seconds=120 but not in _running_agents).
-            #
-            # The stuck-loop counter (_suspend_stuck_loop_sessions, line 2766)
-            # runs AFTER suspend_recently_active() and independently catches
-            # sessions that have been interrupted across 3+ consecutive
-            # restarts — the original safety net is preserved.
-            try:
-                (_hermes_home / ".clean_shutdown").touch()
-            except Exception:
-                pass
+            # Write a clean-shutdown marker so the next startup knows this
+            # wasn't a crash.  suspend_recently_active() only needs to run
+            # after unexpected exits.  However, if the drain timed out and
+            # agents were force-interrupted, their sessions may be in an
+            # incomplete state (trailing tool response, no final assistant
+            # message).  Skip the marker in that case so the next startup
+            # suspends those sessions — giving users a clean slate instead
+            # of resuming a half-finished tool loop.
+            if not timed_out:
+                try:
+                    (_hermes_home / ".clean_shutdown").touch()
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    "Skipping .clean_shutdown marker — drain timed out with "
+                    "interrupted agents; next startup will suspend recently "
+                    "active sessions."
+                )
 
             # Track sessions that were active at shutdown for stuck-loop
             # detection (#7536).  On each restart, the counter increments
@@ -5858,6 +5827,37 @@ class GatewayRunner:
                         e,
                     )
                 _update_prompts.pop(_quick_key, None)
+
+        # Intercept messages that are responses to a pending clarify
+        # request that is awaiting free-form text (either an open-ended
+        # clarify with no choices, or one where the user picked the
+        # "Other" button).  The first non-empty user message in the
+        # session resolves the clarify and unblocks the agent thread —
+        # we do NOT route it to the agent as a new turn.
+        try:
+            from tools import clarify_gateway as _clarify_mod
+            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key)
+        except Exception:
+            _pending_clarify = None
+        if _pending_clarify is not None:
+            _raw_clarify_reply = (event.text or "").strip()
+            # Skip slash commands — the user clearly wanted to issue a
+            # command, not answer the clarify.  Leave the clarify pending
+            # so the user can retry; if it times out, the agent unblocks
+            # with an empty response.
+            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+                _resolved = _clarify_mod.resolve_gateway_clarify(
+                    _pending_clarify.clarify_id, _raw_clarify_reply,
+                )
+                if _resolved:
+                    logger.info(
+                        "Gateway intercepted clarify text response (session=%s, id=%s)",
+                        _quick_key, _pending_clarify.clarify_id,
+                    )
+                    # Acknowledge with empty string so adapters that emit
+                    # the agent's response don't double-post.  The agent
+                    # itself will produce the next user-facing message.
+                    return ""
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
@@ -7529,41 +7529,6 @@ class GatewayRunner:
         if message_text is None:
             return
 
-        # === 每日认证检查 ===
-        import subprocess
-        auth_script = os.path.expanduser("~/.hermes/scripts/daily_auth.py")
-
-        # "233" 本身是通行口令，直接放行并完成验证
-        if message_text.strip() == "233":
-            verify_result = subprocess.run(
-                ["python3", auth_script, "verify", "233"],
-                capture_output=True, text=True
-            ).stdout.strip()
-            adapter = self.adapters.get(source.platform)
-            if adapter and verify_result == "AUTH_OK":
-                await adapter.send(
-                    source.chat_id,
-                    "✅ 验证通过，今日可正常对话",
-                    metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
-                )
-            return  # 验证完成，不重复处理
-
-        auth_status = subprocess.run(
-            ["python3", auth_script],
-            capture_output=True, text=True
-        ).stdout.strip()
-
-        if auth_status.startswith("NEED_AUTH"):
-            adapter = self.adapters.get(source.platform)
-            if adapter:
-                await adapter.send(
-                    source.chat_id,
-                    "🔒 请先输入今日口令：",
-                    metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
-                )
-            return
-        # === 认证检查结束 ===
-
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -7578,6 +7543,7 @@ class GatewayRunner:
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
@@ -8744,7 +8710,7 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or sys.platform == "darwin"  # systemd sets INVOCATION_ID; macOS uses launchd
+        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:
@@ -12871,7 +12837,6 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-
     async def _send_home_channel_startup_notifications(
         self,
         *,
@@ -15024,6 +14989,76 @@ class GatewayRunner:
                     if _pdc is not None:
                         _pdc[session_key] = _release_bg_review_messages
 
+            # ------------------------------------------------------------------
+            # Clarify callback: present a clarify prompt and block on a response.
+            #
+            # Runs on the agent's worker thread (see clarify_tool's synchronous
+            # callback contract).  Bridges sync→async by scheduling the
+            # adapter's send_clarify on the gateway event loop, then blocks on
+            # the clarify primitive's threading.Event with a configurable
+            # timeout.  Returns the user's response string, or a sentinel
+            # explaining that no response arrived (so the agent can adapt
+            # rather than hang forever).
+            # ------------------------------------------------------------------
+            def _clarify_callback_sync(question: str, choices) -> str:
+                from tools import clarify_gateway as _clarify_mod
+                import uuid as _uuid
+
+                if not _status_adapter:
+                    return ""
+
+                clarify_id = _uuid.uuid4().hex[:10]
+                _clarify_mod.register(
+                    clarify_id=clarify_id,
+                    session_key=session_key or "",
+                    question=question,
+                    choices=list(choices) if choices else None,
+                )
+
+                # Pause typing — like approval, we don't want a "thinking..."
+                # status to obscure the prompt or block the user from typing
+                # an "Other" response on platforms that disable input while
+                # typing is active (Slack Assistant API).
+                try:
+                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                except Exception:
+                    pass
+
+                send_ok = False
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send_clarify(
+                            chat_id=_status_chat_id,
+                            question=question,
+                            choices=list(choices) if choices else None,
+                            clarify_id=clarify_id,
+                            session_key=session_key or "",
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    )
+                    result = fut.result(timeout=15)
+                    send_ok = bool(getattr(result, "success", False))
+                except Exception as exc:
+                    logger.warning("Clarify send failed: %s", exc)
+                    send_ok = False
+
+                if not send_ok:
+                    # Couldn't deliver the prompt — clean up and return
+                    # sentinel so the agent can fall back to a sensible
+                    # default rather than hanging.
+                    _clarify_mod.clear_session(session_key or "")
+                    return "[clarify prompt could not be delivered]"
+
+                timeout = _clarify_mod.get_clarify_timeout()
+                response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                if response is None or response == "":
+                    # Timeout or session-boundary cancellation
+                    return f"[user did not respond within {int(timeout / 60)}m]"
+                return response
+
+            agent.clarify_callback = _clarify_callback_sync
+
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
@@ -15295,6 +15330,14 @@ class GatewayRunner:
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                # Cancel any pending clarify entries so blocked agent
+                # threads don't hang past the end of the run (interrupt,
+                # completion, gateway shutdown).  Idempotent.
+                try:
+                    from tools.clarify_gateway import clear_session as _clear_clarify_session
+                    _clear_clarify_session(_approval_session_key)
+                except Exception:
+                    pass
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 

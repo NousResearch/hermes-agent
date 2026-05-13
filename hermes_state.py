@@ -2983,38 +2983,55 @@ class SessionDB:
         section: str,
         chars_needed: int,
         max_chars: int,
-    ) -> int:
+        exclude_id: str = None,
+    ) -> List[Dict[str, Any]]:
         """Evict lowest-value entries from section until total chars <= max_chars.
-        Returns the number of entries evicted.
+        Returns a list of evicted entry dicts (each with id, value, chars, section).
+
+        exclude_id: if provided, that entry is skipped during eviction selection
+        (used by add() to prevent the newly-inserted entry from evicting itself).
         """
-        def _do(conn: sqlite3.Connection) -> int:
-            # Get current total chars
+        def _do(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+            # Get current total chars (excludes the just-inserted entry if exclude_id is set,
+            # because the caller inserted it before calling evict)
+            where_clause = "section=? AND is_active=1"
+            params = (section,)
+            if exclude_id:
+                where_clause += " AND id!=?"
+                params = (section, exclude_id)
             total = conn.execute(
-                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",
-                (section,),
+                f"SELECT COALESCE(SUM(chars),0) FROM memories WHERE {where_clause}",
+                params,
             ).fetchone()[0]
             if total + chars_needed <= max_chars:
-                return 0  # No eviction needed
-            evicted = 0
+                return []  # No eviction needed
+            evicted_rows: List[Dict[str, Any]] = []
             now = int(time.time())
-            # Evict lowest access_count, then oldest last_accessed
+            # Time-decay eviction: prioritize evicting entries with low access_count
+            # relative to their age. Score = access_count / (age_in_days^0.5 + 1).
+            # High value = survive. Low value = evicted first.
+            # Exclusion is applied in both the score subquery and the outer SELECT.
             while total + chars_needed > max_chars:
                 row = conn.execute(
-                    """SELECT id, chars FROM memories
+                    f"""SELECT id, value, chars, section FROM memories
                        WHERE section=? AND is_active=1
-                       ORDER BY access_count ASC, last_accessed ASC
+                       {"AND id!=?" if exclude_id else ""}
+                       ORDER BY
+                          (access_count + 1.0) / ((1.0 + (CAST(? AS REAL) - last_accessed) / 86400.0) ** 0.5) ASC,
+                          last_accessed ASC,
+                          id ASC
                        LIMIT 1""",
-                    (section,),
+                    (section, exclude_id, now) if exclude_id else (section, now),
                 ).fetchone()
                 if not row:
                     break
+                evicted_rows.append(dict(row))
                 conn.execute(
                     "UPDATE memories SET is_active=0, updated_at=? WHERE id=?",
                     (now, row["id"]),
                 )
                 total -= row["chars"]
-                evicted += 1
-            return evicted
+            return evicted_rows
         return self._execute_write(_do)
 
     def memory_total_chars(self, section: str) -> int:

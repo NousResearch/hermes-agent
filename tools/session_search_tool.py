@@ -378,7 +378,30 @@ def session_search(
             offset=0,
         )
 
-        if not raw_results:
+        # Also search memories table
+        memory_results = []
+        try:
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(db.db_path)
+            _conn.row_factory = _sqlite3.Row
+            rows = _conn.execute(
+                "SELECT section, key, value, chars FROM memories "
+                "WHERE is_active=1 AND value LIKE ?",
+                (f"%{query}%",)
+            ).fetchall()
+            for row in rows:
+                memory_results.append({
+                    "source": "memory",
+                    "section": row["section"],
+                    "key": row["key"],
+                    "value": row["value"],
+                    "chars": row["chars"],
+                })
+            _conn.close()
+        except Exception as e:
+            logging.debug("Memory search failed: %s", e)
+
+        if not raw_results and not memory_results:
             return json.dumps({
                 "success": True,
                 "query": query,
@@ -525,12 +548,23 @@ def session_search(
 
             summaries.append(entry)
 
+        # Append memory results as "memory" source entries
+        for mr in memory_results:
+            summaries.append({
+                "source": "memory",
+                "section": mr["section"],
+                "key": mr["key"],
+                "value": mr["value"][:300] + ("..." if len(mr["value"]) > 300 else ""),
+                "chars": mr["chars"],
+            })
+
         return json.dumps({
             "success": True,
             "query": query,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
+            "memories_found": len(memory_results),
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -550,22 +584,21 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search your long-term memory of past conversations, or browse recent sessions. This is your recall -- "
+        "Search your long-term memory of past conversations AND persistent user memories. This is your recall -- "
         "every past session is searchable, and this tool summarizes what happened.\n\n"
         "TWO MODES:\n"
         "1. Recent sessions (no query): Call with no arguments to see what was worked on recently. "
         "Returns titles, previews, and timestamps. Zero LLM cost, instant. "
         "Start here when the user asks what were we working on or what did we do recently.\n"
-        "2. Keyword search (with query): Search for specific topics across all past sessions. "
-        "Returns LLM-generated summaries of matching sessions.\n\n"
+        "2. Keyword search (with query): Search for specific topics across all past sessions AND "
+        "persistent memories (memories table). Returns LLM-generated summaries of matching sessions "
+        "plus matched memory entries with source='memory'.\n\n"
         "USE THIS PROACTIVELY when:\n"
         "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
         "- The user asks about a topic you worked on before but don't have in current context\n"
         "- The user references a project, person, or concept that seems familiar but isn't in memory\n"
         "- You want to check if you've solved a similar problem before\n"
         "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
-        "Don't hesitate to search when it is actually cross-session -- it's fast and cheap. "
-        "Better to search and confirm than to guess or ask the user to repeat themselves.\n\n"
         "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
         "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "

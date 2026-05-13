@@ -139,7 +139,7 @@ def _confirm(prompt: str) -> bool:
     except (EOFError, KeyboardInterrupt):
         print()
         return False
-    return resp in ("y", "yes")
+    return resp in {"y", "yes"}
 
 
 def cmd_clear(args: argparse.Namespace) -> int:

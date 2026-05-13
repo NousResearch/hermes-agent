@@ -978,16 +978,23 @@ class TestTranscribeMistral:
 # ============================================================================
 
 class TestGetProviderMistral:
-    """Mistral-specific provider selection tests."""
+    """Mistral-specific provider selection tests.
+
+    Mistral STT is intentionally disabled in 2026-05-12+ while the
+    `mistralai` PyPI package is quarantined. These tests document that
+    explicit `provider: mistral` always returns "none" with a warning, and
+    that auto-detect skips mistral entirely.
+    """
 
     def test_mistral_when_key_and_sdk_available(self, monkeypatch):
+        """Even with key + SDK, explicit mistral returns 'none' (disabled)."""
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "mistral"}) == "mistral"
+            assert _get_provider({"provider": "mistral"}) == "none"
 
     def test_mistral_explicit_no_key_returns_none(self, monkeypatch):
-        """Explicit mistral with no key returns none — no cross-provider fallback."""
+        """Explicit mistral with no key returns none."""
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
@@ -1000,18 +1007,23 @@ class TestGetProviderMistral:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"
 
-    def test_auto_detect_mistral_after_openai(self, monkeypatch):
-        """Auto-detect: mistral is tried after openai when both are unavailable."""
+    def test_auto_detect_skips_mistral(self, monkeypatch):
+        """Auto-detect intentionally skips mistral (quarantine workaround).
+
+        With no other provider available but MISTRAL_API_KEY set, the result
+        must be 'none' — mistral is no longer in the auto-detect chain.
+        """
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", False), \
              patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "mistral"
+            assert _get_provider({}) == "none"
 
     def test_auto_detect_openai_preferred_over_mistral(self, monkeypatch):
         """Auto-detect: openai is preferred over mistral (both paid, openai more common)."""
@@ -1285,8 +1297,13 @@ class TestGetProviderXAI:
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "xai"
 
-    def test_auto_detect_mistral_preferred_over_xai(self, monkeypatch):
-        """Auto-detect: mistral is preferred over xai."""
+    def test_auto_detect_mistral_skipped_xai_wins(self, monkeypatch):
+        """Auto-detect skips mistral entirely (quarantine) — xai wins.
+
+        Even with MISTRAL_API_KEY set, mistral is no longer in the
+        auto-detect chain. xai is the next-best fallback when the
+        local/groq/openai chain is unavailable.
+        """
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         monkeypatch.setenv("XAI_API_KEY", "xai-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -1297,7 +1314,7 @@ class TestGetProviderXAI:
              patch("tools.transcription_tools._HAS_OPENAI", False), \
              patch("tools.transcription_tools._HAS_MISTRAL", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "mistral"
+            assert _get_provider({}) == "xai"
 
     def test_auto_detect_no_key_returns_none(self, monkeypatch):
         """Auto-detect: xai skipped when no key is set."""

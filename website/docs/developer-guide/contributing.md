@@ -50,6 +50,8 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
+# tinker-atropos is a git submodule — needs `git submodule update --init` first
+# if you didn't clone with `--recurse-submodules`
 uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools

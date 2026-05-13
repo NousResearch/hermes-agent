@@ -13,6 +13,21 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
     monkeypatch.setitem(sys.modules, "gateway.run", module)
+    # ``run_gateway()`` calls ``refresh_systemd_unit_if_needed()`` on every
+    # invocation so that restart settings stay current after exit-code-75
+    # respawns. That helper writes to ``Path.home() / ".config/systemd/user
+    # /hermes-gateway.service"`` and runs ``systemctl --user daemon-reload``
+    # — both target the *real* user environment because the conftest only
+    # sandboxes ``HERMES_HOME``, not ``HOME``. Tests that drive
+    # ``run_gateway()`` end-to-end with a fake ``start_gateway`` MUST stub
+    # the refresh call too, or every run rewrites the developer's installed
+    # unit (baking in the test's pytest-tmp ``HERMES_HOME`` value, which
+    # systemd then uses on the next boot — silently breaking the gateway
+    # for the developer).
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(
+        gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
+    )
 
 
 def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
@@ -88,6 +103,66 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
     gateway.run_gateway(verbose=2, replace=True)
 
     assert calls == [(True, 2)]
+
+
+def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    class _TTY:
+        def isatty(self):
+            return True
+
+    signal_calls = []
+
+    def fake_signal(sig, handler):
+        signal_calls.append((sig, handler))
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
+    monkeypatch.delenv("HERMES_GATEWAY_DETACHED", raising=False)
+    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) not in signal_calls
+
+
+def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    class _TTY:
+        def isatty(self):
+            return True
+
+    signal_calls = []
+
+    def fake_signal(sig, handler):
+        signal_calls.append((sig, handler))
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
+    monkeypatch.setenv("HERMES_GATEWAY_DETACHED", "1")
+    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
 
 
 class TestSystemdLingerStatus:
@@ -343,6 +418,15 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+    # /proc walk is the first path tried (#22693). Force os.listdir on /proc
+    # to raise so the function falls back to ps, where fake_run takes over.
+    _real_listdir = gateway.os.listdir
+    def _no_proc_listdir(path):
+        if path == "/proc":
+            raise OSError("test stub: /proc unavailable")
+        return _real_listdir(path)
+    monkeypatch.setattr(gateway.os, "listdir", _no_proc_listdir)
 
     def fake_run(cmd, **kwargs):
         if cmd[:4] == ["ps", "-A", "eww", "-o"]:

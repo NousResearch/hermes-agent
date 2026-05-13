@@ -2032,6 +2032,32 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
+    def test_acp_command_description_has_do_not_set_guidance(self):
+        # acp_command/acp_args descriptions must NOT bias the model toward
+        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
+        # carry explicit "do not set unless told" guidance so the model doesn't
+        # hallucinate ACP availability (#22013).
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+
+        top_acp_desc = props["acp_command"]["description"]
+        self.assertIn("Do NOT set", top_acp_desc)
+        self.assertIn("explicitly told you", top_acp_desc)
+
+        task_props = props["tasks"]["items"]["properties"]
+        per_task_acp_desc = task_props["acp_command"]["description"]
+        self.assertIn("Do NOT set", per_task_acp_desc)
+
+    def test_acp_command_description_has_no_claude_as_example(self):
+        # Descriptions must not list 'claude' as a canonical example value —
+        # that directly primes the model to attempt Claude ACP even when it is
+        # not installed (#22013).
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        top_acp_desc = props["acp_command"]["description"].lower()
+        self.assertNotIn("e.g. 'claude'", top_acp_desc)
+        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
+
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".
 _SENTINEL = object()

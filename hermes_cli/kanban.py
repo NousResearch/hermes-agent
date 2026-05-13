@@ -82,7 +82,7 @@ def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     if not value:
         return ("scratch", None)
     v = value.strip()
-    if v in ("scratch", "worktree"):
+    if v in {"scratch", "worktree"}:
         return (v, None)
     if v.startswith("dir:"):
         path = v[len("dir:"):].strip()
@@ -510,6 +510,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument(
+        "--notifier-profile", default=None,
+        help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -648,6 +652,16 @@ def kanban_command(args: argparse.Namespace) -> int:
     # keeps the patch small and inherits the exact same resolution the
     # dispatcher uses for workers — consistency is a feature here.
     board_override = getattr(args, "board", None)
+    prev_board_env = os.environ.get("HERMES_KANBAN_BOARD")
+    restore_board_env = False
+
+    def _restore_board_env() -> None:
+        if not restore_board_env:
+            return
+        if prev_board_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_board_env
     if board_override:
         try:
             normed = kb._normalize_board_slug(board_override)
@@ -667,12 +681,16 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
             return 1
         os.environ["HERMES_KANBAN_BOARD"] = normed
+        restore_board_env = True
 
     # Boards management doesn't touch the DB at all — dispatch early so
     # fresh installs that haven't initialized any DB can still use
     # `hermes kanban boards create …`.
     if action == "boards":
-        return _dispatch_boards(args)
+        try:
+            return _dispatch_boards(args)
+        finally:
+            _restore_board_env()
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -685,6 +703,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         kb.init_db()
     except Exception as exc:
         print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+        _restore_board_env()
         return 1
 
     handlers = {
@@ -726,12 +745,16 @@ def kanban_command(args: argparse.Namespace) -> int:
     handler = handlers.get(action)
     if not handler:
         print(f"kanban: unknown action {action!r}", file=sys.stderr)
+        _restore_board_env()
         return 2
     try:
         return int(handler(args) or 0)
     except (ValueError, RuntimeError) as exc:
         print(f"kanban: {exc}", file=sys.stderr)
+        _restore_board_env()
         return 1
+    finally:
+        _restore_board_env()
 
 
 # ---------------------------------------------------------------------------
@@ -765,15 +788,15 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
     can still run ``boards create`` / ``boards list``.
     """
     sub = getattr(args, "boards_action", None) or "list"
-    if sub in ("list", "ls"):
+    if sub in {"list", "ls"}:
         return _cmd_boards_list(args)
-    if sub in ("create", "new"):
+    if sub in {"create", "new"}:
         return _cmd_boards_create(args)
-    if sub in ("rm", "remove", "delete"):
+    if sub in {"rm", "remove", "delete"}:
         return _cmd_boards_rm(args)
-    if sub in ("switch", "use"):
+    if sub in {"switch", "use"}:
         return _cmd_boards_switch(args)
-    if sub in ("show", "current"):
+    if sub in {"show", "current"}:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
@@ -1278,7 +1301,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_assign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
@@ -1305,7 +1328,7 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,
@@ -1921,6 +1944,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
+            notifier_profile=args.notifier_profile or _profile_author(),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -1939,8 +1963,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
         return 0
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
+        owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']})")
+              f"  (since event {s['last_event_id']}){owner}")
     return 0
 
 
@@ -2071,19 +2096,18 @@ def _cmd_specify(args: argparse.Namespace) -> int:
                 "reason": outcome.reason,
                 "new_title": outcome.new_title,
             }))
+        elif outcome.ok:
+            title_suffix = (
+                f" — retitled: {outcome.new_title!r}"
+                if outcome.new_title
+                else ""
+            )
+            print(f"Specified {outcome.task_id} → todo{title_suffix}")
         else:
-            if outcome.ok:
-                title_suffix = (
-                    f" — retitled: {outcome.new_title!r}"
-                    if outcome.new_title
-                    else ""
-                )
-                print(f"Specified {outcome.task_id} → todo{title_suffix}")
-            else:
-                print(
-                    f"kanban: specify {outcome.task_id}: {outcome.reason}",
-                    file=sys.stderr,
-                )
+            print(
+                f"kanban: specify {outcome.task_id}: {outcome.reason}",
+                file=sys.stderr,
+            )
     if not all_flag:
         return 0 if ok_count == 1 else 1
     # --all: succeed if at least one promotion landed; exit 1 only when
@@ -2136,6 +2160,29 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 # Slash-command entry point (used by /kanban from CLI and gateway)
 # ---------------------------------------------------------------------------
 
+_SLASH_KANBAN_HELP = """\
+**/kanban** — manage the shared task board.
+
+Common subcommands:
+  `list` (alias `ls`)   List tasks on the current board
+  `show <id>`           Task details + comments + events
+  `stats`               Per-status / per-assignee counts
+  `create <title>…`     Create a task (auto-subscribes you to events)
+  `comment <id> <msg>`  Append a comment
+  `complete <id>…`      Mark task(s) done
+  `block <id> [reason]` Mark blocked; `unblock <id>` to revive
+  `assign <id> <profile>`  Reassign
+  `boards list`         Show all boards
+  `assignees`           Known profiles + counts
+  `context <id>`        Full worker-context dump
+  `runs <id>`           Attempt history
+  `log <id>`            Worker log
+
+Run `/kanban <subcommand> -h` for arguments. \
+Read-only commands are safe while an agent is running.\
+"""
+
+
 def run_slash(rest: str) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
@@ -2148,26 +2195,47 @@ def run_slash(rest: str) -> str:
 
     tokens = shlex.split(rest) if rest and rest.strip() else []
 
-    parser = argparse.ArgumentParser(prog="/kanban", add_help=False)
-    parser.exit_on_error = False  # type: ignore[attr-defined]
-    sub = parser.add_subparsers(dest="kanban_action")
-    # Reuse the argparse builder -- call it with a throwaway parent
-    # subparsers via a wrapping top-level parser.
-    wrap = argparse.ArgumentParser(prog="/", add_help=False)
-    wrap.exit_on_error = False  # type: ignore[attr-defined]
-    wrap_sub = wrap.add_subparsers(dest="_top")
-    build_parser(wrap_sub)
+    # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
+    # show the curated short-help block instead of dumping argparse's full
+    # usage tree (which is enormous and reads as garbage in a chat
+    # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
+    if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
+        return _SLASH_KANBAN_HELP
+
+    # Single argparse tree rooted at "/kanban".  build_parser() expects a
+    # subparsers action to attach to, so build a throwaway one and pull
+    # the kanban_parser back out — then drive it directly so usage/error
+    # text reads as ``/kanban`` (not ``/kanban-wrap kanban``).
+    _wrap = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
+    _wrap.exit_on_error = False  # type: ignore[attr-defined]
+    _top_sub = _wrap.add_subparsers(dest="_top")
+    kanban_parser = build_parser(_top_sub)
+    kanban_parser.prog = "/kanban"
+    kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
+    for _action in kanban_parser._actions:
+        if isinstance(_action, argparse._SubParsersAction):
+            for _name, _choice in _action.choices.items():
+                _choice.prog = f"/kanban {_name}"
+                _choice.exit_on_error = False  # type: ignore[attr-defined]
 
     buf_out = io.StringIO()
     buf_err = io.StringIO()
+    # ``-h`` / ``--help`` makes argparse print to stdout and SystemExit(0).
+    # Capture both streams so neither the help text nor the error text
+    # bypasses our buffer.
     try:
-        # Prepend the "kanban" token so our top-level subparser routes here.
-        argv = ["kanban", *tokens] if tokens else ["kanban"]
-        args = wrap.parse_args(argv)
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            args = kanban_parser.parse_args(tokens)
     except SystemExit as exc:
-        return f"(usage error: {exc})"
+        out = buf_out.getvalue().rstrip()
+        err = buf_err.getvalue().rstrip()
+        # Help dump (exit 0) → return the captured help text directly.
+        if exc.code in {0, None} and out:
+            return out
+        body = err or out
+        return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"(usage error: {exc})"
+        return f"⚠ /kanban usage error: {exc}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

@@ -1,0 +1,350 @@
+# Каталог статических сообщений Hermes -- Русский
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  ОПАСНАЯ КОМАНДА: {description}"
+  choose_long:     "      [o]один раз  |  [s]сеанс  |  [a]всегда  |  [d]отклонить"
+  choose_short:    "      [o]один раз  |  [s]сеанс  |  [d]отклонить"
+  prompt_long:     "      Выбор [o/s/a/D]: "
+  prompt_short:    "      Выбор [o/s/D]: "
+  timeout:         "      ⏱ Время ожидания истекло — команда отклонена"
+  allowed_once:    "      ✓ Разрешено один раз"
+  allowed_session: "      ✓ Разрешено для этого сеанса"
+  allowed_always:  "      ✓ Добавлено в постоянный список разрешённых"
+  denied:          "      ✗ Отклонено"
+  cancelled:       "      ✗ Отменено"
+  blocklist_message: "Эта команда находится в безусловном списке блокировки и не может быть одобрена."
+
+gateway:
+  approval_expired: "⚠️ Срок одобрения истёк (агент больше не ожидает). Попросите агента повторить попытку."
+  draining:         "⏳ Ожидание завершения {count} активных агент(ов) перед перезапуском..."
+  goal_cleared:     "✓ Цель очищена."
+  no_active_goal:   "Нет активной цели."
+  config_read_failed: "⚠️ Не удалось прочитать config.yaml: {error}"
+  config_save_failed: "⚠️ Не удалось сохранить конфигурацию: {error}"
+
+  model:
+    error_prefix:           "Ошибка: {error}"
+    switched:               "Модель изменена на `{model}`"
+    provider_label:         "Провайдер: {provider}"
+    context_label:          "Контекст: {tokens} токенов"
+    max_output_label:       "Макс. вывод: {tokens} токенов"
+    cost_label:             "Стоимость: {cost}"
+    capabilities_label:     "Возможности: {capabilities}"
+    prompt_caching_enabled: "Кеширование промптов: включено"
+    warning_prefix:         "Предупреждение: {warning}"
+    saved_global:           "Сохранено в config.yaml (`--global`)"
+    session_only_hint:      "_(только для этого сеанса — добавьте `--global`, чтобы сохранить)_"
+    current_label:          "Текущая: `{model}` на {provider}"
+    current_tag:            " (текущая)"
+    more_models_suffix:     " (+ещё {count})"
+    usage_switch_model:     "`/model <name>` — сменить модель"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — сменить провайдера"
+    usage_persist:          "`/model <name> --global` — сохранить навсегда"
+
+  agents:
+    header:                "🤖 **Активные агенты и задачи**"
+    active_agents:         "**Активные агенты:** {count}"
+    this_chat:             " · этот чат"
+    more:                  "... и ещё {count}"
+    running_processes:     "**Выполняющиеся фоновые процессы:** {count}"
+    async_jobs:            "**Асинхронные задачи шлюза:** {count}"
+    none:                  "Нет активных агентов или выполняющихся задач."
+    state_starting:        "запускается"
+    state_running:         "выполняется"
+
+  approve:
+    no_pending:            "Нет команды, ожидающей одобрения."
+    once_singular:         "✅ Команда одобрена. Агент возобновляет работу..."
+    once_plural:           "✅ Команды одобрены ({count} команд). Агент возобновляет работу..."
+    session_singular:      "✅ Команда одобрена (шаблон одобрен для этого сеанса). Агент возобновляет работу..."
+    session_plural:        "✅ Команды одобрены (шаблон одобрен для этого сеанса) ({count} команд). Агент возобновляет работу..."
+    always_singular:       "✅ Команда одобрена (шаблон одобрен навсегда). Агент возобновляет работу..."
+    always_plural:         "✅ Команды одобрены (шаблон одобрен навсегда) ({count} команд). Агент возобновляет работу..."
+
+  background:
+    usage:                 "Использование: /background <запрос>\nПример: /background Сделай сводку лучших историй с HN сегодня\n\nЗапускает запрос в отдельном сеансе. Можно продолжить общение — результат появится здесь по завершении."
+    started:               "🔄 Фоновая задача запущена: «{preview}»\nID задачи: {task_id}\nМожно продолжить общение — результаты появятся здесь по завершении."
+
+  branch:
+    db_unavailable:        "База данных сеансов недоступна."
+    no_conversation:       "Нет беседы для ответвления — сначала отправьте сообщение."
+    create_failed:         "Не удалось создать ветку: {error}"
+    switch_failed:         "Ветка создана, но переключиться на неё не удалось."
+    branched_one:          "⑂ Создана ветка **{title}** (скопировано {count} сообщение)\nОригинал: `{parent}`\nВетка: `{new}`\nИспользуйте `/resume`, чтобы вернуться к оригиналу."
+    branched_many:         "⑂ Создана ветка **{title}** (скопировано {count} сообщений)\nОригинал: `{parent}`\nВетка: `{new}`\nИспользуйте `/resume`, чтобы вернуться к оригиналу."
+
+  commands:
+    usage:                 "Использование: `/commands [page]`"
+    skill_header:          "⚡ **Команды навыков**:"
+    default_desc:          "Команда навыка"
+    none:                  "Нет доступных команд."
+    header:                "📚 **Команды** (всего {total}, страница {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← пред."
+    nav_next:              "след. → `/commands {page}`"
+    out_of_range:          "_(Запрошенная страница {requested} вне диапазона, показана страница {page}.)_"
+
+  compress:
+    not_enough:            "Недостаточно беседы для сжатия (нужно минимум 4 сообщения)."
+    no_provider:           "Провайдер не настроен — сжатие невозможно."
+    nothing_to_do:         "Пока нечего сжимать (стенограмма всё ещё полностью является защищённым контекстом)."
+    focus_line:            "Фокус: \"{topic}\""
+    summary_failed:        "⚠️ Не удалось сгенерировать сводку ({error}). {count} историч. сообщений было удалено и заменено заполнителем; предыдущий контекст больше нельзя восстановить. Проверьте конфигурацию модели auxiliary.compression."
+    aux_failed:            "ℹ️ Настроенная модель сжатия `{model}` дала сбой ({error}). Восстановлено с помощью основной модели — контекст не повреждён — но рекомендуется проверить `auxiliary.compression.model` в config.yaml."
+    failed:                "Сжатие не удалось: {error}"
+
+  debug:
+    upload_failed:         "✗ Не удалось загрузить отчёт отладки: {error}"
+    header:                "**Отчёт отладки загружен:**"
+    auto_delete:           "⏱ Вставки автоматически удалятся через 6 часов."
+    full_logs_hint:        "Для загрузки полных журналов используйте `hermes debug share` из CLI."
+    share_hint:            "Поделитесь этими ссылками с командой Hermes для получения поддержки."
+
+  deny:
+    stale:                 "❌ Команда отклонена (одобрение устарело)."
+    no_pending:            "Нет команды для отклонения."
+    denied_singular:       "❌ Команда отклонена."
+    denied_plural:         "❌ Команды отклонены ({count} команд)."
+
+  fast:
+    not_supported:         "⚡ /fast доступен только для моделей OpenAI, поддерживающих Priority Processing."
+    status:                "⚡ Priority Processing\n\nТекущий режим: `{mode}`\n\n_Использование:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые варианты:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (сохранено в конфигурации)\n_(вступит в силу со следующего сообщения)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (только этот сеанс)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
+    usage:                 "Использование: `/footer [on|off|status]`"
+    saved:                 "📎 Нижний колонтитул среды выполнения: **{state}**{example}\n_(сохранено глобально — вступит в силу со следующего сообщения)_"
+    example_line:          "\nПример: `{preview}`"
+    state_on:              "ON"
+    state_off:             "OFF"
+
+  goal:
+    unavailable:           "Цели недоступны в этом сеансе."
+    no_goal_set:           "Цель не задана."
+    paused:                "⏸ Цель приостановлена: {goal}"
+    no_resume:             "Нет цели для возобновления."
+    resumed:               "▶ Цель возобновлена: {goal}\nОтправьте любое сообщение, чтобы продолжить, или подождите — я сделаю следующий шаг на следующем ходу."
+    invalid:               "Недопустимая цель: {error}"
+    set:                   "⊙ Цель задана (бюджет {budget} ходов): {goal}\nЯ продолжу работу, пока цель не будет достигнута, вы её не приостановите/очистите, или бюджет не исчерпается.\nУправление: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Команды Hermes**\n"
+    skill_header:          "\n⚡ **Команды навыков** (активных: {count}):"
+    more_use_commands:     "\n... и ещё {count}. Используйте `/commands` для полного списка с постраничной разбивкой."
+
+  insights:
+    invalid_days:          "Недействительное значение --days: {value}"
+    error:                 "Ошибка при формировании аналитики: {error}"
+
+  kanban:
+    error_prefix:          "⚠ ошибка kanban: {error}"
+    subscribed_suffix:     "(подписка оформлена — вы получите уведомление, когда {task_id} завершится или будет заблокирован)"
+    truncated_suffix:      "… (сокращено; используйте `hermes kanban …` в терминале для полного вывода)"
+    no_output:             "(нет вывода)"
+
+  personality:
+    none_configured:       "В `{path}/config.yaml` не настроено ни одной личности"
+    header:                "🎭 **Доступные личности**\n"
+    none_option:           "• `none` — (без наложения личности)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nИспользование: `/personality <name>`"
+    save_failed:           "⚠️ Не удалось сохранить изменение личности: {error}"
+    cleared:               "🎭 Личность очищена — используется базовое поведение агента.\n_(вступит в силу со следующего сообщения)_"
+    set_to:                "🎭 Личность установлена на **{name}**\n_(вступит в силу со следующего сообщения)_"
+    unknown:               "Неизвестная личность: `{name}`\n\nДоступные: {available}"
+
+  profile:
+    header:                "👤 **Профиль:** `{profile}`"
+    home:                  "📂 **Домашний каталог:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (по умолчанию)"
+    level_disabled:            "none (отключено)"
+    scope_session:             "переопределение сеанса"
+    scope_global:              "глобальная конфигурация"
+    status:                    "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\n_Использование:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "включено ✓"
+    display_off:               "выключено"
+    display_set_on:            "🧠 ✓ Отображение рассуждений: **ВКЛ.**\nМысли модели будут показываться перед каждым ответом на **{platform}**."
+    display_set_off:           "🧠 ✓ Отображение рассуждений: **ВЫКЛ.** для **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` не поддерживается. Используйте `/reasoning <level> --global`, чтобы изменить глобальное значение по умолчанию."
+    reset_done:                "🧠 ✓ Переопределение рассуждений для сеанса сброшено; возврат к глобальной конфигурации."
+    unknown_arg:               "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые уровни:** none, minimal, low, medium, high, xhigh\n**Отображение:** show, hide\n**Сохранение:** добавьте `--global`, чтобы сохранить за пределами этого сеанса"
+    set_global:                "🧠 ✓ Усилия рассуждений установлены на `{effort}` (сохранено в конфигурации)\n_(вступит в силу со следующего сообщения)_"
+    set_global_save_failed:    "🧠 ✓ Усилия рассуждений установлены на `{effort}` (только этот сеанс — не удалось сохранить конфигурацию)\n_(вступит в силу со следующего сообщения)_"
+    set_session:               "🧠 ✓ Усилия рассуждений установлены на `{effort}` (только этот сеанс — добавьте `--global`, чтобы сохранить)\n_(вступит в силу со следующего сообщения)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp отменено. MCP-инструменты без изменений."
+    always_followup:       "ℹ️ Будущие вызовы `/reload-mcp` будут выполняться без подтверждения. Снова включить можно через `approvals.mcp_reload_confirm: true` в config.yaml."
+    confirm_prompt:        "⚠️ **Подтверждение /reload-mcp**\n\nПерезагрузка MCP-серверов перестраивает набор инструментов для этого сеанса и **сбрасывает кеш промпта провайдера** — следующее сообщение повторно отправит все входные токены. На моделях с длинным контекстом или высоким уровнем рассуждений это может быть дорого.\n\nВыберите:\n• **Одобрить один раз** — перезагрузить сейчас\n• **Всегда одобрять** — перезагрузить и навсегда отключить этот запрос\n• **Отменить** — оставить MCP-инструменты без изменений\n\n_Текстовая альтернатива: ответьте `/approve`, `/always` или `/cancel`._"
+    header:                "🔄 **MCP-серверы перезагружены**\n"
+    reconnected:           "♻️ Переподключено: {names}"
+    added:                 "➕ Добавлено: {names}"
+    removed:               "➖ Удалено: {names}"
+    none_connected:        "Нет подключённых MCP-серверов."
+    tools_available:       "\n🔧 {tools} инструмент(ов) доступно с {servers} сервер(ов)"
+    failed:                "❌ Ошибка перезагрузки MCP: {error}"
+
+  reload_skills:
+    header:                "🔄 **Навыки перезагружены**\n"
+    no_new:                "Новых навыков не обнаружено."
+    total:                 "\n📚 {count} навык(ов) доступно"
+    added_header:          "➕ **Добавленные навыки:**"
+    removed_header:        "➖ **Удалённые навыки:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Ошибка перезагрузки навыков: {error}"
+
+  reset:
+    header_default:        "✨ Сеанс сброшен! Начинаем с чистого листа."
+    header_new:            "✨ Новый сеанс запущен!"
+    header_titled:         "✨ Новый сеанс запущен: {title}"
+    title_rejected:        "\n⚠️ Название отклонено: {error}"
+    title_error_untitled:  "\n⚠️ {error} — сеанс запущен без названия."
+    title_empty_untitled:  "\n⚠️ После очистки название пусто — сеанс запущен без названия."
+    tip:                   "\n✦ Совет: {tip}"
+
+  restart:
+    in_progress:           "⏳ Перезапуск шлюза уже выполняется..."
+    restarting:            "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "База данных сеансов недоступна."
+    no_named_sessions:     "Именованных сеансов не найдено.\nИспользуйте `/title Мой сеанс`, чтобы назвать текущий сеанс, затем `/resume Мой сеанс`, чтобы вернуться к нему позже."
+    list_header:           "📋 **Именованные сеансы**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nИспользование: `/resume <название сеанса>`"
+    list_failed:           "Не удалось получить список сеансов: {error}"
+    not_found:             "Сеанс, соответствующий '**{name}**', не найден.\nИспользуйте `/resume` без аргументов, чтобы увидеть доступные сеансы."
+    already_on:            "📌 Уже в сеансе **{name}**."
+    switch_failed:         "Не удалось переключить сеанс."
+    resumed_one:           "↻ Сеанс **{title}** возобновлён ({count} сообщение). Беседа восстановлена."
+    resumed_many:          "↻ Сеанс **{title}** возобновлён ({count} сообщений). Беседа восстановлена."
+    resumed_no_count:      "↻ Сеанс **{title}** возобновлён. Беседа восстановлена."
+
+  retry:
+    no_previous:           "Нет предыдущего сообщения для повтора."
+
+  rollback:
+    not_enabled:           "Контрольные точки не включены.\nВключите в config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Контрольных точек для {cwd} не найдено"
+    invalid_number:        "Недействительный номер контрольной точки. Используйте 1-{max}."
+    restored:              "✅ Восстановлено до контрольной точки {hash}: {reason}\nСнимок перед откатом сохранён автоматически."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Не удалось сохранить главный канал: {error}"
+    success:               "✅ Главный канал установлен на **{name}** (ID: {chat_id}).\nCron-задачи и межплатформенные сообщения будут доставляться сюда."
+
+  status:
+    header:                "📊 **Состояние Hermes Gateway**"
+    session_id:            "**ID сеанса:** `{session_id}`"
+    title:                 "**Название:** {title}"
+    created:               "**Создано:** {timestamp}"
+    last_activity:         "**Последняя активность:** {timestamp}"
+    tokens:                "**Токены:** {tokens}"
+    agent_running:         "**Агент активен:** {state}"
+    state_yes:             "Да ⚡"
+    state_no:              "Нет"
+    queued:                "**Очередь продолжений:** {count}"
+    platforms:             "**Подключённые платформы:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Остановлено. Агент ещё не начинал — вы можете продолжить этот сеанс."
+    stopped:               "⚡ Остановлено. Вы можете продолжить этот сеанс."
+    no_active:             "Нет активной задачи для остановки."
+
+  title:
+    db_unavailable:        "База данных сеансов недоступна."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ После очистки название пусто. Используйте печатные символы."
+    set_to:                "✏️ Название сеанса установлено: **{title}**"
+    not_found:             "Сеанс не найден в базе данных."
+    current_with_title:    "📌 Сеанс: `{session_id}`\nНазвание: **{title}**"
+    current_no_title:      "📌 Сеанс: `{session_id}`\nНазвание не задано. Использование: `/title Название моего сеанса`"
+
+  topic:
+    not_telegram_dm:         "Команда /topic доступна только в личных чатах Telegram."
+    no_session_db:           "База данных сеансов недоступна."
+    unauthorized:            "У вас нет прав использовать /topic в этом боте."
+    restore_needs_topic:     "Чтобы восстановить сеанс, сначала создайте или откройте Telegram topic, затем отправьте /topic <session-id> в этом topic. Чтобы создать новый topic, откройте All Messages и отправьте там любое сообщение."
+    topics_disabled:         "Telegram topics ещё не включены для этого бота.\n\nКак включить:\n1. Откройте @BotFather.\n2. Выберите своего бота.\n3. Откройте Bot Settings → Threads Settings.\n4. Включите Threaded Mode и убедитесь, что пользователям разрешено создавать новые threads.\n\nЗатем снова отправьте /topic."
+    topics_user_disallowed:  "Telegram topics включены, но пользователям не разрешено создавать topics.\n\nОткройте @BotFather → выберите своего бота → Bot Settings → Threads Settings, затем выключите 'Disallow users to create new threads'.\n\nЗатем снова отправьте /topic."
+    enable_failed:           "Не удалось включить режим Telegram topic: {error}"
+    bound_status:            "Этот topic привязан к:\nСеанс: {label}\nID: {session_id}\n\nИспользуйте /new, чтобы заменить этот topic новым сеансом.\nДля параллельной работы откройте All Messages и отправьте там сообщение, чтобы создать другой topic."
+    thread_ready:            "Многосеансовые Telegram topics включены.\n\nЭтот topic будет использоваться как независимый сеанс Hermes. Используйте /new, чтобы заменить текущий сеанс этого topic. Для параллельной работы откройте All Messages и отправьте там сообщение, чтобы создать другой topic."
+    untitled_session:        "Сеанс без названия"
+
+  undo:
+    nothing:               "Нечего отменять."
+    removed:               "↩️ Отменено сообщений: {count}.\nУдалено: «{preview}»"
+
+  update:
+    platform_not_messaging:  "✗ /update доступен только на платформах обмена сообщениями. Выполните `hermes update` в терминале."
+    not_git_repo:            "✗ Не git-репозиторий — обновление невозможно."
+    hermes_cmd_not_found:    "✗ Не удалось найти команду `hermes`. Hermes запущен, но команда обновления не нашла исполняемый файл в PATH или через текущий интерпретатор Python. Попробуйте выполнить `hermes update` вручную в терминале."
+    start_failed:            "✗ Не удалось запустить обновление: {error}"
+    starting:                "⚕ Запуск обновления Hermes… Я буду транслировать прогресс сюда."
+
+  usage:
+    rate_limits:              "⏱️ **Ограничения скорости:** {state}"
+    header_session:           "📊 **Использование токенов сеанса**"
+    label_model:              "Модель: `{model}`"
+    label_input_tokens:       "Входные токены: {count}"
+    label_cache_read:         "Токены чтения кеша: {count}"
+    label_cache_write:        "Токены записи кеша: {count}"
+    label_output_tokens:      "Выходные токены: {count}"
+    label_total:              "Всего: {count}"
+    label_api_calls:          "Вызовы API: {count}"
+    label_cost:               "Стоимость: {prefix}${amount}"
+    label_cost_included:      "Стоимость: включено"
+    label_context:            "Контекст: {used} / {total} ({pct}%)"
+    label_compressions:       "Сжатий: {count}"
+    header_session_info:      "📊 **Информация о сеансе**"
+    label_messages:           "Сообщений: {count}"
+    label_estimated_context:  "Ориентировочный контекст: ~{count} токенов"
+    detailed_after_first:     "_(Подробное использование доступно после первого ответа агента)_"
+    no_data:                  "Данные об использовании для этого сеанса отсутствуют."
+
+  verbose:
+    not_enabled:           "Команда `/verbose` не включена для платформ обмена сообщениями.\n\nВключите в `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Прогресс инструментов: **OFF** — активность инструментов не показывается."
+    mode_new:              "⚙️ Прогресс инструментов: **NEW** — показывается при смене инструмента (длина предпросмотра: `display.tool_preview_length`, по умолчанию 40)."
+    mode_all:              "⚙️ Прогресс инструментов: **ALL** — показывается каждый вызов инструмента (длина предпросмотра: `display.tool_preview_length`, по умолчанию 40)."
+    mode_verbose:          "⚙️ Прогресс инструментов: **VERBOSE** — каждый вызов инструмента с полными аргументами."
+    saved_suffix:          "_(сохранено для **{platform}** — вступит в силу со следующего сообщения)_"
+    save_failed:           "_(не удалось сохранить в конфигурацию: {error})_"
+
+  voice:
+    enabled_voice_only:    "Голосовой режим включён.\nЯ буду отвечать голосом, когда вы отправляете голосовые сообщения.\nИспользуйте /voice tts, чтобы получать голосовые ответы на все сообщения."
+    disabled_text:         "Голосовой режим отключён. Только текстовые ответы."
+    tts_enabled:           "Авто-TTS включён.\nВсе ответы будут содержать голосовое сообщение."
+    status_mode:           "Голосовой режим: {label}"
+    status_channel:        "Голосовой канал: #{channel}"
+    status_participants:   "Участники: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (говорит)"
+    enabled_short:         "Голосовой режим включён."
+    disabled_short:        "Голосовой режим отключён."
+    label_off:             "Выкл. (только текст)"
+    label_voice_only:      "Вкл. (голосовой ответ на голосовые сообщения)"
+    label_all:             "TTS (голосовой ответ на все сообщения)"
+
+  yolo:
+    disabled:                   "⚠️ Режим YOLO для этого сеанса **ОТКЛЮЧЁН** — опасные команды потребуют одобрения."
+    enabled:                    "⚡ Режим YOLO для этого сеанса **ВКЛЮЧЁН** — все команды одобряются автоматически. Используйте с осторожностью."
+
+  shared:
+    session_db_unavailable:      "База данных сеансов недоступна."
+    session_db_unavailable_prefix: "База данных сеансов недоступна"
+    session_not_found:           "Сеанс не найден в базе данных."
+    warn_passthrough:            "⚠️ {error}"

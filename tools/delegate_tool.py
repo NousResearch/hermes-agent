@@ -315,7 +315,7 @@ def _normalize_role(r: Optional[str]) -> str:
     if r is None or not r:
         return "leaf"
     r_norm = str(r).strip().lower()
-    if r_norm in ("leaf", "orchestrator"):
+    if r_norm in {"leaf", "orchestrator"}:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
@@ -437,7 +437,7 @@ def _get_orchestrator_enabled() -> bool:
         return val
     # Accept "true"/"false" strings from YAML that doesn't auto-coerce.
     if isinstance(val, str):
-        return val.strip().lower() in ("true", "1", "yes", "on")
+        return val.strip().lower() in {"true", "1", "yes", "on"}
     return True
 
 
@@ -1077,11 +1077,15 @@ def _build_child_agent(
     child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
     child_providers_order = getattr(parent_agent, "providers_order", None)
     child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
     if override_provider:
         child_providers_allowed = None
         child_providers_ignored = None
         child_providers_order = None
         child_provider_sort = None
+        # Note: openrouter_min_coding_score is model-gated (only emitted on
+        # openrouter/pareto-code), so we keep it inherited even when the
+        # provider is overridden — it's a no-op on any other model.
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1111,6 +1115,7 @@ def _build_child_agent(
         providers_ignored=child_providers_ignored,
         providers_order=child_providers_order,
         provider_sort=child_provider_sort,
+        openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
@@ -1234,7 +1239,7 @@ def _dump_subagent_timeout_diagnostic(
         if tool_names:
             _w(f"  loaded tool count: {len(tool_names)}")
             try:
-                _w(f"  loaded tools:      {sorted(list(tool_names))}")
+                _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
                 pass
         _w("")
@@ -2266,9 +2271,9 @@ def delegate_task(
             # total as "none" when the parent itself hadn't billed any calls
             # yet (rare but possible when the parent's only action this turn
             # was delegate_task).
-            if getattr(parent_agent, "session_cost_source", "none") in (None, "", "none"):
+            if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
                 parent_agent.session_cost_source = "subagent"
-            if getattr(parent_agent, "session_cost_status", "unknown") in (None, "", "unknown"):
+            if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
                 parent_agent.session_cost_status = "estimated"
         except Exception:
             logger.debug("Subagent cost rollup failed", exc_info=True)
@@ -2681,12 +2686,16 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'copilot'). Overrides the top-level acp_command for this task only.",
+                            "description": (
+                                "Per-task ACP command override (e.g. 'copilot'). "
+                                "Overrides the top-level acp_command for this task only. "
+                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                            ),
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
                         },
                         "role": {
                             "type": "string",
@@ -2713,7 +2722,10 @@ DELEGATE_TASK_SCHEMA = {
                     "When set, children use ACP subprocess transport instead of inheriting "
                     "the parent's transport. Requires an ACP-compatible CLI "
                     "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation."
+                    "See agent/copilot_acp_client.py for the implementation. "
+                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
+                    "a specific ACP-compatible CLI is installed and configured. "
+                    "Leave empty to use the parent's default transport (Hermes subagents)."
                 ),
             },
             "acp_args": {
@@ -2721,7 +2733,8 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set."
+                    "Only used when acp_command is set. "
+                    "Leave empty unless acp_command is explicitly provided."
                 ),
             },
         },

@@ -197,6 +197,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _profile_home = get_subprocess_home()
     if _profile_home:
         sanitized["HOME"] = _profile_home
+        from hermes_constants import get_real_home
+        sanitized["HERMES_REAL_HOME"] = get_real_home()
 
     return sanitized
 
@@ -299,6 +301,8 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+        from hermes_constants import get_real_home
+        run_env["HERMES_REAL_HOME"] = get_real_home()
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

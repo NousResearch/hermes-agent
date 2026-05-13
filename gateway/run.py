@@ -14322,7 +14322,7 @@ class GatewayRunner:
                         args_str = args_str[:_pl - 3] + "..."
                     msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = f"{emoji} {tool_name}: `{preview}`"
                 else:
                     msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
@@ -14337,7 +14337,7 @@ class GatewayRunner:
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                msg = f"{emoji} {tool_name}: `{preview}`"
             else:
                 msg = f"{emoji} {tool_name}..."
             

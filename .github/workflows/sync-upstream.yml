@@ -43,6 +43,7 @@ on:
 permissions:
   contents: write
   issues: write
+  workflows: write
 
 concurrency:
   group: sync-upstream

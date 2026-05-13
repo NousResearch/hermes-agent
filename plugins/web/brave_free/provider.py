@@ -1,9 +1,9 @@
 """Brave Search (free tier) — plugin form.
 
 Subclasses :class:`agent.web_search_provider.WebSearchProvider` (the
-plugin-facing ABC) and reuses the existing Brave search logic from the
-legacy ``tools.web_providers.brave_free`` module. Once the spike validates
-the pattern, the legacy module is deleted and this becomes the canonical
+plugin-facing ABC). The legacy in-tree module
+``tools.web_providers.brave_free`` was removed in the same commit that
+moved this code under ``plugins/``; this file is now the canonical
 implementation.
 
 Config keys this provider responds to::

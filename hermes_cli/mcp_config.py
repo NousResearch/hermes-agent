@@ -755,6 +755,16 @@ def mcp_command(args):
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
+    if action == "bridge-http":
+        from mcp_serve import run_bridge_http_mcp_server
+        run_bridge_http_mcp_server(
+            verbose=getattr(args, "verbose", False),
+            host=getattr(args, "host", "127.0.0.1"),
+            port=getattr(args, "port", 8000),
+            path=getattr(args, "path", "/mcp"),
+        )
+        return
+
     handlers = {
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
@@ -775,6 +785,7 @@ def mcp_command(args):
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
         _info("hermes mcp serve                              Run as MCP server")
+        _info("hermes mcp bridge-http                        Run restricted Streamable HTTP MCP server at /mcp")
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")

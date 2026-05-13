@@ -600,3 +600,39 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
 
+
+
+
+def test_mcp_bridge_http_dispatches_to_restricted_http_runner(monkeypatch):
+    """bridge-http must dispatch only to the restricted HTTP runner, not full serve."""
+    import sys
+    from hermes_cli.mcp_config import mcp_command
+
+    calls = []
+
+    def fake_run_bridge_http_mcp_server(**kwargs):
+        calls.append(kwargs)
+
+    def fake_run_mcp_server(*args, **kwargs):
+        raise AssertionError("bridge-http must not dispatch to run_mcp_server")
+
+    fake_mcp_serve = types.SimpleNamespace(
+        run_bridge_http_mcp_server=fake_run_bridge_http_mcp_server,
+        run_mcp_server=fake_run_mcp_server,
+    )
+    monkeypatch.setitem(sys.modules, "mcp_serve", fake_mcp_serve)
+
+    mcp_command(_make_args(
+        mcp_action="bridge-http",
+        verbose=True,
+        host="127.0.0.1",
+        port=8765,
+        path="/mcp",
+    ))
+
+    assert calls == [{
+        "verbose": True,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "path": "/mcp",
+    }]

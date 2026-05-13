@@ -21,6 +21,39 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+BRIDGE_TASK_TOOLS = {
+    "submit_task",
+    "get_task_status",
+    "get_task_result",
+    "list_recent_tasks",
+}
+
+PRE_EXISTING_MESSAGING_APPROVAL_TOOLS = {
+    "conversations_list",
+    "conversation_get",
+    "messages_read",
+    "attachments_fetch",
+    "events_poll",
+    "events_wait",
+    "messages_send",
+    "permissions_list_open",
+    "permissions_respond",
+    "channels_list",
+}
+
+FORBIDDEN_RESTRICTED_TOOL_NAMES = PRE_EXISTING_MESSAGING_APPROVAL_TOOLS | {
+    "run_shell",
+    "write_file",
+    "read_secret",
+    "git_push",
+    "docker_run",
+    "codex_direct",
+    "openai_call",
+    "shopify_import",
+    "prod_release",
+}
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -209,9 +242,9 @@ def mock_session_db(tmp_path, populated_sessions_dir):
 
 
 class _FakeTool:
-    def __init__(self, fn):
+    def __init__(self, fn, description=None):
         self.name = fn.__name__
-        self.description = inspect.getdoc(fn) or ""
+        self.description = description or inspect.getdoc(fn) or ""
         self.fn = fn
 
 
@@ -219,8 +252,8 @@ class _FakeToolManager:
     def __init__(self):
         self._tools = {}
 
-    def add_tool(self, fn):
-        self._tools[fn.__name__] = _FakeTool(fn)
+    def add_tool(self, fn, description=None):
+        self._tools[fn.__name__] = _FakeTool(fn, description=description)
 
     async def call_tool(self, name, args=None):
         return self._tools[name].fn(**(args or {}))
@@ -231,14 +264,20 @@ class _FakeToolManager:
 
 class _FakeFastMCP:
     def __init__(self, *args, **kwargs):
+        self.init_args = args
+        self.init_kwargs = kwargs
         self._tool_manager = _FakeToolManager()
+        self.run_calls = []
 
-    def tool(self):
+    def tool(self, **kwargs):
         def decorator(fn):
-            self._tool_manager.add_tool(fn)
+            self._tool_manager.add_tool(fn, description=kwargs.get("description"))
             return fn
 
         return decorator
+
+    def run(self, **kwargs):
+        self.run_calls.append(kwargs)
 
 
 @pytest.fixture
@@ -1237,3 +1276,147 @@ class TestEventBridgePollE2E:
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL
         assert POLL_INTERVAL == 0.2
+
+
+
+# ---------------------------------------------------------------------------
+# Restricted bridge-http MCP surface / no-start adapter tests
+# ---------------------------------------------------------------------------
+
+class TestRestrictedBridgeHttpAdapter:
+    def test_bridge_only_mode_exposes_exactly_task_tools(self, monkeypatch):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+        server = mcp_serve.create_bridge_only_mcp_server()
+        tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+
+        assert tool_names == BRIDGE_TASK_TOOLS
+        assert PRE_EXISTING_MESSAGING_APPROVAL_TOOLS.isdisjoint(tool_names)
+        assert FORBIDDEN_RESTRICTED_TOOL_NAMES.isdisjoint(tool_names)
+
+    def test_bridge_http_factory_uses_bridge_only_factory_not_full_factory(self, monkeypatch):
+        import mcp_serve
+
+        calls = []
+
+        def fake_bridge_factory(**kwargs):
+            calls.append(kwargs)
+            server = _FakeFastMCP()
+            for name in BRIDGE_TASK_TOOLS:
+                server._tool_manager._tools[name] = _FakeTool(lambda: None)
+                server._tool_manager._tools[name].name = name
+            return server
+
+        def fail_full_factory(*args, **kwargs):
+            raise AssertionError("restricted HTTP path must not call create_mcp_server")
+
+        monkeypatch.setattr(mcp_serve, "create_bridge_only_mcp_server", fake_bridge_factory)
+        monkeypatch.setattr(mcp_serve, "create_mcp_server", fail_full_factory)
+
+        server = mcp_serve.create_bridge_only_http_mcp_server(
+            host="127.0.0.1",
+            port=8123,
+            path="/mcp",
+        )
+
+        assert server is not None
+        assert calls == [{"host": "127.0.0.1", "port": 8123, "path": "/mcp"}]
+
+    def test_bridge_http_inventory_is_exact_restricted_tool_set(self, monkeypatch):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+        server = mcp_serve.create_bridge_only_http_mcp_server(path="/mcp")
+        tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+
+        assert tool_names == BRIDGE_TASK_TOOLS
+        assert PRE_EXISTING_MESSAGING_APPROVAL_TOOLS.isdisjoint(tool_names)
+        assert FORBIDDEN_RESTRICTED_TOOL_NAMES.isdisjoint(tool_names)
+        assert server.init_kwargs["streamable_http_path"] == "/mcp"
+
+    def test_run_bridge_http_uses_restricted_factory_and_streamable_http(self, monkeypatch):
+        import mcp_serve
+
+        server = _FakeFastMCP()
+        for name in BRIDGE_TASK_TOOLS:
+            server._tool_manager._tools[name] = _FakeTool(lambda: None)
+            server._tool_manager._tools[name].name = name
+        calls = []
+
+        def fake_bridge_http_factory(**kwargs):
+            calls.append(kwargs)
+            return server
+
+        def fail_stdio_runner(*args, **kwargs):
+            raise AssertionError("bridge-http must not call run_mcp_server")
+
+        def fail_full_factory(*args, **kwargs):
+            raise AssertionError("bridge-http must not call create_mcp_server")
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "create_bridge_only_http_mcp_server", fake_bridge_http_factory)
+        monkeypatch.setattr(mcp_serve, "run_mcp_server", fail_stdio_runner)
+        monkeypatch.setattr(mcp_serve, "create_mcp_server", fail_full_factory)
+
+        mcp_serve.run_bridge_http_mcp_server(
+            host="127.0.0.1",
+            port=8123,
+            path="/mcp",
+        )
+
+        assert calls == [{"host": "127.0.0.1", "port": 8123, "path": "/mcp"}]
+        assert server.run_calls == [{"transport": "streamable-http"}]
+
+    def test_bridge_http_inventory_guard_fails_closed_on_extra_tool(self, monkeypatch):
+        import mcp_serve
+
+        server = _FakeFastMCP()
+        for name in BRIDGE_TASK_TOOLS | {"messages_send"}:
+            server._tool_manager._tools[name] = _FakeTool(lambda: None)
+            server._tool_manager._tools[name].name = name
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(
+            mcp_serve,
+            "create_bridge_only_http_mcp_server",
+            lambda **kwargs: server,
+        )
+
+        with pytest.raises(RuntimeError, match="inventory mismatch"):
+            mcp_serve.run_bridge_http_mcp_server()
+
+        assert server.run_calls == []
+
+    def test_bridge_http_unknown_transport_values_fail_closed(self):
+        import mcp_serve
+
+        for transport in ["stdio", "sse", "http", "", None]:
+            with pytest.raises(ValueError, match="transport"):
+                mcp_serve._normalize_bridge_http_transport(transport)
+
+    def test_bridge_http_submit_task_wrapper_exposes_remote_envelope_parameters(self, monkeypatch):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+        server = mcp_serve.create_bridge_only_http_mcp_server(path="/mcp")
+        submit_fn = server._tool_manager._tools["submit_task"].fn
+        params = inspect.signature(submit_fn).parameters
+
+        assert {"payload", "args", "arguments"}.issubset(params)
+        for name in [
+            "title",
+            "project",
+            "mode",
+            "task_contract",
+            "allowed_actions",
+            "forbidden_actions",
+            "return_format",
+        ]:
+            assert params[name].default is None

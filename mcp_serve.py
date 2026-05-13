@@ -38,9 +38,26 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
+
+MCP_TRANSPORT_STREAMABLE_HTTP = "streamable-http"
+MCP_BRIDGE_HTTP_DEFAULT_HOST = "127.0.0.1"
+MCP_BRIDGE_HTTP_DEFAULT_PORT = 8000
+MCP_BRIDGE_HTTP_DEFAULT_PATH = "/mcp"
+
+BRIDGE_ONLY_MCP_TOOLS = frozenset({
+    "submit_task",
+    "get_task_status",
+    "get_task_result",
+    "list_recent_tasks",
+})
+
+_MCP_HTTP_TRANSPORT_ALIASES = {
+    MCP_TRANSPORT_STREAMABLE_HTTP: MCP_TRANSPORT_STREAMABLE_HTTP,
+    "streamable_http": MCP_TRANSPORT_STREAMABLE_HTTP,
+}
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
@@ -446,6 +463,177 @@ class EventBridge:
 # ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
+
+def _register_mcp_bridge_tools(mcp: "FastMCP") -> None:
+    """Register the local task-level MCP bridge tools."""
+    from gateway.mcp_bridge import MCPBridgeError
+    from gateway.mcp_bridge_tools import (
+        TOOL_HANDLERS,
+        TOOL_SCHEMAS,
+        normalize_submit_task_arguments,
+    )
+
+    descriptions = {schema["name"]: schema["description"] for schema in TOOL_SCHEMAS}
+
+    @mcp.tool(description=descriptions["submit_task"])
+    def submit_task(
+        title: Optional[str] = None,
+        project: Optional[str] = None,
+        mode: Optional[str] = None,
+        task_contract: Optional[Any] = None,
+        allowed_actions: Optional[list[str]] = None,
+        forbidden_actions: Optional[list[str]] = None,
+        return_format: Optional[Any] = None,
+        repo_scope: Optional[Any] = None,
+        worktree_scope: Optional[Any] = None,
+        approvals: Optional[Any] = None,
+        expected_branch: Optional[str] = None,
+        expected_head: Optional[str] = None,
+        stop_conditions: Optional[Any] = None,
+        worker_selection_guidance: Optional[Any] = None,
+        training_notes: Optional[Any] = None,
+        payload: Optional[dict[str, Any]] = None,
+        args: Optional[dict[str, Any]] = None,
+        arguments: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Validate and record a local Hermes task contract for future orchestration."""
+        raw_arguments = {
+            "title": title,
+            "project": project,
+            "mode": mode,
+            "repo_scope": repo_scope,
+            "worktree_scope": worktree_scope,
+            "task_contract": task_contract,
+            "allowed_actions": allowed_actions,
+            "forbidden_actions": forbidden_actions,
+            "return_format": return_format,
+            "approvals": approvals,
+            "expected_branch": expected_branch,
+            "expected_head": expected_head,
+            "stop_conditions": stop_conditions,
+            "worker_selection_guidance": worker_selection_guidance,
+            "training_notes": training_notes,
+            "payload": payload,
+            "args": args,
+            "arguments": arguments,
+        }
+        compact_arguments = {
+            key: value for key, value in raw_arguments.items() if value is not None
+        }
+        try:
+            normalized_payload = normalize_submit_task_arguments(compact_arguments)
+            response = TOOL_HANDLERS["submit_task"](normalized_payload)
+        except MCPBridgeError as exc:
+            response = {"ok": False, "error": str(exc)}
+        return json.dumps(response, indent=2)
+
+    @mcp.tool(description=descriptions["get_task_status"])
+    def get_task_status(task_id: str) -> str:
+        """Return the stored status for a local bridge task."""
+        return json.dumps(TOOL_HANDLERS["get_task_status"]({"task_id": task_id}), indent=2)
+
+    @mcp.tool(description=descriptions["get_task_result"])
+    def get_task_result(task_id: str) -> str:
+        """Return the stored result/refusal/accepted record for a local bridge task."""
+        return json.dumps(TOOL_HANDLERS["get_task_result"]({"task_id": task_id}), indent=2)
+
+    @mcp.tool(description=descriptions["list_recent_tasks"])
+    def list_recent_tasks(limit: int = 20) -> str:
+        """List recently recorded local bridge tasks. No task execution is performed."""
+        return json.dumps(TOOL_HANDLERS["list_recent_tasks"]({"limit": limit}), indent=2)
+
+
+def create_bridge_only_mcp_server(
+    *,
+    host: str = MCP_BRIDGE_HTTP_DEFAULT_HOST,
+    port: int = MCP_BRIDGE_HTTP_DEFAULT_PORT,
+    path: str = MCP_BRIDGE_HTTP_DEFAULT_PATH,
+) -> "FastMCP":
+    """Create a restricted MCP server with only task-contract bridge tools.
+
+    This mode intentionally excludes messaging, approval, shell, filesystem,
+    secret, deployment, Docker, Codex, OpenAI, Shopify, and PROD surfaces.
+    """
+    if not _MCP_SERVER_AVAILABLE:
+        raise ImportError(
+            "MCP server requires the 'mcp' package. "
+            f"Install with: {sys.executable} -m pip install 'mcp'"
+        )
+
+    path = _normalize_mcp_path(path)
+    mcp = FastMCP(
+        "hermes-bridge",
+        instructions=(
+            "Restricted Hermes task-contract MCP bridge. Records local task "
+            "contracts and status only; it does not execute tasks, send "
+            "messages, manage approvals, expose shell/files/secrets, or call "
+            "Codex/OpenAI/Docker/Shopify/PROD systems."
+        ),
+        host=host,
+        port=port,
+        streamable_http_path=path,
+    )
+    _register_mcp_bridge_tools(mcp)
+    return mcp
+
+
+def create_bridge_only_http_mcp_server(
+    *,
+    host: str = MCP_BRIDGE_HTTP_DEFAULT_HOST,
+    port: int = MCP_BRIDGE_HTTP_DEFAULT_PORT,
+    path: str = MCP_BRIDGE_HTTP_DEFAULT_PATH,
+) -> "FastMCP":
+    """Create the restricted Streamable HTTP MCP server without starting it."""
+    return create_bridge_only_mcp_server(host=host, port=port, path=path)
+
+
+def _normalize_bridge_http_transport(transport: str) -> str:
+    """Normalize the restricted HTTP transport selector.
+
+    Unknown transports fail closed so the bridge-only HTTP command cannot drift
+    into SSE, stdio, or any future transport with different exposure semantics.
+    """
+    if not isinstance(transport, str):
+        raise ValueError("MCP bridge HTTP transport must be a string")
+
+    normalized = transport.strip().lower()
+    if normalized not in _MCP_HTTP_TRANSPORT_ALIASES:
+        known = ", ".join(sorted(_MCP_HTTP_TRANSPORT_ALIASES))
+        raise ValueError(
+            f"Unknown MCP bridge HTTP transport: {transport!r}. "
+            f"Expected one of: {known}"
+        )
+    return _MCP_HTTP_TRANSPORT_ALIASES[normalized]
+
+
+def _normalize_mcp_path(path: str) -> str:
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("MCP bridge HTTP path must be a non-empty string")
+    normalized = path.strip()
+    if not normalized.startswith("/"):
+        raise ValueError("MCP bridge HTTP path must start with '/'")
+    return normalized
+
+
+def _mcp_tool_names(mcp: "FastMCP") -> set[str]:
+    """Return registered FastMCP tool names for pre-serve inventory checks."""
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    if tool_manager is None or not hasattr(tool_manager, "list_tools"):
+        raise RuntimeError("Cannot inspect MCP tool inventory before serving")
+    return {tool.name for tool in tool_manager.list_tools()}
+
+
+def assert_bridge_only_tool_inventory(mcp: "FastMCP") -> None:
+    """Fail closed unless the restricted MCP server exposes exactly task tools."""
+    actual = _mcp_tool_names(mcp)
+    if actual != BRIDGE_ONLY_MCP_TOOLS:
+        missing = sorted(BRIDGE_ONLY_MCP_TOOLS - actual)
+        unexpected = sorted(actual - BRIDGE_ONLY_MCP_TOOLS)
+        raise RuntimeError(
+            "Restricted MCP bridge inventory mismatch before serving "
+            f"(missing={missing}, unexpected={unexpected})"
+        )
+
 
 def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     """Create and return the Hermes MCP server with all tools registered."""
@@ -895,3 +1083,37 @@ def run_mcp_server(verbose: bool = False) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         bridge.stop()
+
+
+def run_bridge_http_mcp_server(
+    *,
+    verbose: bool = False,
+    host: str = MCP_BRIDGE_HTTP_DEFAULT_HOST,
+    port: int = MCP_BRIDGE_HTTP_DEFAULT_PORT,
+    path: str = MCP_BRIDGE_HTTP_DEFAULT_PATH,
+    transport: str = MCP_TRANSPORT_STREAMABLE_HTTP,
+) -> None:
+    """Start the restricted bridge-only MCP server over Streamable HTTP."""
+    if not _MCP_SERVER_AVAILABLE:
+        print(
+            "Error: MCP server requires the 'mcp' package.\n"
+            f"Install with: {sys.executable} -m pip install 'mcp'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    normalized_transport = _normalize_bridge_http_transport(transport)
+    normalized_path = _normalize_mcp_path(path)
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+    else:
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    server = create_bridge_only_http_mcp_server(
+        host=host,
+        port=port,
+        path=normalized_path,
+    )
+    assert_bridge_only_tool_inventory(server)
+    server.run(transport=normalized_transport)

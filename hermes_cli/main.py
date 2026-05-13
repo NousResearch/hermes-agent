@@ -11108,10 +11108,13 @@ Examples:
         "mcp",
         help="Manage MCP servers and run Hermes as an MCP server",
         description=(
-            "Manage MCP server connections and run Hermes as an MCP server.\n\n"
+            "Manage MCP server connections and run Hermes MCP surfaces.\n\n"
             "MCP servers provide additional tools via the Model Context Protocol.\n"
-            "Use 'hermes mcp add' to connect to a new server, or\n"
-            "'hermes mcp serve' to expose Hermes conversations over MCP."
+            "Use 'hermes mcp add' to connect to a new server. Use\n"
+            "'hermes mcp bridge-http' for the restricted Streamable HTTP\n"
+            "task-contract surface at /mcp. 'hermes mcp serve' is the\n"
+            "full/shared surface and must not be used as the ChatGPT/default\n"
+            "external config unless full/shared exposure is explicitly approved."
         ),
     )
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
@@ -11127,6 +11130,37 @@ Examples:
         help="Enable verbose logging on stderr",
     )
     _add_accept_hooks_flag(mcp_serve_p)
+
+    mcp_bridge_http_p = mcp_sub.add_parser(
+        "bridge-http",
+        help="Run the restricted bridge-only MCP server over Streamable HTTP",
+        description=(
+            "Run Hermes as a restricted bridge-only MCP server over Streamable "
+            "HTTP. This exposes only the task-contract tools at /mcp."
+        ),
+    )
+    mcp_bridge_http_p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging on stderr",
+    )
+    mcp_bridge_http_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind for Streamable HTTP (default: 127.0.0.1)",
+    )
+    mcp_bridge_http_p.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind for Streamable HTTP (default: 8000)",
+    )
+    mcp_bridge_http_p.add_argument(
+        "--path",
+        default="/mcp",
+        help="Streamable HTTP endpoint path (default: /mcp)",
+    )
 
     mcp_add_p = mcp_sub.add_parser(
         "add", help="Add an MCP server (discovery-first install)"

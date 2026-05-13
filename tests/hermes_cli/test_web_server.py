@@ -296,6 +296,51 @@ class TestWebServerEndpoints:
         assert resp.status_code == 404
         assert "workflow node not found: missing" in resp.json()["detail"]
 
+    def test_workflow_events_endpoint_returns_limited_audit_feed(self):
+        from hermes_cli.workflow.store import add_event, connect, create_workflow
+
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_events", title="Events Workflow", board="core", status="running", now=1.0)
+            add_event(conn, workflow_id="wf_events", event_type="old", actor_type="workflow", now=2.0)
+            add_event(conn, workflow_id="wf_events", event_type="new", actor_type="workflow", now=3.0)
+
+        resp = self.client.get("/api/workflows/wf_events/events?limit=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert data["facts"]["workflowId"] == "wf_events"
+        assert [event["eventType"] for event in data["facts"]["events"]] == ["new"]
+
+    def test_workflow_artifacts_endpoint_filters_by_kind(self, tmp_path):
+        from hermes_cli.workflow.store import add_artifact, connect, create_workflow
+
+        spec_path = tmp_path / "spec.md"
+        log_path = tmp_path / "log.txt"
+        spec_path.write_text("spec", encoding="utf-8")
+        log_path.write_text("log", encoding="utf-8")
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_artifacts", title="Artifacts Workflow", board="core", status="running", now=1.0)
+            add_artifact(conn, workflow_id="wf_artifacts", kind="spec", path=spec_path, now=2.0)
+            add_artifact(conn, workflow_id="wf_artifacts", kind="log", path=log_path, now=3.0)
+
+        resp = self.client.get("/api/workflows/wf_artifacts/artifacts?kind=spec")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert data["facts"]["workflowId"] == "wf_artifacts"
+        assert [artifact["kind"] for artifact in data["facts"]["artifacts"]] == ["spec"]
+
+    def test_workflow_events_and_artifacts_endpoints_map_read_model_errors(self):
+        missing_events_resp = self.client.get("/api/workflows/missing/events")
+        invalid_limit_resp = self.client.get("/api/workflows/missing/artifacts?limit=0")
+
+        assert missing_events_resp.status_code == 404
+        assert "workflow not found: missing" in missing_events_resp.json()["detail"]
+        assert invalid_limit_resp.status_code == 400
+        assert "limit must be positive" in invalid_limit_resp.json()["detail"]
+
     def test_workflow_endpoints_require_session_token(self):
         from starlette.testclient import TestClient
 
@@ -306,6 +351,8 @@ class TestWebServerEndpoints:
         list_resp = unauthenticated_client.get("/api/workflows")
         dag_resp = unauthenticated_client.get("/api/workflows/wf_dag/dag")
         node_resp = unauthenticated_client.get("/api/workflows/wf_dag/nodes/build")
+        events_resp = unauthenticated_client.get("/api/workflows/wf_dag/events")
+        artifacts_resp = unauthenticated_client.get("/api/workflows/wf_dag/artifacts")
 
         assert list_resp.status_code == 401
         assert list_resp.json()["detail"] == "Unauthorized"
@@ -313,6 +360,10 @@ class TestWebServerEndpoints:
         assert dag_resp.json()["detail"] == "Unauthorized"
         assert node_resp.status_code == 401
         assert node_resp.json()["detail"] == "Unauthorized"
+        assert events_resp.status_code == 401
+        assert events_resp.json()["detail"] == "Unauthorized"
+        assert artifacts_resp.status_code == 401
+        assert artifacts_resp.json()["detail"] == "Unauthorized"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

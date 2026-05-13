@@ -49,7 +49,9 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from hermes_cli.workflow import (
+    get_workflow_artifacts as workflow_get_workflow_artifacts,
     get_workflow_dag as workflow_get_workflow_dag,
+    get_workflow_events as workflow_get_workflow_events,
     get_workflow_node as workflow_get_workflow_node,
     list_workflow_summaries as workflow_list_workflow_summaries,
 )
@@ -675,6 +677,30 @@ async def get_workflow_node_endpoint(workflow_id: str, node_id: str):
     except ValueError as exc:
         message = str(exc)
         if message.startswith(("workflow not found:", "workflow node not found:")):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.get("/api/workflows/{workflow_id}/events")
+async def get_workflow_events_endpoint(workflow_id: str, limit: int = 100):
+    try:
+        with workflow_connect() as conn:
+            return workflow_get_workflow_events(conn, workflow_id, limit=limit)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.get("/api/workflows/{workflow_id}/artifacts")
+async def get_workflow_artifacts_endpoint(workflow_id: str, kind: Optional[str] = None, limit: int = 100):
+    try:
+        with workflow_connect() as conn:
+            return workflow_get_workflow_artifacts(conn, workflow_id, kind=kind, limit=limit)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow not found:"):
             raise HTTPException(status_code=404, detail=message)
         raise HTTPException(status_code=400, detail=message)
 

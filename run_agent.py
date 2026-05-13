@@ -9376,6 +9376,19 @@ class AIAgent:
             or "bedrock-runtime." in base
         )
 
+    def _is_zai_direct(self) -> bool:
+        """Return True when using z.ai/Zhipu directly (not via OpenRouter).
+
+        Detects the zai provider or known z.ai/bigmodel endpoint URLs.
+        Used to inject the z.ai-native ``thinking`` parameter for preserved
+        thinking and to re-inject ``reasoning_content`` on assistant messages
+        for multi-turn reasoning continuity.
+        """
+        if (getattr(self, "provider", "") or "").lower() == "zai":
+            return True
+        base = (getattr(self, "base_url", "") or "").lower()
+        return "bigmodel.cn" in base or "api.z.ai" in base
+
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
@@ -9656,6 +9669,98 @@ class AIAgent:
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
         )
+
+        # Provider preferences (only, ignore, order, sort) are OpenRouter-
+        # specific.  Only send to OpenRouter-compatible endpoints.
+        # TODO: Nous Portal will add transparent proxy support — re-enable
+        # for _is_nous when their backend is updated.
+        if provider_preferences and _is_openrouter:
+            extra_body["provider"] = provider_preferences
+        _is_nous = "nousresearch" in self._base_url_lower
+
+        if self._supports_reasoning_extra_body():
+            if _is_github_models:
+                github_reasoning = self._github_models_reasoning_extra_body()
+                if github_reasoning is not None:
+                    extra_body["reasoning"] = github_reasoning
+            else:
+                if self.reasoning_config is not None:
+                    rc = dict(self.reasoning_config)
+                    # Nous Portal requires reasoning enabled — don't send
+                    # enabled=false to it (would cause 400).
+                    if _is_nous and rc.get("enabled") is False:
+                        pass  # omit reasoning entirely for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": "medium"
+                    }
+
+        # Nous Portal product attribution
+        if _is_nous:
+            extra_body["tags"] = ["product=hermes-agent"]
+
+        # Ollama num_ctx: override the 2048 default so the model actually
+        # uses the context window it was trained for.  Passed via the OpenAI
+        # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
+        # endpoint forwards to the runner as --ctx-size.
+        if self._ollama_num_ctx:
+            options = extra_body.get("options", {})
+            options["num_ctx"] = self._ollama_num_ctx
+            extra_body["options"] = options
+
+        # Ollama / custom provider: pass think=false when reasoning is disabled.
+        # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
+        # field, so we use its native `think` parameter instead.
+        # This prevents thinking-capable models (Qwen3, etc.) from generating
+        # <think> blocks and producing empty-response errors when the user has
+        # set reasoning_effort: none.
+        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+            _effort = (self.reasoning_config.get("effort") or "").strip().lower()
+            _enabled = self.reasoning_config.get("enabled", True)
+            if _effort == "none" or _enabled is False:
+                extra_body["think"] = False
+
+        if self._is_qwen_portal():
+            extra_body["vl_high_resolution_images"] = True
+
+        # z.ai/Zhipu GLM-5/4.7 preserved thinking mode.
+        # z.ai uses a top-level ``thinking`` parameter (not OpenRouter's
+        # ``reasoning`` in extra_body).  When ``type`` is ``enabled`` the
+        # model always produces ``reasoning_content`` in its response.
+        # ``compact_history: false`` ensures reasoning survives across
+        # multi-turn agent loops.
+        if self._is_zai_direct():
+            _model_lower = (self.model or "").lower()
+            # GLM-5.x, GLM-5-turbo, GLM-4.7 support compulsory thinking.
+            # Older models (4.6, 4.5) auto-determine whether to think.
+            if any(p in _model_lower for p in ("glm-5", "glm-4.7")):
+                if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                    if self.reasoning_config.get("enabled") is False:
+                        extra_body["thinking"] = {"type": "disabled"}
+                    else:
+                        extra_body["thinking"] = {
+                            "type": "enabled",
+                            "compact_history": False,
+                        }
+                else:
+                    # Default: enable preserved thinking for reasoning-capable GLM.
+                    extra_body["thinking"] = {
+                        "type": "enabled",
+                        "compact_history": False,
+                    }
+
+        if extra_body:
+            api_kwargs["extra_body"] = extra_body
+
+        # Priority Processing / generic request overrides (e.g. service_tier).
+        # Applied last so overrides win over any defaults set above.
+        if self.request_overrides:
+            api_kwargs.update(self.request_overrides)
+
+        return api_kwargs
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
@@ -11482,6 +11587,12 @@ class AIAgent:
                 self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
+                # z.ai/GLM: re-inject reasoning as reasoning_content for
+                # preserved thinking.  The ``thinking`` parameter with
+                # compact_history=false requires the previous turn's
+                # reasoning_content to be present on assistant messages.
+                if self._is_zai_direct() and msg.get("role") == "assistant" and msg.get("reasoning"):
+                    api_msg["reasoning_content"] = msg["reasoning"]
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)

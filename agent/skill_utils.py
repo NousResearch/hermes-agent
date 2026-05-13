@@ -75,7 +75,12 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
-    except Exception:
+    except Exception as e:
+        logger.debug(
+            "Skill frontmatter YAML parse failed, using line fallback: %s",
+            e,
+            exc_info=True,
+        )
         # Fallback: simple key:value parsing for malformed YAML
         for line in yaml_content.strip().split("\n"):
             if ":" not in line:
@@ -136,7 +141,12 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
+        logger.debug(
+            "Could not read skill config %s: %s",
+            config_path,
+            e,
+            exc_info=True,
+        )
         return set()
     if not isinstance(parsed, dict):
         return set()
@@ -216,7 +226,13 @@ def get_external_skills_dirs() -> List[Path]:
 
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug(
+            "Could not read config for external skills dirs %s: %s",
+            config_path,
+            e,
+            exc_info=True,
+        )
         return []
     if not isinstance(parsed, dict):
         return []
@@ -383,7 +399,13 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             try:
                 raw = skill_file.read_text(encoding="utf-8")
                 frontmatter, _ = parse_frontmatter(raw)
-            except Exception:
+            except Exception as e:
+                logger.debug(
+                    "Skipping skill file due to read/parse error %s: %s",
+                    skill_file,
+                    e,
+                    exc_info=True,
+                )
                 continue
 
             skill_name = frontmatter.get("name") or skill_file.parent.name
@@ -437,8 +459,13 @@ def resolve_skill_config_values(
             parsed = yaml_load(config_path.read_text(encoding="utf-8"))
             if isinstance(parsed, dict):
                 config = parsed
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Could not read config for skill config var resolution %s: %s",
+                config_path,
+                e,
+                exc_info=True,
+            )
 
     resolved: Dict[str, Any] = {}
     for var in config_vars:

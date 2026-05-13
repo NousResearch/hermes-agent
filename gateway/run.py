@@ -7599,6 +7599,23 @@ class GatewayRunner:
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+
+            # When the requested model is a router (e.g. openrouter/auto), the
+            # actual model that handled the request is returned in the API
+            # response and surfaced as agent_result["routed_model"].  Append a
+            # short marker so the user can see which model was chosen.
+            try:
+                _requested_model = agent_result.get("model") or ""
+                _routed_model = agent_result.get("routed_model") or ""
+                if (
+                    response
+                    and _routed_model
+                    and _routed_model != _requested_model
+                ):
+                    response = f"{response}\n\n[Model: {_routed_model}]"
+            except Exception:
+                pass
+
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)

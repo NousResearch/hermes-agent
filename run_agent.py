@@ -14422,6 +14422,16 @@ class AIAgent:
                 except Exception:
                     pass
 
+                # Track the last model returned by the API. This can differ from
+                # self.model when using routers like openrouter/auto, which pick
+                # the underlying model per-request and return the actual name in
+                # the response. Consumers (e.g. the gateway) can surface this to
+                # the user so they know which model was chosen.
+                try:
+                    self._last_routed_model = getattr(response, "model", None)
+                except Exception:
+                    pass
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
@@ -15448,6 +15458,7 @@ class AIAgent:
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
             "model": self.model,
+            "routed_model": getattr(self, "_last_routed_model", None),
             "provider": self.provider,
             "base_url": self.base_url,
             "input_tokens": self.session_input_tokens,

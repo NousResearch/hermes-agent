@@ -3810,8 +3810,6 @@ def resolve_provider_client(
             api_key = explicit_api_key.strip() or api_key
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
-            if provider == "copilot":
-                tried_sources.append("gh auth token")
             logger.debug("resolve_provider_client: provider %s has no API "
                          "key configured (tried: %s)",
                          provider, ", ".join(tried_sources))

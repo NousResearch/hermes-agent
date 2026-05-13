@@ -7,7 +7,7 @@ Hermes seeds its credential pool from many places:
     hermes_pkce   — ~/.hermes/.anthropic_oauth.json
     device_code   — auth.json providers.<provider> (nous, openai-codex, ...)
     qwen-cli      — ~/.qwen/oauth_creds.json
-    gh_cli        — gh auth token
+    gh_cli        — legacy gh auth token source
     config:<name> — custom_providers config entry
     model_config  — model.api_key when model.provider == "custom"
     manual        — user ran `hermes auth add`
@@ -21,7 +21,7 @@ unify here is **removal**:
 Before this module, every source had an ad-hoc removal branch in
 ``auth_remove_command``, and several sources had no branch at all — so
 ``auth remove`` silently reverted on the next ``load_pool()`` call for
-qwen-cli, nous device_code (partial), hermes_pkce, copilot gh_cli, and
+qwen-cli, nous device_code (partial), hermes_pkce, legacy copilot gh_cli, and
 custom-config sources.
 
 Now every source registers a ``RemovalStep`` that does exactly three things
@@ -338,7 +338,7 @@ def _remove_qwen_cli(provider: str, removed) -> RemovalResult:
 
 
 def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
-    """Copilot token comes from `gh auth token` or COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN.
+    """Copilot token comes from COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN.
 
     Copilot is special: the same token can be seeded as multiple source
     entries (gh_cli from ``_seed_from_singletons`` plus env:<VAR> from
@@ -393,7 +393,7 @@ def _register_all_sources() -> None:
         provider="copilot", source_id="gh_cli",
         match_fn=lambda src: src == "gh_cli" or src.startswith("env:"),
         remove_fn=_remove_copilot_gh,
-        description="gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
+        description="legacy gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
     ))
     register(RemovalStep(
         provider="*", source_id="env:",

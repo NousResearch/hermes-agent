@@ -2227,14 +2227,14 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
     assert pool.entries() == []
 
 
-def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
-    """Copilot credentials from `gh auth token` should be seeded into the pool."""
+def test_load_pool_seeds_copilot_via_explicit_env_token(tmp_path, monkeypatch):
+    """Explicit Copilot env credentials should be seeded into the pool."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_fake_token_abc123", "gh auth token"),
+        lambda: ("gho_fake_token_abc123", "COPILOT_GITHUB_TOKEN"),
     )
 
     from agent.credential_pool import load_pool
@@ -2243,9 +2243,25 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert pool.has_credentials()
     entries = pool.entries()
     assert len(entries) == 1
-    assert entries[0].source == "gh_cli"
+    assert entries[0].source == "env:COPILOT_GITHUB_TOKEN"
     assert entries[0].access_token == "gho_fake_token_abc123"
     assert entries[0].base_url == "https://api.githubcopilot.com"
+
+
+def test_load_pool_keeps_explicit_gh_token_as_env_source(tmp_path, monkeypatch):
+    """GH_TOKEN is explicit env config, not the old gh CLI fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "GH_TOKEN"),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.entries()[0].source == "env:GH_TOKEN"
 
 
 def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):

@@ -1484,7 +1484,7 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
+    """GitHub Copilot flow using env vars or OAuth device code."""
     from hermes_cli.main import _current_reasoning_effort, _prompt_reasoning_effort_selection, _set_reasoning_effort
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
@@ -1583,8 +1583,6 @@ def _model_flow_copilot(config, current_model=""):
             from hermes_cli.env_loader import format_secret_source_suffix
             bw_suffix = format_secret_source_suffix(source)
             print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
-        elif source == "gh auth token":
-            print("  GitHub token: ✓ (from `gh auth token`)")
         else:
             print("  GitHub token: ✓")
         print()

@@ -1775,15 +1775,15 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "copilot":
-        # Copilot tokens are resolved dynamically via `gh auth token` or
-        # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
+        # Copilot tokens are resolved dynamically via explicit env vars
+        # (COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
                 api_token = get_copilot_api_token(token)
-                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                source_name = "gh_cli" if source == "gh auth token" else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
                     pconfig = PROVIDER_REGISTRY.get(provider)

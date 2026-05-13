@@ -1,0 +1,4 @@
+name: operational_lcm
+version: "0.1.0"
+description: "Local-only operational context engine for Kanban, handoffs, decisions, artifacts, and session summaries."
+author: Nous Research contributors

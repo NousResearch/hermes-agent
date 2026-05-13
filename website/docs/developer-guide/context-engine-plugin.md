@@ -167,25 +167,44 @@ context:
 
 The `compression` config block (`compression.threshold`, `compression.protect_last_n`, etc.) is specific to the built-in `ContextCompressor`. Your engine should define its own config format if needed, reading from `config.yaml` during initialization.
 
+## Bundled example: Operational LCM
+
+Hermes ships a local-only operational LCM example at `plugins/context_engine/operational_lcm/`. It demonstrates a production-style alternative to lossy summarization for long-running operational work:
+
+- keeps a plugin-owned SQLite side store under `~/.hermes/data/operational-lcm/context.db`;
+- ingests local Kanban task metadata, task runs, comments, events, sanitized session summaries, handoffs, daily notes, progress notes, wiki pages, live message snippets, artifact paths, and hashes;
+- exposes retrieval tools named `operational_context_*`;
+- avoids network calls and does not auto-activate;
+- skips secret-shaped content and known credential/runtime paths.
+
+Activate it explicitly:
+
+```yaml
+context:
+  engine: "operational_lcm"
+```
+
+Use this engine as a reference when building business/project-specific structured-context engines. Keep private business data, credentials, raw transcripts, and user-specific policy out of bundled plugins and tests.
+
 ## Testing
 
 ```python
 from agent.context_engine import ContextEngine
 
 def test_engine_satisfies_abc():
-    engine = YourEngine(context_length=200000)
+    engine = YourEngine(context_length=200_000)
     assert isinstance(engine, ContextEngine)
     assert engine.name == "your-name"
 
 def test_compress_returns_valid_messages():
-    engine = YourEngine(context_length=200000)
+    engine = YourEngine(context_length=200_000)
     msgs = [{"role": "user", "content": "hello"}]
     result = engine.compress(msgs)
     assert isinstance(result, list)
     assert all("role" in m for m in result)
 ```
 
-See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
+See `tests/agent/test_context_engine.py` for the full ABC contract test suite, and `tests/agent/test_operational_lcm_context_engine.py` for the bundled operational LCM example.
 
 ## See also
 

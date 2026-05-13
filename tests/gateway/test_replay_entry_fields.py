@@ -1,4 +1,5 @@
-"""Tests for ``gateway.run._build_replay_entry``.
+"""
+Tests for ``gateway.run._build_replay_entry``.
 
 The gateway rebuilds ``agent_history`` from the persisted transcript on every
 turn (unlike the CLI, which keeps the live in-memory message list).  When a
@@ -18,7 +19,11 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.run import _ASSISTANT_REPLAY_FIELDS, _build_replay_entry
+from gateway.run import (
+    _ASSISTANT_REPLAY_FIELDS,
+    _build_replay_entry,
+    _is_reasoning_content_replay_bloat_model,
+)
 
 
 class TestBuildReplayEntry:
@@ -252,3 +257,124 @@ class TestBuildReplayEntry:
         assert "timestamp" not in entry
         assert "internal_marker" not in entry
         assert "tool_call_id" not in entry
+
+
+class TestReasoningBloatModel:
+    """Tests for the MiniMax-specific reasoning content bloat mitigation."""
+
+    def test_bloat_model_minimax_provider(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "minimax-cn", "MiniMax-M2.7-highspeed", "https://api.minimaxi.com/v1",
+        ) is True
+
+    def test_bloat_model_minimax_global(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "minimax", "MiniMax-M2.7", "https://api.minimax.io/v1",
+        ) is True
+
+    def test_bloat_model_minimax_oauth(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "minimax-oauth", "MiniMax-M2.7", "https://api.minimax.io/v1",
+        ) is True
+
+    def test_bloat_model_host_detection_minimaxio(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "custom", "MiniMax-M2.7", "https://api.minimax.io/anthropic",
+        ) is True
+
+    def test_bloat_model_host_detection_minimaxicom(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "custom", "miniMax-M2.7-highspeed", "https://api.minimaxi.com/v1",
+        ) is True
+
+    def test_bloat_model_deepseek_not_bloat(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "deepseek", "deepseek-r1", "https://api.deepseek.com/v1",
+        ) is False
+
+    def test_bloat_model_kimi_not_bloat(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "kimi-coding-cn", "kimi-thinking", "https://api.moonshot.ai/v1",
+        ) is False
+
+    def test_bloat_model_anthropic_not_bloat(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "anthropic", "claude-sonnet-4", "https://api.anthropic.com/v1",
+        ) is False
+
+    def test_bloat_model_empty_not_bloat(self):
+        assert _is_reasoning_content_replay_bloat_model(
+            "", "", "",
+        ) is False
+
+
+class TestBuildReplayEntryWithBloatModel:
+    """Tests that ``reasoning_bloat_model=True`` correctly suppresses
+    reasoning fields while preserving Codex and finish_reason fields."""
+
+    def test_reasoning_content_skipped_when_bloat(self):
+        msg = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "I think...",
+            "reasoning": "I think...",
+            "finish_reason": "stop",
+        }
+        entry = _build_replay_entry(
+            "assistant", "answer", msg,
+            reasoning_bloat_model=True,
+        )
+        assert "reasoning_content" not in entry
+        assert "reasoning" not in entry
+        assert entry["finish_reason"] == "stop"
+
+    def test_reasoning_details_skipped_when_bloat(self):
+        details = [{"type": "reasoning.summary", "summary": "thought hard"}]
+        msg = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning": "thinking",
+            "reasoning_content": "structured",
+            "reasoning_details": details,
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "b"}],
+            "codex_message_items": [
+                {"type": "message", "role": "assistant", "phase": "final_answer",
+                 "content": [{"type": "output_text", "text": "Done"}]}
+            ],
+            "finish_reason": "stop",
+        }
+        entry = _build_replay_entry(
+            "assistant", "Done", msg,
+            reasoning_bloat_model=True,
+        )
+        # Reasoning fields dropped
+        assert "reasoning" not in entry
+        assert "reasoning_content" not in entry
+        assert "reasoning_details" not in entry
+        # Non-reasoning fields still preserved
+        assert "codex_reasoning_items" in entry
+        assert "codex_message_items" in entry
+        assert entry["finish_reason"] == "stop"
+
+    def test_bloat_false_preserves_reasoning(self):
+        """When reasoning_bloat_model=False (default), all fields preserved."""
+        msg = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "I think...",
+        }
+        entry = _build_replay_entry("assistant", "answer", msg)
+        assert entry["reasoning_content"] == "I think..."
+
+    def test_bloat_still_drops_none_reasoning_content(self):
+        """None reasoning_content still dropped even when bloat=True."""
+        msg = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": None,
+        }
+        entry = _build_replay_entry(
+            "assistant", "answer", msg,
+            reasoning_bloat_model=True,
+        )
+        assert "reasoning_content" not in entry

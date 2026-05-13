@@ -4323,6 +4323,27 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_aiagent_ignores_namespace_acp_args_alias():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            args=SimpleNamespace(acp_args=["--acp", "--stdio"]),
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.acp_args == []
+    assert mock_acp_client.call_args.kwargs["args"] == []
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):

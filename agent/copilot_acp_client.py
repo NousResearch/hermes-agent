@@ -46,6 +46,20 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _normalize_acp_args(value: Any) -> list[str]:
+    """Return ACP subprocess args as a list without iterating arbitrary objects."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return shlex.split(value)
+    if isinstance(value, dict):
+        return []
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return []
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
 
@@ -329,7 +343,12 @@ class CopilotACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        explicit_args = acp_args if acp_args is not None else args
+        self._acp_args = (
+            _normalize_acp_args(explicit_args)
+            if explicit_args is not None
+            else _resolve_args()
+        )
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False

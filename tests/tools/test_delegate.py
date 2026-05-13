@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -1230,6 +1231,35 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs.get("override_api_mode"), "chat_completions")
             self.assertEqual(kwargs.get("override_acp_command"), "custom-copilot")
             self.assertEqual(kwargs.get("override_acp_args"), ["--stdio-custom"])
+
+    def test_build_child_agent_drops_non_iterable_acp_args(self):
+        """ACP delegation should not crash when parent ACP args are a Namespace."""
+        parent = _make_mock_parent(depth=0)
+        parent.acp_args = SimpleNamespace(acp_args=["--acp", "--stdio"])
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            MockAgent.return_value = child
+
+            _build_child_agent(
+                task_index=0,
+                goal="ACP delegation test",
+                context=None,
+                toolsets=None,
+                model="copilot-model",
+                max_iterations=45,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="copilot-acp",
+                override_base_url="acp://copilot",
+                override_api_key="copilot-acp",
+                override_api_mode="chat_completions",
+                override_acp_command="custom-copilot",
+                override_acp_args=None,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs.get("acp_args"), [])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

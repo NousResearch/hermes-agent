@@ -22,6 +22,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import shlex
 import threading
 import time
 from concurrent.futures import (
@@ -319,6 +320,20 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+def _normalize_acp_args(value: Any) -> List[str]:
+    """Return ACP subprocess args as a list without iterating arbitrary objects."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return shlex.split(value)
+    if isinstance(value, dict):
+        return []
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return []
 
 
 def _get_max_concurrent_children() -> int:
@@ -1021,7 +1036,7 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
-    effective_acp_args = list(
+    effective_acp_args = _normalize_acp_args(
         override_acp_args
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])

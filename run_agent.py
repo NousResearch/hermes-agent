@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import shlex
 import ssl
 import sys
 import tempfile
@@ -99,6 +100,21 @@ class _OpenAIProxy:
 
 
 OpenAI = _OpenAIProxy()
+
+
+def _normalize_acp_args(value: Any) -> list[str]:
+    """Return ACP subprocess args as a list without iterating arbitrary objects."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return shlex.split(value)
+    if isinstance(value, dict):
+        return []
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return []
+
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -1270,7 +1286,9 @@ class AIAgent:
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
-        self.acp_args = list(acp_args or args or [])
+        self.acp_args = _normalize_acp_args(
+            acp_args if acp_args is not None else args
+        )
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":

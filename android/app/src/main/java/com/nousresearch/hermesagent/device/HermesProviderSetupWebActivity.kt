@@ -265,7 +265,12 @@ class HermesProviderSetupWebActivity : Activity() {
 
     private fun releaseWebView() {
         webView?.let { existing ->
+            runCatching { existing.webChromeClient = null }
+            runCatching { existing.webViewClient = WebViewClient() }
             runCatching { existing.stopLoading() }
+            runCatching { existing.loadUrl("about:blank") }
+            runCatching { existing.clearHistory() }
+            runCatching { existing.removeAllViews() }
             (existing.parent as? ViewGroup)?.removeView(existing)
             runCatching { existing.destroy() }
         }

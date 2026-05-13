@@ -5,6 +5,7 @@ import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -18,6 +19,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
+import fi.iki.elonen.NanoHTTPD
 import org.hamcrest.Description
 import org.hamcrest.TypeSafeMatcher
 import org.junit.After
@@ -27,6 +29,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.FileInputStream
+import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
@@ -82,54 +85,53 @@ class ProviderSetupWebActivityInstrumentedTest {
     @Test
     fun providerSetupViewerStartsForApiKeyAndTokenProviders() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val localServer = if (isX86Emulator()) {
+            LightweightProviderSetupServer(freePort()).also { it.start(30_000, false) }
+        } else {
+            null
+        }
+        try {
+            providerSetupViewerProviderIds().forEach { providerId ->
+                val target = requireNotNull(ProviderPresets.setupTarget(providerId, 0)) {
+                    "Expected setup target for $providerId"
+                }
+                val setupUrl = localServer?.urlFor(providerId) ?: target.url
+                val intent = HermesProviderSetupWebActivity.createIntent(
+                    context = context,
+                    uri = Uri.parse(setupUrl),
+                    title = "Open $providerId setup",
+                )
 
-        listOf(
-            "openrouter",
-            "openai",
-            "chatgpt-web",
-            "anthropic",
-            "gemini",
-            "alibaba",
-            "alibaba-coding-plan",
-            "qwen-oauth",
-            "zai",
-            "zai-coding-plan",
-        ).forEach { providerId ->
-            val target = requireNotNull(ProviderPresets.setupTarget(providerId, 0)) {
-                "Expected setup target for $providerId"
-            }
-            val intent = HermesProviderSetupWebActivity.createIntent(
-                context = context,
-                uri = Uri.parse(target.url),
-                title = "Open $providerId setup",
-            )
+                ActivityScenario.launch<HermesProviderSetupWebActivity>(intent).use { scenario ->
+                    scenario.onActivity { activity ->
+                        val root = activity.window.decorView
+                        val webView = root.findFirstWebView()
+                        val toolbarLabels = root.findButtons().map { it.text.toString() }.toSet()
+                        if (webView != null) {
+                            val currentUrl = webView.url.orEmpty().ifBlank { webView.originalUrl.orEmpty() }
+                            assertTrue(
+                                "Expected $providerId setup WebView to start loading $setupUrl, got '$currentUrl'",
+                                currentUrl.startsWith("http://") || currentUrl.startsWith("https://"),
+                            )
 
-            ActivityScenario.launch<HermesProviderSetupWebActivity>(intent).use { scenario ->
-                scenario.onActivity { activity ->
-                    val root = activity.window.decorView
-                    val webView = root.findFirstWebView()
-                    val toolbarLabels = root.findButtons().map { it.text.toString() }.toSet()
-                    if (webView != null) {
-                        val currentUrl = webView.url.orEmpty().ifBlank { webView.originalUrl.orEmpty() }
-                        assertTrue(
-                            "Expected $providerId setup WebView to start loading ${target.url}, got '$currentUrl'",
-                            currentUrl.startsWith("http://") || currentUrl.startsWith("https://"),
-                        )
+                            assertTrue("Missing Back button for $providerId: $toolbarLabels", "Back" in toolbarLabels)
+                            assertTrue("Missing Browser button for $providerId: $toolbarLabels", "Browser" in toolbarLabels)
+                            assertTrue("Missing Copy button for $providerId: $toolbarLabels", "Copy" in toolbarLabels)
+                            assertTrue("Missing Close button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                        } else {
+                            assertTrue("Missing browser fallback button for $providerId: $toolbarLabels", "Open in browser" in toolbarLabels)
+                            assertTrue("Missing copy fallback button for $providerId: $toolbarLabels", "Copy URL" in toolbarLabels)
+                            assertTrue("Missing close fallback button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                        }
 
-                        assertTrue("Missing Back button for $providerId: $toolbarLabels", "Back" in toolbarLabels)
-                        assertTrue("Missing Browser button for $providerId: $toolbarLabels", "Browser" in toolbarLabels)
-                        assertTrue("Missing Copy button for $providerId: $toolbarLabels", "Copy" in toolbarLabels)
-                        assertTrue("Missing Close button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
-                    } else {
-                        assertTrue("Missing browser fallback button for $providerId: $toolbarLabels", "Open in browser" in toolbarLabels)
-                        assertTrue("Missing copy fallback button for $providerId: $toolbarLabels", "Copy URL" in toolbarLabels)
-                        assertTrue("Missing close fallback button for $providerId: $toolbarLabels", "Close" in toolbarLabels)
+                        webView?.stopLoading()
+                        webView?.loadUrl("about:blank")
+                        activity.finish()
                     }
-
-                    webView?.stopLoading()
-                    activity.finish()
                 }
             }
+        } finally {
+            localServer?.stop()
         }
     }
 
@@ -191,6 +193,39 @@ class ProviderSetupWebActivityInstrumentedTest {
         return descriptor.use { fd ->
             FileInputStream(fd.fileDescriptor).bufferedReader().use { it.readText() }
         }
+    }
+
+    private fun providerSetupViewerProviderIds(): List<String> {
+        return listOf(
+            "openrouter",
+            "openai",
+            "chatgpt-web",
+            "anthropic",
+            "gemini",
+            "alibaba",
+            "alibaba-coding-plan",
+            "qwen-oauth",
+            "zai",
+            "zai-coding-plan",
+        )
+    }
+
+    private fun isX86Emulator(): Boolean {
+        return Build.SUPPORTED_ABIS.any { it.contains("x86", ignoreCase = true) }
+    }
+
+    private fun freePort(): Int {
+        return ServerSocket(0).use { it.localPort }
+    }
+
+    private class LightweightProviderSetupServer(port: Int) : NanoHTTPD("127.0.0.1", port) {
+        override fun serve(session: IHTTPSession): Response {
+            val providerId = session.uri.substringAfterLast('/').ifBlank { "provider" }
+            val html = "<!doctype html><html><body><h1>Hermes setup $providerId</h1></body></html>"
+            return newFixedLengthResponse(Response.Status.OK, "text/html", html)
+        }
+
+        fun urlFor(providerId: String): String = "http://127.0.0.1:$listeningPort/setup/$providerId"
     }
 
 }

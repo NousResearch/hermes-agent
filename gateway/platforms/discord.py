@@ -1059,6 +1059,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
             return
+
+        self._log_watched_channels()
+
         try:
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
@@ -3576,6 +3579,35 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _log_watched_channels(self) -> None:
+        """Log resolved free-response and allowed channels at startup for debugging."""
+        if not self._client:
+            return
+        free_channels = self._discord_free_response_channels()
+        allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        allowed_channels = {ch.strip() for ch in allowed_raw.split(",") if ch.strip()} if allowed_raw else set()
+        for label, ch_ids in [("free-response", free_channels), ("allowed", allowed_channels)]:
+            if not ch_ids or "*" in ch_ids:
+                continue
+            for ch_id in sorted(ch_ids):
+                try:
+                    channel = self._client.get_channel(int(ch_id))
+                except (ValueError, TypeError):
+                    channel = None
+                if channel:
+                    logger.info(
+                        "[%s] %s channel: %s (type: %s, name: %s)",
+                        self.name, label, ch_id,
+                        type(channel).__name__,
+                        getattr(channel, "name", "?"),
+                    )
+                else:
+                    logger.warning(
+                        "[%s] %s channel %s not found — check the ID is correct "
+                        "and the bot has access",
+                        self.name, label, ch_id,
+                    )
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""

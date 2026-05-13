@@ -733,11 +733,12 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
         from gateway.platforms.matrix import check_matrix_requirements
+        available = check_matrix_requirements()
         try:
             import mautrix  # noqa: F401
-            assert check_matrix_requirements() is True
+            assert available is True
         except ImportError:
-            assert check_matrix_requirements() is False
+            assert available is False
 
     def test_check_requirements_without_creds(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)

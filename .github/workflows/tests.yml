@@ -39,9 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv sync --locked --python 3.11 --extra all --extra dev
 
       - name: Run tests
         run: |
@@ -71,9 +69,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv sync --locked --python 3.11 --extra all --extra dev
 
       - name: Run e2e tests
         run: |

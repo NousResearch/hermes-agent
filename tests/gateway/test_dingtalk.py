@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import importlib.util
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -8,6 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+
+
+_REQUIRES_DINGTALK_SDK = pytest.mark.skipif(
+    importlib.util.find_spec("dingtalk_stream") is None,
+    reason="dingtalk_stream optional dependency is not installed",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +633,7 @@ class TestShouldProcessMessage:
 # ---------------------------------------------------------------------------
 
 
+@_REQUIRES_DINGTALK_SDK
 class TestIncomingHandlerProcess:
     """Verify that _IncomingHandler.process correctly converts callback data
     and dispatches message processing as a background task (fire-and-forget)
@@ -793,6 +801,7 @@ class TestMessageContextIsolation:
 # ---------------------------------------------------------------------------
 
 
+@_REQUIRES_DINGTALK_SDK
 class TestCardLifecycle:
 
     @pytest.fixture
@@ -948,6 +957,7 @@ class TestCardLifecycle:
 # AI Card Tests
 # ---------------------------------------------------------------------------
 
+@_REQUIRES_DINGTALK_SDK
 class TestDingTalkAdapterAICards:
     @pytest.fixture
     def config(self):

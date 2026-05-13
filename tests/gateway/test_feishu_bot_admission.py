@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 from typing import Any
 
@@ -454,6 +455,9 @@ def test_admit_per_group_require_mention_overrides_global():
 
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
+
+    if importlib.util.find_spec("lark_oapi") is None:
+        pytest.skip("lark_oapi optional dependency is not installed")
 
     from gateway.platforms.feishu import FeishuAdapter
 

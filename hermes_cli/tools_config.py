@@ -1212,6 +1212,19 @@ def _get_platform_tools(
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
+    # Honcho toolset: auto-enable when configured, like plugins.
+    # Honcho isn't in CONFIGURABLE_TOOLSETS (it's auto-managed), so explicit
+    # platform_toolsets lists won't contain it. Enable it when a valid Honcho
+    # config exists, unless the user explicitly removed it after it was known.
+    if "honcho" not in enabled_toolsets:
+        try:
+            from honcho_integration.client import HonchoClientConfig
+            hcfg = HonchoClientConfig.from_global_config()
+            if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
+                enabled_toolsets.add("honcho")
+        except Exception:
+            pass
+
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     explicit_passthrough = {

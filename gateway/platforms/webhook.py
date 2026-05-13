@@ -388,10 +388,13 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
         # Check event type filter
+        # Note: also checks action_type for n0loc and similar tools that use
+        # action_type instead of event_type in their webhook payloads
         event_type = (
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("action_type", "")  # n0loc and similar tools
             or "unknown"
         )
         allowed_events = route_config.get("events", [])

@@ -69,8 +69,6 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
-| `GMI_API_KEY` | GMI Cloud API key — open and reasoning models ([inference.gmi.ai](https://inference.gmi.ai)) |
-| `GMI_BASE_URL` | Override GMI Cloud base URL (default: `https://api.gmi.ai/v1`) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |
 | `STEPFUN_BASE_URL` | Override StepFun base URL (default: `https://api.stepfun.com/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |
@@ -92,6 +90,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language passed to `HERMES_LOCAL_STT_COMMAND` or auto-detected local `whisper` CLI fallback (default: `en`) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
+| `HERMES_GIT_BASH_PATH` | **Windows only.** Override `bash.exe` discovery for the terminal tool. Points at any bash — full Git-for-Windows install, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically to the PortableGit it provisioned. See the [Windows (Native) Guide](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
+| `HERMES_DISABLE_WINDOWS_UTF8` | **Windows only.** Set to `1` to disable the UTF-8 stdio shim (`configure_windows_stdio()`) and fall back to the console's locale code page. Useful for bisecting encoding bugs; rarely the right setting in normal operation |
 | `HERMES_KANBAN_HOME` | Override the shared Hermes root that anchors the kanban board (db + workspaces + worker logs). Falls back to `get_default_hermes_root()` (the parent of any active profile). Useful for tests and unusual deployments |
 | `HERMES_KANBAN_BOARD` | Pin the active kanban board for this process. Takes precedence over `~/.hermes/kanban/current`; the dispatcher injects this into worker subprocess env so workers physically cannot see tasks on other boards. Defaults to `default`. Slug validation: lowercase alphanumerics + hyphens + underscores, 1-64 chars |
 | `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
@@ -129,6 +129,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl browser session TTL in seconds (default: 300) |
 | `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |
 | `CAMOFOX_URL` | Camofox local anti-detection browser URL (default: `http://localhost:9377`) |
+| `CAMOFOX_USER_ID` | Optional externally managed Camofox user ID for shared visible sessions |
+| `CAMOFOX_SESSION_KEY` | Optional Camofox session key used when creating tabs for `CAMOFOX_USER_ID` |
+| `CAMOFOX_ADOPT_EXISTING_TAB` | Set to `true` to reuse an existing Camofox tab before creating a new one |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
@@ -406,6 +409,65 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
 
+### Microsoft Graph (Teams Meetings)
+
+App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/docs/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.
+
+| Variable | Description |
+|----------|-------------|
+| `MSGRAPH_TENANT_ID` | Azure AD tenant ID (directory GUID) for the Graph app registration. |
+| `MSGRAPH_CLIENT_ID` | Application (client) ID of the Azure app registration. |
+| `MSGRAPH_CLIENT_SECRET` | Client secret value for the app registration. Store in `~/.hermes/.env` with `chmod 600`; rotate periodically via the Azure portal. |
+| `MSGRAPH_SCOPE` | OAuth2 scope for the client-credentials token request (default: `https://graph.microsoft.com/.default`). |
+| `MSGRAPH_AUTHORITY_URL` | Microsoft identity platform authority (default: `https://login.microsoftonline.com`). Override only for national/sovereign clouds (e.g. `https://login.microsoftonline.us` for GCC High). |
+
+### Microsoft Graph Webhook Listener
+
+Inbound change-notification listener for Graph events (Teams meetings, calendar, chat, etc.). See [Microsoft Graph Webhook Listener](/docs/user-guide/messaging/msgraph-webhook) for setup and security hardening.
+
+| Variable | Description |
+|----------|-------------|
+| `MSGRAPH_WEBHOOK_ENABLED` | Enable the `msgraph_webhook` gateway platform (`true`/`1`/`yes`). |
+| `MSGRAPH_WEBHOOK_PORT` | Port the listener binds to (default: `8646`). |
+| `MSGRAPH_WEBHOOK_CLIENT_STATE` | Shared secret Graph echoes in every notification; compared with `hmac.compare_digest`. Generate with `openssl rand -hex 32`. |
+| `MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES` | Comma-separated allowlist of Graph resource paths/patterns (e.g. `communications/onlineMeetings,chats/*/messages`). Trailing `*` is prefix-matching. Empty = accept all. |
+| `MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS` | Comma-separated CIDR ranges allowed to POST to the listener (e.g. `52.96.0.0/14,52.104.0.0/14`). Empty = allow all (default). Restrict to Microsoft Graph's published egress ranges in production. |
+
+### Teams Meeting Summary Delivery
+
+Only used when the [`teams_pipeline` plugin](/docs/user-guide/messaging/msgraph-webhook) is enabled. Settings are also configurable under `platforms.teams.extra` in `config.yaml` — env vars take priority when both are set. See [Microsoft Teams → Meeting Summary Delivery](/docs/user-guide/messaging/teams#meeting-summary-delivery-teams-meeting-pipeline).
+
+| Variable | Description |
+|----------|-------------|
+| `TEAMS_DELIVERY_MODE` | `graph` or `incoming_webhook`. |
+| `TEAMS_INCOMING_WEBHOOK_URL` | Teams-generated webhook URL; required when `TEAMS_DELIVERY_MODE=incoming_webhook`. |
+| `TEAMS_GRAPH_ACCESS_TOKEN` | Pre-acquired delegated access token for Graph delivery. Rarely needed — the writer falls back to the `MSGRAPH_*` app credentials when unset. |
+| `TEAMS_TEAM_ID` | Target Team ID for channel delivery (`graph` mode). |
+| `TEAMS_CHANNEL_ID` | Target channel ID (paired with `TEAMS_TEAM_ID`). |
+| `TEAMS_CHAT_ID` | Target 1:1 or group chat ID (alternative to team+channel for `graph` mode). |
+
+### LINE Messaging API
+
+Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messaging Gateway → LINE](/docs/user-guide/messaging/line) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `LINE_CHANNEL_ACCESS_TOKEN` | Long-lived channel access token from the LINE Developers Console (Messaging API tab). Required. |
+| `LINE_CHANNEL_SECRET` | Channel secret (Basic settings tab); used for HMAC-SHA256 webhook signature verification. Required. |
+| `LINE_HOST` | Webhook bind host (default: `0.0.0.0`). |
+| `LINE_PORT` | Webhook bind port (default: `8646`). |
+| `LINE_PUBLIC_URL` | Public HTTPS base URL (e.g. `https://my-tunnel.example.com`). Required for image / audio / video sends — LINE only accepts HTTPS-reachable URLs. |
+| `LINE_ALLOWED_USERS` | Comma-separated user IDs allowed to DM the bot (`U`-prefixed). |
+| `LINE_ALLOWED_GROUPS` | Comma-separated group IDs the bot will respond in (`C`-prefixed). |
+| `LINE_ALLOWED_ROOMS` | Comma-separated room IDs the bot will respond in (`R`-prefixed). |
+| `LINE_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any source. Default: `false`. |
+| `LINE_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: line`. |
+| `LINE_SLOW_RESPONSE_THRESHOLD` | Seconds before the slow-LLM Template Buttons postback fires (default: `45`). Set `0` to disable and always Push-fallback. |
+| `LINE_PENDING_TEXT` | Bubble text shown alongside the postback button. |
+| `LINE_BUTTON_LABEL` | Postback button label (default: `Get answer`). |
+| `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
+| `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.
@@ -431,6 +493,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT` | Per-platform connect timeout during gateway startup (seconds). |
 | `HERMES_GATEWAY_BUSY_INPUT_MODE` | Default gateway busy-input behavior: `queue`, `steer`, or `interrupt`. Can be overridden per chat with `/busy`. |
 | `HERMES_GATEWAY_BUSY_ACK_ENABLED` | Whether the gateway sends an acknowledgment message (⚡/⏳/⏩) when a user sends input while the agent is busy (default: `true`). Set to `false` to suppress these messages entirely — the input is still queued/steered/interrupts as normal, only the chat reply is silenced. Bridged from `display.busy_ack_enabled` in `config.yaml`. |
+| `HERMES_FILE_MUTATION_VERIFIER` | Enable the per-turn file-mutation verifier footer (default: `true`). When enabled, Hermes appends an advisory listing any `write_file` / `patch` calls that failed during the turn and were not superseded by a successful write. Set to `0`, `false`, `no`, or `off` to suppress. Mirrors `display.file_mutation_verifier` in `config.yaml`; the env var wins when set. |
 | `HERMES_CRON_TIMEOUT` | Inactivity timeout for cron job agent runs in seconds (default: `600`). The agent can run indefinitely while actively calling tools or receiving stream tokens — this only triggers when idle. Set to `0` for unlimited. |
 | `HERMES_CRON_SCRIPT_TIMEOUT` | Timeout for pre-run scripts attached to cron jobs in seconds (default: `120`). Override for scripts that need longer execution (e.g., randomized delays for anti-bot timing). Also configurable via `cron.script_timeout_seconds` in `config.yaml`. |
 | `HERMES_CRON_MAX_PARALLEL` | Max cron jobs run in parallel per tick (default: `4`). |
@@ -463,6 +526,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_CHECKPOINT_TIMEOUT` | Timeout for filesystem checkpoint creation in seconds (default: `30`). |
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
 | `HERMES_ENABLE_PROJECT_PLUGINS` | Enable auto-discovery of repo-local plugins from `./.hermes/plugins/` (`true`/`false`, default: `false`) |
+| `HERMES_PLUGINS_DEBUG` | `1`/`true` to surface verbose plugin-discovery logs on stderr — directories scanned, manifests parsed, skip reasons, and full tracebacks on parse or `register()` failure. Aimed at plugin authors. |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
 | `HERMES_EPHEMERAL_SYSTEM_PROMPT` | Ephemeral system prompt injected at API-call time (never persisted to sessions) |
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time. |

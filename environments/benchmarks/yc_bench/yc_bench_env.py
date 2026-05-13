@@ -422,7 +422,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
-        self._streaming_file = open(self._streaming_path, "w")
+        self._streaming_file = open(self._streaming_path, "w", encoding="utf-8")
         self._streaming_lock = threading.Lock()
 
         print(f"\nYC-Bench eval matrix: {len(self.all_eval_items)} runs")
@@ -759,7 +759,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             eval_metrics[f"eval/survival_rate_{key}"] = ps / pt if pt else 0
             eval_metrics[f"eval/avg_score_{key}"] = pa
 
-        self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
+        self.eval_metrics = list(eval_metrics.items())
 
         # --- Print summary ---
         print(f"\n{'='*60}")

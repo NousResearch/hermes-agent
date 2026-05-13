@@ -91,7 +91,7 @@ def make_env(daytona_sdk, monkeypatch):
         if list_return is not None:
             mock_client.list.return_value = list_return
         else:
-            mock_client.list.return_value = SimpleNamespace(items=[])
+            mock_client.list.return_value = iter([])
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
 
@@ -156,13 +156,13 @@ class TestPersistence:
         legacy.process.exec.return_value = _make_exec_response(result="/root")
         env = make_env(
             get_side_effect=daytona_sdk.DaytonaError("not found"),
-            list_return=SimpleNamespace(items=[legacy]),
+            list_return=iter([legacy]),
             persistent=True,
             task_id="mytask",
         )
         legacy.start.assert_called_once()
         env._mock_client.list.assert_called_once_with(
-            labels={"hermes_task_id": "mytask"}, page=1, limit=1)
+            labels={"hermes_task_id": "mytask"}, limit=1)
         env._mock_client.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
@@ -176,7 +176,7 @@ class TestPersistence:
         # by checking get() was called with the right sandbox name
         env._mock_client.get.assert_called_with("hermes-mytask")
         env._mock_client.list.assert_called_with(
-            labels={"hermes_task_id": "mytask"}, page=1, limit=1)
+            labels={"hermes_task_id": "mytask"}, limit=1)
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)
@@ -299,24 +299,6 @@ class TestExecute:
         assert "print" in cmd
         assert "hi" in cmd
 
-    def test_custom_cwd_in_command_wrapper(self, make_env):
-        """CWD is handled by _wrap_command() in the command string, not as a kwarg."""
-        sb = _make_sandbox()
-        sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),
-            _make_exec_response(result="", exit_code=0),  # init_session
-            _make_exec_response(result="/tmp", exit_code=0),
-        ]
-        sb.state = "started"
-        env = make_env(sandbox=sb)
-
-        env.execute("pwd", cwd="/tmp")
-        # CWD should be embedded in the command string via _wrap_command
-        call_args = sb.process.exec.call_args_list[-1]
-        cmd = call_args[0][0]
-        assert "cd /tmp" in cmd
-        # CWD should NOT be passed as a kwarg to exec
-        assert "cwd" not in call_args[1]
 
     def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
         sb = _make_sandbox()

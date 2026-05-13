@@ -6,7 +6,8 @@
   "version": "1.0.0",
   "tab": {
     "path": "/example",
-    "position": "after:skills"
+    "position": "after:skills",
+    "hidden": true
   },
   "slots": [],
   "entry": "dist/index.js",

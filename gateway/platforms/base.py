@@ -3380,14 +3380,9 @@ class BasePlatformAdapter(ABC):
                 )
             else:
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
-            if callable(_post_cb):
-                try:
-                    _post_result = _post_cb()
-                    if inspect.isawaitable(_post_result):
-                        await _post_result
-                except Exception:
-                    pass
-            # Stop typing indicator
+            # Stop typing indicator FIRST — must not be delayed by callback work.
+            # If the post-delivery callback hangs (e.g. dead socket), the typing
+            # task would run indefinitely.  See issue #24971.
             await _stop_typing_task()
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
@@ -3396,6 +3391,13 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
+            if callable(_post_cb):
+                try:
+                    _post_result = _post_cb()
+                    if inspect.isawaitable(_post_result):
+                        await asyncio.wait_for(_post_result, timeout=30.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
             # Late-arrival drain: a message may have arrived during the
             # cleanup awaits above (typing_task cancel, stop_typing).  Such
             # messages passed the Level-1 guard (entry still live, Event

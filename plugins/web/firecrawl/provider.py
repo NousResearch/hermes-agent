@@ -374,6 +374,9 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
+    def supports_crawl(self) -> bool:
+        return True
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a Firecrawl search.
 
@@ -559,13 +562,193 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         return results
 
+    async def crawl(self, url: str, **kwargs: Any) -> Dict[str, Any]:
+        """Crawl a seed URL via Firecrawl's ``/crawl`` endpoint.
+
+        Sync SDK call wrapped in ``asyncio.to_thread`` because the dispatcher
+        in :func:`tools.web_tools.web_crawl_tool` is async and runs LLM
+        post-processing on the response. The dispatcher gates the seed URL
+        against SSRF + website-access policy before calling us; this method
+        re-checks every crawled page's URL against the policy after the
+        crawl returns to catch redirected pages that map to a blocked host.
+
+        Accepted kwargs (others ignored for forward compat):
+          - ``instructions``: str — logged then dropped. Firecrawl's /crawl
+            endpoint does NOT accept natural-language instructions (that's
+            an /extract feature), so we record the value for debugging and
+            proceed without it. Tavily's crawl IS instruction-aware; this
+            divergence is documented in both plugins' docstrings.
+          - ``limit``: int — max pages to crawl (default 20).
+          - ``depth``: str — accepted for API parity with Tavily; ignored
+            by Firecrawl's crawl endpoint.
+
+        Returns ``{"results": [...]}`` matching the shape that
+        :func:`tools.web_tools.web_crawl_tool`'s shared LLM-summarization
+        path expects. Per-page failures (policy block on redirected URL,
+        bad response shape) are included as items with an ``error`` field
+        rather than raising.
+        """
+        try:
+            from tools.interrupt import is_interrupted
+
+            if is_interrupted():
+                return {"results": [{"url": url, "title": "", "content": "", "error": "Interrupted"}]}
+
+            instructions = kwargs.get("instructions")
+            limit = kwargs.get("limit", 20)
+
+            # Firecrawl's /crawl endpoint does not accept natural-language
+            # instructions (that's an /extract feature). Log + drop.
+            if instructions:
+                logger.info(
+                    "Firecrawl crawl: 'instructions' parameter ignored "
+                    "(not supported by Firecrawl /crawl)"
+                )
+
+            logger.info("Firecrawl crawl: %s (limit=%d)", url, limit)
+
+            crawl_params = {
+                "limit": limit,
+                "scrape_options": {"formats": ["markdown"]},
+            }
+
+            # The SDK call is sync; run in a thread so we don't block the
+            # gateway event loop on a multi-page crawl.
+            crawl_result = await asyncio.to_thread(
+                _get_firecrawl_client().crawl,
+                url=url,
+                **crawl_params,
+            )
+
+            # CrawlJob normalization across SDK + direct + gateway shapes.
+            data_list: List[Any] = []
+            if hasattr(crawl_result, "data"):
+                data_list = crawl_result.data if crawl_result.data else []
+                logger.info(
+                    "Firecrawl crawl status: %s, %d pages",
+                    getattr(crawl_result, "status", "unknown"),
+                    len(data_list),
+                )
+            elif isinstance(crawl_result, dict) and "data" in crawl_result:
+                data_list = crawl_result.get("data", []) or []
+            else:
+                logger.warning(
+                    "Firecrawl crawl: unexpected result type %r",
+                    type(crawl_result).__name__,
+                )
+
+            pages: List[Dict[str, Any]] = []
+            for item in data_list:
+                # Pydantic model | typed object | dict — handle all shapes.
+                content_markdown = None
+                content_html = None
+                metadata: Any = {}
+
+                if hasattr(item, "model_dump"):
+                    item_dict = item.model_dump()
+                    content_markdown = item_dict.get("markdown")
+                    content_html = item_dict.get("html")
+                    metadata = item_dict.get("metadata", {})
+                elif hasattr(item, "__dict__"):
+                    content_markdown = getattr(item, "markdown", None)
+                    content_html = getattr(item, "html", None)
+                    metadata_obj = getattr(item, "metadata", {})
+                    if hasattr(metadata_obj, "model_dump"):
+                        metadata = metadata_obj.model_dump()
+                    elif hasattr(metadata_obj, "__dict__"):
+                        metadata = metadata_obj.__dict__
+                    elif isinstance(metadata_obj, dict):
+                        metadata = metadata_obj
+                    else:
+                        metadata = {}
+                elif isinstance(item, dict):
+                    content_markdown = item.get("markdown")
+                    content_html = item.get("html")
+                    metadata = item.get("metadata", {})
+
+                # Ensure metadata is a plain dict.
+                if not isinstance(metadata, dict):
+                    if hasattr(metadata, "model_dump"):
+                        metadata = metadata.model_dump()
+                    elif hasattr(metadata, "__dict__"):
+                        metadata = metadata.__dict__
+                    else:
+                        metadata = {}
+
+                page_url = metadata.get(
+                    "sourceURL", metadata.get("url", "Unknown URL")
+                )
+                title = metadata.get("title", "")
+
+                # Per-page policy re-check (catches blocked redirects).
+                page_blocked = check_website_access(page_url)
+                if page_blocked:
+                    logger.info(
+                        "Blocked crawled page %s by rule %s",
+                        page_blocked["host"],
+                        page_blocked["rule"],
+                    )
+                    pages.append(
+                        {
+                            "url": page_url,
+                            "title": title,
+                            "content": "",
+                            "raw_content": "",
+                            "error": page_blocked["message"],
+                            "blocked_by_policy": {
+                                "host": page_blocked["host"],
+                                "rule": page_blocked["rule"],
+                                "source": page_blocked["source"],
+                            },
+                        }
+                    )
+                    continue
+
+                content = content_markdown or content_html or ""
+                pages.append(
+                    {
+                        "url": page_url,
+                        "title": title,
+                        "content": content,
+                        "raw_content": content,
+                        "metadata": metadata,
+                    }
+                )
+
+            return {"results": pages}
+        except ValueError as exc:
+            return {"results": [{"url": url, "title": "", "content": "", "error": str(exc)}]}
+        except ImportError as exc:
+            return {
+                "results": [
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "error": f"Firecrawl SDK not installed: {exc}",
+                    }
+                ]
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Firecrawl crawl error: %s", exc)
+            return {
+                "results": [
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "error": f"Firecrawl crawl failed: {exc}",
+                    }
+                ]
+            }
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Firecrawl",
             "badge": "paid · optional gateway",
             "tag": (
-                "Mainstream search + extract; supports direct API and Nous "
-                "tool-gateway routing."
+                "Full search + extract + crawl; supports direct API and "
+                "Nous tool-gateway routing."
             ),
             "env_vars": [
                 {

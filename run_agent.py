@@ -7856,15 +7856,18 @@ class AIAgent:
                         "Local provider detected (%s) — stream read timeout raised to %.0fs",
                         self.base_url, _stream_read_timeout,
                     )
+            # Cap connect/pool at 60s even when provider timeout is higher.
+            # connect/pool cover TCP handshake, not model inference.
+            _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "timeout": _httpx.Timeout(
-                    connect=_base_timeout if _provider_timeout_cfg is not None else 30.0,
+                    connect=_conn_cap,
                     read=_stream_read_timeout,
                     write=_base_timeout,
-                    pool=_base_timeout if _provider_timeout_cfg is not None else 30.0,
+                    pool=_conn_cap,
                 ),
             }
             request_client_holder["client"] = self._create_request_openai_client(

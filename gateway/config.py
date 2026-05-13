@@ -468,6 +468,20 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Per-platform whitelist of session sources that session_search may read
+    # when the current conversation lives on that platform.  Maps platform
+    # name (e.g. "qqbot") -> list of allowed source values (e.g. ["qqbot",
+    # "weixin"]).  Platforms not listed here are treated as "self only" --
+    # session_search will only surface past sessions from the same platform.
+    # Non-gateway sources (cli, cron, acp, local, ...) are never restricted.
+    #
+    # Example config.yaml:
+    #   gateway:
+    #     session_search_visibility:
+    #       qqbot: [qqbot, weixin]   # QQ can read QQ + weixin history
+    #       # weixin omitted -> defaults to weixin-only (one-way isolation)
+    session_search_visibility: Dict[str, List[str]] = field(default_factory=dict)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -561,6 +575,9 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "session_search_visibility": {
+                k: list(v) for k, v in self.session_search_visibility.items()
+            },
         }
     
     @classmethod
@@ -615,6 +632,25 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Parse session_search_visibility: {platform_name: [allowed_sources]}.
+        # Coerce defensively -- users may write scalars instead of lists, or
+        # supply None values; normalize to Dict[str, List[str]] and silently
+        # drop malformed entries rather than crash gateway startup.
+        raw_visibility = data.get("session_search_visibility") or {}
+        session_search_visibility: Dict[str, List[str]] = {}
+        if isinstance(raw_visibility, dict):
+            for k, v in raw_visibility.items():
+                if not isinstance(k, str) or not k.strip():
+                    continue
+                if isinstance(v, str):
+                    allowed = [v.strip()] if v.strip() else []
+                elif isinstance(v, (list, tuple)):
+                    allowed = [str(x).strip() for x in v if str(x).strip()]
+                else:
+                    continue
+                if allowed:
+                    session_search_visibility[k.strip()] = allowed
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -630,6 +666,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            session_search_visibility=session_search_visibility,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -642,6 +679,41 @@ class GatewayConfig:
                     self.unauthorized_dm_behavior,
                 )
         return self.unauthorized_dm_behavior
+
+    def resolve_session_search_visibility(
+        self,
+        current_source: Optional[str],
+    ) -> Optional[List[str]]:
+        """Decide which session sources session_search may read.
+
+        Given the source value of the *current* session, returns:
+          - None: no restriction (search all sources). Used for non-gateway
+            sources (cli, cron, acp, local, ...) and unknown/empty input.
+          - List[str]: whitelist of source values the agent may search.
+            Always includes ``current_source`` itself.
+
+        Default policy when ``current_source`` is a known gateway platform
+        but no entry exists in ``session_search_visibility``: restrict to
+        that platform alone (one-way isolation by default).
+        """
+        if not current_source or not isinstance(current_source, str):
+            return None
+        # Only restrict third-party messaging platforms. Anything else
+        # (cli, cron, acp, local, webhook, ...) keeps full visibility --
+        # those are the operator's own surfaces, not external chats.
+        try:
+            platform = Platform(current_source)
+        except ValueError:
+            return None
+        if platform in (Platform.LOCAL, Platform.WEBHOOK):
+            return None
+        allowed = self.session_search_visibility.get(current_source)
+        if allowed:
+            # Always include self even if user forgot to list it explicitly.
+            if current_source not in allowed:
+                allowed = [current_source, *allowed]
+            return list(dict.fromkeys(allowed))  # de-dup, preserve order
+        return [current_source]
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""

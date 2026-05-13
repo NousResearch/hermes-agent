@@ -576,3 +576,204 @@ class TestSessionSearch:
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+
+# =========================================================================
+# Cross-platform session_search visibility (gateway.session_search_visibility)
+# =========================================================================
+
+class TestVisibilityResolver:
+    """Unit tests for GatewayConfig.resolve_session_search_visibility."""
+
+    def _make_config(self, visibility=None):
+        from gateway.config import GatewayConfig
+        return GatewayConfig(session_search_visibility=visibility or {})
+
+    def test_unknown_source_returns_none(self):
+        cfg = self._make_config()
+        assert cfg.resolve_session_search_visibility("made_up_thing") is None
+
+    def test_cli_source_returns_none(self):
+        # 'cli' / 'cron' / 'acp' are not Platform enum members -> unrestricted.
+        cfg = self._make_config()
+        assert cfg.resolve_session_search_visibility("cli") is None
+        assert cfg.resolve_session_search_visibility("cron") is None
+        assert cfg.resolve_session_search_visibility("acp") is None
+
+    def test_local_and_webhook_unrestricted(self):
+        cfg = self._make_config()
+        assert cfg.resolve_session_search_visibility("local") is None
+        assert cfg.resolve_session_search_visibility("webhook") is None
+
+    def test_empty_or_none_input(self):
+        cfg = self._make_config()
+        assert cfg.resolve_session_search_visibility(None) is None
+        assert cfg.resolve_session_search_visibility("") is None
+
+    def test_default_isolation_for_messaging_platform(self):
+        # Gateway platform with no explicit entry -> self only.
+        cfg = self._make_config()
+        assert cfg.resolve_session_search_visibility("weixin") == ["weixin"]
+        assert cfg.resolve_session_search_visibility("qqbot") == ["qqbot"]
+
+    def test_explicit_whitelist_one_way(self):
+        # QQ can read QQ + weixin; weixin only reads itself (the asymmetric
+        # case the user originally asked for).
+        cfg = self._make_config({"qqbot": ["qqbot", "weixin"]})
+        assert cfg.resolve_session_search_visibility("qqbot") == ["qqbot", "weixin"]
+        assert cfg.resolve_session_search_visibility("weixin") == ["weixin"]
+
+    def test_self_auto_added_if_missing(self):
+        # User forgot to list 'qqbot' itself -> still included.
+        cfg = self._make_config({"qqbot": ["weixin"]})
+        result = cfg.resolve_session_search_visibility("qqbot")
+        assert result is not None
+        assert "qqbot" in result
+        assert "weixin" in result
+
+    def test_dedup_preserves_order(self):
+        cfg = self._make_config({"qqbot": ["qqbot", "weixin", "qqbot", "feishu"]})
+        assert cfg.resolve_session_search_visibility("qqbot") == [
+            "qqbot",
+            "weixin",
+            "feishu",
+        ]
+
+
+class TestVisibilityFromDict:
+    """GatewayConfig.from_dict normalizes session_search_visibility input."""
+
+    def test_parses_clean_dict(self):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig.from_dict({
+            "session_search_visibility": {
+                "qqbot": ["qqbot", "weixin"],
+                "weixin": ["weixin"],
+            }
+        })
+        assert cfg.session_search_visibility == {
+            "qqbot": ["qqbot", "weixin"],
+            "weixin": ["weixin"],
+        }
+
+    def test_coerces_scalar_value(self):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig.from_dict({
+            "session_search_visibility": {"qqbot": "weixin"},
+        })
+        assert cfg.session_search_visibility == {"qqbot": ["weixin"]}
+
+    def test_drops_malformed_entries(self):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig.from_dict({
+            "session_search_visibility": {
+                "qqbot": ["weixin"],   # ok
+                "": ["weixin"],        # empty key -> drop
+                "feishu": None,        # None value -> drop
+                "slack": 42,           # wrong type -> drop
+                "discord": [],         # empty list -> drop
+            }
+        })
+        assert cfg.session_search_visibility == {"qqbot": ["weixin"]}
+
+    def test_missing_key_yields_empty_dict(self):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig.from_dict({})
+        assert cfg.session_search_visibility == {}
+
+    def test_roundtrip_via_to_dict(self):
+        from gateway.config import GatewayConfig
+        original = GatewayConfig(
+            session_search_visibility={"qqbot": ["qqbot", "weixin"]}
+        )
+        roundtripped = GatewayConfig.from_dict(original.to_dict())
+        assert roundtripped.session_search_visibility == {
+            "qqbot": ["qqbot", "weixin"]
+        }
+
+
+class TestSessionSearchAppliesVisibilityFilter:
+    """End-to-end: session_search must pass source_filter to db.search_messages."""
+
+    def _setup_db(self, current_source):
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_session.return_value = {
+            "id": "current_sid",
+            "source": current_source,
+            "parent_session_id": None,
+        }
+        db.search_messages.return_value = []  # no matches -> short-circuit
+        return db
+
+    def _patch_gateway_config(self, monkeypatch, visibility):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig(session_search_visibility=visibility or {})
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: cfg,
+        )
+
+    def test_weixin_session_restricted_to_weixin_by_default(self, monkeypatch):
+        from tools.session_search_tool import session_search
+        db = self._setup_db("weixin")
+        self._patch_gateway_config(monkeypatch, {})
+
+        session_search(query="hello", db=db, current_session_id="current_sid")
+
+        kwargs = db.search_messages.call_args.kwargs
+        assert kwargs["source_filter"] == ["weixin"], (
+            "Default isolation: weixin must only see its own sessions"
+        )
+
+    def test_qqbot_session_with_explicit_whitelist(self, monkeypatch):
+        from tools.session_search_tool import session_search
+        db = self._setup_db("qqbot")
+        self._patch_gateway_config(
+            monkeypatch, {"qqbot": ["qqbot", "weixin"]}
+        )
+
+        session_search(query="hello", db=db, current_session_id="current_sid")
+
+        kwargs = db.search_messages.call_args.kwargs
+        assert kwargs["source_filter"] == ["qqbot", "weixin"]
+
+    def test_weixin_session_cannot_see_qqbot_under_one_way_config(self, monkeypatch):
+        # The asymmetric scenario the user requested: QQ reads weixin, but
+        # weixin must NOT read qqbot.
+        from tools.session_search_tool import session_search
+        db = self._setup_db("weixin")
+        self._patch_gateway_config(
+            monkeypatch, {"qqbot": ["qqbot", "weixin"]}
+        )
+
+        session_search(query="hello", db=db, current_session_id="current_sid")
+
+        kwargs = db.search_messages.call_args.kwargs
+        assert kwargs["source_filter"] == ["weixin"]
+        assert "qqbot" not in kwargs["source_filter"]
+
+    def test_cli_session_unrestricted(self, monkeypatch):
+        from tools.session_search_tool import session_search
+        db = self._setup_db("cli")
+        self._patch_gateway_config(monkeypatch, {"qqbot": ["qqbot", "weixin"]})
+
+        session_search(query="hello", db=db, current_session_id="current_sid")
+
+        kwargs = db.search_messages.call_args.kwargs
+        assert kwargs["source_filter"] is None, (
+            "CLI sessions must keep full visibility (operator's own surface)"
+        )
+
+    def test_no_current_session_means_no_restriction(self, monkeypatch):
+        from tools.session_search_tool import session_search
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.search_messages.return_value = []
+        # Don't even need to patch gateway config -- whitelist resolver
+        # short-circuits when current_session_id is missing.
+
+        session_search(query="hello", db=db, current_session_id=None)
+
+        kwargs = db.search_messages.call_args.kwargs
+        assert kwargs["source_filter"] is None

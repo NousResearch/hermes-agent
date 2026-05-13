@@ -265,11 +265,64 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
-    """Return metadata for the most recent sessions (no LLM calls)."""
+def _get_visibility_whitelist(db, current_session_id: Optional[str]) -> Optional[List[str]]:
+    """Resolve the source whitelist for the *current* session.
+
+    Returns:
+        - None if no restriction applies (current session is CLI/cron/local/
+          webhook/unknown, or gateway config unavailable).
+        - List of allowed source values the agent may search.
+
+    Default policy for a gateway platform with no explicit visibility
+    entry is "self only" (one-way isolation by default). Configure
+    ``gateway.session_search_visibility`` to allow cross-platform reads.
+    """
+    if not current_session_id or db is None:
+        return None
     try:
+        session = db.get_session(current_session_id)
+    except Exception:
+        logging.debug(
+            "Failed to load current session for visibility check",
+            exc_info=True,
+        )
+        return None
+    if not session:
+        return None
+    current_source = session.get("source")
+    if not current_source:
+        return None
+    try:
+        from gateway.config import load_gateway_config
+        gw_config = load_gateway_config()
+    except Exception:
+        logging.debug(
+            "Gateway config unavailable for session_search visibility check",
+            exc_info=True,
+        )
+        return None
+    return gw_config.resolve_session_search_visibility(current_source)
+
+
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    allowed_sources: Optional[List[str]] = None,
+) -> str:
+    """Return metadata for the most recent sessions (no LLM calls).
+
+    When ``allowed_sources`` is set, sessions whose ``source`` is not in
+    that whitelist are filtered out (cross-platform isolation). When None,
+    no source restriction is applied.
+    """
+    try:
+        # Fetch a wider window when whitelisting -- after Python-side filter
+        # we still need at least ``limit`` rows. The cap keeps DB load bounded
+        # even if the visibility whitelist excludes most recent sessions.
+        fetch_limit = (limit + 5) if allowed_sources is None else max(limit + 5, 50)
         sessions = db.list_sessions_rich(
-            limit=limit + 5,
+            limit=fetch_limit,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
         )  # fetch extra to skip current
@@ -290,6 +343,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             except Exception:
                 current_root = current_session_id
 
+        allowed_set = set(allowed_sources) if allowed_sources else None
         results = []
         for s in sessions:
             sid = s.get("id", "")
@@ -297,6 +351,9 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 continue
             # Skip child/delegation sessions (they have parent_session_id)
             if s.get("parent_session_id"):
+                continue
+            # Cross-platform visibility filter
+            if allowed_set is not None and s.get("source", "") not in allowed_set:
                 continue
             results.append({
                 "session_id": sid,
@@ -356,10 +413,16 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
+    # Resolve cross-platform visibility whitelist for the current session.
+    # None = no restriction (CLI/cron/local/webhook). List = allowed sources.
+    allowed_sources = _get_visibility_whitelist(db, current_session_id)
+
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(
+            db, limit, current_session_id, allowed_sources=allowed_sources
+        )
 
     query = query.strip()
 
@@ -369,9 +432,13 @@ def session_search(
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-        # FTS5 search -- get matches ranked by relevance
+        # FTS5 search -- get matches ranked by relevance.
+        # ``source_filter`` enforces cross-platform isolation: e.g. when this
+        # session lives on weixin and the user has not opted into reading
+        # other platforms, FTS will only return weixin matches.
         raw_results = db.search_messages(
             query=query,
+            source_filter=allowed_sources,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # Get more matches to find unique sessions

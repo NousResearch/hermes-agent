@@ -40,6 +40,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
+| `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
@@ -222,6 +223,33 @@ Options:
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
 :::
+
+## `hermes lsp`
+
+```bash
+hermes lsp <subcommand>
+```
+
+Manage the Language Server Protocol integration. LSP runs real
+language servers (pyright, gopls, rust-analyzer, …) in the
+background and feeds their diagnostics into the post-write check
+used by `write_file` and `patch`. Gated on git workspace detection
+— LSP only runs when the cwd or edited file is inside a git
+worktree.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show service state, configured servers, install status. |
+| `list` | Print the registry of supported servers. Pass `--installed-only` to skip missing ones. |
+| `install <id>` | Eagerly install one server's binary. |
+| `install-all` | Install every server with a known auto-install recipe. |
+| `restart` | Tear down running clients so the next edit re-spawns. |
+| `which <id>` | Print the resolved binary path for one server. |
+
+See [LSP — Semantic Diagnostics](/docs/user-guide/features/lsp) for
+the full guide, supported languages, and configuration knobs.
 
 ## `hermes setup`
 
@@ -976,7 +1004,8 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `install` | Run the upstream cua-driver installer (macOS only). |
-| `status` | Print whether `cua-driver` is on `$PATH`. |
+| `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
+| `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the
@@ -984,6 +1013,11 @@ Subcommands:
 `hermes tools` invokes when you first enable Computer Use, so it's safe
 to use for re-running the install if the toolset toggle didn't trigger
 it (for example, on returning-user setups).
+
+`hermes update` automatically re-runs the upstream installer at the end
+of the update if cua-driver is on PATH, so most users will not need to
+call `--upgrade` manually. Use it when upstream ships a fix you want
+right now without waiting for the next Hermes update.
 
 ## `hermes sessions`
 

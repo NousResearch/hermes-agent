@@ -56,10 +56,22 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
-    raise SystemExit(
-        "Web UI requires fastapi and uvicorn.\n"
-        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
-    )
+    # First try lazy-installing the dashboard extras. Only the user actually
+    # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
+    # them out of every other install path. After install, re-import.
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.dashboard", prompt=False)
+        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.staticfiles import StaticFiles
+        from pydantic import BaseModel
+    except Exception:
+        raise SystemExit(
+            "Web UI requires fastapi and uvicorn.\n"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+        )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
@@ -179,7 +191,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
-    if bound_host in ("0.0.0.0", "::"):
+    if bound_host in {"0.0.0.0", "::"}:
         return True
 
     # Loopback bind: accept the loopback names
@@ -273,7 +285,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        "options": ["local", "openai", "mistral"],
+        # "mistral" temporarily removed — mistralai PyPI package quarantined
+        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
+        "options": ["local", "openai"],
     },
     "display.skin": {
         "type": "select",
@@ -385,7 +399,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in ("_config_version",):
+        if full_key in {"_config_version",}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -576,13 +590,13 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override
             # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in (None, "stopped"):
+            if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
     # If there was no runtime info at all but the health probe confirmed alive,
@@ -1075,7 +1089,7 @@ async def set_model_assignment(body: ModelAssignment):
     model = (body.model or "").strip()
     task = (body.task or "").strip().lower()
 
-    if scope not in ("main", "auxiliary"):
+    if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     try:
@@ -1190,14 +1204,13 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     disk_model.pop("context_length", None)
                 config["model"] = disk_model
-            else:
-                # Model was previously a bare string — upgrade to dict if
-                # user is setting a context_length override
-                if ctx_override > 0:
-                    config["model"] = {
-                        "default": model_val,
-                        "context_length": ctx_override,
-                    }
+            # Model was previously a bare string — upgrade to dict if
+            # user is setting a context_length override
+            elif ctx_override > 0:
+                config["model"] = {
+                    "default": model_val,
+                    "context_length": ctx_override,
+                }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -1457,7 +1470,12 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
-        "flow": "pkce",
+        # MiniMax's flow is structurally device-code (verification URI +
+        # user code, backend polls the token endpoint) with a PKCE
+        # extension for code-binding. The dashboard renders the same UX
+        # as Nous's device-code flow; the PKCE bit is a security
+        # extension that doesn't change the operator experience.
+        "flow": "device_code",
         "cli_command": "hermes auth add minimax-oauth",
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
@@ -1569,7 +1587,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     # AND forget the Claude Code import. We don't touch ~/.claude/* directly
     # — that's owned by the Claude Code CLI; users can re-auth there if they
     # want to undo a disconnect.
-    if provider_id in ("anthropic", "claude-code"):
+    if provider_id in {"anthropic", "claude-code"}:
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
@@ -1820,7 +1838,7 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
 
 async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous or OpenAI Codex).
+    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
@@ -1899,6 +1917,82 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "poll_interval": int(s.get("interval") or 5),
         }
 
+    if provider_id == "minimax-oauth":
+        # MiniMax uses a device-code-style flow (verification URI + user
+        # code + background poll) with a PKCE extension on top. From the
+        # operator's perspective it's identical to Nous's device-code
+        # flow; the PKCE bit (verifier + challenge from
+        # _minimax_pkce_pair) is a security extension that binds the
+        # token exchange to the original session.
+        from hermes_cli.auth import (
+            _minimax_pkce_pair,
+            _minimax_request_user_code,
+            MINIMAX_OAUTH_CLIENT_ID,
+            MINIMAX_OAUTH_GLOBAL_BASE,
+        )
+        import httpx
+        verifier, challenge, state = _minimax_pkce_pair()
+        portal_base_url = (
+            os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE
+        ).rstrip("/")
+        def _do_minimax_request():
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                headers={"Accept": "application/json"},
+                follow_redirects=True,
+            ) as client:
+                return _minimax_request_user_code(
+                    client=client,
+                    portal_base_url=portal_base_url,
+                    client_id=MINIMAX_OAUTH_CLIENT_ID,
+                    code_challenge=challenge,
+                    state=state,
+                )
+        device_data = await asyncio.get_event_loop().run_in_executor(
+            None, _do_minimax_request
+        )
+        sid, sess = _new_oauth_session("minimax-oauth", "device_code")
+        # The CLI flow names this `interval_ms` because MiniMax's
+        # `interval` field is in milliseconds (defensive default 2000ms
+        # in _minimax_poll_token).
+        interval_raw = device_data.get("interval")
+        sess["interval_ms"] = (
+            int(interval_raw) if interval_raw is not None else None
+        )
+        sess["user_code"] = str(device_data["user_code"])
+        sess["code_verifier"] = verifier
+        sess["state"] = state
+        sess["portal_base_url"] = portal_base_url
+        sess["client_id"] = MINIMAX_OAUTH_CLIENT_ID
+        sess["region"] = "global"
+        # `expired_in` from MiniMax is overloaded — could be a unix-ms
+        # timestamp OR a seconds-from-now duration. Mirror the heuristic
+        # in _minimax_poll_token. Stash the raw value for the poller;
+        # compute a derived expires_at + UI-friendly expires_in seconds.
+        expired_in_raw = int(device_data["expired_in"])
+        sess["expired_in_raw"] = expired_in_raw
+        if expired_in_raw > 1_000_000_000_000:  # likely unix-ms
+            expires_at_ts = expired_in_raw / 1000.0
+            expires_in_seconds = max(0, int(expires_at_ts - time.time()))
+        else:
+            expires_at_ts = time.time() + expired_in_raw
+            expires_in_seconds = expired_in_raw
+        sess["expires_at"] = expires_at_ts
+        threading.Thread(
+            target=_minimax_poller,
+            args=(sid,),
+            daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(device_data["user_code"]),
+            "verification_url": str(device_data["verification_uri"]),
+            "expires_in": expires_in_seconds,
+            "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
+        }
+
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
@@ -1955,6 +2049,89 @@ def _nous_poller(session_id: str) -> None:
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("nous device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _minimax_poller(session_id: str) -> None:
+    """Background poller that drives a MiniMax OAuth flow to completion.
+
+    Mirrors `_nous_poller` but calls the MiniMax-specific token endpoint,
+    which uses a PKCE-style ``code_verifier`` + ``user_code`` rather than
+    the ``device_code`` field used by Nous. On success, builds the same
+    auth_state dict that ``_minimax_oauth_login`` (the CLI flow) builds
+    and persists via ``_minimax_save_auth_state`` — so the dashboard
+    path leaves the system in the same state as
+    ``hermes auth add minimax-oauth``.
+    """
+    from hermes_cli.auth import (
+        _minimax_poll_token,
+        _minimax_resolve_token_expiry_unix,
+        _minimax_save_auth_state,
+        MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        MINIMAX_OAUTH_SCOPE,
+    )
+    from datetime import datetime, timezone
+    import httpx
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    portal_base_url = sess["portal_base_url"]
+    client_id = sess["client_id"]
+    user_code = sess["user_code"]
+    code_verifier = sess["code_verifier"]
+    interval_ms = sess.get("interval_ms")
+    expired_in_raw = sess["expired_in_raw"]
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            headers={"Accept": "application/json"},
+            follow_redirects=True,
+        ) as client:
+            token_data = _minimax_poll_token(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                user_code=user_code,
+                code_verifier=code_verifier,
+                expired_in=expired_in_raw,
+                interval_ms=interval_ms,
+            )
+        # Build the auth_state dict in the same shape as the CLI flow's
+        # `_minimax_oauth_login` so `_minimax_save_auth_state` writes
+        # the canonical record. Region is fixed to "global" for the
+        # dashboard path; cn-region operators can still use the CLI
+        # flow which supports `--region cn`.
+        now = datetime.now(timezone.utc)
+        expires_at_ts = _minimax_resolve_token_expiry_unix(
+            int(token_data["expired_in"]), now=now,
+        )
+        expires_in_s = max(0, int(expires_at_ts - now.timestamp()))
+        auth_state = {
+            "provider": "minimax-oauth",
+            "region": sess.get("region", "global"),
+            "portal_base_url": portal_base_url,
+            "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "token_type": token_data.get("token_type", "Bearer"),
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data["refresh_token"],
+            "resource_url": token_data.get("resource_url"),
+            "obtained_at": now.isoformat(),
+            "expires_at": datetime.fromtimestamp(
+                expires_at_ts, tz=timezone.utc
+            ).isoformat(),
+            "expires_in": expires_in_s,
+        }
+        _minimax_save_auth_state(auth_state)
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: minimax login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)
@@ -2025,7 +2202,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 if poll.status_code == 200:
                     code_resp = poll.json()
                     break
-                if poll.status_code in (403, 404):
+                if poll.status_code in {403, 404}:
                     continue  # user hasn't authorized yet
                 raise RuntimeError(f"deviceauth/token poll returned {poll.status_code}")
 
@@ -2112,7 +2289,13 @@ async def start_oauth_login(provider_id: str, request: Request):
             detail=f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually",
         )
     try:
-        if catalog_entry["flow"] == "pkce":
+        # The pkce branch is gated on provider_id == "anthropic" because
+        # `_start_anthropic_pkce()` is hardcoded to the Anthropic flow.
+        # Routing any other future pkce-flagged provider through it would
+        # silently launch the Anthropic OAuth flow (the bug fixed in this
+        # change for MiniMax). New PKCE providers must add their own
+        # start function and an explicit branch here.
+        if catalog_entry["flow"] == "pkce" and provider_id == "anthropic":
             return _start_anthropic_pkce()
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
@@ -3004,7 +3187,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 def _is_public_bind() -> bool:
     """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -3586,7 +3769,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if isinstance(radius, str) and radius.strip():
         layout["radius"] = radius
     density = layout_src.get("density")
-    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+    if isinstance(density, str) and density in {"compact", "comfortable", "spacious"}:
         layout["density"] = density
 
     # Color overrides — keep only valid keys with string values.
@@ -3838,6 +4021,9 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
     if _dashboard_plugins_cache is None or force_rescan:
         _dashboard_plugins_cache = _discover_dashboard_plugins()
+    elif _dashboard_plugins_cache:
+        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
+            _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
 
 
@@ -3919,7 +4105,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             pass
 
         can_remove_update = (
-            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+            source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
         )
 
         # Check if this plugin provides tools that require auth
@@ -4249,11 +4435,33 @@ def start_server(
     if open_browser:
         import webbrowser
 
-        def _open():
-            time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+        # On headless Linux (no DISPLAY or WAYLAND_DISPLAY) some registered
+        # browsers are TUI programs (links, lynx, www-browser) that try to
+        # take over the terminal.  That can send SIGHUP to the server process
+        # and cause an immediate exit even though uvicorn bound successfully.
+        # Skip the auto-open attempt on headless systems and let the user
+        # open the URL manually.  macOS and Windows are always considered
+        # display-capable.
+        _has_display = (
+            sys.platform != "linux"
+            or bool(os.environ.get("DISPLAY"))
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
 
-        threading.Thread(target=_open, daemon=True).start()
+        if _has_display:
+            def _open():
+                try:
+                    time.sleep(1.0)
+                    webbrowser.open(f"http://{host}:{port}")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_open, daemon=True).start()
+        else:
+            _log.debug(
+                "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
+                "(headless Linux). Pass --no-open to suppress this detection."
+            )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

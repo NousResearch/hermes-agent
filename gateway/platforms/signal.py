@@ -99,11 +99,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 _EXT_TO_MIME = {
@@ -446,7 +446,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    if dest == self._account_normalized:
+                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
+                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
@@ -1449,7 +1451,7 @@ class SignalAdapter(BasePlatformAdapter):
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
         """
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in ("false", "0", "no"):
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
             sender = getattr(getattr(event, "source", None), "user_id", None)

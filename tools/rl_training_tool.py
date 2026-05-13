@@ -919,7 +919,7 @@ async def rl_stop_training(run_id: str) -> str:
     
     run_state = _active_runs[run_id]
     
-    if run_state.status not in ("running", "starting"):
+    if run_state.status not in {"running", "starting"}:
         return json.dumps({
             "message": f"Run '{run_id}' is not running (status: {run_state.status})",
         }, indent=2)

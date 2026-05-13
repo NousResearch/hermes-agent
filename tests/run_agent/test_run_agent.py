@@ -3344,6 +3344,88 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
+        """Regression: kanban worker must call kanban_block when iteration
+        budget is exhausted, otherwise the dispatcher sees a protocol
+        violation and gives up after 1 failure (issue #23216)."""
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+
+        # Return a tool call for every iteration to exhaust the budget.
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        # Final summary response from _handle_max_iterations.
+        summary_resp = _mock_response(
+            content="Could not finish — budget exhausted.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        # The agent should have reported the task as not completed.
+        assert result["completed"] is False
+
+        # Among all handle_function_call invocations, one must be
+        # kanban_block with the correct task_id and a reason mentioning
+        # iteration exhaustion.
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list
+            if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 1, (
+            f"Expected exactly 1 kanban_block call, got {len(kanban_block_calls)}. "
+            f"All calls: {mock_hfc.call_args_list}"
+        )
+        call = kanban_block_calls[0]
+        assert call[0][1]["task_id"] == "t_test_task_123"
+        assert "Iteration budget exhausted" in call[0][1]["reason"]
+
+    def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
+        """kanban_block must NOT be called when HERMES_KANBAN_TASK is unset."""
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        summary_resp = _mock_response(
+            content="Summary.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("do stuff")
+
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list
+            if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 0, (
+            "kanban_block should not be called outside kanban mode"
+        )
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).

@@ -63,7 +63,7 @@ def _confirm(question: str, default: bool = True) -> bool:
         return default
     if not val:
         return default
-    return val in ("y", "yes")
+    return val in {"y", "yes"}
 
 
 def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
@@ -375,11 +375,11 @@ def cmd_mcp_add(args):
         _info("Cancelled.")
         return
 
-    if choice in ("n", "no"):
+    if choice in {"n", "no"}:
         _info("Cancelled — server not saved.")
         return
 
-    if choice in ("s", "select"):
+    if choice in {"s", "select"}:
         # Interactive tool selection
         from hermes_cli.curses_ui import curses_checklist
 
@@ -509,7 +509,7 @@ def cmd_mcp_list(args=None):
         # Enabled status
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
-            enabled = enabled.lower() in ("true", "1", "yes")
+            enabled = enabled.lower() in {"true", "1", "yes"}
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
 
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")

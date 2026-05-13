@@ -52,6 +52,13 @@ def _load_fal_client() -> Any:
     global fal_client
     if fal_client is not None:
         return fal_client
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("image.fal", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import fal_client as _fal_client  # noqa: F811 — module-global rebind
     fal_client = _fal_client
     return fal_client
@@ -575,7 +582,7 @@ def _build_fal_payload(
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
-    if size_style in ("image_size_preset", "gpt_literal"):
+    if size_style in {"image_size_preset", "gpt_literal"}:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio":
         payload["aspect_ratio"] = sizes[aspect]

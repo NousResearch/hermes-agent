@@ -347,7 +347,7 @@ def _cmd_prune(args) -> int:
         except (EOFError, KeyboardInterrupt):
             print("\ncurator: aborted")
             return 1
-        if reply not in ("y", "yes"):
+        if reply not in {"y", "yes"}:
             print("curator: aborted")
             return 1
 
@@ -449,7 +449,7 @@ def _cmd_rollback(args) -> int:
         except (EOFError, KeyboardInterrupt):
             print("\ncancelled")
             return 1
-        if ans not in ("y", "yes"):
+        if ans not in {"y", "yes"}:
             print("cancelled")
             return 1
 

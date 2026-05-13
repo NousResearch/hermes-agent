@@ -80,11 +80,34 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user picked ElevenLabs as their TTS provider but never ran
+    the post-setup hook (e.g. enabled it by editing config.yaml directly).
+    Raises ``ImportError`` on lazy-install failure so existing callers'
+    error-handling paths keep working.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.elevenlabs", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import
+        # so older code paths still get a clean ImportError.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -466,13 +489,12 @@ def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
                 escaped = True
             elif char == '"':
                 quote = None
-        else:
-            if char == "'":
-                quote = "'"
-            elif char == '"':
-                quote = '"'
-            elif char == "\\":
-                i += 1
+        elif char == "'":
+            quote = "'"
+        elif char == '"':
+            quote = '"'
+        elif char == "\\":
+            i += 1
         i += 1
     return quote
 
@@ -849,13 +871,13 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        create_kwargs = dict(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format=response_format,
-            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
-        )
+        create_kwargs = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": response_format,
+            "extra_headers": {"x-idempotency-key": str(uuid.uuid4())},
+        }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
@@ -1613,7 +1635,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1663,16 +1685,21 @@ def text_to_speech_tool(
             _generate_xai_tts(text, file_str, tts_config)
 
         elif provider == "mistral":
-            try:
-                _import_mistral_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Mistral Voxtral TTS...")
-            _generate_mistral_tts(text, file_str, tts_config)
+            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
+            # malicious 2.4.6 release. Surface a clear status message instead
+            # of attempting an import that would either fail or pull a stale
+            # cached package.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Mistral Voxtral TTS is temporarily disabled. The "
+                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
+                    "after a malicious 2.4.6 release. Switch tts.provider in "
+                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
+                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
+                    "support will return once PyPI un-quarantines the package."
+                ),
+            }, ensure_ascii=False)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
@@ -1763,12 +1790,12 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)

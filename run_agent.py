@@ -347,6 +347,10 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+# Tools that mutate files on disk.  Used by the per-turn verifier that
+# surfaces silently-failed file edits so the model can't over-claim success.
+_FILE_MUTATING_TOOLS = frozenset({"write_file", "patch"})
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -524,6 +528,68 @@ def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
         value["text_summary"] = value["text_summary"] + hint
 
 
+def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
+    """Return the file paths a ``write_file`` or ``patch`` call is targeting.
+
+    For ``write_file`` and ``patch`` in replace mode this is just ``args["path"]``.
+    For ``patch`` in V4A patch mode we parse the patch content for
+    ``*** Update File:`` / ``*** Add File:`` / ``*** Delete File:`` headers so
+    the verifier can track each file in a multi-file patch separately.
+    """
+    if tool_name not in _FILE_MUTATING_TOOLS:
+        return []
+    if tool_name == "write_file":
+        p = args.get("path")
+        return [str(p)] if p else []
+    # tool_name == "patch"
+    mode = args.get("mode") or "replace"
+    if mode == "replace":
+        p = args.get("path")
+        return [str(p)] if p else []
+    if mode == "patch":
+        body = args.get("patch") or ""
+        if not isinstance(body, str) or not body:
+            return []
+        import re as _re
+        paths: List[str] = []
+        for _m in _re.finditer(
+            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+            body,
+            _re.MULTILINE,
+        ):
+            p = _m.group(1).strip()
+            if p:
+                paths.append(p)
+        return paths
+    return []
+
+
+def _extract_error_preview(result: Any, max_len: int = 180) -> str:
+    """Pull a one-line error summary out of a tool result for footer display."""
+    text = _multimodal_text_summary(result) if result is not None else ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return ""
+    # Try to parse JSON and pull the ``error`` field — tool handlers return
+    # ``{"success": false, "error": "..."}``; raw string wins if parse fails.
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            import json as _json
+            data = _json.loads(stripped)
+            if isinstance(data, dict) and isinstance(data.get("error"), str):
+                text = data["error"]
+        except Exception:
+            pass
+    # Collapse whitespace, trim to max_len.
+    text = " ".join(text.split())
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -539,7 +605,7 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(content, list):
         cleaned = []
         for p in content:
-            if isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
+            if isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                 cleaned.append({"type": "text", "text": "[screenshot]"})
             else:
                 cleaned.append(p)
@@ -903,7 +969,7 @@ def _strip_images_from_messages(messages: list) -> bool:
             continue
         new_parts = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") in ("image_url", "image", "input_image"):
+            if isinstance(part, dict) and part.get("type") in {"image_url", "image", "input_image"}:
                 found = True
             else:
                 new_parts.append(part)
@@ -1388,13 +1454,28 @@ class AIAgent:
         # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
         # sessions with >5-minute pauses between turns (#14971).
         self._cache_ttl = "5m"
+        # Long-lived prefix caching: when enabled and supported by the
+        # current provider, splits the system prompt into a stable prefix
+        # (cached cross-session at 1h TTL) and a volatile suffix
+        # (memory/timestamp — never cached), and attaches a 1h cache_control
+        # marker to the last tool in the schema array.  Restricted to
+        # Claude on Anthropic / OpenRouter / Nous Portal; see
+        # ``_supports_long_lived_anthropic_cache``.
+        self._use_long_lived_prefix_cache = False
+        self._long_lived_cache_ttl = "1h"
         try:
             from hermes_cli.config import load_config as _load_pc_cfg
 
             _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
             _ttl = _pc_cfg.get("cache_ttl", "5m")
-            if _ttl in ("5m", "1h"):
+            if _ttl in {"5m", "1h"}:
                 self._cache_ttl = _ttl
+            _ll_enabled = _pc_cfg.get("long_lived_prefix", True)
+            _ll_ttl = _pc_cfg.get("long_lived_ttl", "1h")
+            if _ll_ttl in ("5m", "1h"):
+                self._long_lived_cache_ttl = _ll_ttl
+            if _ll_enabled and self._use_prompt_caching and self._supports_long_lived_anthropic_cache():
+                self._use_long_lived_prefix_cache = True
         except Exception:
             pass
 
@@ -1433,19 +1514,18 @@ class AIAgent:
         if self.verbose_logging:
             setup_verbose_logging()
             logger.info("Verbose logging enabled (third-party library logs suppressed)")
-        else:
-            if self.quiet_mode:
-                # In quiet mode (CLI default), keep console output clean —
-                # but DO NOT raise per-logger levels. Doing so prevents the
-                # root logger's file handlers (agent.log, errors.log) from
-                # ever seeing the records, because Python checks
-                # logger.isEnabledFor() before handler propagation. We rely
-                # on the fact that hermes_logging.setup_logging() does not
-                # install a console StreamHandler in quiet mode — so INFO
-                # records flow to the file handlers but never reach a
-                # console. Any future noise reduction belongs at the
-                # handler level inside hermes_logging.py, not here.
-                pass
+        elif self.quiet_mode:
+            # In quiet mode (CLI default), keep console output clean —
+            # but DO NOT raise per-logger levels. Doing so prevents the
+            # root logger's file handlers (agent.log, errors.log) from
+            # ever seeing the records, because Python checks
+            # logger.isEnabledFor() before handler propagation. We rely
+            # on the fact that hermes_logging.setup_logging() does not
+            # install a console StreamHandler in quiet mode — so INFO
+            # records flow to the file handlers but never reach a
+            # console. Any future noise reduction belongs at the
+            # handler level inside hermes_logging.py, not here.
+            pass
         
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
@@ -1641,7 +1721,7 @@ class AIAgent:
                     # but no credentials were found, fail fast with a clear
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                    if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                         # Look up the actual env var name from the provider
                         # config — some providers use non-standard names
                         # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
@@ -1823,7 +1903,20 @@ class AIAgent:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
+        # Expose session ID to tools (terminal, execute_code) so agents can
+        # reference their own session for --resume commands, cross-session
+        # coordination, and logging.  Uses the ContextVar system from
+        # session_context.py for concurrency safety (gateway runs multiple
+        # sessions in one process).  Also writes os.environ as fallback for
+        # CLI mode where ContextVars aren't used.
+        os.environ["HERMES_SESSION_ID"] = self.session_id
+        try:
+            from gateway.session_context import _SESSION_ID
+            _SESSION_ID.set(self.session_id)
+        except Exception:
+            pass  # CLI/test mode — ContextVar not needed
+
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
@@ -2011,8 +2104,7 @@ class AIAgent:
         try:
             _raw_api_retries = _agent_section.get("api_max_retries", 3)
             _api_retries = int(_raw_api_retries)
-            if _api_retries < 1:
-                _api_retries = 1  # 1 = no retry (single attempt)
+            _api_retries = max(_api_retries, 1)  # 1 = no retry (single attempt)
         except (TypeError, ValueError):
             _api_retries = 3
         self._api_max_retries = _api_retries
@@ -2031,7 +2123,7 @@ class AIAgent:
                 compression_threshold = _model_cthresh
         except Exception:
             pass
-        compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
+        compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
@@ -2388,6 +2480,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2545,7 +2638,7 @@ class AIAgent:
         # tests) can't reintroduce the double-/v1 404 bug.
         if (
             api_mode == "anthropic_messages"
-            and new_provider in ("opencode-zen", "opencode-go")
+            and new_provider in {"opencode-zen", "opencode-go"}
             and isinstance(base_url, str)
             and base_url
         ):
@@ -2553,6 +2646,11 @@ class AIAgent:
 
         old_model = self.model
         old_provider = self.provider
+
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        self._config_context_length = None
 
         # ── Swap core runtime fields ──
         self.model = new_model
@@ -2618,6 +2716,15 @@ class AIAgent:
                 model=new_model,
             )
         )
+        self._use_long_lived_prefix_cache = bool(
+            self._use_prompt_caching
+            and self._supports_long_lived_anthropic_cache(
+                provider=new_provider,
+                base_url=self.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
+        )
 
         # ── LM Studio: preload before probing context length ──
         self._ensure_lmstudio_runtime_loaded()
@@ -2666,6 +2773,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3414,6 +3522,10 @@ class AIAgent:
         provider_lower = eff_provider.lower()
         is_claude = "claude" in model_lower
         is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
+        # Nous Portal proxies to OpenRouter behind the scenes — identical
+        # OpenAI-wire envelope cache_control semantics. Treat it as an
+        # OpenRouter-equivalent endpoint for caching layout purposes.
+        is_nous_portal = "nousresearch" in eff_base_url.lower()
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
         is_native_anthropic = (
             is_anthropic_wire
@@ -3422,7 +3534,16 @@ class AIAgent:
 
         if is_native_anthropic:
             return True, True
-        if is_openrouter and is_claude:
+        if (is_openrouter or is_nous_portal) and is_claude:
+            return True, False
+        # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
+        # cache_control path as Portal Claude. Portal proxies to OpenRouter
+        # and the upstream Qwen route accepts cache_control markers; without
+        # this branch the alibaba-family check below only matches
+        # provider=opencode/alibaba and Portal traffic falls through to
+        # (False, False), serving 0% cache hits and re-billing the full
+        # prompt on every turn.
+        if is_nous_portal and "qwen" in model_lower:
             return True, False
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
@@ -3462,6 +3583,80 @@ class AIAgent:
             return True, False
 
         return False, False
+
+    def _supports_long_lived_anthropic_cache(
+        self,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> bool:
+        """Decide whether the long-lived (1h cross-session) cache layout applies.
+
+        Narrower than ``_anthropic_prompt_cache_policy`` — only enabled
+        for Claude models on the four endpoints whose cross-session
+        cache_control behavior we have explicitly validated:
+
+          * Native Anthropic API (``api_mode == 'anthropic_messages'`` +
+            host ``api.anthropic.com``)
+          * Anthropic OAuth subscription (same transport as native API)
+          * OpenRouter (``base_url`` contains ``openrouter.ai``)
+          * Nous Portal (``base_url`` contains ``nousresearch`` — proxies
+            to OpenRouter, so identical wire-format)
+
+        All four honour ``cache_control`` on both the tools array and the
+        first system content block, and bill cross-session cache reads at
+        the documented 0.1× rate.
+
+        Other endpoints covered by the standard ``system_and_3`` policy
+        (third-party Anthropic gateways, MiniMax, opencode-go Qwen, etc.)
+        keep that layout — they support cache_control but their behavior
+        with mixed-TTL multi-block system content has not been validated
+        against this codebase.
+        """
+        eff_provider = (provider if provider is not None else self.provider) or ""
+        eff_base_url = base_url if base_url is not None else (self.base_url or "")
+        eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
+        eff_model = (model if model is not None else self.model) or ""
+
+        model_lower = eff_model.lower()
+        is_claude = "claude" in model_lower
+        is_nous_portal = "nousresearch" in eff_base_url.lower()
+
+        # Nous Portal Claude rides the 1h prefix_and_2 layout (Portal
+        # proxies to OpenRouter, which honours ttl=1h on Anthropic
+        # routes).  Qwen does NOT — Alibaba DashScope (the upstream for
+        # all Qwen routes, including Portal -> OpenRouter -> Alibaba)
+        # documents a single ``ephemeral`` TTL of 5 minutes; ttl="1h"
+        # on Qwen markers is silently ignored upstream, so the
+        # high-value tools[-1] + system-prefix breakpoints never land
+        # and only the 5m rolling-window markers on the last 2 messages
+        # get cached.  Portal Qwen still gets cache_control via
+        # _anthropic_prompt_cache_policy returning (True, False) — it
+        # just rides the standard system_and_3 5m layout instead of the
+        # mismatched prefix_and_2 1h layout.
+        if is_nous_portal and is_claude:
+            return True
+
+        if not is_claude:
+            return False
+
+        # Native Anthropic + Anthropic OAuth subscription
+        if eff_api_mode == "anthropic_messages":
+            if eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com":
+                return True
+
+        # OpenRouter
+        if base_url_host_matches(eff_base_url, "openrouter.ai"):
+            return True
+
+        # Nous Portal — front-ends OpenRouter behind the scenes; identical
+        # wire format and cache_control semantics.
+        if is_nous_portal:
+            return True
+
+        return False
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -4282,7 +4477,7 @@ class AIAgent:
             metadata["task_id"] = task_id
         if tool_call_id:
             metadata["tool_call_id"] = tool_call_id
-        return {k: v for k, v in metadata.items() if v not in (None, "")}
+        return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -4496,7 +4691,7 @@ class AIAgent:
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":
                             _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
+                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
@@ -4855,11 +5050,11 @@ class AIAgent:
                 context["message"] = message.strip()
             for key in ("resets_at", "reset_at"):
                 value = payload.get(key)
-                if value not in (None, ""):
+                if value not in {None, ""}:
                     context["reset_at"] = value
                     break
             retry_after = payload.get("retry_after")
-            if retry_after not in (None, "") and "reset_at" not in context:
+            if retry_after not in {None, ""} and "reset_at" not in context:
                 try:
                     context["reset_at"] = time.time() + float(retry_after)
                 except (TypeError, ValueError):
@@ -5228,6 +5423,103 @@ class AIAgent:
             text = self._pending_steer
             self._pending_steer = None
         return text
+
+    def _record_file_mutation_result(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        is_error: bool,
+    ) -> None:
+        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
+
+        On failure, store ``{path: {error_preview, tool}}`` entries.  On
+        success, remove any prior failure entries for the same paths (the
+        model recovered within the turn).  Silently no-ops if the per-turn
+        state dict hasn't been initialised yet (e.g. a tool dispatched
+        outside ``run_conversation``).
+        """
+        if tool_name not in _FILE_MUTATING_TOOLS:
+            return
+        state = getattr(self, "_turn_failed_file_mutations", None)
+        if state is None:
+            return
+        targets = _extract_file_mutation_targets(tool_name, args)
+        if not targets:
+            return
+        if is_error:
+            preview = _extract_error_preview(result)
+            for path in targets:
+                # Keep the FIRST error we saw for a given path unless we
+                # later see success.  A repeated failure with a different
+                # message shouldn't silently overwrite the original.
+                if path not in state:
+                    state[path] = {
+                        "tool": tool_name,
+                        "error_preview": preview,
+                    }
+        else:
+            for path in targets:
+                state.pop(path, None)
+
+    def _file_mutation_verifier_enabled(self) -> bool:
+        """Check whether the per-turn file-mutation verifier footer is on.
+
+        Config path: ``display.file_mutation_verifier`` (bool, default True).
+        ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
+        as a method so tests can patch a single seam without reaching into
+        the private ``_turn_failed_file_mutations`` state dict.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
+            if env is not None:
+                return env.strip().lower() not in ("0", "false", "no", "off")
+            # Read from the persisted config.yaml so gateway and CLI share
+            # the same setting.  Import lazily to avoid a startup-time cycle.
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "file_mutation_verifier" in _display:
+                return bool(_display.get("file_mutation_verifier"))
+        except Exception:
+            pass
+        return True  # safe default: verifier on
+
+    @staticmethod
+    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+        """Render the per-turn failed-mutation dict as a user-facing footer.
+
+        Displays up to 10 paths with their first error preview, then a
+        count of any additional failures.  Returns an empty string when
+        the dict is empty so callers can concatenate unconditionally.
+        """
+        if not failed:
+            return ""
+        lines = [
+            "⚠️ File-mutation verifier: "
+            f"{len(failed)} file(s) were NOT modified this turn despite any "
+            "wording above that may suggest otherwise. Run `git status` or "
+            "`read_file` to confirm."
+        ]
+        shown = 0
+        for path, info in failed.items():
+            if shown >= 10:
+                break
+            preview = (info.get("error_preview") or "").strip()
+            tool = info.get("tool") or "patch"
+            if preview:
+                lines.append(f"  • {path} — [{tool}] {preview}")
+            else:
+                lines.append(f"  • {path} — [{tool}] failed")
+            shown += 1
+        remaining = len(failed) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
+        return "\n".join(lines)
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Append any pending /steer text to the last tool result in this turn.
@@ -5610,22 +5902,33 @@ class AIAgent:
 
 
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+        """Assemble the system prompt as three ordered parts.
+
+        Returns a dict with three keys:
+          * ``stable``  — content that is byte-stable across sessions for a
+            given user config: identity, tool guidance, skills prompt,
+            environment hints, platform hints, model-family operational
+            guidance.  Eligible for cross-session 1h prompt caching when
+            placed as a separate Anthropic content block (see
+            ``apply_anthropic_cache_control_long_lived``).
+          * ``context`` — context files (AGENTS.md, .cursorrules, etc.) and
+            caller-supplied system_message.  Stable within a session but may
+            change between sessions when files are edited or the cwd
+            differs.  Cached within-session via the rolling messages
+            breakpoint (5m TTL); not promoted to the long-lived tier so
+            edits don't poison the cross-session cache.
+          * ``volatile`` — content that changes on most turns/sessions:
+            memory snapshot, user profile, external memory provider block,
+            timestamp line.  Never marked for caching.
+
+        Joined ``stable\\n\\ncontext\\n\\nvolatile`` produces the same
+        logical content the old single-string builder produced, with the
+        guarantee that volatile content is at the end (cache-friendly
+        ordering for any provider that does prefix caching).
         """
-        Assemble the full system prompt from all layers.
-        
-        Called once per session (cached on self._cached_system_prompt) and only
-        rebuilt after context compression events. This ensures the system prompt
-        is stable across all turns in a session, maximizing prefix cache hits.
-        """
-        # Layers (in order):
-        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
-        #   2. User / gateway system prompt (if provided)
-        #   3. Persistent memory (frozen snapshot)
-        #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
-        #   6. Current date & time (frozen at build time)
-        #   7. Platform-specific formatting hint
+        # ── Stable tier ────────────────────────────────────────────────
+        stable_parts: List[str] = []
 
         # Try SOUL.md as primary identity unless the caller explicitly skipped it.
         # Some execution modes (cron) still want HERMES_HOME persona while keeping
@@ -5634,15 +5937,15 @@ class AIAgent:
         if self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
-                prompt_parts = [_soul_content]
+                stable_parts.append(_soul_content)
                 _soul_loaded = True
 
         if not _soul_loaded:
             # Fallback to hardcoded identity
-            prompt_parts = [DEFAULT_AGENT_IDENTITY]
+            stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -5659,17 +5962,17 @@ class AIAgent:
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
         if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+            stable_parts.append(" ".join(tool_guidance))
 
         # Computer-use (macOS) — goes in as its own block rather than being
         # merged into tool_guidance because the content is multi-paragraph.
         if "computer_use" in self.valid_tool_names:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            prompt_parts.append(COMPUTER_USE_GUIDANCE)
+            stable_parts.append(COMPUTER_USE_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
-            prompt_parts.append(nous_subscription_prompt)
+            stable_parts.append(nous_subscription_prompt)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -5680,9 +5983,9 @@ class AIAgent:
         if self.valid_tool_names:
             _enforce = self._tool_use_enforcement
             _inject = False
-            if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in ("true", "always", "yes", "on")):
+            if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
                 _inject = True
-            elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in ("false", "never", "no", "off")):
+            elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
                 _inject = False
             elif isinstance(_enforce, list):
                 model_lower = (self.model or "").lower()
@@ -5692,43 +5995,16 @@ class AIAgent:
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
-                prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
                 _model_lower = (self.model or "").lower()
                 # Google model operational guidance (conciseness, absolute
                 # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
-                    prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                    stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
                 # OpenAI GPT/Codex execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
-
-        # so it can refer the user to them rather than reinventing answers.
-
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
-        if system_message is not None:
-            prompt_parts.append(system_message)
-
-        if self._memory_store:
-            if self._memory_enabled:
-                mem_block = self._memory_store.format_for_system_prompt("memory")
-                if mem_block:
-                    prompt_parts.append(mem_block)
-            # USER.md is always included when enabled.
-            if self._user_profile_enabled:
-                user_block = self._memory_store.format_for_system_prompt("user")
-                if user_block:
-                    prompt_parts.append(user_block)
-
-        # External memory provider system prompt block (additive to built-in)
-        if self._memory_manager:
-            try:
-                _ext_mem_block = self._memory_manager.build_system_prompt()
-                if _ext_mem_block:
-                    prompt_parts.append(_ext_mem_block)
-            except Exception:
-                pass
+                    stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -5746,7 +6022,49 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            prompt_parts.append(skills_prompt)
+            stable_parts.append(skills_prompt)
+
+        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
+        # of the requested model. Inject explicit model identity into the system prompt
+        # so the agent can correctly report which model it is (workaround for API bug).
+        # Stable for the lifetime of an agent instance — model and provider are fixed
+        # at construction time.
+        if self.provider == "alibaba":
+            _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
+            stable_parts.append(
+                f"You are powered by the model named {_model_short}. "
+                f"The exact model ID is {self.model}. "
+                f"When asked what model you are, always answer based on this information, "
+                f"not on any model name returned by the API."
+            )
+
+        # Environment hints (WSL, Termux, etc.) — tell the agent about the
+        # execution environment so it can translate paths and adapt behavior.
+        # Stable for the lifetime of the process.
+        _env_hints = build_environment_hints()
+        if _env_hints:
+            stable_parts.append(_env_hints)
+
+        platform_key = (self.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            stable_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    stable_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
+
+        # ── Context tier (cwd-dependent, may change between sessions) ─
+        context_parts: List[str] = []
+
+        # Note: ephemeral_system_prompt is NOT included here. It's injected at
+        # API-call time only so it stays out of the cached/stored system prompt.
+        if system_message is not None:
+            context_parts.append(system_message)
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
@@ -5757,7 +6075,30 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
+                context_parts.append(context_files_prompt)
+
+        # ── Volatile tier (changes per session/turn — never cached) ───
+        volatile_parts: List[str] = []
+
+        if self._memory_store:
+            if self._memory_enabled:
+                mem_block = self._memory_store.format_for_system_prompt("memory")
+                if mem_block:
+                    volatile_parts.append(mem_block)
+            # USER.md is always included when enabled.
+            if self._user_profile_enabled:
+                user_block = self._memory_store.format_for_system_prompt("user")
+                if user_block:
+                    volatile_parts.append(user_block)
+
+        # External memory provider system prompt block (additive to built-in)
+        if self._memory_manager:
+            try:
+                _ext_mem_block = self._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    volatile_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -5768,40 +6109,31 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        volatile_parts.append(timestamp_line)
 
-        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-        # of the requested model. Inject explicit model identity into the system prompt
-        # so the agent can correctly report which model it is (workaround for API bug).
-        if self.provider == "alibaba":
-            _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            prompt_parts.append(
-                f"You are powered by the model named {_model_short}. "
-                f"The exact model ID is {self.model}. "
-                f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API."
-            )
+        return {
+            "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
+            "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
+            "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        }
 
-        # Environment hints (WSL, Termux, etc.) — tell the agent about the
-        # execution environment so it can translate paths and adapt behavior.
-        _env_hints = build_environment_hints()
-        if _env_hints:
-            prompt_parts.append(_env_hints)
+    def _build_system_prompt(self, system_message: str = None) -> str:
+        """
+        Assemble the full system prompt from all layers.
 
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
-        elif platform_key:
-            # Check plugin registry for platform-specific LLM guidance
-            try:
-                from gateway.platform_registry import platform_registry
-                _entry = platform_registry.get(platform_key)
-                if _entry and _entry.platform_hint:
-                    prompt_parts.append(_entry.platform_hint)
-            except Exception:
-                pass
+        Called once per session (cached on self._cached_system_prompt) and only
+        rebuilt after context compression events. This ensures the system prompt
+        is stable across all turns in a session, maximizing prefix cache hits.
 
-        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        Layers are ordered cache-friendly: stable identity/guidance first,
+        then session-stable context files, then per-call volatile content
+        (memory, USER profile, timestamp). The split is exposed via
+        ``_build_system_prompt_parts`` for the long-lived prompt-caching
+        path (Claude on Anthropic / OpenRouter / Nous Portal).
+        """
+        parts = self._build_system_prompt_parts(system_message=system_message)
+        joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+        return joined
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -5937,7 +6269,7 @@ class AIAgent:
                         return False
                     continue
                 btype = block.get("type")
-                if btype in ("thinking", "redacted_thinking"):
+                if btype in {"thinking", "redacted_thinking"}:
                     continue
                 if btype == "text":
                     text = block.get("text", "")
@@ -6667,7 +6999,7 @@ class AIAgent:
                             if done_item is not None:
                                 collected_output_items.append(done_item)
                         # Log non-completed terminal events for diagnostics
-                        elif event_type in ("response.incomplete", "response.failed"):
+                        elif event_type in {"response.incomplete", "response.failed"}:
                             resp_obj = getattr(event, "response", None)
                             status = getattr(resp_obj, "status", None) if resp_obj else None
                             incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
@@ -6769,7 +7101,7 @@ class AIAgent:
                         done_item = event.get("item")
                     if done_item is not None:
                         collected_output_items.append(done_item)
-                elif event_type in ("response.output_text.delta",):
+                elif event_type in {"response.output_text.delta",}:
                     delta = getattr(event, "delta", "")
                     if not delta and isinstance(event, dict):
                         delta = event.get("delta", "")
@@ -7065,7 +7397,7 @@ class AIAgent:
                 effective_reason = FailoverReason.billing
             elif status_code == 429:
                 effective_reason = FailoverReason.rate_limit
-            elif status_code in (401, 403):
+            elif status_code in {401, 403}:
                 effective_reason = FailoverReason.auth
 
         if effective_reason == FailoverReason.billing:
@@ -7728,24 +8060,23 @@ class AIAgent:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
                         deltas_were_sent["yes"] = True
-                    else:
-                        # Tool calls suppress regular content streaming (avoids
-                        # displaying chatty "I'll use the tool..." text alongside
-                        # tool calls).  But reasoning tags embedded in suppressed
-                        # content should still reach the display — otherwise the
-                        # reasoning box only appears as a post-response fallback,
-                        # rendering it confusingly after the already-streamed
-                        # response.  Route suppressed content through the stream
-                        # delta callback so its tag extraction can fire the
-                        # reasoning display.  Non-reasoning text is harmlessly
-                        # suppressed by the CLI's _stream_delta when the stream
-                        # box is already closed (tool boundary flush).
-                        if self.stream_delta_callback:
-                            try:
-                                self.stream_delta_callback(delta.content)
-                                self._record_streamed_assistant_text(delta.content)
-                            except Exception:
-                                pass
+                    # Tool calls suppress regular content streaming (avoids
+                    # displaying chatty "I'll use the tool..." text alongside
+                    # tool calls).  But reasoning tags embedded in suppressed
+                    # content should still reach the display — otherwise the
+                    # reasoning box only appears as a post-response fallback,
+                    # rendering it confusingly after the already-streamed
+                    # response.  Route suppressed content through the stream
+                    # delta callback so its tag extraction can fire the
+                    # reasoning display.  Non-reasoning text is harmlessly
+                    # suppressed by the CLI's _stream_delta when the stream
+                    # box is already closed (tool boundary flush).
+                    elif self.stream_delta_callback:
+                        try:
+                            self.stream_delta_callback(delta.content)
+                            self._record_streamed_assistant_text(delta.content)
+                        except Exception:
+                            pass
 
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
@@ -8387,7 +8718,7 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
+        if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
             # Only start cooldown when leaving the primary provider.  If we're
             # already on a fallback and chain-switching, the primary wasn't the
             # source of the 429 so the cooldown should not be reset/extended.
@@ -8498,6 +8829,11 @@ class AIAgent:
                 fb_api_mode = "bedrock_converse"
 
             old_model = self.model
+
+            # Clear the per-config context_length override so the fallback
+            # model's actual context window is resolved instead of inheriting
+            # the stale value from the previous model.  See #22387.
+            self._config_context_length = None
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
@@ -8554,6 +8890,15 @@ class AIAgent:
             # Re-evaluate prompt caching for the new provider/model
             self._use_prompt_caching, self._use_native_cache_layout = (
                 self._anthropic_prompt_cache_policy(
+                    provider=fb_provider,
+                    base_url=fb_base_url,
+                    api_mode=fb_api_mode,
+                    model=fb_model,
+                )
+            )
+            self._use_long_lived_prefix_cache = bool(
+                self._use_prompt_caching
+                and self._supports_long_lived_anthropic_cache(
                     provider=fb_provider,
                     base_url=fb_base_url,
                     api_mode=fb_api_mode,
@@ -8636,6 +8981,16 @@ class AIAgent:
                 "use_native_cache_layout",
                 self.api_mode == "anthropic_messages" and self.provider == "anthropic",
             )
+            # Long-lived prefix flag was added later — restore False on
+            # snapshots predating the new field, then re-evaluate against
+            # the restored provider/model in case the user had it enabled.
+            self._use_long_lived_prefix_cache = rt.get(
+                "use_long_lived_prefix_cache",
+                bool(
+                    self._use_prompt_caching
+                    and self._supports_long_lived_anthropic_cache()
+                ),
+            )
 
             # ── Rebuild client for the primary provider ──
             if self.api_mode == "anthropic_messages":
@@ -8713,7 +9068,7 @@ class AIAgent:
         if self._is_openrouter_url():
             return False
         provider_lower = (self.provider or "").strip().lower()
-        if provider_lower in ("nous", "nous-research"):
+        if provider_lower in {"nous", "nous-research"}:
             return False
 
         try:
@@ -9213,6 +9568,20 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        # Resolve the tools array exactly once. When the long-lived
+        # prefix-cache layout is active (Claude on Anthropic / OpenRouter
+        # / Nous Portal), attach a 1h cache_control marker to the last
+        # tool — this caches the entire tools array cross-session via
+        # Anthropic's tools→system→messages prefix order. The function
+        # returns a deep copy, so self.tools is never mutated.
+        if self._use_long_lived_prefix_cache and self.tools:
+            from agent.prompt_caching import mark_tools_for_long_lived_cache
+            tools_for_api = mark_tools_for_long_lived_cache(
+                self.tools, long_lived_ttl=self._long_lived_cache_ttl,
+            )
+        else:
+            tools_for_api = self.tools
+
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -9224,7 +9593,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -9244,7 +9613,7 @@ class AIAgent:
             return _bt.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
@@ -9268,7 +9637,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=_msgs_for_codex,
-                tools=self.tools,
+                tools=tools_for_api,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -9359,7 +9728,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 base_url=self.base_url,
                 timeout=self._resolved_api_call_timeout(),
                 max_tokens=self.max_tokens,
@@ -9391,7 +9760,7 @@ class AIAgent:
         return _ct.build_kwargs(
             model=self.model,
             messages=_msgs_for_chat,
-            tools=self.tools,
+            tools=tools_for_api,
             base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
@@ -10078,6 +10447,12 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                os.environ["HERMES_SESSION_ID"] = self.session_id
+                try:
+                    from gateway.session_context import _SESSION_ID
+                    _SESSION_ID.set(self.session_id)
+                except Exception:
+                    pass
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db_created = False
@@ -10089,25 +10464,6 @@ class AIAgent:
                     parent_session_id=old_session_id,
                 )
                 self._session_db_created = True
-                # Forward any standing /goal state from the parent session to
-                # the continuation session so the goal loop survives
-                # auto-compression. Without this rebind, _get_goal_manager()
-                # constructs a fresh manager keyed on the new session_id,
-                # load_goal() returns None, mgr.is_active() is False, and
-                # the loop silently dies mid-task. The goal is stored in
-                # state_meta under "goal:<sid>" by hermes_cli.goals.
-                try:
-                    _goal_meta_key_old = f"goal:{old_session_id}"
-                    _goal_meta_key_new = f"goal:{self.session_id}"
-                    _goal_blob = self._session_db.get_meta(_goal_meta_key_old)
-                    if _goal_blob:
-                        self._session_db.set_meta(_goal_meta_key_new, _goal_blob)
-                        logger.info(
-                            "goal: forwarded standing goal from %s → %s on compression",
-                            old_session_id, self.session_id,
-                        )
-                except Exception as exc:
-                    logger.debug("goal forward on compression failed: %s", exc)
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:
@@ -10326,7 +10682,7 @@ class AIAgent:
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -10425,7 +10781,7 @@ class AIAgent:
                 function_args = {}
 
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -10696,6 +11052,17 @@ class AIAgent:
                     result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+                # Track file-mutation outcome for the turn-end verifier.
+                # `blocked` calls never actually ran — don't let a guardrail
+                # block count as either a failure or a success.
+                if not blocked:
+                    try:
+                        self._record_file_mutation_result(
+                            function_name, function_args, function_result, is_error,
+                        )
+                    except Exception as _ver_err:
+                        logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
                 if not blocked and self.tool_progress_callback:
                     try:
                         self.tool_progress_callback(
@@ -10839,12 +11206,11 @@ class AIAgent:
                 # Tool blocked by plugin or guardrail policy — skip counters,
                 # callbacks, checkpointing, activity mutation, and real execution.
                 pass
-            else:
-                # Reset nudge counters when the relevant tool is actually used
-                if function_name == "memory":
-                    self._turns_since_memory = 0
-                elif function_name == "skill_manage":
-                    self._iters_since_skill = 0
+            # Reset nudge counters when the relevant tool is actually used
+            elif function_name == "memory":
+                self._turns_since_memory = 0
+            elif function_name == "skill_manage":
+                self._iters_since_skill = 0
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -10883,7 +11249,7 @@ class AIAgent:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if not _execution_blocked and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if not _execution_blocked and function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -10955,7 +11321,7 @@ class AIAgent:
                     store=self._memory_store,
                 )
                 # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
@@ -11122,6 +11488,18 @@ class AIAgent:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+
+            # Track file-mutation outcome for the turn-end verifier.  See
+            # the concurrent path for the rationale; both paths must feed
+            # the same state so the footer reflects every tool call in the
+            # turn, not just the parallel ones.
+            if not _execution_blocked:
+                try:
+                    self._record_file_mutation_result(
+                        function_name, function_args, function_result, _is_error_result,
+                    )
+                except Exception as _ver_err:
+                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if not _execution_blocked and self.tool_progress_callback:
                 try:
@@ -11820,6 +12198,14 @@ class AIAgent:
         truncated_response_prefix = ""
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+        # Per-turn file-mutation verifier state.  Keyed by resolved path;
+        # each failed ``write_file`` / ``patch`` call records the error
+        # preview.  Later successful writes to the same path remove the
+        # entry (the model recovered).  At end-of-turn, any entries still
+        # present are surfaced in an advisory footer so the model cannot
+        # over-claim success while the file is actually unchanged on disk.
+        self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -12053,20 +12439,42 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            #
+            # When the long-lived prefix-cache layout is active (Claude on
+            # Anthropic / OpenRouter / Nous Portal), we build the system
+            # message as a *list of content blocks*: [stable, context,
+            # volatile, ephemeral?].  Block 0 (stable) gets the 1h
+            # cache_control marker further down via
+            # apply_anthropic_cache_control_long_lived; blocks 1-3 are
+            # cached only via the rolling messages window at 5m.
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
             # cache prefix.  The system prompt is reserved for Hermes internals.
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            if self._use_long_lived_prefix_cache:
+                _sys_parts = self._build_system_prompt_parts(system_message=system_message)
+                _sys_blocks: list = []
+                if _sys_parts.get("stable"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["stable"]})
+                if _sys_parts.get("context"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["context"]})
+                if _sys_parts.get("volatile"):
+                    _sys_blocks.append({"type": "text", "text": _sys_parts["volatile"]})
+                if self.ephemeral_system_prompt:
+                    _sys_blocks.append({"type": "text", "text": self.ephemeral_system_prompt})
+                if _sys_blocks:
+                    api_messages = [{"role": "system", "content": _sys_blocks}] + api_messages
+            else:
+                effective_system = active_system_prompt or ""
+                if self.ephemeral_system_prompt:
+                    effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                if effective_system:
+                    api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
+                sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
@@ -12077,12 +12485,27 @@ class AIAgent:
             # to reduce input token costs by ~75% on multi-turn
             # conversations. Layout is chosen per endpoint by
             # ``_anthropic_prompt_cache_policy``.
+            #
+            # Long-lived prefix layout (prefix_and_2): stable system block
+            # gets 1h marker + last 2 messages get 5m markers. Tools
+            # array's last entry is marked separately at API-call kwargs
+            # build time (see ``_build_api_kwargs`` and
+            # ``mark_tools_for_long_lived_cache``).
             if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(
-                    api_messages,
-                    cache_ttl=self._cache_ttl,
-                    native_anthropic=self._use_native_cache_layout,
-                )
+                if self._use_long_lived_prefix_cache:
+                    from agent.prompt_caching import apply_anthropic_cache_control_long_lived
+                    api_messages = apply_anthropic_cache_control_long_lived(
+                        api_messages,
+                        long_lived_ttl=self._long_lived_cache_ttl,
+                        rolling_ttl=self._cache_ttl,
+                        native_anthropic=self._use_native_cache_layout,
+                    )
+                else:
+                    api_messages = apply_anthropic_cache_control(
+                        api_messages,
+                        cache_ttl=self._cache_ttl,
+                        native_anthropic=self._use_native_cache_layout,
+                    )
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not
@@ -12485,9 +12908,9 @@ class AIAgent:
                             _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                         elif _resp_error_code == 429:
                             _failure_hint = f"rate limited by upstream provider (429)"
-                        elif _resp_error_code in (500, 502):
+                        elif _resp_error_code in {500, 502}:
                             _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
-                        elif _resp_error_code in (503, 529):
+                        elif _resp_error_code in {503, 529}:
                             _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
                         elif _resp_error_code is not None:
                             _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
@@ -12675,7 +13098,7 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                             assistant_message = _trunc_msg
                             if assistant_message is not None and not _trunc_has_tool_calls:
                                 length_continue_retries += 1
@@ -12715,7 +13138,7 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                             assistant_message = _trunc_msg
                             if assistant_message is not None and _trunc_has_tool_calls:
                                 if truncated_tool_call_retries < 1:
@@ -13136,6 +13559,21 @@ class AIAgent:
                         "does not support multimodal",
                         "does not support vision",
                         "model does not support image",
+                        # ChatGPT-account Codex backend
+                        # (https://chatgpt.com/backend-api/codex) rejects
+                        # data:image/...base64 URLs in input_image fields
+                        # with HTTP 400 "Invalid 'input[N].content[K].image_url'.
+                        # Expected a valid URL, but got a value with an
+                        # invalid format." The OpenAI Responses API on the
+                        # public endpoint accepts data URLs, but the
+                        # ChatGPT-account variant does not. Without this
+                        # phrase the agent cascaded into compression /
+                        # context-too-large recovery instead of just
+                        # stripping the images. Match is narrow on
+                        # purpose — keyed on the field-path apostrophe so
+                        # we don't false-trip on other URL validation
+                        # errors. (issue #23570)
+                        "image_url'. expected",
                     )
                     _err_lower = _err_body.lower()
                     _looks_like_image_rejection = any(
@@ -13532,10 +13970,10 @@ class AIAgent:
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the
                     # primary provider won't recover within the retry window.
-                    is_rate_limited = classified.reason in (
+                    is_rate_limited = classified.reason in {
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
-                    )
+                    }
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
@@ -13860,7 +14298,7 @@ class AIAgent:
                         or (
                             not classified.retryable
                             and not classified.should_compress
-                            and classified.reason not in (
+                            and classified.reason not in {
                                 FailoverReason.rate_limit,
                                 FailoverReason.billing,
                                 FailoverReason.overloaded,
@@ -13868,7 +14306,7 @@ class AIAgent:
                                 FailoverReason.payload_too_large,
                                 FailoverReason.long_context_tier,
                                 FailoverReason.thinking_signature,
-                            )
+                            }
                         )
                     ) and not is_context_length_error
 
@@ -14021,7 +14459,7 @@ class AIAgent:
                             _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                             if _ra_raw:
                                 try:
-                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                    _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
@@ -14987,7 +15425,41 @@ class AIAgent:
                     "— requesting summary..."
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
-        
+
+            # If running as a kanban worker, block the task so the dispatcher
+            # knows the worker could not complete (rather than treating it as a
+            # protocol violation).  The agent loop strips tools before calling
+            # _handle_max_iterations, so the model cannot call kanban_block
+            # itself — we must do it on its behalf.
+            _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+            if _kanban_task:
+                try:
+                    handle_function_call(
+                        "kanban_block",
+                        {
+                            "task_id": _kanban_task,
+                            "reason": (
+                                f"Iteration budget exhausted "
+                                f"({api_call_count}/{self.max_iterations}) — "
+                                "task could not complete within the allowed "
+                                "iterations"
+                            ),
+                        },
+                        task_id=effective_task_id,
+                    )
+                    logger.info(
+                        "kanban_block called for task %s after iteration "
+                        "exhaustion (%d/%d)",
+                        _kanban_task, api_call_count, self.max_iterations,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to call kanban_block after iteration "
+                        "exhaustion for task %s",
+                        _kanban_task,
+                        exc_info=True,
+                    )
+
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
@@ -15048,6 +15520,31 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        # File-mutation verifier footer.
+        # If one or more ``write_file`` / ``patch`` calls failed during this
+        # turn and were never superseded by a successful write to the same
+        # path, append an advisory footer to the assistant response.  This
+        # catches the specific case — reported by Ben Eng (#15524-adjacent)
+        # — where a model issues a batch of parallel patches, half of them
+        # fail with "Could not find old_string", and the model summarises
+        # the turn claiming every file was edited.  The user then has to
+        # manually run ``git status`` to catch the lie.  With this footer
+        # the truth is surfaced on every turn, so over-claiming is
+        # structurally impossible past the model.
+        #
+        # Gate: only applied when a real text response exists for this
+        # turn and the user didn't interrupt.  Empty/interrupted turns
+        # already have other surface text that shouldn't be augmented.
+        if final_response and not interrupted:
+            try:
+                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+                if _failed and self._file_mutation_verifier_enabled():
+                    footer = self._format_file_mutation_failure_footer(_failed)
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
+            except Exception as _ver_err:
+                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
         # Plugin hook: transform_llm_output
         # Fired once per turn after the tool-calling loop completes.
@@ -15281,9 +15778,9 @@ def main(
             info = get_toolset_info(name)
             if info:
                 entry = (name, info)
-                if name in ["web", "terminal", "vision", "creative", "reasoning"]:
+                if name in {"web", "terminal", "vision", "creative", "reasoning"}:
                     basic_toolsets.append(entry)
-                elif name in ["research", "development", "analysis", "content_creation", "full_stack"]:
+                elif name in {"research", "development", "analysis", "content_creation", "full_stack"}:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)

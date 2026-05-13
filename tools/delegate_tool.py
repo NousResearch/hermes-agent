@@ -1905,6 +1905,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    write_memory: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2063,6 +2064,20 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # Inject restricted memory write capability when requested
+            if write_memory:
+                from tools.subagent_memory_tool import (
+                    make_subagent_memory_writer,
+                    SUBAGENT_MEMORY_WRITE_SCHEMA,
+                )
+                writer = make_subagent_memory_writer(parent_agent)
+                if writer is not None:
+                    child._subagent_memory_writer = writer
+                    child.tools.append({
+                        "type": "function",
+                        "function": SUBAGENT_MEMORY_WRITE_SCHEMA,
+                    })
+                    child.valid_tool_names.add("subagent_memory_write")
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
@@ -2737,6 +2752,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "write_memory": {
+                "type": "boolean",
+                "description": (
+                    "Allow the subagent to write findings to the parent's persistent memory "
+                    "via the subagent_memory_write tool. Append-only, max 3 writes of 400 chars "
+                    "each. Entries are tagged [subagent] so the parent can identify them. "
+                    "Does nothing if the parent has no memory provider configured. "
+                    "Default: false."
+                ),
+            },
         },
         "required": [],
     },
@@ -2760,6 +2785,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
+        write_memory=args.get("write_memory", False),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

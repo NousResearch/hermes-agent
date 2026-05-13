@@ -1607,9 +1607,6 @@ maybe_start_gateway() {
     fi
 
     HAS_MESSAGING=false
-    # INKBOX_API_KEY is included so Inkbox-only installs (the fork's
-    # default path) get the same end-of-install "install as a service?"
-    # nudge as Telegram/Discord/etc. users.
     for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED INKBOX_API_KEY; do
         VAL=$(grep "^${VAR}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
         if [ -n "$VAL" ] && [ "$VAL" != "your-token-here" ]; then

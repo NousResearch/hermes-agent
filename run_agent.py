@@ -181,6 +181,7 @@ from agent.tool_guardrails import (
     append_toolguard_guidance,
     toolguard_synthetic_result,
 )
+from agent.tool_result_classification import file_mutation_result_landed
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -5347,7 +5348,8 @@ class AIAgent:
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
             return
-        if is_error:
+        landed = file_mutation_result_landed(tool_name, result)
+        if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we

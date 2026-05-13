@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -3564,6 +3565,57 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
+    def _initial_dashboard_theme() -> Optional[Dict[str, Any]]:
+        """Return the active custom dashboard theme for first paint, if any.
+
+        Custom YAML themes normally arrive from ``/api/dashboard/themes`` after
+        React mounts; embedding the active custom definition into ``index.html``
+        lets the client initialize from the right theme immediately. Built-in
+        themes remain owned by the frontend bundle.
+        """
+        try:
+            config = load_config()
+            active = cfg_get(config, "dashboard", "theme", default="default")
+            if not isinstance(active, str) or not active:
+                return None
+            for theme in _discover_user_themes():
+                if theme.get("name") == active:
+                    return {"active": active, "definition": theme}
+        except Exception:
+            return None
+        return None
+
+    def _dashboard_theme_layer_color(
+        initial_theme: Dict[str, Any],
+        layer: str,
+        fallback: str,
+    ) -> str:
+        definition = initial_theme.get("definition")
+        palette = definition.get("palette") if isinstance(definition, dict) else None
+        layer_value = palette.get(layer) if isinstance(palette, dict) else None
+        color = layer_value.get("hex") if isinstance(layer_value, dict) else None
+        if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{3,8}", color.strip()):
+            return color.strip()
+        return fallback
+
+    def _dashboard_theme_head() -> str:
+        initial_theme = _initial_dashboard_theme()
+        if not initial_theme:
+            return ""
+        background = _dashboard_theme_layer_color(initial_theme, "background", "#041c1c")
+        midground = _dashboard_theme_layer_color(initial_theme, "midground", "#ffe6cb")
+        first_paint_style = (
+            '<style id="hermes-initial-custom-theme">'
+            f":root{{--background-base:{background};--midground-base:{midground};}}"
+            f"html,body,#root{{background:{background};color:{midground};}}"
+            "</style>"
+        )
+        payload = json.dumps(initial_theme, ensure_ascii=False).replace("</", "<\\/")
+        return (
+            first_paint_style
+            + f"<script>window.__HERMES_INITIAL_DASHBOARD_THEME__={payload};</script>"
+        )
+
     def _serve_index(prefix: str = ""):
         """Return index.html with the session token + base-path injected.
 
@@ -3577,6 +3629,7 @@ def mount_spa(application: FastAPI):
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
+        theme_head = _dashboard_theme_head()
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -3586,7 +3639,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{token_script}</head>", 1)
+        html = html.replace("</head>", f"{token_script}{theme_head}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -3647,7 +3700,6 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
-
 
 def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
     """Normalise a theme layer spec from YAML into `{hex, alpha}` form.

@@ -22,13 +22,139 @@ import type {
 } from "./types";
 import { api } from "@/lib/api";
 
+declare global {
+  interface Window {
+    __HERMES_INITIAL_DASHBOARD_THEME__?: {
+      active?: string;
+      definition?: DashboardTheme;
+    };
+  }
+}
+
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
 const STORAGE_KEY = "hermes-dashboard-theme";
+const DEFINITION_CACHE_KEY = `${STORAGE_KEY}:definitions`;
+const FIRST_PAINT_CACHE_KEY = `${STORAGE_KEY}:first-paint`;
+
+interface FirstPaintCache {
+  background: string;
+  midground: string;
+  name: string;
+}
 
 /** Tracks fontUrls we've already injected so multiple theme switches don't
  *  pile up <link> tags. Keyed by URL. */
 const INJECTED_FONT_URLS = new Set<string>();
+
+function readCachedThemeDefinitions(): Record<string, DashboardTheme> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(DEFINITION_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const defs: Record<string, DashboardTheme> = {};
+    for (const value of Object.values(parsed)) {
+      const theme = value as Partial<DashboardTheme> | null;
+      if (
+        theme &&
+        typeof theme.name === "string" &&
+        theme.palette &&
+        theme.typography &&
+        theme.layout
+      ) {
+        defs[theme.name] = theme as DashboardTheme;
+      }
+    }
+    return defs;
+  } catch {
+    return {};
+  }
+}
+
+function writeCachedThemeDefinitions(defs: Record<string, DashboardTheme>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DEFINITION_CACHE_KEY, JSON.stringify(defs));
+  } catch {}
+}
+
+function mergeThemeDefinitions(
+  existing: Record<string, DashboardTheme>,
+  incoming: Record<string, DashboardTheme>,
+): Record<string, DashboardTheme> {
+  return Object.keys(incoming).length ? { ...existing, ...incoming } : existing;
+}
+
+function definitionsFromEntries(
+  entries: Array<{ definition?: DashboardTheme }>,
+): Record<string, DashboardTheme> {
+  const defs: Record<string, DashboardTheme> = {};
+  for (const entry of entries) {
+    const definition = entry.definition;
+    if (definition?.name) defs[definition.name] = definition;
+  }
+  return defs;
+}
+
+function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value.trim());
+}
+
+function readCachedFirstPaint(): FirstPaintCache | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(FIRST_PAINT_CACHE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as Partial<FirstPaintCache> | null;
+    if (
+      parsed &&
+      typeof parsed.name === "string" &&
+      isHexColor(parsed.background) &&
+      isHexColor(parsed.midground)
+    ) {
+      return {
+        name: parsed.name,
+        background: parsed.background.trim(),
+        midground: parsed.midground.trim(),
+      };
+    }
+  } catch {}
+  return undefined;
+}
+
+function writeCachedFirstPaint(theme: DashboardTheme) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      FIRST_PAINT_CACHE_KEY,
+      JSON.stringify({
+        name: theme.name,
+        background: theme.palette.background.hex,
+        midground: theme.palette.midground.hex,
+      }),
+    );
+  } catch {}
+}
+
+function applyCachedFirstPaint() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const activeName = window.localStorage.getItem(STORAGE_KEY);
+  const cached = readCachedFirstPaint();
+  if (!activeName || !cached || cached.name !== activeName) return;
+
+  const root = document.documentElement;
+  root.style.setProperty("--background-base", cached.background);
+  root.style.setProperty("--midground-base", cached.midground);
+  root.style.background = cached.background;
+  root.style.color = cached.midground;
+  document.body.style.background = cached.background;
+  document.body.style.color = cached.midground;
+  document.getElementById("root")?.style.setProperty("background", cached.background);
+}
+
+applyCachedFirstPaint();
 
 // ---------------------------------------------------------------------------
 // CSS variable builders
@@ -296,6 +422,7 @@ function applyTheme(theme: DashboardTheme) {
   injectFontStylesheet(theme.typography.fontUrl);
   applyCustomCSS(theme.customCSS);
   applyLayoutVariant(theme.layoutVariant);
+  writeCachedFirstPaint(theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +430,18 @@ function applyTheme(theme: DashboardTheme) {
 // ---------------------------------------------------------------------------
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const initialTheme =
+    typeof window === "undefined" ? undefined : window.__HERMES_INITIAL_DASHBOARD_THEME__;
+  const cachedThemeDefs = useMemo(() => readCachedThemeDefinitions(), []);
+
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
+    const initialName = initialTheme?.active ?? initialTheme?.definition?.name;
+    if (initialName) {
+      window.localStorage.setItem(STORAGE_KEY, initialName);
+      return initialName;
+    }
     return window.localStorage.getItem(STORAGE_KEY) ?? "default";
   });
 
@@ -323,7 +459,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
    *  these so custom YAMLs apply without a client-side stub. */
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
-  >({});
+  >(() => {
+    const definition = initialTheme?.definition;
+    return definition?.name
+      ? { ...cachedThemeDefs, [definition.name]: definition }
+      : cachedThemeDefs;
+  });
 
   // Resolve a theme name to a full DashboardTheme, falling back to default
   // only when neither a built-in nor a user theme is found.
@@ -362,13 +503,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
             })),
           );
           // Index any definitions the server shipped (user themes).
-          const defs: Record<string, DashboardTheme> = {};
-          for (const entry of resp.themes) {
-            if (entry.definition) {
-              defs[entry.name] = entry.definition;
-            }
+          const defs = definitionsFromEntries(resp.themes);
+          if (Object.keys(defs).length > 0) {
+            setUserThemeDefs((prev) => {
+              const next = mergeThemeDefinitions(prev, defs);
+              writeCachedThemeDefinitions(next);
+              return next;
+            });
           }
-          if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
         if (resp.active && resp.active !== themeName) {
           setThemeName(resp.active);
@@ -394,6 +536,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setThemeName(next);
       if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, next);
+        const definition =
+          availableThemes.find((t) => t.name === next)?.definition ??
+          userThemeDefs[next];
+        if (definition) {
+          writeCachedThemeDefinitions({
+            ...readCachedThemeDefinitions(),
+            [definition.name]: definition,
+          });
+        }
       }
       api.setTheme(next).catch(() => {});
     },

@@ -20,6 +20,7 @@ from .store import (
     list_artifacts,
     list_events,
     list_workflows,
+    save_dag,
 )
 
 __all__ = [
@@ -42,5 +43,6 @@ __all__ = [
     "list_workflows",
     "load_policy",
     "normalize_dag",
+    "save_dag",
     "validate_dag",
 ]

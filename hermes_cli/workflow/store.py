@@ -418,6 +418,64 @@ def list_artifacts(conn: sqlite3.Connection, workflow_id: str, *, kind: str | No
     return [_artifact_from_row(row) for row in rows]
 
 
+def save_dag(conn: sqlite3.Connection, *, workflow_id: str, normalized_dag: dict[str, Any], now: float | None = None) -> None:
+    """Replace persisted workflow nodes and edges from a normalized DAG."""
+
+    if get_workflow(conn, workflow_id) is None:
+        raise ValueError(f"workflow not found: {workflow_id}")
+    dag_workflow_id = normalized_dag.get("workflow_id")
+    if dag_workflow_id is not None and dag_workflow_id != workflow_id:
+        raise ValueError(f"normalized DAG workflow_id does not match {workflow_id}: {dag_workflow_id}")
+    ts = time.time() if now is None else now
+    nodes = normalized_dag.get("nodes", [])
+    edges = normalized_dag.get("edges", [])
+    with conn:
+        conn.execute("DELETE FROM workflow_edges WHERE workflow_id = ?", (workflow_id,))
+        conn.execute("DELETE FROM workflow_nodes WHERE workflow_id = ?", (workflow_id,))
+        for node in nodes:
+            workspace = node.get("workspace") if isinstance(node.get("workspace"), dict) else {}
+            gate = node.get("gate") if isinstance(node.get("gate"), dict) else {}
+            conn.execute(
+                """
+                INSERT INTO workflow_nodes (
+                  workflow_id, node_id, title, role, profile, status, gate_level,
+                  gate_type, kanban_task_id, branch, worktree_path, base_ref,
+                  definition_of_done_json, scope_json, evidence_json, metadata_json,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    workflow_id,
+                    node["id"],
+                    node.get("title", ""),
+                    node["role"],
+                    node.get("profile"),
+                    node.get("status", "waiting"),
+                    node.get("gate_level", 1),
+                    gate.get("type"),
+                    node.get("kanban_task_id"),
+                    node.get("branch") or workspace.get("branch"),
+                    node.get("worktree_path") or workspace.get("worktree_path"),
+                    node.get("base_ref") or workspace.get("base_ref"),
+                    _json(node.get("definition_of_done", [])),
+                    _json(node.get("scope", {})),
+                    _json(node.get("evidence", {})),
+                    _json(node.get("metadata", {})),
+                    ts,
+                    ts,
+                ),
+            )
+        for edge in edges:
+            conn.execute(
+                """
+                INSERT INTO workflow_edges (workflow_id, parent_node_id, child_node_id, kind)
+                VALUES (?, ?, ?, ?)
+                """,
+                (workflow_id, edge["source"], edge["target"], edge.get("kind", "depends_on")),
+            )
+        conn.execute("UPDATE workflows SET updated_at = ? WHERE id = ?", (ts, workflow_id))
+
+
 def add_event(
     conn: sqlite3.Connection,
     *,

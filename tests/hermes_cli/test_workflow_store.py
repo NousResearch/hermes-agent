@@ -14,6 +14,7 @@ from hermes_cli.workflow.store import (
     list_artifacts,
     list_events,
     list_workflows,
+    save_dag,
 )
 
 
@@ -166,6 +167,77 @@ def test_add_and_list_artifacts_records_auditable_file_metadata(tmp_path):
     assert artifact.metadata == {"source": "test"}
     assert artifact.to_dict()["createdAt"] == 3.5
     assert [item.id for item in artifacts] == ["art_dag"]
+
+
+def test_save_dag_replaces_nodes_and_edges_transactionally(tmp_path):
+    normalized = {
+        "nodes": [
+            {
+                "id": "backend-api",
+                "title": "Implement backend API",
+                "role": "engineer",
+                "profile": "engineer",
+                "status": "waiting",
+                "parents": [],
+                "gate_level": 1,
+                "definition_of_done": ["Tests pass."],
+                "scope": {"summary": "Build API."},
+                "workspace": {"kind": "worktree", "base_ref": "origin/main"},
+            },
+            {
+                "id": "integration",
+                "title": "Integrate outputs",
+                "role": "integrator",
+                "profile": "integrator",
+                "status": "waiting",
+                "parents": ["backend-api"],
+                "gate_level": 2,
+                "gate": {"type": "integration_review"},
+                "definition_of_done": ["Integration tests pass."],
+                "scope": {"summary": "Integrate API."},
+            },
+        ],
+        "edges": [{"source": "backend-api", "target": "integration", "kind": "depends_on"}],
+    }
+
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_dag", title="DAG")
+        save_dag(conn, workflow_id="wf_dag", normalized_dag=normalized, now=10.0)
+        save_dag(
+            conn,
+            workflow_id="wf_dag",
+            normalized_dag={**normalized, "nodes": normalized["nodes"][:1], "edges": []},
+            now=11.0,
+        )
+
+        node_rows = conn.execute("SELECT * FROM workflow_nodes WHERE workflow_id = ?", ("wf_dag",)).fetchall()
+        edge_rows = conn.execute("SELECT * FROM workflow_edges WHERE workflow_id = ?", ("wf_dag",)).fetchall()
+        workflow = get_workflow(conn, "wf_dag")
+
+    assert workflow is not None
+    assert workflow.updated_at == 11.0
+    assert len(node_rows) == 1
+    assert node_rows[0]["node_id"] == "backend-api"
+    assert node_rows[0]["role"] == "engineer"
+    assert node_rows[0]["base_ref"] == "origin/main"
+    assert node_rows[0]["definition_of_done_json"] == '["Tests pass."]'
+    assert node_rows[0]["scope_json"] == '{"summary":"Build API."}'
+    assert node_rows[0]["created_at"] == 11.0
+    assert node_rows[0]["updated_at"] == 11.0
+    assert edge_rows == []
+
+
+def test_save_dag_rejects_workflow_id_mismatch(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_dag", title="DAG")
+        with pytest.raises(ValueError, match="normalized DAG workflow_id does not match wf_dag"):
+            save_dag(conn, workflow_id="wf_dag", normalized_dag={"workflow_id": "wf_other", "nodes": [], "edges": []})
+
+
+def test_save_dag_rejects_unknown_workflow(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="workflow not found: wf_missing"):
+            save_dag(conn, workflow_id="wf_missing", normalized_dag={"nodes": [], "edges": []})
 
 
 def test_add_artifact_rejects_unknown_workflow_and_missing_file(tmp_path):

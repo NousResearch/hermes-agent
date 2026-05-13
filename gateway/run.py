@@ -8742,7 +8742,17 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # Detect service-managed environments: systemd (INVOCATION_ID),
+        # Docker (/.dockerenv), or Podman (/run/.containerenv).  In these
+        # environments the detached-subprocess restart approach doesn't work
+        # because the container/service kills all child processes when the
+        # main process exits.  Use the service restart path (exit code 75)
+        # instead, letting the supervisor handle the restart.
+        _under_service = bool(
+            os.environ.get("INVOCATION_ID")  # systemd
+            or os.path.isfile("/.dockerenv")  # Docker
+            or os.path.isfile("/run/.containerenv")  # Podman
+        )
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:

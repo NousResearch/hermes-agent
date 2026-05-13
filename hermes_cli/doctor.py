@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import shutil
-from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 
@@ -31,6 +30,7 @@ os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(HERMES_HOME))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.paperclip_runtime import paperclip_runtime_diagnostics
 from hermes_constants import OPENROUTER_MODELS_URL
 
 
@@ -321,6 +321,37 @@ def run_doctor(args):
                 fixed_count += 1
             else:
                 check_warn(f"~/.hermes/{subdir_name}/ not found", "(will be created on first use)")
+
+    # =========================================================================
+    # Check: Paperclip/Fleet runtime context
+    # =========================================================================
+    print()
+    print(color("◆ Paperclip/Fleet Runtime", Colors.CYAN, Colors.BOLD))
+    paperclip = paperclip_runtime_diagnostics(hermes_home=hermes_home)
+    context = paperclip["context"]
+    if paperclip["paperclip_managed_routines"]:
+        check_ok("Paperclip-managed routine authority enabled")
+    else:
+        check_info("Paperclip-managed routine authority not enabled")
+    if context.get("fleet_runtime_id"):
+        check_ok("Fleet runtime identity", f"({context['fleet_runtime_id']})")
+    else:
+        check_warn("Fleet runtime identity missing", "(set FLEET_RUNTIME_ID in the Fleet env pack)")
+    if context.get("paperclip_company_id") and context.get("paperclip_node_id"):
+        check_ok("Paperclip org link", f"({context['paperclip_company_id']} / {context['paperclip_node_id']})")
+    else:
+        check_warn("Paperclip org link missing", "(set Paperclip company/node ids in the Fleet env pack)")
+    contract = paperclip["routine_contract"]
+    if contract["exists"]:
+        check_ok("Routine contract file", f"(sha256 {contract['sha256']})")
+    else:
+        check_warn("Routine contract file missing", f"({contract['path']})")
+    unmanaged = paperclip["local_cron"]["not_backed_by_paperclip_routines"]
+    if unmanaged:
+        check_warn("Local cron jobs not backed by Paperclip routines", f"({len(unmanaged)})")
+        issues.append("Review local cron jobs not backed by Paperclip routines before client-visible scheduling.")
+    else:
+        check_ok("Local cron jobs backed by Paperclip routines")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"

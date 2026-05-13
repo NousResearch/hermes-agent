@@ -26,6 +26,7 @@ from cron.jobs import (
     trigger_job,
     update_job,
 )
+from hermes_cli.paperclip_runtime import paperclip_cron_create_block_reason
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +168,20 @@ def cronjob(
             canonical_skills = _canonical_skills(skill, skills)
             if not prompt and not canonical_skills:
                 return json.dumps({"success": False, "error": "create requires either prompt or at least one skill"}, indent=2)
+            paperclip_block = paperclip_cron_create_block_reason(
+                name=name,
+                prompt=prompt,
+                deliver=deliver,
+            )
+            if paperclip_block:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": paperclip_block,
+                        "reroute": "paperclip_fleet_managed_routine",
+                    },
+                    indent=2,
+                )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:

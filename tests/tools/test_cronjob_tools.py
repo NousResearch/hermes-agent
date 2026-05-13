@@ -2,7 +2,6 @@
 
 import json
 import pytest
-from pathlib import Path
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
@@ -99,6 +98,50 @@ class TestCronjobRequirements:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         assert check_cronjob_requirements() is False
+
+
+class TestPaperclipManagedCronGuard:
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_blocks_client_visible_cron_when_paperclip_owns_routines(self, monkeypatch):
+        monkeypatch.setenv("PAPERCLIP_MANAGED_ROUTINES", "true")
+        monkeypatch.setenv("PAPERCLIP_COMPANY_ID", "pc-co-ijt")
+        monkeypatch.setenv("PAPERCLIP_AGENT_ID", "pc-agent-coo")
+        monkeypatch.setenv("PAPERCLIP_TITLE", "COO")
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                schedule="0 9 * * *",
+                name="Daily Operating Brief",
+                prompt="Send the client daily operating brief",
+                deliver="origin",
+            )
+        )
+
+        assert result["success"] is False
+        assert result["reroute"] == "paperclip_fleet_managed_routine"
+        assert "Paperclip/Fleet owns client-visible routine authority" in result["error"]
+
+    def test_allows_internal_maintenance_cron_when_paperclip_owns_routines(self, monkeypatch):
+        monkeypatch.setenv("PAPERCLIP_MANAGED_ROUTINES", "true")
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                schedule="0 * * * *",
+                name="internal health diagnostic",
+                prompt="Run internal runtime health diagnostic",
+                deliver="local",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["job"]["deliver"] == "local"
 
 
 # =========================================================================

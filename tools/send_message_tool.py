@@ -355,6 +355,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
         return target_ref, None, True
+    # XMPP JIDs (user@server or room@conference.server) are explicit
+    if platform_name == "xmpp" and "@" in target_ref:
+        return target_ref, None, True
     return None, None, False
 
 

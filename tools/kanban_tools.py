@@ -551,6 +551,57 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _ensure_notify_subscriptions(conn, kb, new_tid: str, parents) -> None:
+    """Copy parent notify subscriptions or auto-subscribe the origin session.
+
+    If any parent task has gateway notification subscriptions, copy them
+    to the new child so the original requester stays subscribed when
+    workers fan out follow-up cards.
+
+    If no parent subscription was copied, look up the active gateway
+    session and subscribe the origin (platform + chat + thread) so the
+    user hears back when this worker completes / blocks.
+
+    CLI / no-session contexts silently skip subscription when no session
+    context is available.
+    """
+    copied = False
+    for parent_id in parents:
+        for sub in kb.list_notify_subs(conn, parent_id):
+            kb.add_notify_sub(
+                conn,
+                task_id=new_tid,
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=(sub.get("thread_id") or None) or None,
+                user_id=sub.get("user_id"),
+                notifier_profile=(
+                    sub.get("notifier_profile")
+                    or os.environ.get("HERMES_PROFILE")
+                    or "default"
+                ),
+            )
+            copied = True
+    if copied:
+        return
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    if platform and chat_id:
+        kb.add_notify_sub(
+            conn,
+            task_id=new_tid,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=get_session_env("HERMES_SESSION_THREAD_ID", "") or None,
+            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+            notifier_profile=os.environ.get("HERMES_PROFILE") or "default",
+        )
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -613,6 +664,7 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
+            _ensure_notify_subscriptions(conn, kb, new_tid, parents)
             new_task = kb.get_task(conn, new_tid)
             return _ok(
                 task_id=new_tid,

@@ -715,6 +715,113 @@ def test_create_rejects_non_list_skills(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_create_auto_subscribes_origin_in_gateway_session(monkeypatch, tmp_path):
+    """When gateway session context is present, tool-created tasks auto-subscribe
+    the origin platform/chat so the user hears back on completion/block."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    # Simulate gateway session env fallback (contextvars are unset in test process)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "-100123")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "456")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "789")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    out = kt._handle_create({"title": "origin-sub", "assignee": "worker"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "-100123"
+    assert subs[0]["thread_id"] == "456"
+    assert subs[0]["user_id"] == "789"
+    assert subs[0]["notifier_profile"] == "test-orchestrator"
+
+
+def test_create_child_inherits_parent_notify_subscriptions(monkeypatch, tmp_path):
+    """Tool-created children copy their parents' notify subscriptions so the
+    original requester stays subscribed through fan-out chains."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="orchestrator")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="discord",
+            chat_id="#engineering",
+            thread_id="111",
+            user_id="u1",
+            notifier_profile="default",
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent)
+    out = kt._handle_create({
+        "title": "child",
+        "assignee": "fixer",
+        "parents": [parent],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "#engineering"
+    assert subs[0]["thread_id"] == "111"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["notifier_profile"] == "default"
+
+
+def test_create_no_subscription_without_parent_or_session(monkeypatch, tmp_path):
+    """Without parent subscriptions and without gateway session context,
+    tool-created tasks must not get phantom notify subscriptions."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    # Intentionally leave HERMES_SESSION_* unset
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    out = kt._handle_create({"title": "no-sub", "assignee": "worker"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    assert subs == []
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

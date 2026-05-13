@@ -485,15 +485,28 @@ class TestWebSearchSchema:
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools
 
-        with patch("tools.web_tools._get_backend", return_value="parallel"), \
-             patch("tools.web_tools._parallel_search", return_value={"success": True, "data": {"web": []}}) as mock_search, \
+        # After the web-provider plugin migration, _parallel_search lives in
+        # plugins.web.parallel.provider.ParallelWebSearchProvider.search; the
+        # tool dispatcher resolves a provider from the registry and calls
+        # provider.search(query, limit). Mock the provider lookup so we can
+        # assert the limit is clamped before reaching the backend.
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(
+            name="ParallelWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "parallel"
+
+        with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.object(tools.web_tools._debug, "log_call"), \
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
         assert result == {"success": True, "data": {"web": []}}
-        mock_search.assert_called_once_with("docs", 100)
+        fake_search.assert_called_once_with("docs", 100)
 
 
 class TestWebSearchErrorHandling:
@@ -502,11 +515,19 @@ class TestWebSearchErrorHandling:
     def test_search_error_response_does_not_expose_diagnostics(self):
         import tools.web_tools
 
-        firecrawl_client = MagicMock()
-        firecrawl_client.search.side_effect = RuntimeError("boom")
+        # After the web-provider plugin migration, the firecrawl client lives
+        # at plugins.web.firecrawl.provider._get_firecrawl_client. We mock the
+        # registry's get_provider to return a fake provider whose .search()
+        # raises so we can verify error sanitization.
+        fake_provider = MagicMock(
+            name="FirecrawlWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search.side_effect = RuntimeError("boom")
+        fake_provider.name = "firecrawl"
 
-        with patch("tools.web_tools._get_backend", return_value="firecrawl"), \
-             patch("tools.web_tools._get_firecrawl_client", return_value=firecrawl_client), \
+        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.object(tools.web_tools._debug, "log_call") as mock_log_call, \
              patch.object(tools.web_tools._debug, "save"):

@@ -201,7 +201,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
-def _build_models_probe_request(pname: str, url: str, key: str) -> tuple[str, dict]:
+def _build_models_probe_request(url: str, key: str) -> tuple[str, dict]:
     """Build the URL and headers for a provider /models health check.
 
     Most OpenAI-compatible providers accept ``Authorization: Bearer``.
@@ -1462,7 +1462,7 @@ def run_doctor(args):
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
             url = (base.rstrip("/") + "/models") if base else default_url
-            url, headers = _build_models_probe_request(pname, url, key)
+            url, headers = _build_models_probe_request(url, key)
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)

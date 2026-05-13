@@ -6,7 +6,6 @@ def test_gemini_models_probe_uses_key_query_param_not_bearer_header():
     from hermes_cli.doctor import _build_models_probe_request
 
     url, headers = _build_models_probe_request(
-        "Google Gemini",
         "https://generativelanguage.googleapis.com/v1beta/models",
         "AIza-test-key",
     )
@@ -20,7 +19,6 @@ def test_non_gemini_models_probe_keeps_bearer_header():
     from hermes_cli.doctor import _build_models_probe_request
 
     url, headers = _build_models_probe_request(
-        "DeepSeek",
         "https://api.deepseek.com/v1/models",
         "sk-test",
     )
@@ -34,7 +32,6 @@ def test_gemini_models_probe_preserves_existing_query_params_and_encodes_key():
     from hermes_cli.doctor import _build_models_probe_request
 
     url, headers = _build_models_probe_request(
-        "Google Gemini",
         "https://generativelanguage.googleapis.com/v1beta/models?alt=json",
         "AIza-test+key&bad=value",
     )

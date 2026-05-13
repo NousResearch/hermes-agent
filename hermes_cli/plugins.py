@@ -569,6 +569,34 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- web search/extract provider registration ----------------------------
+
+    def register_web_search_provider(self, provider) -> None:
+        """Register a web search/extract backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.web_search_provider.WebSearchProvider`. The
+        ``provider.name`` attribute is what ``web.search_backend`` /
+        ``web.extract_backend`` / ``web.backend`` in ``config.yaml``
+        matches against when routing ``web_search`` / ``web_extract``
+        tool calls.
+        """
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider as _register_web_provider
+
+        if not isinstance(provider, WebSearchProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a web provider that does "
+                "not inherit from WebSearchProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_web_provider(provider)
+        logger.info(
+            "Plugin '%s' registered web provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

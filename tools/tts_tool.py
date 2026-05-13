@@ -50,7 +50,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional, Tuple
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
@@ -148,34 +148,113 @@ def _import_piper():
 # ===========================================================================
 # Defaults
 # ===========================================================================
-DEFAULT_PROVIDER = "edge"
-DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
-DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
-DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
-DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
-DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
-DEFAULT_KITTENTTS_VOICE = "Jasper"
-DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
-DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MINIMAX_MODEL = "speech-01"
-DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
-DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.chat/v1/text_to_speech"
-DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
-DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
-DEFAULT_XAI_VOICE_ID = "eve"
-DEFAULT_XAI_LANGUAGE = "en"
-DEFAULT_XAI_SAMPLE_RATE = 24000
-DEFAULT_XAI_BIT_RATE = 128000
-DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
-DEFAULT_GEMINI_TTS_VOICE = "Kore"
-DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# All defaults are overridable through environment variables (read through
+# the ``get_env_value`` helper above so tests can monkeypatch the live
+# config module). Hardcoded fallbacks are kept as the second argument so
+# the module still works without any env-var configuration.
+
+def _env_int(name: str, fallback: int) -> int:
+    raw = get_env_value(name, None)
+    if raw is None or raw == "":
+        return fallback
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
+
+
+def _env_float(name: str, fallback: float) -> float:
+    raw = get_env_value(name, None)
+    if raw is None or raw == "":
+        return fallback
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _env_str(name: str, fallback: str) -> str:
+    raw = get_env_value(name, None)
+    if raw is None:
+        return fallback
+    value = str(raw).strip()
+    return value if value else fallback
+
+
+DEFAULT_PROVIDER = _env_str("HERMES_TTS_DEFAULT_PROVIDER", "edge")
+DEFAULT_EDGE_VOICE = _env_str(
+    "HERMES_TTS_EDGE_DEFAULT_VOICE", "en-US-AvaMultilingualNeural",
+)  # multilingual; see _resolve_voice_for_text
+DEFAULT_ELEVENLABS_VOICE_ID = _env_str(
+    "HERMES_TTS_ELEVENLABS_DEFAULT_VOICE_ID", "pNInz6obpgDQGcFmaJgB",
+)  # Adam
+DEFAULT_ELEVENLABS_MODEL_ID = _env_str(
+    "HERMES_TTS_ELEVENLABS_DEFAULT_MODEL_ID", "eleven_multilingual_v2",
+)
+DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = _env_str(
+    "HERMES_TTS_ELEVENLABS_DEFAULT_STREAMING_MODEL_ID", "eleven_flash_v2_5",
+)
+DEFAULT_OPENAI_MODEL = _env_str(
+    "HERMES_TTS_OPENAI_DEFAULT_MODEL", "gpt-4o-mini-tts",
+)
+DEFAULT_KITTENTTS_MODEL = _env_str(
+    "HERMES_TTS_KITTENTTS_DEFAULT_MODEL", "KittenML/kitten-tts-nano-0.8-int8",
+)  # 25MB
+DEFAULT_KITTENTTS_VOICE = _env_str(
+    "HERMES_TTS_KITTENTTS_DEFAULT_VOICE", "Jasper",
+)
+DEFAULT_PIPER_VOICE = _env_str(
+    "HERMES_TTS_PIPER_DEFAULT_VOICE", "en_US-lessac-medium",
+)  # balanced size/quality
+DEFAULT_OPENAI_VOICE = _env_str(
+    "HERMES_TTS_OPENAI_DEFAULT_VOICE", "alloy",
+)
+DEFAULT_OPENAI_BASE_URL = _env_str(
+    "HERMES_TTS_OPENAI_DEFAULT_BASE_URL", "https://api.openai.com/v1",
+)
+DEFAULT_MINIMAX_MODEL = _env_str(
+    "HERMES_TTS_MINIMAX_DEFAULT_MODEL", "speech-01",
+)
+DEFAULT_MINIMAX_VOICE_ID = _env_str(
+    "HERMES_TTS_MINIMAX_DEFAULT_VOICE_ID", "female-shaonv",
+)
+DEFAULT_MINIMAX_BASE_URL = _env_str(
+    "HERMES_TTS_MINIMAX_DEFAULT_BASE_URL",
+    "https://api.minimax.chat/v1/text_to_speech",
+)
+DEFAULT_MISTRAL_TTS_MODEL = _env_str(
+    "HERMES_TTS_MISTRAL_DEFAULT_MODEL", "voxtral-mini-tts-2603",
+)
+DEFAULT_MISTRAL_TTS_VOICE_ID = _env_str(
+    "HERMES_TTS_MISTRAL_DEFAULT_VOICE_ID",
+    "c69964a6-ab8b-4f8a-9465-ec0925096ec8",
+)  # Paul - Neutral
+DEFAULT_XAI_VOICE_ID = _env_str(
+    "HERMES_TTS_XAI_DEFAULT_VOICE_ID", "eve",
+)
+DEFAULT_XAI_LANGUAGE = _env_str(
+    "HERMES_TTS_XAI_DEFAULT_LANGUAGE", "en",
+)
+DEFAULT_XAI_SAMPLE_RATE = _env_int("HERMES_TTS_XAI_DEFAULT_SAMPLE_RATE", 24000)
+DEFAULT_XAI_BIT_RATE = _env_int("HERMES_TTS_XAI_DEFAULT_BIT_RATE", 128000)
+DEFAULT_XAI_BASE_URL = _env_str(
+    "HERMES_TTS_XAI_DEFAULT_BASE_URL", "https://api.x.ai/v1",
+)
+DEFAULT_GEMINI_TTS_MODEL = _env_str(
+    "HERMES_TTS_GEMINI_DEFAULT_MODEL", "gemini-2.5-flash-preview-tts",
+)
+DEFAULT_GEMINI_TTS_VOICE = _env_str(
+    "HERMES_TTS_GEMINI_DEFAULT_VOICE", "Kore",
+)
+DEFAULT_GEMINI_TTS_BASE_URL = _env_str(
+    "HERMES_TTS_GEMINI_DEFAULT_BASE_URL",
+    "https://generativelanguage.googleapis.com/v1beta",
+)
 # PCM output specs for Gemini TTS (fixed by the API)
-GEMINI_TTS_SAMPLE_RATE = 24000
-GEMINI_TTS_CHANNELS = 1
-GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+GEMINI_TTS_SAMPLE_RATE = _env_int("HERMES_TTS_GEMINI_SAMPLE_RATE", 24000)
+GEMINI_TTS_CHANNELS = _env_int("HERMES_TTS_GEMINI_CHANNELS", 1)
+GEMINI_TTS_SAMPLE_WIDTH = _env_int("HERMES_TTS_GEMINI_SAMPLE_WIDTH", 2)  # 16-bit PCM (L16)
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -183,40 +262,193 @@ def _get_default_output_dir() -> str:
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 
+
+# ---------------------------------------------------------------------------
+# Per-language voice resolution
+# ---------------------------------------------------------------------------
+# When a TTS provider voice is locked to a single language (e.g. Edge's
+# ``en-US-AriaNeural`` is English-only), feeding it text in another
+# language produces garbled or partial audio. The provider has no way to
+# detect this — it simply tries to read the text using English phonemes,
+# drops characters it cannot map, and silently produces a clip that
+# matches no language well.
+#
+# Users can opt into per-language voice routing by adding a
+# ``voice_by_language`` block to the provider's config, e.g.:
+#
+#     tts:
+#       provider: edge
+#       edge:
+#         voice: en-US-AvaMultilingualNeural   # fallback / unknown lang
+#         voice_by_language:
+#           ru: ru-RU-SvetlanaNeural
+#           zh: zh-CN-XiaoxiaoNeural
+#           ja: ja-JP-NanamiNeural
+#           ko: ko-KR-SunHiNeural
+#           ar: ar-SA-ZariyahNeural
+#
+# Detection is intentionally a tiny Unicode-block heuristic — no extra
+# pip dependency. It identifies the five non-Latin scripts above (which
+# are the cases where an English voice produces total garbage); anything
+# else (English, German, Spanish, French, Polish, ...) falls back to the
+# default ``voice`` setting, which the user is expected to point at a
+# Latin-script voice (or a true multilingual one like
+# ``en-US-AvaMultilingualNeural`` / ``en-US-AndrewMultilingualNeural``).
+#
+# When ``voice_by_language`` is absent from config, behavior is
+# unchanged: the static ``voice`` is used for every call.
+# ---------------------------------------------------------------------------
+
+# Unicode-block ranges (start, end) used by ``_detect_language``. Order
+# matters only for documentation; matches are unambiguous because the
+# blocks below do not overlap.
+_LANG_UNICODE_RANGES: Tuple[Tuple[str, Tuple[int, int]], ...] = (
+    # Cyrillic + Cyrillic Supplement
+    ("ru", (0x0400, 0x04FF)),
+    ("ru", (0x0500, 0x052F)),
+    # CJK Unified Ideographs (Chinese)
+    ("zh", (0x4E00, 0x9FFF)),
+    ("zh", (0x3400, 0x4DBF)),
+    # Hiragana + Katakana (Japanese — checked after CJK so pure-kanji
+    # text routes to zh, mixed kana+kanji routes to ja)
+    ("ja", (0x3040, 0x309F)),
+    ("ja", (0x30A0, 0x30FF)),
+    # Hangul Syllables (Korean)
+    ("ko", (0xAC00, 0xD7AF)),
+    ("ko", (0x1100, 0x11FF)),
+    # Arabic
+    ("ar", (0x0600, 0x06FF)),
+    ("ar", (0x0750, 0x077F)),
+)
+
+# Minimum fraction of the input that must fall in a script's Unicode
+# blocks before we route to that language. 0.15 means 15% of non-space
+# chars must be in the target script. Lower than that and we assume the
+# text is mostly Latin with a sprinkling of foreign words (e.g. "Hello,
+# меня зовут Vasya") — in that case the user-configured default voice
+# (ideally a multilingual one) handles it best.
+# Override via HERMES_TTS_LANG_DETECT_THRESHOLD env var.
+_LANG_DETECT_THRESHOLD = _env_float("HERMES_TTS_LANG_DETECT_THRESHOLD", 0.15)
+
+
+def _detect_language(text: str) -> Optional[str]:
+    """Heuristically detect the language of ``text`` from Unicode blocks.
+
+    Returns one of ``"ru" / "zh" / "ja" / "ko" / "ar"`` when more than
+    ``_LANG_DETECT_THRESHOLD`` of the non-whitespace input falls in the
+    corresponding Unicode block. Returns ``None`` for Latin-script or
+    very short / empty input — callers then fall back to the
+    user-configured default voice.
+
+    No external dependencies; runs in O(len(text)).
+    """
+    if not text:
+        return None
+    counts: Dict[str, int] = {}
+    total_significant = 0
+    for ch in text:
+        cp = ord(ch)
+        if cp <= 0x007F and not ch.isspace():
+            total_significant += 1
+            continue
+        if ch.isspace() or cp < 0x0080:
+            continue
+        total_significant += 1
+        for lang, (lo, hi) in _LANG_UNICODE_RANGES:
+            if lo <= cp <= hi:
+                counts[lang] = counts.get(lang, 0) + 1
+                break
+    if total_significant == 0:
+        return None
+    best_lang: Optional[str] = None
+    best_count = 0
+    for lang, count in counts.items():
+        if count > best_count:
+            best_lang = lang
+            best_count = count
+    if best_lang is None:
+        return None
+    if best_count / total_significant < _LANG_DETECT_THRESHOLD:
+        return None
+    return best_lang
+
+
+def _resolve_voice_for_text(
+    provider_config: Optional[Dict[str, Any]],
+    default_voice: str,
+    text: str,
+    *,
+    voice_key: str = "voice",
+    map_key: str = "voice_by_language",
+) -> str:
+    """Pick the right voice for ``text`` given the provider's config.
+
+    Resolution order:
+      1. ``provider_config[map_key][detected_lang]`` — exact per-language
+         voice override.
+      2. ``provider_config[voice_key]`` — the user's default voice.
+      3. ``default_voice`` — the built-in fallback (e.g.
+         ``DEFAULT_EDGE_VOICE``).
+
+    Backward compatible: when ``map_key`` is absent or empty, this
+    returns exactly what ``provider_config.get(voice_key, default_voice)``
+    would return.
+    """
+    static_voice = (provider_config or {}).get(voice_key) or default_voice
+    if not provider_config:
+        return static_voice
+    voice_map = provider_config.get(map_key)
+    if not isinstance(voice_map, dict) or not voice_map:
+        return static_voice
+    lang = _detect_language(text)
+    if lang and lang in voice_map:
+        mapped = voice_map.get(lang)
+        if isinstance(mapped, str) and mapped.strip():
+            logger.debug(
+                "TTS voice routed to %r for detected language %r", mapped, lang,
+            )
+            return mapped
+    return static_voice
+
+
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
 # ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini caps at ~8k
 # input tokens.  Users can override any of these via
-# ``tts.<provider>.max_text_length`` in config.yaml.
+# ``tts.<provider>.max_text_length`` in config.yaml, or globally via
+# ``HERMES_TTS_<PROVIDER>_MAX_TEXT_LENGTH`` env vars (e.g.
+# ``HERMES_TTS_EDGE_MAX_TEXT_LENGTH=7000``).
 # ---------------------------------------------------------------------------
 PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
-    "edge": 5000,         # edge-tts practical sync limit
-    "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
-    "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
-    "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
-    "mistral": 4000,      # conservative; no published per-request cap
-    "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
-    "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
-    "neutts": 2000,       # local model, quality falls off on long text
-    "kittentts": 2000,    # local 25MB model
-    "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "edge":       _env_int("HERMES_TTS_EDGE_MAX_TEXT_LENGTH",        5000),  # edge-tts practical sync limit
+    "openai":     _env_int("HERMES_TTS_OPENAI_MAX_TEXT_LENGTH",      4096),  # https://platform.openai.com/docs/guides/text-to-speech
+    "xai":        _env_int("HERMES_TTS_XAI_MAX_TEXT_LENGTH",         15000), # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
+    "minimax":    _env_int("HERMES_TTS_MINIMAX_MAX_TEXT_LENGTH",     10000), # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "mistral":    _env_int("HERMES_TTS_MISTRAL_MAX_TEXT_LENGTH",     4000),  # conservative; no published per-request cap
+    "gemini":     _env_int("HERMES_TTS_GEMINI_MAX_TEXT_LENGTH",      5000),  # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "elevenlabs": _env_int("HERMES_TTS_ELEVENLABS_MAX_TEXT_LENGTH",  10000), # fallback when model-aware lookup can't resolve (multilingual_v2)
+    "neutts":     _env_int("HERMES_TTS_NEUTTS_MAX_TEXT_LENGTH",      2000),  # local model, quality falls off on long text
+    "kittentts":  _env_int("HERMES_TTS_KITTENTTS_MAX_TEXT_LENGTH",   2000),  # local 25MB model
+    "piper":      _env_int("HERMES_TTS_PIPER_MAX_TEXT_LENGTH",       5000),  # local VITS model, phoneme-based; practical cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
+# Per-model overrides via HERMES_TTS_ELEVENLABS_<MODEL_ID_UPPER>_MAX_TEXT_LENGTH
+# (dots/dashes in model_id become underscores in the env var name).
 ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
-    "eleven_v3": 5000,
-    "eleven_ttv_v3": 5000,
-    "eleven_multilingual_v2": 10000,
-    "eleven_multilingual_v1": 10000,
-    "eleven_english_sts_v2": 10000,
-    "eleven_english_sts_v1": 10000,
-    "eleven_flash_v2": 30000,
-    "eleven_flash_v2_5": 40000,
+    "eleven_v3":               _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_V3_MAX_TEXT_LENGTH",                5000),
+    "eleven_ttv_v3":           _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_TTV_V3_MAX_TEXT_LENGTH",            5000),
+    "eleven_multilingual_v2":  _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_MULTILINGUAL_V2_MAX_TEXT_LENGTH",   10000),
+    "eleven_multilingual_v1":  _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_MULTILINGUAL_V1_MAX_TEXT_LENGTH",   10000),
+    "eleven_english_sts_v2":   _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_ENGLISH_STS_V2_MAX_TEXT_LENGTH",    10000),
+    "eleven_english_sts_v1":   _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_ENGLISH_STS_V1_MAX_TEXT_LENGTH",    10000),
+    "eleven_flash_v2":         _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_FLASH_V2_MAX_TEXT_LENGTH",          30000),
+    "eleven_flash_v2_5":       _env_int("HERMES_TTS_ELEVENLABS_ELEVEN_FLASH_V2_5_MAX_TEXT_LENGTH",        40000),
 }
 
 # Final fallback when provider isn't recognised at all.
-FALLBACK_MAX_TEXT_LENGTH = 4000
+FALLBACK_MAX_TEXT_LENGTH = _env_int("HERMES_TTS_FALLBACK_MAX_TEXT_LENGTH", 4000)
 
 # Back-compat alias. Prefer ``_resolve_max_text_length()`` for new code.
 MAX_TEXT_LENGTH = FALLBACK_MAX_TEXT_LENGTH
@@ -349,10 +581,10 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "piper",
 })
 
-DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
-DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
+DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = _env_int("HERMES_TTS_COMMAND_DEFAULT_TIMEOUT_SECONDS", 120)
+DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = _env_str("HERMES_TTS_COMMAND_DEFAULT_OUTPUT_FORMAT", "mp3")
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
-DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = _env_int("HERMES_TTS_COMMAND_DEFAULT_MAX_TEXT_LENGTH", 5000)
 
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -780,7 +1012,12 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     """
     _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
-    voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    # Per-language voice routing: if the user provided ``voice_by_language``
+    # we pick the voice that matches the detected script of ``text``;
+    # otherwise we fall back to the static ``voice`` (which itself
+    # defaults to DEFAULT_EDGE_VOICE).  Backward-compatible: configs
+    # without ``voice_by_language`` see no behavior change.
+    voice = _resolve_voice_for_text(edge_config, DEFAULT_EDGE_VOICE, text)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
     kwargs = {"voice": voice}

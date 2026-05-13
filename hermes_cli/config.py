@@ -986,8 +986,17 @@ DEFAULT_CONFIG = {
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
-            "voice": "en-US-AriaNeural",
-            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
+            # Default to a multilingual voice so non-English replies
+            # (Russian, Chinese, Japanese, ...) are read correctly out
+            # of the box.  English-only voices like ``en-US-AriaNeural``
+            # produce garbled / fragmented audio for non-Latin scripts
+            # because edge-tts has no language auto-detection.
+            # See ``_resolve_voice_for_text`` + ``voice_by_language``
+            # in tools/tts_tool.py for per-language voice routing.
+            "voice": "en-US-AvaMultilingualNeural",
+            # Popular monolingual: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
+            # Popular multilingual: AvaMultilingualNeural, AndrewMultilingualNeural,
+            #                       EmmaMultilingualNeural, BrianMultilingualNeural
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam

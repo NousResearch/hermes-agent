@@ -74,6 +74,29 @@ _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
+
+def _try_lazy_install_faster_whisper() -> bool:
+    """Attempt to lazy-install the ``stt.faster_whisper`` feature.
+
+    The faster-whisper wheel pulls in heavy native deps (ctranslate2,
+    onnxruntime) so the default Docker image and the base pip install
+    intentionally do not ship it.  When a user explicitly opts into local
+    STT via ``stt.provider: local``, install on first use — mirroring the
+    pattern used by gateway/platforms/* and other tools/* modules.
+
+    Returns ``True`` if faster-whisper is importable after the call.
+    """
+    global _HAS_FASTER_WHISPER
+    if _HAS_FASTER_WHISPER:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("stt.faster_whisper", prompt=False)
+    except Exception:
+        return False
+    _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+    return _HAS_FASTER_WHISPER
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -216,6 +239,13 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
+            # Try lazy-install — same pattern as gateway/platforms/* and
+            # other tools/* modules.  Local STT is an opt-in extra, so the
+            # default Docker image doesn't ship faster-whisper; users who
+            # explicitly set `stt.provider: local` have opted in and the
+            # install should "just work" on first use.
+            if _try_lazy_install_faster_whisper():
+                return "local"
             if _has_local_command():
                 return "local_command"
             logger.warning(
@@ -278,6 +308,11 @@ def _get_provider(stt_config: dict) -> str:
     # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
+    #
+    # Auto-detect deliberately does NOT lazy-install faster-whisper —
+    # that would impose a multi-MB download (ctranslate2 + onnxruntime)
+    # on users who didn't ask for local STT.  Lazy install only triggers
+    # when the user has explicitly set ``stt.provider: local``.
 
     if _HAS_FASTER_WHISPER:
         return "local"

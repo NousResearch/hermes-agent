@@ -167,7 +167,7 @@ def _strip_image_parts_from_parts(parts: Any) -> Any:
             out.append(part)
             continue
         ptype = part.get("type")
-        if ptype in ("image", "image_url", "input_image"):
+        if ptype in {"image", "image_url", "input_image"}:
             had_image = True
             out.append({"type": "text", "text": "[screenshot removed to save context]"})
         else:
@@ -274,8 +274,8 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         mode = args.get("mode", "replace")
         return f"[patch] {mode} in {path} ({content_len:,} chars result)"
 
-    if tool_name in ("browser_navigate", "browser_click", "browser_snapshot",
-                     "browser_type", "browser_scroll", "browser_vision"):
+    if tool_name in {"browser_navigate", "browser_click", "browser_snapshot",
+                     "browser_type", "browser_scroll", "browser_vision"}:
         url = args.get("url", "")
         ref = args.get("ref", "")
         detail = f" {url}" if url else (f" ref={ref}" if ref else "")
@@ -304,7 +304,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
-    if tool_name in ("skill_view", "skills_list", "skill_manage"):
+    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
         name = args.get("name", "?")
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
@@ -979,13 +979,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             _status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
             _err_str = str(e).lower()
             _is_model_not_found = (
-                _status in (404, 503)
+                _status in {404, 503}
                 or "model_not_found" in _err_str
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
             _is_timeout = (
-                _status in (408, 429, 502, 504)
+                _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
@@ -1316,8 +1316,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
-        if cut_idx > fallback_cut:
-            cut_idx = fallback_cut
+        cut_idx = min(cut_idx, fallback_cut)
 
         # If the token budget would protect everything (small conversations),
         # force a cut after the head so compression can still remove middle turns.
@@ -1480,7 +1479,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in ("assistant", "tool"):
+        if last_head_role in {"assistant", "tool"}:
             summary_role = "user"
         else:
             summary_role = "assistant"

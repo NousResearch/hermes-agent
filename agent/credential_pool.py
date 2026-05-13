@@ -149,7 +149,7 @@ class PooledCredential:
         }
         result: Dict[str, Any] = {}
         for field_def in fields(self):
-            if field_def.name in ("provider", "extra"):
+            if field_def.name in {"provider", "extra"}:
                 continue
             value = getattr(self, field_def.name)
             if value is not None or field_def.name in _ALWAYS_EMIT:

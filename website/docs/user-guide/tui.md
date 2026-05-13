@@ -66,7 +66,7 @@ export HERMES_TUI_DIR=/path/to/prebuilt/ui-tui
 hermes --tui
 ```
 
-The directory must contain `dist/entry.js` and an up-to-date `node_modules`.
+The directory must contain `dist/entry.js`.
 
 ## Keybindings
 

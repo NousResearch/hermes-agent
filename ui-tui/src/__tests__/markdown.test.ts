@@ -217,3 +217,86 @@ describe('Md wrapping', () => {
     expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
   })
 })
+
+describe('Md link labels', () => {
+  it('renders bare URLs with readable slug labels', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
+    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+  })
+
+  it('keeps explicit markdown labels as the immediate fallback', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
+        })
+      )
+    )
+
+    expect(lines.join('\n')).toContain('Trip details')
+  })
+})
+
+describe('renderTable CJK width alignment', () => {
+  it('column starts share the same display offset across CJK rows', async () => {
+    const { stringWidth } = await import('@hermes/ink')
+
+    const md = [
+      '| 配置 | Config | 状态 |',
+      '|------|--------|------|',
+      '| Vicuna (report) | dense | × |',
+      '| ChatGLM | chat | ✓ |',
+      '| 通义千问 | qwen | × |'
+    ].join('\n')
+
+    // Pre-fix bug: ` `.repeat(w - stripInlineMarkup(...).length) used
+    // UTF-16 code units, so a CJK header cell padded to 2 cells while
+    // the body cell padded to 4, drifting subsequent columns by 2
+    // cells per CJK char.
+    //
+    // Post-fix contract: the prefix preceding the start of column N
+    // has the same display width across the header and every body row
+    // (deduped to skip the divider, which renders independently).
+    const lines = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    // Heuristic: a "data row" line either contains 'Config' (header)
+    // or one of the body labels; a divider is all box-drawing.  Use
+    // the substring 'Config' / 'dense' / 'chat' / 'qwen' as the
+    // unique anchor for column 2's start position on each row.
+    const colStarts = (line: string, anchor: string): number => {
+      const idx = line.indexOf(anchor)
+
+      return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
+    }
+
+    const headerCol2 = lines.map(l => colStarts(l, 'Config')).find(v => v >= 0)
+    const denseCol2 = lines.map(l => colStarts(l, 'dense')).find(v => v >= 0)
+    const chatCol2 = lines.map(l => colStarts(l, 'chat')).find(v => v >= 0)
+    const qwenCol2 = lines.map(l => colStarts(l, 'qwen')).find(v => v >= 0)
+
+    expect(headerCol2).toBeDefined()
+    expect(denseCol2).toBe(headerCol2)
+    expect(chatCol2).toBe(headerCol2)
+    // The CJK row is the one that drifted before the fix.  It must
+    // align with the rest now.
+    expect(qwenCol2).toBe(headerCol2)
+  })
+})

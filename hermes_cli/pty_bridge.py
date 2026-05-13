@@ -164,7 +164,7 @@ class PtyBridge:
             data = os.read(self._fd, 65536)
         except OSError as exc:
             # EIO on Linux = slave side closed.  EBADF = already closed.
-            if exc.errno in (errno.EIO, errno.EBADF):
+            if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
             raise
         if not data:
@@ -181,7 +181,7 @@ class PtyBridge:
             try:
                 n = os.write(self._fd, view)
             except OSError as exc:
-                if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
                     return
                 raise
             if n <= 0:

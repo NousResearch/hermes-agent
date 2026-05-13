@@ -1967,7 +1967,7 @@ class SessionDB:
             # Route to LIKE when any non-operator CJK token is <3 CJK chars.
             _tokens_for_check = [
                 t for t in raw_query.split()
-                if t.upper() not in ("AND", "OR", "NOT") and self._contains_cjk(t)
+                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
             ]
             _any_short_cjk = any(
                 self._count_cjk(t) < 3 for t in _tokens_for_check
@@ -1980,7 +1980,7 @@ class SessionDB:
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
-                    if tok.upper() in ("AND", "OR", "NOT"):
+                    if tok.upper() in {"AND", "OR", "NOT"}:
                         parts.append(tok)
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
@@ -2031,7 +2031,7 @@ class SessionDB:
                 # is matched independently (#20494).
                 non_op_tokens = [
                     t for t in raw_query.split()
-                    if t.upper() not in ("AND", "OR", "NOT")
+                    if t.upper() not in {"AND", "OR", "NOT"}
                 ] or [raw_query]
                 token_clauses = []
                 like_params: list = []
@@ -2337,7 +2337,7 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
                 return 0

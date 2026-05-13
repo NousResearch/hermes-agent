@@ -139,7 +139,7 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
         return False
 
     disk = config.get("container_disk", 51200)
-    if disk not in (0, 51200):
+    if disk not in {0, 51200}:
         logger.error(
             "Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
             "Use the default shared setting (51200 MB).",
@@ -416,7 +416,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     c = msvcrt.getwch()
-                    if c in ("\r", "\n"):
+                    if c in {"\r", "\n"}:
                         break
                     if c == "\x03":
                         raise KeyboardInterrupt
@@ -432,7 +432,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     b = os.read(tty_fd, 1)
-                    if not b or b in (b"\n", b"\r"):
+                    if not b or b in {b"\n", b"\r"}:
                         break
                     chars.append(b)
                 result["password"] = b"".join(chars).decode("utf-8", errors="replace")
@@ -707,7 +707,7 @@ def _rewrite_compound_background(command: str) -> str:
             continue
 
         # Quoted tokens — consume whole string via the shared tokenizer.
-        if ch in ("'", '"'):
+        if ch in {"'", '"'}:
             _, next_i = _read_shell_token(command, i)
             i = max(next_i, i + 1)
             continue
@@ -888,6 +888,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+import sys
 
 
 # Tool description for LLM
@@ -1009,7 +1010,7 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
+    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1041,7 +1042,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in ("modal", "docker", "singularity", "daytona", "vercel_sandbox") and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1076,17 +1077,17 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in ("true", "1", "yes"),
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in ("true", "1", "yes"),
+        ).lower() in {"true", "1", "yes"},
+        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
+        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
+        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
         "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
     }
 
@@ -1782,7 +1783,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -2243,7 +2244,7 @@ if __name__ == "__main__":
 
     if not check_terminal_requirements():
         print("\n❌ Requirements not met. Please check the messages above.")
-        exit(1)
+        sys.exit(1)
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")

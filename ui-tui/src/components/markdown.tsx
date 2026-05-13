@@ -1,7 +1,8 @@
-import { Box, Link, Text } from '@hermes/ink'
+import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
+import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -143,13 +144,43 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const renderAutolink = (k: number, t: Theme, raw: string) => (
-  <Link key={k} url={autolinkUrl(raw)}>
-    <Text color={t.color.accent} underline>
-      {raw.replace(/^mailto:/, '')}
-    </Text>
-  </Link>
-)
+const defaultLinkLabel = (url: string) =>
+  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+
+const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+  const trimmed = label?.trim()
+
+  if (!trimmed) {
+    return undefined
+  }
+
+  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+}
+
+interface ResolvedLinkProps {
+  fallbackLabel?: string
+  t: Theme
+  url: string
+}
+
+function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(url)
+  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+
+  return (
+    <Link url={url}>
+      <Text color={t.color.accent} underline>
+        {display}
+      </Text>
+    </Link>
+  )
+}
+
+const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
+
+  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+}
 
 export const stripInlineMarkup = (v: string) =>
   v
@@ -170,16 +201,22 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
 const renderTable = (k: number, rows: string[][], t: Theme) => {
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
+  // Column widths in *display cells*, not UTF-16 code units.  CJK
+  // glyphs and most emoji render as two cells but `String#length`
+  // counts them as one, which collapses Chinese / Japanese / Korean
+  // tables into drift across rows.  `stringWidth` (Bun.stringWidth
+  // fast path + an East-Asian-width-aware fallback, memoised in
+  // @hermes/ink) returns the actual cell count.
+  const cellWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
+
+  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => cellWidth(r[ci] ?? ''))))
 
   // Thin divider under the header.  Without it tables look like prose
   // with extra spacing because the header is just accent-coloured text
   // (#15534).  We avoid full borders on purpose — column widths come
-  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
-  // display width), so a real outline often misaligns on emoji and
-  // East-Asian wide characters; one dim solid rule (`─`) under row 0
-  // plus tab-style column gaps reads cleanly on every terminal we
-  // tested.
+  // from `stringWidth(...)`, so the dividers and the row content stay
+  // in sync on CJK / emoji tables; tab-style column gaps still read
+  // cleanly without the boxed look.
   const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
   return (
@@ -190,7 +227,7 @@ const renderTable = (k: number, rows: string[][], t: Theme) => {
             {widths.map((w, ci) => (
               <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
                 <MdInline t={t} text={row[ci] ?? ''} />
-                {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
+                {' '.repeat(Math.max(0, w - cellWidth(row[ci] ?? '')))}
                 {ci < widths.length - 1 ? '  ' : ''}
               </Text>
             ))}
@@ -226,15 +263,9 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(
-        <Link key={parts.length} url={m[4]}>
-          <Text color={t.color.accent} underline>
-            {m[3]}
-          </Text>
-        </Link>
-      )
+      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderAutolink(parts.length, t, m[5]))
+      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
@@ -296,7 +327,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderAutolink(parts.length, t, url))
+      parts.push(renderResolvedLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)

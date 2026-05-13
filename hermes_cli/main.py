@@ -124,7 +124,7 @@ def _apply_profile_override() -> None:
 
     # 1. Check for explicit -p / --profile flag
     for i, arg in enumerate(argv):
-        if arg in ("--profile", "-p") and i + 1 < len(argv):
+        if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
             break
@@ -192,7 +192,7 @@ def _apply_profile_override() -> None:
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
-                if arg in ("--profile", "-p"):
+                if arg in {"--profile", "-p"}:
                     start = i + 1  # +1 because argv is sys.argv[1:]
                     sys.argv = sys.argv[:start] + sys.argv[start + consume :]
                     break
@@ -505,8 +505,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Compute visible area
                 visible_rows = max_y - 4  # header + col header + blank + footer
-                if visible_rows < 1:
-                    visible_rows = 1
+                visible_rows = max(visible_rows, 1)
 
                 # Clamp cursor and scroll
                 if not filtered:
@@ -518,8 +517,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 else:
                     if cursor >= len(filtered):
                         cursor = len(filtered) - 1
-                    if cursor < 0:
-                        cursor = 0
+                    cursor = max(cursor, 0)
                     if cursor < scroll_offset:
                         scroll_offset = cursor
                     elif cursor >= scroll_offset + visible_rows:
@@ -569,13 +567,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP,):
+                if key in {curses.KEY_UP,}:
                     if filtered:
                         cursor = (cursor - 1) % len(filtered)
-                elif key in (curses.KEY_DOWN,):
+                elif key in {curses.KEY_DOWN,}:
                     if filtered:
                         cursor = (cursor + 1) % len(filtered)
-                elif key in (curses.KEY_ENTER, 10, 13):
+                elif key in {curses.KEY_ENTER, 10, 13}:
                     if filtered:
                         result_holder[0] = filtered[cursor]["id"]
                     return
@@ -589,7 +587,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     else:
                         # Second Esc exits
                         return
-                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                elif key in {curses.KEY_BACKSPACE, 127, 8}:
                     if search_text:
                         search_text = search_text[:-1]
                         if search_text:
@@ -628,7 +626,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     while True:
         try:
             val = input(f"\n  Select [1-{len(sessions)}]: ").strip()
-            if not val or val.lower() in ("q", "quit", "exit"):
+            if not val or val.lower() in {"q", "quit", "exit"}:
                 return None
             idx = int(val) - 1
             if 0 <= idx < len(sessions):
@@ -899,6 +897,11 @@ to avoid false-positive reinstalls on every launch.
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
+    Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
+    ``package-lock.json`` (nix install layout only ships ``dist/`` +
+    ``package.json``), skip reinstall entirely — the bundle is self-contained
+    and there is nothing to install.
+
     Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
     (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
     rewrites can bump the root lockfile's timestamp even when installed deps
@@ -916,10 +919,16 @@ def _tui_need_npm_install(root: Path) -> bool:
     we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
     """
+    lock = root / "package-lock.json"
+    entry = root / "dist" / "entry.js"
+    # Prebuilt self-contained bundle (nix / packaged release): no lockfile
+    # shipped, dist/entry.js is the single runtime artefact.
+    if entry.is_file() and not lock.is_file():
+        return False
+
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
-    lock = root / "package-lock.json"
     if not lock.is_file():
         return False
     marker = root / "node_modules" / ".package-lock.json"
@@ -955,63 +964,6 @@ def _tui_need_npm_install(root: Path) -> bool:
         ):
             return True
 
-    return False
-
-
-def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
-    """Directory whose dist/entry.js we should run: HERMES_TUI_DIR first, else repo ui-tui."""
-    env = os.environ.get("HERMES_TUI_DIR")
-    if env:
-        p = Path(env)
-        if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
-            return p
-    if (tui_dir / "dist" / "entry.js").exists() and not _tui_need_npm_install(tui_dir):
-        return tui_dir
-    return None
-
-
-def _tui_build_needed(tui_dir: Path) -> bool:
-    if _hermes_ink_bundle_stale(tui_dir):
-        return True
-    entry = tui_dir / "dist" / "entry.js"
-    if not entry.exists():
-        return True
-    dist_m = entry.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_m:
-                    return True
-    for meta in (
-        "package.json",
-        "package-lock.json",
-        "tsconfig.json",
-        "tsconfig.build.json",
-    ):
-        mp = tui_dir / meta
-        if mp.exists() and mp.stat().st_mtime > dist_m:
-            return True
-    return False
-
-
-def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
-    ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
-    if not bundle.exists():
-        return True
-    bm = bundle.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > bm:
-                    return True
-    mp = ink_root / "package.json"
-    if mp.exists() and mp.stat().st_mtime > bm:
-        return True
     return False
 
 
@@ -1073,7 +1025,7 @@ def _ensure_tui_node() -> None:
 
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
+    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
@@ -1087,23 +1039,31 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
-    # pre-built dist + node_modules (nix / full HERMES_TUI_DIR) skips npm.
+    # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
+    ext_dir = os.environ.get("HERMES_TUI_DIR")
+    if tui_dev and ext_dir:
+        print(
+            f"Error: --dev is incompatible with HERMES_TUI_DIR={ext_dir}\n"
+            f"The prebuilt TUI has no source code to hot-reload.\n"
+            f"Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use --dev from a checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 1. Prebuilt bundle (nix / packaged release): just run it.
     if not tui_dev:
-        ext_dir = os.environ.get("HERMES_TUI_DIR")
         if ext_dir:
             p = Path(ext_dir)
-            if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
+            if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
 
-    npm = _node_bin("npm")
+    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
+    #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).
     if _tui_need_npm_install(tui_dir):
+        npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
-        # Capture stdout as well as stderr — some npm errors (notably EACCES on a
-        # root-owned node_modules in containers) are emitted on stdout, and a
-        # bare "npm install failed." with no preview defeats debugging.  We keep
-        # the failure-only print path so a successful install stays silent.
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(tui_dir),
@@ -1121,47 +1081,30 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
 
     if tui_dev:
-        if _hermes_ink_bundle_stale(tui_dir):
-            result = subprocess.run(
-                [npm, "run", "build", "--prefix", "packages/hermes-ink"],
-                cwd=str(tui_dir),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-                preview = "\n".join(combined.splitlines()[-30:])
-                print("@hermes/ink build failed.")
-                if preview:
-                    print(preview)
-                sys.exit(1)
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
+        npm = _node_bin("npm")
         return [npm, "start"], tui_dir
 
-    if _tui_build_needed(tui_dir):
-        result = subprocess.run(
-            [npm, "run", "build"],
-            cwd=str(tui_dir),
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-            preview = "\n".join(combined.splitlines()[-30:])
-            print("TUI build failed.")
-            if preview:
-                print(preview)
-            sys.exit(1)
-
-    root = _find_bundled_tui(tui_dir)
-    if not root:
-        print("TUI build did not produce dist/entry.js")
+    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
+    npm = _node_bin("npm")
+    result = subprocess.run(
+        [npm, "run", "build"],
+        cwd=str(tui_dir),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+        preview = "\n".join(combined.splitlines()[-30:])
+        print("TUI build failed.")
+        if preview:
+            print(preview)
         sys.exit(1)
 
     node = _node_bin("node")
-    return [node, str(root / "dist" / "entry.js")], root
+    return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
@@ -1305,7 +1248,7 @@ def _launch_tui(
         except KeyboardInterrupt:
             code = 130
 
-        if code in (0, 130):
+        if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
         try:
@@ -1405,7 +1348,7 @@ def cmd_chat(args):
             reply = input("Run setup now? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             reply = "n"
-        if reply in ("", "y", "yes"):
+        if reply in {"", "y", "yes"}:
             cmd_setup(args)
             return
         print()
@@ -1585,7 +1528,7 @@ def cmd_whatsapp(args):
             response = input("\n  Update allowed users? [y/N] ").strip()
         except (EOFError, KeyboardInterrupt):
             response = "n"
-        if response.lower() in ("y", "yes"):
+        if response.lower() in {"y", "yes"}:
             if wa_mode == "bot":
                 phone = input(
                     "  Phone numbers that can message the bot (comma-separated): "
@@ -1660,7 +1603,7 @@ def cmd_whatsapp(args):
             ).strip()
         except (EOFError, KeyboardInterrupt):
             response = "n"
-        if response.lower() in ("y", "yes"):
+        if response.lower() in {"y", "yes"}:
             shutil.rmtree(session_dir, ignore_errors=True)
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
@@ -2014,7 +1957,7 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
-    elif selected_provider in (
+    elif selected_provider in {
         "gemini",
         "deepseek",
         "xai",
@@ -2034,18 +1977,18 @@ def select_provider_and_model(args=None):
         "ollama-cloud",
         "tencent-tokenhub",
         "lmstudio",
-    ) or _is_profile_api_key_provider(selected_provider):
+    } or _is_profile_api_key_provider(selected_provider):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
     # When the user switches to a named provider (anything except "custom"),
     # a leftover OPENAI_BASE_URL in ~/.hermes/.env can poison auxiliary
     # clients that use provider:auto. Clear it proactively.  (#5161)
-    if selected_provider not in (
+    if selected_provider not in {
         "custom",
         "cancel",
         "remove-custom",
-    ) and not selected_provider.startswith("custom:"):
+    } and not selected_provider.startswith("custom:"):
         _clear_stale_openai_base_url()
 
 
@@ -2171,7 +2114,7 @@ def _reset_aux_to_auto() -> int:
             entry = {}
             aux[task] = entry
         changed = False
-        if entry.get("provider") not in (None, "", "auto"):
+        if entry.get("provider") not in {None, "", "auto"}:
             entry["provider"] = "auto"
             changed = True
         for field in ("model", "base_url", "api_key"):
@@ -2646,6 +2589,8 @@ def _model_flow_nous(config, current_model="", args=None):
         get_pricing_for_provider,
         check_nous_free_tier,
         partition_nous_models_by_tier,
+        union_with_portal_free_recommendations,
+        union_with_portal_paid_recommendations,
     )
 
     model_ids = get_curated_nous_model_ids()
@@ -2686,19 +2631,8 @@ def _model_flow_nous(config, current_model="", args=None):
     # Check if user is on free tier
     free_tier = check_nous_free_tier()
 
-    # For free users: partition models into selectable/unavailable based on
-    # whether they are free per the Portal-reported pricing.
-    unavailable_models: list[str] = []
-    if free_tier:
-        model_ids, unavailable_models = partition_nous_models_by_tier(
-            model_ids, pricing, free_tier=True
-        )
-
-    if not model_ids and not unavailable_models:
-        print("No models available for Nous Portal after filtering.")
-        return
-
-    # Resolve portal URL for upgrade links (may differ on staging)
+    # Resolve portal URL early — needed both for upgrade links and for the
+    # freeRecommendedModels endpoint below.
     _nous_portal_url = ""
     try:
         _nous_state = get_provider_auth_state("nous")
@@ -2706,6 +2640,32 @@ def _model_flow_nous(config, current_model="", args=None):
             _nous_portal_url = _nous_state.get("portal_base_url", "")
     except Exception:
         pass
+
+    # For free users: partition models into selectable/unavailable based on
+    # whether they are free per the Portal-reported pricing.  First augment
+    # with the Portal's freeRecommendedModels list so newly-launched free
+    # models show up even if this CLI build's hardcoded curated list and
+    # docs-hosted manifest haven't caught up yet.
+    #
+    # For paid users: mirror the same idea with paidRecommendedModels so
+    # newly-launched paid models surface in the picker too — independent
+    # of CLI release cadence.
+    unavailable_models: list[str] = []
+    if free_tier:
+        model_ids, pricing = union_with_portal_free_recommendations(
+            model_ids, pricing, _nous_portal_url,
+        )
+        model_ids, unavailable_models = partition_nous_models_by_tier(
+            model_ids, pricing, free_tier=True
+        )
+    else:
+        model_ids, pricing = union_with_portal_paid_recommendations(
+            model_ids, pricing, _nous_portal_url,
+        )
+
+    if not model_ids and not unavailable_models:
+        print("No models available for Nous Portal after filtering.")
+        return
 
     if free_tier and not model_ids:
         print("No free models currently available.")
@@ -3082,7 +3042,7 @@ def _model_flow_custom(config):
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             _add_v1 = "n"
-        if _add_v1 in ("", "y", "yes"):
+        if _add_v1 in {"", "y", "yes"}:
             effective_url = effective_url.rstrip("/") + "/v1"
             if base_url:
                 base_url = effective_url
@@ -3126,7 +3086,7 @@ def _model_flow_custom(config):
         if len(detected_models) == 1:
             print(f"  Detected model: {detected_models[0]}")
             confirm = input("  Use this model? [Y/n]: ").strip().lower()
-            if confirm in ("", "y", "yes"):
+            if confirm in {"", "y", "yes"}:
                 model_name = detected_models[0]
             else:
                 model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
@@ -3959,7 +3919,7 @@ def _model_flow_copilot(config, current_model=""):
         api_key = creds.get("api_key", "")
         source = creds.get("source", "")
     else:
-        if source in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
             print(f"  GitHub token: {api_key[:8]}... ✓ ({source})")
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
@@ -5279,7 +5239,7 @@ def cmd_slack(args):
                  command registered as a first-class slash.
     """
     sub = getattr(args, "slack_command", None)
-    if sub in (None, ""):
+    if sub in {None, ""}:
         # No subcommand — print usage hint.
         print(
             "usage: hermes slack <subcommand>\n"
@@ -5426,7 +5386,7 @@ def _clear_bytecode_cache(root: Path) -> int:
         dirnames[:] = [
             d
             for d in dirnames
-            if d not in ("venv", ".venv", "node_modules", ".git", ".worktrees")
+            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
         ]
         if os.path.basename(dirpath) == "__pycache__":
             try:
@@ -5491,7 +5451,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 def _web_ui_build_needed(web_dir: Path) -> bool:
     """Return True if the web UI dist is missing or stale.
 
-    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
     The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
     outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
     manifest as the sentinel because it is written last and therefore has the
@@ -5549,6 +5508,8 @@ def _run_npm_install_deterministic(
             cwd=cwd,
             capture_output=capture_output,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         if ci_result.returncode == 0:
@@ -5561,6 +5522,8 @@ def _run_npm_install_deterministic(
         cwd=cwd,
         capture_output=capture_output,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -5597,12 +5560,50 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
-    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+    # First attempt
+    r2 = subprocess.run(
+        [npm, "run", "build"],
+        cwd=web_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if r2.returncode != 0:
+        # Retry once after a short delay — covers boot-time races on Windows
+        # (antivirus scanning Node.js binaries, npm cache not ready, transient
+        # I/O when launched via Scheduled Task at logon). See issue #23817.
+        _time.sleep(3)
+        r2 = subprocess.run(
+            [npm, "run", "build"],
+            cwd=web_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    if r2.returncode != 0:
+        stderr_preview = (r2.stderr or "").strip()
+        stderr_tail = "\n  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
+        dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+        dist_index = dist_dir / "index.html"
+
+        # If a stale dist exists, serve it as a fallback instead of failing.
+        # A stale UI is far better than no UI for non-interactive callers
+        # (Windows Scheduled Tasks, CI) — issue #23817.
+        if dist_index.exists():
+            print("  ⚠ Web UI build failed — serving stale dist as fallback")
+            if stderr_tail:
+                print(f"  Build error:\n  {stderr_tail}")
+            return True
+
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        if stderr_tail:
+            print(f"  Build error:\n  {stderr_tail}")
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
@@ -5921,8 +5922,8 @@ def _kill_stale_dashboard_processes(
 
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
-    for pid, reason in failed:
-        print(f"    ✗ failed to stop PID {pid}: {reason}")
+    for pid, err_msg in failed:
+        print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
     if killed:
         print("  Restart the dashboard when you're ready:")
@@ -6179,7 +6180,7 @@ def _restore_stashed_changes(
             response = input_fn("Restore local changes now? [Y/n]", "y")
         else:
             response = input().strip().lower()
-        if response not in ("", "y", "yes"):
+        if response not in {"", "y", "yes"}:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
             print(f"Restore manually with: git stash apply {stash_ref}")
@@ -6422,7 +6423,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             print()
             response = "n"
 
-        if response in ("", "y", "yes"):
+        if response in {"", "y", "yes"}:
             print("→ Adding upstream remote...")
             if _add_upstream_remote(git_cmd, cwd):
                 print(
@@ -7481,7 +7482,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in ("main", "HEAD"):
+            if current_branch not in {"main", "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
@@ -7765,7 +7766,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 except EOFError:
                     response = "n"
 
-            if response in ("", "y", "yes", "auto"):
+            if response in {"", "y", "yes", "auto"}:
                 print()
                 # Gateway mode, --yes, and non-interactive update contexts
                 # (dashboard / web server actions) cannot prompt for API keys.
@@ -7816,6 +7817,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _ensure_fhs_path_guard()
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
+
+        # Refresh the cua-driver binary used by the Computer Use toolset.
+        # The upstream installer is gated on macOS and on the binary already
+        # being on PATH, so this is a no-op for users who don't have it.
+        # Tying the refresh to ``hermes update`` gives users a predictable
+        # cadence (matches when they pull new agent code) without adding
+        # startup latency or a per-launch GitHub API call.
+        try:
+            if sys.platform == "darwin" and shutil.which("cua-driver"):
+                from hermes_cli.tools_config import install_cua_driver
+
+                print()
+                print("→ Refreshing cua-driver (Computer Use)...")
+                install_cua_driver(upgrade=True)
+        except Exception as e:
+            logger.debug("cua-driver refresh failed: %s", e)
 
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's
@@ -8826,7 +8843,7 @@ def cmd_profile(args):
                         answer = input("\nProceed with install? [y/N] ").strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         answer = ""
-                    if answer not in ("y", "yes"):
+                    if answer not in {"y", "yes"}:
                         print("Install cancelled.")
                         return
 
@@ -8885,7 +8902,7 @@ def cmd_profile(args):
                     answer = input("\nProceed? [y/N] ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     answer = ""
-                if answer not in ("y", "yes"):
+                if answer not in {"y", "yes"}:
                     print("Update cancelled.")
                     return
 
@@ -9075,9 +9092,24 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
-    if "HERMES_WEB_DIST" not in os.environ:
+    if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
+    elif getattr(args, "skip_build", False):
+        # --skip-build trusts the caller to have pre-built the web UI.
+        # Verify the dist actually exists; otherwise the server will start
+        # and serve 404s with no obvious cause (issue #23817).
+        _dist_root = (
+            Path(os.environ["HERMES_WEB_DIST"])
+            if "HERMES_WEB_DIST" in os.environ
+            else PROJECT_ROOT / "hermes_cli" / "web_dist"
+        )
+        if not (_dist_root / "index.html").exists():
+            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
+            print("  Pre-build first:  cd web && npm install && npm run build")
+            print("  Or drop --skip-build to build automatically.")
+            sys.exit(1)
+        print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
     from hermes_cli.web_server import start_server
 
@@ -9358,7 +9390,7 @@ def main():
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp)",
+        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)",
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
@@ -9500,6 +9532,17 @@ def main():
     )
 
     gateway_parser.set_defaults(func=cmd_gateway)
+
+    # =========================================================================
+    # lsp command
+    # =========================================================================
+    try:
+        from agent.lsp.cli import register_subparser as _lsp_register
+        _lsp_register(subparsers)
+    except Exception as _lsp_err:  # noqa: BLE001
+        # LSP is optional infrastructure — never let a registration
+        # failure break the CLI overall.
+        logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     # =========================================================================
     # setup command
@@ -10062,6 +10105,16 @@ def main():
     )
     doctor_parser.add_argument(
         "--fix", action="store_true", help="Attempt to fix issues automatically"
+    )
+    doctor_parser.add_argument(
+        "--ack",
+        metavar="ADVISORY_ID",
+        default=None,
+        help=(
+            "Acknowledge a security advisory by ID and exit. After ack, the "
+            "advisory will no longer trigger startup banners. Run `hermes "
+            "doctor` first to see active advisories and their IDs."
+        ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
 
@@ -10658,9 +10711,9 @@ Examples:
             mem_dir = get_hermes_home() / "memories"
             target = getattr(args, "target", "all")
             files_to_reset = []
-            if target in ("all", "memory"):
+            if target in {"all", "memory"}:
                 files_to_reset.append(("MEMORY.md", "agent notes"))
-            if target in ("all", "user"):
+            if target in {"all", "user"}:
                 files_to_reset.append(("USER.md", "user profile"))
 
             # Check what exists
@@ -10771,7 +10824,7 @@ Examples:
 
     def cmd_tools(args):
         action = getattr(args, "tools_action", None)
-        if action in ("list", "disable", "enable"):
+        if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
@@ -10802,9 +10855,18 @@ Examples:
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
-    computer_use_sub.add_parser(
+    computer_use_install = computer_use_sub.add_parser(
         "install",
         help="Install or repair the cua-driver binary (macOS)",
+    )
+    computer_use_install.add_argument(
+        "--upgrade",
+        action="store_true",
+        help=(
+            "Re-run the upstream installer even if cua-driver is already on "
+            "PATH. The upstream install.sh always pulls the latest release, "
+            "so this performs an in-place upgrade."
+        ),
     )
     computer_use_sub.add_parser(
         "status",
@@ -10814,14 +10876,27 @@ Examples:
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
         if action == "install":
-            from hermes_cli.tools_config import _run_post_setup
-            _run_post_setup("cua_driver")
+            from hermes_cli.tools_config import install_cua_driver
+            install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
             import shutil
+            import subprocess
             path = shutil.which("cua-driver")
             if path:
-                print(f"cua-driver: installed at {path}")
+                version = ""
+                try:
+                    version = subprocess.run(
+                        ["cua-driver", "--version"],
+                        capture_output=True, text=True, timeout=5,
+                    ).stdout.strip()
+                except Exception:
+                    pass
+                if version:
+                    print(f"cua-driver: installed at {path} ({version})")
+                else:
+                    print(f"cua-driver: installed at {path}")
+                print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")
             print("  Run: hermes computer-use install")
@@ -10980,7 +11055,7 @@ Examples:
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
         try:
-            return input(prompt).strip().lower() in ("y", "yes")
+            return input(prompt).strip().lower() in {"y", "yes"}
         except (EOFError, KeyboardInterrupt):
             return False
 
@@ -11552,6 +11627,15 @@ Examples:
         help=(
             "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
             "Alternatively set HERMES_DASHBOARD_TUI=1."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Skip the web UI build step and serve the existing dist directly. "
+            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
+            "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
     # Lifecycle flags — mutually exclusive with each other and with the

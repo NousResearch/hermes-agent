@@ -162,7 +162,7 @@ def _normalize_tar_member_parts(member_name: str) -> list:
     ):
         raise ValueError(f"Unsafe archive member path: {member_name}")
 
-    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    parts = [part for part in posix_path.parts if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe archive member path: {member_name}")
     return parts
@@ -561,7 +561,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             # --- 5. Verify -- run test suite in the agent's sandbox ---
             # Skip verification if the agent produced no meaningful output
             only_system_and_user = all(
-                msg.get("role") in ("system", "user") for msg in result.messages
+                msg.get("role") in {"system", "user"} for msg in result.messages
             )
             if result.turns_used == 0 or only_system_and_user:
                 logger.warning(
@@ -919,7 +919,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             eval_metrics[f"eval/pass_rate_{cat_key}"] = cat_pass_rate
 
         # Store metrics for wandb_log
-        self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
+        self.eval_metrics = list(eval_metrics.items())
 
         # ---- Print summary ----
         print(f"\n{'='*60}")

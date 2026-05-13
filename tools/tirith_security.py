@@ -52,7 +52,7 @@ def _env_bool(key: str, default: bool) -> bool:
     val = os.getenv(key)
     if val is None:
         return default
-    return val.lower() in ("1", "true", "yes")
+    return val.lower() in {"1", "true", "yes"}
 
 
 def _env_int(key: str, default: int) -> int:
@@ -189,14 +189,14 @@ def _detect_target() -> str | None:
     # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
     if system == "Darwin":
         plat = "apple-darwin"
-    elif system in ("Linux", "Android"):
+    elif system in {"Linux", "Android"}:
         plat = "unknown-linux-gnu"
     else:
         return None
 
-    if machine in ("x86_64", "amd64"):
+    if machine in {"x86_64", "amd64"}:
         arch = "x86_64"
-    elif machine in ("aarch64", "arm64"):
+    elif machine in {"aarch64", "arm64"}:
         arch = "aarch64"
     else:
         return None

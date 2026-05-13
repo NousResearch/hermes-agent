@@ -436,6 +436,7 @@ Each platform has its own toolset:
 
 ## Next Steps
 
+- [Multi-Agent Routing](multi-agent.md) — Run multiple isolated agents from one gateway
 - [Telegram Setup](telegram.md)
 - [Discord Setup](discord.md)
 - [Slack Setup](slack.md)

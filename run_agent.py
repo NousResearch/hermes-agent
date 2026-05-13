@@ -5849,7 +5849,7 @@ class AIAgent:
 
         bankr_wallet_prompt = build_bankr_wallet_prompt()
         if bankr_wallet_prompt:
-            prompt_parts.append(bankr_wallet_prompt)
+            stable_parts.append(bankr_wallet_prompt)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []

@@ -369,6 +369,21 @@ def build_or_headers(or_config: dict | None = None) -> dict:
 
     return headers
 
+
+# NVIDIA NIM cloud billing attribution.  Keep this host-gated because the
+# nvidia provider also supports local/on-prem NIM endpoints via NVIDIA_BASE_URL.
+_NVIDIA_NIM_CLOUD_HEADERS = {
+    "X-BILLING-INVOKE-ORIGIN": "HermesAgent",
+}
+
+
+def build_nvidia_nim_headers(base_url: str | None) -> dict:
+    """Return NVIDIA NIM cloud attribution headers for build.nvidia.com traffic."""
+    if base_url_host_matches(str(base_url or ""), "integrate.api.nvidia.com"):
+        return dict(_NVIDIA_NIM_CLOUD_HEADERS)
+    return {}
+
+
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
 from hermes_cli import __version__ as _HERMES_VERSION
@@ -1372,6 +1387,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(base_url)
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -1407,6 +1424,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            extra["default_headers"] = build_nvidia_nim_headers(base_url)
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -2690,6 +2709,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
+        async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -2951,6 +2972,8 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(custom_base)
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -3149,6 +3172,8 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            headers.update(build_nvidia_nim_headers(base_url))
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI

@@ -10,6 +10,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
@@ -35,8 +37,14 @@ def test_hermes_launcher_wrapper_clears_python_env_before_exec() -> None:
     assert 'mv -f "$launcher_tmp" "$command_link_dir/hermes"' in text
 
 
+@pytest.mark.live_system_guard_bypass
 def test_setup_path_does_not_clobber_symlinked_venv_entrypoint(tmp_path) -> None:
-    """setup_path() must replace the launcher symlink, not overwrite its target."""
+    """setup_path() must replace the launcher symlink, not overwrite its target.
+
+    The bash -lc script embeds scripts/install.sh; the live-system subprocess
+    guard matches ``systemctl`` substrings inside that text. Only ``setup_path``
+    runs — no systemd or gateway mutation.
+    """
     install_source = INSTALL_SH.read_text(encoding="utf-8")
     install_prelude, _, _ = install_source.rpartition("\nmain\n")
     assert install_prelude, "expected trailing `main` call in scripts/install.sh"

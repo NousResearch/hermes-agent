@@ -626,12 +626,19 @@ class TestAssignAgent:
 class TestAssignAgentRoutingRejection:
     """Tests for routing mode / runner metadata rejection in PR1."""
 
-    def test_rejects_hermes_routing_mode(self, global_agents_dir):
-        """Agents with routing.mode='hermes' must be rejected."""
+    def test_hermes_routing_mode_passes_native_provider_model_to_delegate_task(self, global_agents_dir, monkeypatch):
+        """Agents with routing.mode='hermes' must route children to their configured provider/model."""
         make_agent(global_agents_dir / "hermes-agent.md", "hermes-agent",
                    description="Hermes routing agent",
-                   routing={"mode": "hermes", "provider": "openai"})
+                   routing={"mode": "hermes", "provider": "kimi-coding", "model": "kimi-k2.6"})
         mock_parent = MagicMock()
+        recorded_calls = []
+
+        def mock_delegate_task(**kwargs):
+            recorded_calls.append(kwargs)
+            return json.dumps({"success": True, "results": []})
+
+        monkeypatch.setattr("tools.delegate_tool.delegate_task", mock_delegate_task)
         result = assign_agent(
             agent_name="hermes-agent",
             task="Do something",
@@ -639,9 +646,41 @@ class TestAssignAgentRoutingRejection:
             workdir=str(global_agents_dir),
         )
         parsed = json.loads(result)
-        assert parsed.get("success") is False
-        assert "routing.mode='hermes'" in parsed["error"]
-        assert "PR1" in parsed["error"]
+        assert parsed.get("success") is True
+        assert len(recorded_calls) == 1
+        assert recorded_calls[0]["provider"] == "kimi-coding"
+        assert recorded_calls[0]["model"] == "kimi-k2.6"
+
+    def test_assign_agent_passes_all_native_provider_routes(self, global_agents_dir, monkeypatch):
+        """Kimi, MiniMax, and GLM/Z.AI agent routes are forwarded exactly to delegation."""
+        routes = {
+            "kimi-agent": ("kimi-coding", "kimi-k2.6"),
+            "minimax-agent": ("minimax", "MiniMax-M2.7-highspeed"),
+            "glm-agent": ("zai", "glm-5.1"),
+        }
+        for name, (provider, model) in routes.items():
+            make_agent(global_agents_dir / f"{name}.md", name,
+                       description=f"{provider} route",
+                       routing={"mode": "hermes", "provider": provider, "model": model})
+
+        recorded_calls = []
+
+        def mock_delegate_task(**kwargs):
+            recorded_calls.append(kwargs)
+            return json.dumps({"success": True, "results": []})
+
+        monkeypatch.setattr("tools.delegate_tool.delegate_task", mock_delegate_task)
+        mock_parent = MagicMock()
+        for name in routes:
+            result = assign_agent(
+                agent_name=name,
+                task="Do something",
+                parent_agent=mock_parent,
+                workdir=str(global_agents_dir),
+            )
+            assert json.loads(result).get("success") is True
+
+        assert [(c["provider"], c["model"]) for c in recorded_calls] == list(routes.values())
 
     def test_rejects_acp_routing_mode(self, global_agents_dir):
         """Agents with routing.mode='acp' must be rejected."""
@@ -658,7 +697,7 @@ class TestAssignAgentRoutingRejection:
         parsed = json.loads(result)
         assert parsed.get("success") is False
         assert "routing.mode='acp'" in parsed["error"]
-        assert "PR1" in parsed["error"]
+        assert "Supported routing modes: inherit, hermes" in parsed["error"]
 
     def test_accepts_inherit_routing_mode(self, global_agents_dir, monkeypatch):
         """Agents with routing.mode='inherit' (default) must be accepted."""

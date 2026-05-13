@@ -1906,6 +1906,14 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    # Internal per-call routing overrides used by assign_agent. These are not
+    # exposed in the public tool schema, so models cannot smuggle secrets or
+    # arbitrary transports through delegate_task.
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -1974,7 +1982,15 @@ def delegate_task(
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent_agent,
+            model_override=model,
+            provider_override=provider,
+            base_url_override=base_url,
+            api_key_override=api_key,
+            api_mode_override=api_mode,
+        )
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2323,7 +2339,16 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    *,
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+    base_url_override: Optional[str] = None,
+    api_key_override: Optional[str] = None,
+    api_mode_override: Optional[str] = None,
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -2344,10 +2369,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
-    configured_base_url = str(cfg.get("base_url") or "").strip() or None
-    configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_model = model_override or str(cfg.get("model") or "").strip() or None
+    configured_provider = provider_override or str(cfg.get("provider") or "").strip() or None
+    configured_base_url = base_url_override or str(cfg.get("base_url") or "").strip() or None
+    configured_api_key = api_key_override or str(cfg.get("api_key") or "").strip() or None
+    configured_api_mode = api_mode_override or None
 
     if configured_base_url:
         # When delegation.api_key is not set, return None so _build_child_agent
@@ -2373,6 +2399,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+        if configured_api_mode:
+            api_mode = configured_api_mode
 
         return {
             "model": configured_model,
@@ -2417,7 +2445,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": configured_api_mode or runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

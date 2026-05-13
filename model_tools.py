@@ -703,6 +703,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    parent_agent: Any = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -716,6 +717,8 @@ def handle_function_call(
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
                        ``_last_resolved_tool_names`` for backward compat.
+        parent_agent: Optional calling AIAgent instance for tools that need
+                      runtime context (for example assign_agent -> delegate_task).
 
     Returns:
         Function result as a JSON string.
@@ -785,6 +788,7 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
+                parent_agent=parent_agent,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 

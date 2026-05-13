@@ -301,18 +301,19 @@ def assign_agent(
             ensure_ascii=False,
         )
 
-    # ── Reject unsupported routing modes in PR1 ────────────────────────────
-    # PR1 native registry only supports routing.mode == "inherit" or None.
-    # All other modes require delegate_task's full routing machinery.
+    # ── Validate routing mode ───────────────────────────────────────────────
+    # assign_agent supports inherited routing and native Hermes provider/model
+    # overrides.  ACP transport remains unsupported here; it belongs either in
+    # delegate_task's explicit ACP override path or trusted CLI runners.
     routing_mode = agent.routing.mode
-    if routing_mode not in (None, "inherit"):
+    if routing_mode not in (None, "inherit", "hermes"):
         return json.dumps(
             {
                 "success": False,
                 "error": (
                     f"Agent '{agent_name}' has routing.mode='{routing_mode}' which is "
-                    "not supported in the PR1 native registry. "
-                    "Use delegate_task for non-inherit routing modes."
+                    "not supported. Supported routing modes: inherit, hermes. "
+                    "Use trusted CLI runners for external transports."
                 ),
             },
             ensure_ascii=False,
@@ -476,6 +477,10 @@ def assign_agent(
             toolsets=effective_toolsets,
             role=effective_role,
             parent_agent=parent_agent,
+            model=agent.routing.model if routing_mode == "hermes" else None,
+            provider=agent.routing.provider if routing_mode == "hermes" else None,
+            base_url=agent.routing.base_url if routing_mode == "hermes" else None,
+            api_mode=agent.routing.api_mode if routing_mode == "hermes" else None,
         )
     except Exception as exc:
         logger.warning("assign_agent delegate_task failed: %s", exc)

@@ -73,6 +73,11 @@ class TestDelegateRequirements(unittest.TestCase):
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
+        self.assertNotIn("model", props)
+        self.assertNotIn("provider", props)
+        self.assertNotIn("base_url", props)
+        self.assertNotIn("api_key", props)
+        self.assertNotIn("api_mode", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
     def test_schema_description_advertises_runtime_limits(self):
@@ -107,6 +112,30 @@ class TestDelegateRequirements(unittest.TestCase):
         for surface in (desc, tasks_desc, role_desc):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
+
+    def test_internal_provider_model_override_resolves_runtime_credentials(self):
+        """assign_agent-only routing overrides must use runtime provider resolution."""
+        parent = _make_mock_parent()
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.return_value = {
+                "model": "ignored-runtime-model",
+                "provider": "zai",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "api_key": "test-key",
+                "api_mode": "chat_completions",
+            }
+            creds = _resolve_delegation_credentials(
+                {},
+                parent,
+                model_override="glm-5.1",
+                provider_override="zai",
+            )
+
+        mock_resolve.assert_called_once_with(requested="zai", target_model="glm-5.1")
+        self.assertEqual(creds["provider"], "zai")
+        self.assertEqual(creds["model"], "glm-5.1")
+        self.assertEqual(creds["base_url"], "https://api.z.ai/api/coding/paas/v4")
+        self.assertEqual(creds["api_key"], "test-key")
 
     def test_schema_overrides_applied_via_get_definitions(self):
         """Registry.get_definitions() must apply dynamic_schema_overrides so

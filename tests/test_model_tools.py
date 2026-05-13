@@ -112,6 +112,23 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_parent_agent_forwarded_to_registry_dispatch(self):
+        """Tools like assign_agent need the live AIAgent instance from the loop."""
+        parent = object()
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch,
+            patch("hermes_cli.plugins.invoke_hook"),
+        ):
+            result = handle_function_call(
+                "assign_agent",
+                {"agent_name": "code-explorer", "task": "smoke"},
+                task_id="task-1",
+                parent_agent=parent,
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_dispatch.call_args.kwargs["parent_agent"] is parent
+
 
 # =========================================================================
 # Agent loop tools

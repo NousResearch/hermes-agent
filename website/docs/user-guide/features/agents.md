@@ -70,6 +70,7 @@ When done, summarize your findings in a concise report.
 | `tags` | No | Labels used by the `agents_list(category=...)` filter. |
 | `tools.mode` / `tools.allow_toolsets` | No | Optional toolset restriction for the delegated worker. |
 | `delegation.role` | No | Optional child role (`leaf` or `orchestrator`) passed to the delegation layer. |
+| `routing.mode` / `routing.provider` / `routing.model` | No | Optional native Hermes provider routing. `routing.mode: hermes` runs the child with the named provider/model through Hermes' normal credential resolver. |
 | `runner.mode` / `runner.name` / `runner.continue` | No | Optional execution runner. Defaults to `delegate_task`; `cli` uses a trusted runner from `agent_runners` config. |
 
 :::warning No secrets in frontmatter
@@ -85,6 +86,31 @@ assign_agent(agent_name="code-reviewer", task="Review PR #42 in /home/nuuair/myp
 ```
 
 The agent runs with its own isolated context. Only the final result is returned — intermediate tool calls and thoughts stay private to the subagent.
+
+### Native provider routing
+
+By default, a named agent inherits the normal delegation model/provider. To pin a named agent to a specific Hermes-supported provider and model, use `routing.mode: hermes`:
+
+```markdown
+---
+schema_version: 1
+name: fast-code-explorer
+description: "Repository exploration specialist backed by Kimi"
+routing:
+  mode: hermes
+  provider: kimi-coding
+  model: kimi-k2.6
+tools:
+  mode: restrict
+  allow_toolsets: [file]
+---
+
+You explore repositories and report concise findings.
+```
+
+When `assign_agent` runs this agent, the child uses the configured provider/model while the parent session keeps its own model. Credentials, base URLs, API modes, OAuth state, and credential pools are resolved by Hermes' normal provider machinery. Do not put API keys in agent files.
+
+`routing.mode: hermes` is intended for native Hermes providers such as OpenRouter, Anthropic, Kimi, MiniMax, Z.AI/GLM, and other configured provider integrations. External command-backed agents should use trusted CLI runners instead.
 
 ### CLI-backed agents
 
@@ -191,6 +217,7 @@ agent_view(name="code-reviewer", workdir="/path/to/project")
 
 - **Agents toolset is read-only.** You can list and view agents, but cannot create, edit, or delete them via tools.
 - **`assign_agent` is in the delegation toolset**, not the agents toolset. It requires explicit enablement.
+- **Native provider routing is trusted metadata.** Agent files may request a provider/model with `routing.mode: hermes`, but API keys and credential lookup stay outside the file. Internal provider/model overrides are not exposed on the public `delegate_task` tool schema.
 - **Project-local agents cannot define arbitrary CLI or ACP commands.** CLI commands, args, resume flags, and executable paths must come from trusted `agent_runners` config. Project-local agents can only request a configured runner by name, and only when that runner sets `allowed_from_project_agents: true`.
 - **Secrets in frontmatter are rejected** at load time. Never put credentials in agent files.
 
@@ -201,7 +228,7 @@ Named agents are a new capability. Current limitations:
 - **No `spawn_agent` / background execution.** Agents run synchronously via `assign_agent` and return when complete.
 - **No marketplace or install wizard.** Agent files are created and managed by hand.
 - **No edit or update tools.** To change an agent, edit its Markdown file directly.
-- **Limited routing.** `delegate_task` agents inherit delegation routing; `cli` agents can use trusted external runners from `agent_runners`; arbitrary per-agent provider/model routing is not implemented yet.
+- **Limited routing.** `delegate_task` agents can inherit delegation routing or use `routing.mode: hermes` for native provider/model routing; `cli` agents can use trusted external runners from `agent_runners`. Arbitrary ACP commands from agent files are not supported.
 - **No agent-to-agent chaining.** You cannot currently have one agent spawn another as a subagent.
 
 These limitations will be addressed in future releases.

@@ -1,8 +1,10 @@
 """SearXNG search — plugin form.
 
 Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Same JSON
-API call (``/search?format=json``), same result normalization as the legacy
-:mod:`tools.web_providers.searxng` module.
+API call (``/search?format=json``), same result normalization. The legacy
+in-tree module ``tools.web_providers.searxng`` was removed in the same
+commit that moved this code under ``plugins/``; this file is now the
+canonical implementation.
 
 Search-only — SearXNG aggregates results from upstream engines but does not
 fetch/extract arbitrary URLs. ``supports_extract()`` returns False.

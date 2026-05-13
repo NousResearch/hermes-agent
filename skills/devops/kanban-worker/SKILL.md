@@ -29,6 +29,10 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 - Good: `business-a: Acme is our biggest customer`
 - Bad (leaks): `Acme is our biggest customer`
 
+## Review / QA / verifier outcomes
+
+Use `kanban_complete` only for pass/approved outcomes. For fail/actionable findings, create remediation and re-review cards with `kanban_create` and list the returned ids in `created_cards`, or call `kanban_block` if the blocker is human-only (approval, credentials, access, product decision). Do not complete with `metadata.verdict=fail`, `metadata.approved=false`, or a `verdict: fail` summary unless the downstream remediation card ids are included.
+
 ## Good summary + metadata shapes
 
 The `kanban_complete(summary=..., metadata=...)` handoff is how downstream workers read what you did. Patterns that work:

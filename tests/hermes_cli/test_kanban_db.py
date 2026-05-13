@@ -592,6 +592,96 @@ def test_auto_remediate_ignores_human_approval_blocker(
         assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
 
 
+def test_negative_verifier_completion_without_cards_blocks_not_done(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="Verifier: dashboard smoke test", assignee="verifier")
+        kb.claim_task(conn, review)
+
+        ok = kb.complete_task(
+            conn,
+            review,
+            summary="verdict: fail - smoke test still failing with 500 error",
+            metadata={"verdict": "fail", "approved": False},
+        )
+
+        assert ok is True
+        task = kb.get_task(conn, review)
+        assert task.status == "blocked"
+        run = kb.latest_run(conn, review)
+        assert run.outcome == "blocked"
+        assert "verdict: fail" in (run.summary or "")
+        events = kb.list_events(conn, review)
+        assert "negative_completion_blocked" in [e.kind for e in events]
+        assert "completed" not in [e.kind for e in events]
+
+
+def test_negative_verifier_completion_with_created_cards_is_audit_done(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="QA review backend", assignee="reviewer")
+        kb.claim_task(conn, review)
+        remediation = kb.create_task(
+            conn,
+            title="Fix QA findings",
+            assignee="backend-eng",
+            parents=[review],
+            created_by="reviewer",
+        )
+
+        ok = kb.complete_task(
+            conn,
+            review,
+            summary="verdict: fail - remediation created; issue remains open",
+            metadata={"verdict": "failed", "approved": False},
+            created_cards=[remediation],
+        )
+
+        assert ok is True
+        assert kb.get_task(conn, review).status == "done"
+        completed = [e for e in kb.list_events(conn, review) if e.kind == "completed"][-1]
+        assert completed.payload["verified_cards"] == [remediation]
+        assert completed.payload["negative_outcome"] is True
+        assert completed.payload["underlying_issue_open"] is True
+
+
+def test_blocked_verifier_failure_routes_remediation_and_rereview(kanban_home):
+    with kb.connect() as conn:
+        impl = kb.create_task(conn, title="Implement worker", assignee="backend-eng")
+        kb.complete_task(conn, impl)
+        review = kb.create_task(conn, title="Verifier: worker smoke test", assignee="verifier", parents=[impl])
+        kb.claim_task(conn, review)
+        kb.complete_task(
+            conn,
+            review,
+            summary="verdict: blocked - regression test failed in worker queue",
+            metadata={"verdict": "blocked"},
+        )
+
+        assert kb.get_task(conn, review).status == "blocked"
+        routed = kb.auto_remediate_blocked_reviews(conn)
+        assert len(routed) == 1
+        assert routed[0][0] == review
+        rem = kb.get_task(conn, routed[0][1])
+        rereview = kb.get_task(conn, routed[0][2])
+        assert rem.assignee == "backend-eng"
+        assert rereview.assignee == "verifier"
+
+
+def test_negative_human_auth_blocker_does_not_auto_route(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="QA deployment verification", assignee="qa")
+        kb.claim_task(conn, review)
+        kb.complete_task(
+            conn,
+            review,
+            summary="verdict: blocked - need human approval and credentials for prod deploy",
+            metadata={"verdict": "blocked"},
+        )
+
+        assert kb.get_task(conn, review).status == "blocked"
+        assert kb.auto_remediate_blocked_reviews(conn) == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

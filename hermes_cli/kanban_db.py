@@ -2158,6 +2158,70 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
+
+
+_NEGATIVE_COMPLETION_VERDICTS = {"fail", "failed", "blocked"}
+_NEGATIVE_COMPLETION_PREFIX_RE = re.compile(
+    r"^\s*(verdict\s*:\s*(?:fail|failed|blocked)|approved\s*:\s*false)\b",
+    re.I,
+)
+_OPEN_BLOCKER_RE = re.compile(
+    r"\b(open\s+blockers?|blockers?\s+(?:remain|open)|issue\s+remains\s+open|not\s+deployed)\b",
+    re.I,
+)
+
+
+def _is_negative_completion(
+    task: Optional[Task],
+    summary: Optional[str],
+    metadata: Optional[dict],
+) -> bool:
+    """Return True for review/QA/verifier handoffs that mean "not passed".
+
+    Reviewers sometimes called ``kanban_complete`` with structured failure
+    fields, which made failed gates look done. This detector is intentionally
+    scoped to review/QA/verifier tasks so ordinary implementation metadata like
+    ``approved=False`` does not surprise non-gate workers.
+    """
+    if task is None or not _is_review_task(task):
+        return False
+    meta = metadata if isinstance(metadata, dict) else {}
+    verdict = str(meta.get("verdict", "")).strip().lower()
+    if verdict in _NEGATIVE_COMPLETION_VERDICTS:
+        return True
+    if meta.get("approved") is False:
+        return True
+    text = (summary or "").strip()
+    if _NEGATIVE_COMPLETION_PREFIX_RE.search(text):
+        return True
+    if _OPEN_BLOCKER_RE.search(text):
+        return True
+    return False
+
+
+def _negative_completion_reason(
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> str:
+    text = (summary if summary is not None else result) or ""
+    text = (
+        text.strip()
+        or "Negative review/QA/verifier completion reported without details"
+    )
+    meta = metadata if isinstance(metadata, dict) else {}
+    verdict = str(meta.get("verdict", "")).strip()
+    approved = meta.get("approved")
+    bits = []
+    if verdict:
+        bits.append(f"metadata.verdict={verdict}")
+    if approved is False:
+        bits.append("metadata.approved=false")
+    prefix = "Negative review/QA/verifier completion"
+    if bits:
+        prefix += " (" + ", ".join(bits) + ")"
+    return f"{prefix}: {text}"
+
 class HallucinatedCardsError(ValueError):
     """Raised by ``complete_task`` when ``created_cards`` contains ids
     that don't exist or weren't created by the completing worker.
@@ -2243,6 +2307,42 @@ def complete_task(
     else:
         verified_cards = []
 
+    task_before = get_task(conn, task_id)
+    negative_completion = _is_negative_completion(task_before, summary, metadata)
+    if negative_completion and not verified_cards:
+        reason = _negative_completion_reason(summary, result, metadata)
+        ok = block_task(conn, task_id, reason=reason, expected_run_id=expected_run_id)
+        if ok:
+            run = latest_run(conn, task_id)
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "negative_completion_blocked",
+                    {
+                        "summary": (
+                            ((summary if summary is not None else result) or "")
+                            .strip()
+                            .splitlines()[0][:400]
+                            or None
+                        ),
+                        "metadata_verdict": (
+                            (metadata or {}).get("verdict")
+                            if isinstance(metadata, dict)
+                            else None
+                        ),
+                        "metadata_approved": (
+                            (metadata or {}).get("approved")
+                            if isinstance(metadata, dict)
+                            else None
+                        ),
+                        "required_action": (
+                            "create remediation plus re-review, or block for "
+                            "a human-only blocker"
+                        ),
+                    },
+                    run_id=run.id if run else None,
+                )
+        return ok
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -2306,6 +2406,13 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        if negative_completion:
+            completed_payload["negative_outcome"] = True
+            completed_payload["underlying_issue_open"] = True
+            completed_payload["required_action"] = (
+                "verified downstream remediation/re-review cards were created; "
+                "completion is an audit handoff, not approval"
+            )
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -2620,8 +2727,13 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 
 
-_REVIEW_ASSIGNEE_RE = re.compile(r"\b(review|reviewer|qa|quality|test|tester)\b", re.I)
-_REVIEW_TITLE_RE = re.compile(r"\b(review|re-review|qa|quality assurance|test)\b", re.I)
+_REVIEW_ASSIGNEE_RE = re.compile(
+    r"\b(review|reviewer|qa|quality|test|tester|verify|verifier)\b", re.I
+)
+_REVIEW_TITLE_RE = re.compile(
+    r"\b(review|re-review|qa|quality assurance|test|verify|verifier|verification)\b",
+    re.I,
+)
 _DEFECT_BLOCKER_RE = re.compile(
     r"\b("
     r"bug|defect|regression|broken|fails?|failing|failure|error|exception|"

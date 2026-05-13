@@ -9035,6 +9035,38 @@ class HermesCLI:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
+    def _classify_busy_input(self, text: str) -> "ControlPlaneDecision":  # type: ignore[name-defined]
+        """Frontdesk control-plane adapter — Phase 2 substrate, no callers wired.
+
+        Returns a :class:`agent.control_plane.ControlPlaneDecision` for *text*
+        derived from the pure-classifier output.  ``frontdesk_mode_active`` is
+        sourced from ``self.frontdesk_mode_enabled`` when that attribute
+        exists; otherwise it defaults to ``False`` so the decision is
+        guaranteed to downgrade WORKER_LANE → MAIN under legacy mode.
+
+        This method is **deliberately not yet called from any code path**.
+        Phase 5 (``/mode frontdesk`` opt-in) is the first phase that wires it
+        into ``cli.py:11634-11650`` (integrated-busy capture) and
+        ``cli.py:8714-8736`` (slash-command dispatch).  Phase 2's job is to
+        land the schema and the classifier so transcript-replay fixtures and
+        unit tests can already be written against a stable contract while the
+        default user-visible behaviour stays bit-identical.
+
+        Hard boundaries this respects (PRD §9.2 / design review §9.2):
+
+        * No mutation of ``self._pending_input``.
+        * No mutation of ``self.busy_input_mode``.
+        * No call into ``self._handle_busy_command`` or
+          ``self._coalesce_pending_integrated_busy_queue``.
+        * No persona / prompt-builder change.
+        """
+        # Lazy import: keeps cli.py module-import cost flat and ensures a future
+        # circular-import regression is loud rather than silent.
+        from agent.control_plane import classify as _classify
+
+        frontdesk_active = bool(getattr(self, "frontdesk_mode_enabled", False))
+        return _classify(text, frontdesk_mode_active=frontdesk_active)
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
         if not self._fast_command_available():

@@ -1171,6 +1171,40 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _classify_incoming(
+    event: Any, *, frontdesk_mode_active: bool = False
+) -> "ControlPlaneDecision":  # type: ignore[name-defined]
+    """Frontdesk control-plane adapter — Phase 2 substrate, no callers wired.
+
+    Duck-typed on *event*: reads ``.text`` (str-like, optional), ``.message_type``
+    (with ``.value`` or ``.name``).  Anything else is treated as missing.  The
+    function returns a :class:`agent.control_plane.ControlPlaneDecision`
+    derived purely from the textual content of the event; the gateway's own
+    queueing / drain / merge semantics are NOT consulted.
+
+    This adapter is **deliberately not yet called from any code path** in the
+    gateway.  Phase 6 (gateway parity) is the first phase that wires it into
+    ``gateway/run.py`` capture (``:2588-2602``) and drain (``:6243-6285``)
+    branches, gated by ``mode.frontdesk.gateway_parity`` config (PRD §12.1 /
+    design review §4.4).  Until then it is *function-only*, callable from
+    tests / replay fixtures / future wiring but invisible to live traffic.
+
+    Hard boundaries this respects (PRD §9.2 / design review §9.2):
+
+    * No mutation of any platform adapter, pending-message slot, or
+      ``MessageEvent``.
+    * No interaction with ``merge_pending_message_event`` semantics.
+    * No process-level side effect (INV-5: zero mid-task gateway restart).
+    """
+    # Lazy import so gateway/run.py module-load cost stays flat and a future
+    # accidental circular import becomes loud rather than silent.
+    from agent.control_plane import classify as _classify
+
+    text_attr = getattr(event, "text", None)
+    text = text_attr if isinstance(text_attr, str) else ""
+    return _classify(text, frontdesk_mode_active=frontdesk_mode_active)
+
+
 class GatewayRunner:
     """
     Main gateway controller.

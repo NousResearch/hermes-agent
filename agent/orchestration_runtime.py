@@ -70,6 +70,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from agent.control_plane import (
+    ControlPlaneDecision,
+    classify as _classify_frontdesk,
+)
 from agent.orchestration_status import (
     OrchestrationSnapshot,
     build_snapshot,
@@ -89,6 +93,7 @@ __all__ = [
     "format_runtime_tasks",
     "format_runtime_agents",
     "format_runtime_overview",
+    "advise_frontdesk_for_owner",
 ]
 
 # The private attribute name a runtime is stored under on an owner object.  One
@@ -148,6 +153,24 @@ class OrchestrationRuntime:
         graceful empty-state line when there is neither."""
         return _format_overview(
             self.task_registry, self.worker_registry, session_key=session_key, compact=compact
+        )
+
+    # -- frontdesk policy advisory (read-only) ---------------------------
+    def advise_frontdesk(
+        self, request_text: str, *, frontdesk_mode_active: bool = False
+    ) -> ControlPlaneDecision:
+        """Return a :class:`~agent.control_plane.ControlPlaneDecision` for
+        *request_text*.
+
+        Side-effect-free: this is a thin pass-through to
+        :func:`agent.control_plane.classify`, including its mode-gating
+        invariant.  Defaulting ``frontdesk_mode_active`` to ``False`` preserves
+        legacy UX: worker/steer-shaped policy verdicts are advisories only and
+        downgrade to ``MAIN`` until a future phase explicitly enables
+        frontdesk mode.  The runtime's own task/worker state is *not* consulted.
+        """
+        return _classify_frontdesk(
+            request_text, frontdesk_mode_active=frontdesk_mode_active
         )
 
 
@@ -221,4 +244,21 @@ def format_runtime_overview(
     runtime on *owner* first if needed."""
     return get_or_create_orchestration_runtime(owner).format_overview(
         session_key=session_key, compact=compact
+    )
+
+
+def advise_frontdesk_for_owner(
+    owner: Any, request_text: str, *, frontdesk_mode_active: bool = False
+) -> ControlPlaneDecision:
+    """Return the frontdesk policy verdict for *request_text* against *owner*'s
+    runtime, creating an empty runtime on *owner* first if needed.
+
+    Read-only: no task, worker, or queue state is mutated.  Callers that only
+    need the verdict (and not the runtime) can call
+    :func:`agent.frontdesk_policy.classify_request` directly; this helper
+    matches the per-owner shape of the other ``*_runtime_*`` formatters so a
+    thin command handler can stay a one-liner.
+    """
+    return get_or_create_orchestration_runtime(owner).advise_frontdesk(
+        request_text, frontdesk_mode_active=frontdesk_mode_active
     )

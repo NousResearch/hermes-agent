@@ -17,6 +17,8 @@ __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
+!tests/agent/data/
+!tests/agent/data/frontdesk_intents_ko.yaml
 .pytest_cache/
 tmp/
 temp_vision_images/

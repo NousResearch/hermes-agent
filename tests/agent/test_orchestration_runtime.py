@@ -4,9 +4,17 @@ import threading
 
 import pytest
 
+from agent.control_plane import (
+    Confidence,
+    ControlPlaneDecision,
+    Intent,
+    Recommendation,
+    Signal,
+)
 from agent.orchestration_runtime import (
     RUNTIME_ATTR,
     OrchestrationRuntime,
+    advise_frontdesk_for_owner,
     format_runtime_agents,
     format_runtime_overview,
     format_runtime_tasks,
@@ -261,6 +269,58 @@ def test_runtime_format_tasks_is_session_scoped_and_active_only():
     assert "active in s1" in text_all
     assert "active in s2" in text_all
     assert "done in s1" not in text_all
+
+
+# --------------------------------------------------------------------------
+# Frontdesk policy advisory (read-only pass-through)
+# --------------------------------------------------------------------------
+def test_advise_frontdesk_routes_a_research_artifact_request_to_worker_lane():
+    rt = OrchestrationRuntime.create()
+    decision = rt.advise_frontdesk(
+        "investigate the regression and write a report.md with the findings",
+        frontdesk_mode_active=True,
+    )
+    assert isinstance(decision, ControlPlaneDecision)
+    assert decision.recommendation == Recommendation.WORKER_LANE
+    assert decision.intent is Intent.NEW_TASK_WORKER
+    assert decision.confidence == Confidence.HIGH
+    assert Signal.RESEARCH in decision.signals
+    assert Signal.ARTIFACT in decision.signals
+
+
+def test_advise_frontdesk_keeps_short_status_query_on_main():
+    rt = OrchestrationRuntime.create()
+    decision = rt.advise_frontdesk("status?")
+    assert decision.recommendation == Recommendation.MAIN
+    assert not decision.should_delegate
+
+
+def test_advise_frontdesk_does_not_mutate_runtime_state():
+    rt = OrchestrationRuntime.create()
+    before_tasks = len(rt.task_registry)
+    before_lanes = list(rt.worker_registry.lane_names())
+    rt.advise_frontdesk("delegate this in the background", frontdesk_mode_active=True)
+    assert len(rt.task_registry) == before_tasks
+    assert list(rt.worker_registry.lane_names()) == before_lanes
+
+
+def test_advise_frontdesk_for_owner_creates_runtime_if_absent():
+    owner = _DummyOwner()
+    assert get_orchestration_runtime(owner) is None
+    decision = advise_frontdesk_for_owner(
+        owner, "draft a report.md with the audit", frontdesk_mode_active=True
+    )
+    assert decision.should_delegate
+    rt = get_orchestration_runtime(owner)
+    assert isinstance(rt, OrchestrationRuntime)
+    assert advise_frontdesk_for_owner(owner, "status?").recommendation == Recommendation.MAIN
+
+
+def test_advise_frontdesk_for_owner_does_not_inspect_other_owners():
+    owner_a = _DummyOwner()
+    owner_b = _DummyOwner()
+    advise_frontdesk_for_owner(owner_a, "write a report.md")
+    assert get_orchestration_runtime(owner_b) is None
 
 
 def test_worker_with_non_json_safe_metadata_degrades_without_raising_through_runtime():

@@ -1469,6 +1469,31 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # 0c. LiteLLM /v1/model/info — authoritative source when the provider
+    # is a LiteLLM proxy.  Placed before provider-prefix stripping so the
+    # raw model name (as LiteLLM knows it) is used for lookup.
+    if provider == "litellm" and base_url:
+        try:
+            import json as _json
+            from urllib.request import Request, urlopen
+
+            _info_url = f"{base_url.rstrip('/')}/v1/model/info"
+            _headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            _req = Request(_info_url, headers=_headers)
+            with urlopen(_req, timeout=10) as _resp:
+                _info_data = _json.loads(_resp.read())
+            for _entry in (_info_data.get("data") or []):
+                if _entry.get("model_name") == model:
+                    _mi = _entry.get("model_info") or {}
+                    _litellm_ctx = _mi.get("max_tokens") or _mi.get("max_input_tokens")
+                    if _litellm_ctx:
+                        if base_url:
+                            save_context_length(model, base_url, _litellm_ctx)
+                        return _litellm_ctx
+                    break
+        except Exception:
+            pass
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
@@ -1547,17 +1572,18 @@ def get_model_context_length(
     # LiteLLM is a multi-backend gateway — skip Ollama/LM Studio/llama.cpp
     # probes that would 404 against it.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and provider != "litellm":
-        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key, provider=provider)
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
             # 2b. Ollama native /api/show — any URL might be an Ollama server
             # (local, cloud, or custom hosting).  Non-Ollama servers return
-            # 404/405 quickly.  Fall through on failure.
-            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-            if ctx is not None:
-                save_context_length(model, base_url, ctx)
-                return ctx
+            # 404/405 quickly.  LiteLLM is not Ollama — skip this probe.
+            if provider != "litellm":
+                ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+                if ctx is not None:
+                    save_context_length(model, base_url, ctx)
+                    return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key, provider=provider)

@@ -3870,16 +3870,15 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
+        # If the user set an explicit non-"auto" provider, respect it —
+        # forcing "custom" here would discard the provider flag that
+        # downstream code uses to skip inappropriate probes (e.g. litellm
+        # shouldn't be probed for Ollama/LM Studio endpoints).
+        if cfg_provider and cfg_provider != "auto":
+            return cfg_provider, resolved_model, cfg_base_url or None, cfg_api_key or None, resolved_api_mode
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_base_url and cfg_provider and cfg_provider != "auto":
-            # base_url set without api_key but with a known provider — use
-            # the provider so it can resolve credentials from env vars
-            # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
-            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 

@@ -345,6 +345,83 @@ class TestAllowPrivateUrlsIntegration:
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
 
+
+class TestAllowPrivateUrlsConcurrency:
+    """Regression tests for the TOCTOU race in _global_allow_private_urls (#24623).
+
+    The old implementation published _allow_private_resolved=True before
+    _cached_allow_private was fully computed.  A concurrent caller on the fast
+    path would observe resolved=True and return the stale default False even
+    when the user had opted in.  The fix uses double-checked locking.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_concurrent_calls_all_agree(self, monkeypatch):
+        """Spawn many threads simultaneously; all must return the same value."""
+        import threading as _threading
+
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        results: list[bool] = []
+        errors: list[Exception] = []
+        barrier = _threading.Barrier(20)
+
+        def call_it():
+            try:
+                barrier.wait()  # start all threads at once
+                results.append(_global_allow_private_urls())
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [_threading.Thread(target=call_it) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"thread errors: {errors}"
+        assert all(r is True for r in results), f"inconsistent results: {results}"
+
+    def test_concurrent_false_all_agree(self, monkeypatch):
+        """Same test for the False outcome (default / no toggle)."""
+        import threading as _threading
+
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        results: list[bool] = []
+        errors: list[Exception] = []
+        barrier = _threading.Barrier(20)
+
+        def call_it():
+            try:
+                barrier.wait()
+                with patch("hermes_cli.config.read_raw_config", return_value={}):
+                    results.append(_global_allow_private_urls())
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [_threading.Thread(target=call_it) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"thread errors: {errors}"
+        assert all(r is False for r in results), f"inconsistent results: {results}"
+
+    def test_reset_cache_is_safe_to_call_under_lock(self, monkeypatch):
+        """_reset_allow_private_cache must not deadlock when called after resolution."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+        # Must not deadlock
+        _reset_allow_private_cache()
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _global_allow_private_urls() is False
+
     def test_metadata_goog_blocked_even_with_toggle(self, monkeypatch):
         """metadata.goog is ALWAYS blocked."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")

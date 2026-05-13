@@ -30,6 +30,8 @@ The goal is to make multi-agent workflows stable without removing LLM agility.
 
 LLMs should be used where judgment is required. Deterministic middleware should own anything that can be specified, validated, or enforced.
 
+Related architecture bridge: `docs/specs/oh-my-hermes-agent-architecture-bridge.md` records which `oh-my-hermes-agent` operating-model lessons are being adopted as first-party workflow primitives.
+
 In short:
 
 > LLMs are allowed to be smart. They are not allowed to be the database, scheduler, validator, lock manager, CI parser, state machine, or source of truth.

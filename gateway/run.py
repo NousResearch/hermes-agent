@@ -13867,6 +13867,100 @@ class GatewayRunner:
             else None
         )
 
+        def _drain_progress_queue() -> None:
+            """Discard all pending progress events."""
+            while not progress_queue.empty():
+                try:
+                    progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+        def _dequeue_progress() -> object | None:
+            """Return next event or None if queue is empty."""
+            try:
+                return progress_queue.get_nowait()
+            except queue.Empty:
+                return None
+
+        async def _send_progress_no_edit(adapter, interval: float) -> None:
+            """Buffered progress for no-edit platforms (Weixin, iMessage…).
+
+            Flushes accumulated lines as a single message every *interval*
+            seconds.  interval=0 disables (silent drain).
+            """
+            if not interval:
+                return _drain_progress_queue()
+
+            buf: list[str] = []
+            last_flush = 0.0
+
+            async def flush() -> None:
+                nonlocal last_flush
+                if not buf or not _run_still_current():
+                    return
+                try:
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content="\n".join(buf),
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
+                    if _cleanup_progress and getattr(result, "success", False) and getattr(result, "message_id", None):
+                        _cleanup_msg_ids.append(str(result.message_id))
+                except Exception as e:
+                    logger.debug("No-edit progress send failed: %s", e)
+                buf.clear()
+                last_flush = time.monotonic()
+
+            def apply_event(raw: object) -> None:
+                """Process one queue event into buf."""
+                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    _, base_msg, count = raw
+                    line = f"{base_msg} (×{count + 1})"
+                    if buf:
+                        buf[-1] = line
+                    else:
+                        buf.append(line)
+                elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                    buf.clear()
+                elif isinstance(raw, str):
+                    buf.append(raw)
+
+            def is_interrupted() -> bool:
+                try:
+                    a = agent_holder[0] if agent_holder else None
+                    return a is not None and getattr(a, "is_interrupted", False)
+                except Exception:
+                    return False
+
+            def ready_to_flush() -> bool:
+                return bool(buf) and (time.monotonic() - last_flush) >= interval
+
+            try:
+                while True:
+                    if not _run_still_current():
+                        _drain_progress_queue()
+                        return await flush()
+
+                    raw = _dequeue_progress()
+                    if raw is None:
+                        await asyncio.sleep(0.3)
+                        if ready_to_flush():
+                            await flush()
+                        continue
+
+                    if not is_interrupted():
+                        apply_event(raw)
+
+                    if ready_to_flush():
+                        await flush()
+
+                    await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                while (raw := _dequeue_progress()) is not None:
+                    apply_event(raw)
+                await flush()
+
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -13875,16 +13969,12 @@ class GatewayRunner:
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
+            # No-edit platforms: buffered progress instead of silent discard
             if type(adapter).edit_message is BasePlatformAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
+                interval = resolve_display_setting(
+                    user_config, platform_key, "tool_progress_buffer_interval", 3.0
+                )
+                return await _send_progress_no_edit(adapter, interval)
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit

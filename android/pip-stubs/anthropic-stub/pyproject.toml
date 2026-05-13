@@ -4,6 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anthropic"
-version = "0.39.0"
+version = "0.86.0"
 description = "Android/Chaquopy placeholder for Hermes Agent builds"
 requires-python = ">=3.11"

@@ -61,17 +61,17 @@ def test_fdroid_updatecheck_data_uses_literal_version_code_for_future_tags():
     assert "UpdateCheckData: fdroid/com.nousresearch.hermesagent.version|versionCode=(\\d+)|.|versionName=(.*)" in template
 
 
-def test_android_anthropic_stub_matches_project_requirement_floor():
+def test_android_anthropic_stub_matches_project_requirement_pin():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     stub_project = tomllib.loads(
         (REPO_ROOT / "android/pip-stubs/anthropic-stub/pyproject.toml").read_text(encoding="utf-8")
     )
 
     base_anthropic = next(
-        dep for dep in pyproject["project"]["dependencies"]
-        if dep.startswith("anthropic>=")
+        dep for dep in pyproject["project"]["optional-dependencies"]["anthropic"]
+        if dep.startswith("anthropic==")
     )
-    assert base_anthropic.startswith(f"anthropic>={stub_project['project']['version']}")
+    assert base_anthropic == f"anthropic=={stub_project['project']['version']}"
 
 
 def test_android_runtime_requirements_pin_pre_jiter_openai_sdk():

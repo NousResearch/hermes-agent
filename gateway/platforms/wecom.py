@@ -365,11 +365,20 @@ class WeComAdapter(BasePlatformAdapter):
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send lightweight application-level pings."""
+        """Send lightweight application-level pings.
+
+        Consecutive ping failures indicate a dead connection.  After
+        ``_PING_FAIL_THRESHOLD`` failures in a row, we proactively close
+        the websocket so ``_listen_loop`` detects the break and reconnects.
+        This shrinks the "subscribe vacuum" window from minutes to seconds.
+        """
+        _PING_FAIL_THRESHOLD = 3
+        _consecutive_failures = 0
         try:
             while self._running:
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
                 if not self._ws or self._ws.closed:
+                    _consecutive_failures = 0
                     continue
                 try:
                     await self._send_json(
@@ -379,8 +388,19 @@ class WeComAdapter(BasePlatformAdapter):
                             "body": {},
                         }
                     )
+                    _consecutive_failures = 0
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    _consecutive_failures += 1
+                    if _consecutive_failures >= _PING_FAIL_THRESHOLD:
+                        logger.warning(
+                            "[%s] %d consecutive heartbeat failures — closing WS to trigger reconnect",
+                            self.name, _consecutive_failures,
+                        )
+                        _consecutive_failures = 0
+                        await self._cleanup_ws()
+                        # _listen_loop will detect ws.closed and enter reconnect cycle
+                    else:
+                        logger.debug("[%s] Heartbeat send failed (%d/%d): %s", self.name, _consecutive_failures, _PING_FAIL_THRESHOLD, exc)
         except asyncio.CancelledError:
             pass
 
@@ -1367,11 +1387,16 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
             logger.error("[%s] Send failed: %s", self.name, exc)
-            return SendResult(success=False, error=str(exc))
+            # WebSocket not connected / subscribe vacuum — transient, safe to retry
+            error_str = str(exc)
+            is_transient = "websocket is not connected" in error_str.lower() or "not subscribed" in error_str.lower()
+            return SendResult(success=False, error=error_str, retryable=is_transient)
 
         error = self._response_error(response)
         if error:
-            return SendResult(success=False, error=error)
+            # errcode 846609 = "aibot websocket not subscribed" — transient during reconnect
+            is_transient = "846609" in error
+            return SendResult(success=False, error=error, retryable=is_transient)
 
         return SendResult(
             success=True,

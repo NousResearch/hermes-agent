@@ -932,6 +932,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
+    saw_reasoning_item = False
 
     for item in output:
         item_type = getattr(item, "type", None)
@@ -969,6 +970,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
+            saw_reasoning_item = True
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
@@ -979,6 +981,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
                 item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
+                    logger.debug(
+                        "Skipping transient Codex reasoning item during normalization: %s",
+                        item_id,
+                    )
+                    continue
                 if isinstance(item_id, str) and item_id:
                     raw_item["id"] = item_id
                 # Capture summary — required by the API when replaying reasoning items
@@ -1089,13 +1097,13 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         finish_reason = "incomplete"
     elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
         finish_reason = "incomplete"
-    elif reasoning_items_raw and not final_text:
-        # Response contains only reasoning (encrypted thinking state) with
-        # no visible content or tool calls.  The model is still thinking and
-        # needs another turn to produce the actual answer.  Marking this as
-        # "stop" would send it into the empty-content retry loop which burns
-        # 3 retries then fails — treat it as incomplete instead so the Codex
-        # continuation path handles it correctly.
+    elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
+        # Response contains only reasoning (encrypted thinking state and/or
+        # human-readable summary) with no visible content or tool calls. The
+        # model is still thinking and needs another turn to produce the actual
+        # answer. Marking this as "stop" would send it into the empty-content
+        # retry loop which burns retries then fails — treat it as incomplete so
+        # the Codex continuation path handles it correctly.
         finish_reason = "incomplete"
     else:
         finish_reason = "stop"

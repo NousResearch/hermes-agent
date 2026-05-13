@@ -26,14 +26,42 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "repo_head": "abc12345"}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with patch("hermes_cli.banner._git_short_hash", return_value="abc12345") as mock_head, \
+         patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
     assert result == 3
+    mock_head.assert_called_once()
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_repo_head_changes(tmp_path, monkeypatch):
+    """A fresh update cache from an old checkout must not survive a local rebase/update."""
+    import hermes_cli.banner as banner
+
+    project_root = tmp_path / "project"
+    (project_root / "hermes_cli").mkdir(parents=True)
+    (project_root / "hermes_cli" / "banner.py").touch()
+    (project_root / ".git").mkdir()
+    monkeypatch.setattr(banner, "__file__", str(project_root / "hermes_cli" / "banner.py"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 30, "repo_head": "oldhead"}))
+
+    with patch("hermes_cli.banner._git_short_hash", return_value="newhead") as mock_head, \
+         patch("hermes_cli.banner._check_via_local_git", return_value=0) as mock_check:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    mock_head.assert_called()
+    mock_check.assert_called_once_with(project_root)
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 0
+    assert cached["repo_head"] == "newhead"
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
@@ -55,7 +83,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count >= 2  # git fetch + git rev-list (+ optional HEAD cache key)
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

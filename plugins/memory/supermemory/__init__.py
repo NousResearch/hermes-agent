@@ -32,6 +32,7 @@ _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
+_MEMORIES_URL = "https://api.supermemory.ai/v4/memories"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
     re.IGNORECASE,
@@ -260,6 +261,26 @@ def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
+def _sanitize_metadata(metadata: Optional[dict]) -> dict:
+    """Return Supermemory v4-compatible metadata without dropping useful fields."""
+    if not isinstance(metadata, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for raw_key, raw_value in metadata.items():
+        key = str(raw_key)[:100]
+        value = raw_value
+        if isinstance(value, (str, int, float, bool)):
+            sanitized[key] = value
+        elif isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            sanitized[key] = list(value)
+        else:
+            try:
+                sanitized[key] = json.dumps(value, ensure_ascii=False)[:1000]
+            except Exception:
+                sanitized[key] = str(value)[:1000]
+    return sanitized
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
         from supermemory import Supermemory
@@ -277,6 +298,7 @@ class _SupermemoryClient:
         kwargs: dict[str, Any] = {
             "content": content.strip(),
             "container_tags": [tag],
+            "task_type": "memory",
         }
         if metadata:
             kwargs["metadata"] = metadata
@@ -286,6 +308,44 @@ class _SupermemoryClient:
             kwargs["custom_id"] = custom_id
         result = self._client.documents.add(**kwargs)
         return {"id": getattr(result, "id", "")}
+
+    def create_memory(self, content: str, metadata: Optional[dict] = None, *,
+                      container_tag: Optional[str] = None,
+                      is_static: bool = False) -> dict:
+        """Create an explicit v4 memory and return the real memory id.
+
+        Document ingestion returns document ids, which cannot be passed to the
+        v4 memory forget endpoint and may not be immediately searchable. The
+        explicit memory tool needs a memory id so store -> search -> forget
+        health checks can be exact and safe.
+        """
+        tag = container_tag or self._container_tag
+        memory: dict[str, Any] = {
+            "content": content.strip(),
+            "isStatic": bool(is_static),
+        }
+        clean_metadata = _sanitize_metadata(metadata)
+        if clean_metadata:
+            memory["metadata"] = clean_metadata
+        payload = json.dumps({"memories": [memory], "containerTag": tag}).encode("utf-8")
+        req = urllib.request.Request(
+            _MEMORIES_URL,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout + 3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        memories = data.get("memories") or []
+        first = memories[0] if memories else {}
+        return {
+            "id": first.get("id", ""),
+            "memory": first.get("memory", ""),
+            "document_id": data.get("documentId"),
+        }
 
     def search_memories(self, query: str, *, limit: int = 5,
                         container_tag: Optional[str] = None,
@@ -334,19 +394,23 @@ class _SupermemoryClient:
 
     def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
         tag = container_tag or self._container_tag
-        self._client.memories.forget(container_tag=tag, id=memory_id)
+        try:
+            self._client.memories.forget(container_tag=tag, id=memory_id)
+        except Exception as memory_exc:
+            # Backward-compatibility cleanup: historical versions of this
+            # plugin returned document ids from documents.add(). Those ids are
+            # not valid v4 memory ids, so exact-id cleanup must fall back to
+            # document deletion rather than forcing fuzzy query deletion.
+            try:
+                self._client.documents.delete(memory_id)
+            except Exception:
+                raise memory_exc
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
-        results = self.search_memories(query, limit=5, container_tag=container_tag)
-        if not results:
-            return {"success": False, "message": "No matching memory found to forget."}
-        target = results[0]
-        memory_id = target.get("id", "")
-        if not memory_id:
-            return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
-        return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
+        return {
+            "success": False,
+            "message": "Query-based forgetting is disabled because Supermemory search is semantic/fuzzy. Search first, verify the exact id, then forget by id.",
+        }
 
     def ingest_conversation(self, session_id: str, messages: list[dict]) -> None:
         payload = json.dumps({
@@ -395,7 +459,7 @@ SEARCH_SCHEMA = {
 
 FORGET_SCHEMA = {
     "name": "supermemory_forget",
-    "description": "Forget a memory by exact id or by best-match query.",
+    "description": "Forget a memory by exact id. Query-based deletion is disabled because search is semantic/fuzzy.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -622,10 +686,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                self._client.add_memory(
+                self._client.create_memory(
                     content.strip(),
                     metadata={"source": "hermes_memory", "target": target, "type": "explicit_memory"},
-                    entity_context=self._entity_context,
                 )
             except Exception:
                 logger.debug("Supermemory on_memory_write failed", exc_info=True)
@@ -693,7 +756,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         metadata.setdefault("type", _detect_category(content))
         metadata["source"] = "hermes_tool"
         try:
-            result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
+            result = self._client.create_memory(content, metadata=metadata, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
             resp: dict[str, Any] = {"saved": True, "id": result.get("id", ""), "preview": preview}
             if tag:

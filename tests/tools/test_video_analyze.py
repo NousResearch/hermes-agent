@@ -11,6 +11,7 @@ import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
+    _video_analysis_looks_unavailable,
     _video_to_base64_data_url,
     _handle_video_analyze,
     _MAX_VIDEO_BASE64_BYTES,
@@ -182,6 +183,17 @@ class TestVideoAnalyzeTool:
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
 
+    def test_unavailable_heuristic_handles_curly_apostrophe_no_video_response(self):
+        assert _video_analysis_looks_unavailable(
+            "I can’t see any video or frames attached here. Please upload the short video."
+        ) is True
+
+    def test_unavailable_heuristic_handles_french_no_video_response(self):
+        assert _video_analysis_looks_unavailable(
+            "Je n’ai pas accès à la vidéo ni à des images extraites/contact-sheet dans cette conversation, "
+            "donc impossible à déterminer sans la vidéo."
+        ) is True
+
     def test_local_file_success(self, tmp_path, monkeypatch):
         """Analyze a local video file — happy path."""
         video = tmp_path / "demo.mp4"
@@ -307,6 +319,55 @@ class TestVideoAnalyzeTool:
         assert content[1]["type"] == "video_url"
         assert "video_url" in content[1]
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+    def test_native_unavailable_response_falls_back_to_frame_contact_sheet(self, tmp_path):
+        """If the native model says it cannot access the video, use ffmpeg→vision fallback."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"\x00" * 100)
+        sheet = tmp_path / "sheet.jpg"
+        sheet.write_bytes(b"\xff\xd8\xff\xd9")
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "I cannot access or view the local MP4 file."
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response):
+            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="I cannot access or view the local MP4 file."):
+                with patch("tools.vision_tools._build_video_contact_sheet", return_value=sheet) as mock_sheet:
+                    with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_vision:
+                        mock_vision.return_value = json.dumps({"success": True, "analysis": "Frame 1: square. Frame 2: check. Frame 3: X."})
+                        result = self._run(video_analyze_tool(str(video), "Describe frames"))
+
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["fallback_used"] is True
+        assert data["fallback_method"] == "ffmpeg_contact_sheet_to_vision"
+        assert "square" in data["analysis"].lower()
+        assert data["contact_sheet_path"] == str(sheet)
+        mock_sheet.assert_called_once()
+        assert mock_vision.call_args[0][0] == str(sheet)
+        assert "contact sheet" in mock_vision.call_args[0][1].lower()
+
+    def test_native_exception_falls_back_to_frame_contact_sheet(self, tmp_path):
+        """A provider-side video_url rejection should not kill video analysis when ffmpeg fallback works."""
+        video = tmp_path / "test.mp4"
+        video.write_bytes(b"\x00" * 100)
+        sheet = tmp_path / "sheet.jpg"
+        sheet.write_bytes(b"\xff\xd8\xff\xd9")
+
+        async def fail_llm(**kwargs):
+            raise ValueError("video_url is not supported by this model")
+
+        with patch("tools.vision_tools.async_call_llm", side_effect=fail_llm):
+            with patch("tools.vision_tools._build_video_contact_sheet", return_value=sheet):
+                with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_vision:
+                    mock_vision.return_value = json.dumps({"success": True, "analysis": "Fallback saw sampled frames."})
+                    result = self._run(video_analyze_tool(str(video), "Describe video"))
+
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["fallback_used"] is True
+        assert "sampled frames" in data["analysis"].lower()
 
 
 # ---------------------------------------------------------------------------

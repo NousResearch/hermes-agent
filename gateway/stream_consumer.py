@@ -473,8 +473,8 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit, _len_fn,
                         )
                         split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        if split_at < max(1, _cp_budget // 2):
+                            split_at = _cp_budget
                         chunk = self._accumulated[:split_at]
                         ok = await self._send_or_edit(chunk)
                         if self._fallback_final_send or not ok:
@@ -675,8 +675,8 @@ class GatewayStreamConsumer:
         while len_fn(remaining) > limit:
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            if split_at < max(1, _cp_budget // 2):
+                split_at = _cp_budget
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:
@@ -813,6 +813,18 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    @staticmethod
+    def _retry_after_seconds(result) -> Optional[float]:
+        """Extract retry-after seconds from a SendResult-like failure, if present."""
+        err = getattr(result, "error", "") or ""
+        match = re.search(r"(?:flood_control|retry\s+after)[:\s]+(\d+(?:\.\d+)?)", err, re.I)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
 
     def _resolve_draft_streaming(self) -> bool:
         """Decide whether this run should use native draft streaming.
@@ -1191,6 +1203,18 @@ class GatewayStreamConsumer:
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
+                            retry_after = self._retry_after_seconds(result)
+                            if retry_after is not None and retry_after > 5.0:
+                                logger.debug(
+                                    "Long flood-control retry_after %.1fs; entering final fallback mode",
+                                    retry_after,
+                                )
+                                self._fallback_prefix = self._visible_prefix()
+                                self._fallback_final_send = True
+                                self._edit_supported = False
+                                self._already_sent = True
+                                self._last_edit_time = time.monotonic()
+                                return False
                             self._current_edit_interval = min(
                                 self._current_edit_interval * 2, 10.0,
                             )

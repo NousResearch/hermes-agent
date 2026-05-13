@@ -189,35 +189,44 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
+    repo_head: Optional[str] = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    # Read cache — invalidate if the embedded rev or local checkout HEAD has
+    # changed since the last check.  The HEAD guard prevents a stale banner
+    # after a successful git update/rebase that leaves the old cache fresh.
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-            ):
-                return cached.get("behind")
+            cache_is_fresh = now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+            if cache_is_fresh and cached.get("rev") == embedded_rev:
+                if embedded_rev:
+                    return cached.get("behind")
+
+                repo_dir = _resolve_repo_dir()
+                if repo_dir is None:
+                    return None
+                repo_head = _git_short_hash(repo_dir, "HEAD")
+                if repo_head and cached.get("repo_head") == repo_head:
+                    return cached.get("behind")
     except Exception:
         pass
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
+        repo_dir = repo_dir or _resolve_repo_dir()
+        if repo_dir is None:
             return None
         behind = _check_via_local_git(repo_dir)
+        repo_head = repo_head or _git_short_hash(repo_dir, "HEAD")
 
+    cache_payload = {"ts": now, "behind": behind, "rev": embedded_rev}
+    if repo_head:
+        cache_payload["repo_head"] = repo_head
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(json.dumps(cache_payload))
     except Exception:
         pass
 

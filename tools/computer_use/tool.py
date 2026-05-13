@@ -167,10 +167,20 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+    ) -> CaptureResult:
+        self.calls.append(("capture", {"mode": mode, "app": app, "window_title": window_title}))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
-                             elements=[], app=app or "", window_title="")
+                             elements=[], app=app or "", window_title=window_title or "")
+
+    def capture_active(self, mode: str = "som") -> CaptureResult:
+        self.calls.append(("capture_active", {"mode": mode}))
+        return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
+                             elements=[], app="", window_title="")
 
     def click(self, **kw) -> ActionResult:
         self.calls.append(("click", kw))
@@ -316,7 +326,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs = {"mode": mode, "app": args.get("app")}
+        if args.get("window_title"):
+            capture_kwargs["window_title"] = args.get("window_title")
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap)
 
     if action == "wait":
@@ -457,7 +470,11 @@ def _maybe_follow_capture(
     if not do_capture:
         return _text_response(res)
     try:
-        cap = backend.capture(mode="som")
+        capture_active = getattr(backend, "capture_active", None)
+        if callable(capture_active):
+            cap = capture_active(mode="som")
+        else:
+            cap = backend.capture(mode="som")
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

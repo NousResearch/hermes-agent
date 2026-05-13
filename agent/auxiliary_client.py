@@ -740,7 +740,12 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                # The polling path can notice the total timeout before the
+                # background Timer gets scheduled.  Close/evict here too;
+                # otherwise the cached Codex wrapper can keep a half-dead
+                # httpx transport and poison the next compression retry.
+                if not timed_out.is_set():
+                    _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted

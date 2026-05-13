@@ -415,6 +415,57 @@ class TestHTTP413Compression:
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 
+    def test_preflight_clears_stale_interrupt_before_compressing(self, agent):
+        """Preflight compression must not inherit a stale thread interrupt.
+
+        Regression for gateway sessions where an earlier interrupt/restart left
+        the current worker thread marked interrupted before preflight compression
+        ran.  The Codex auxiliary adapter polls ``tools.interrupt.is_interrupted``
+        while streaming summaries; if run_conversation() has not yet rebound and
+        cleared the execution thread, the summary fails immediately with
+        "Codex auxiliary Responses stream interrupted" and the compressor drops
+        history into its fallback path.
+        """
+        from tools.interrupt import is_interrupted, set_interrupt
+
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} with padding"})
+            big_history.append({"role": "assistant", "content": f"Response {i} with padding"})
+
+        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        def _fake_compress(*args, **kwargs):
+            assert not is_interrupted(), (
+                "preflight compression inherited a stale tools.interrupt flag"
+            )
+            return ([{"role": "user", "content": "compressed"}], "new system prompt")
+
+        # Simulate a stale interrupt bit on the current worker thread.  Patch
+        # hydration to avoid the legacy incidental clear there; the production
+        # fix belongs at run_conversation() startup before any preflight work.
+        set_interrupt(True)
+        try:
+            with (
+                patch.object(agent, "_hydrate_todo_store", lambda _history: None),
+                patch.object(agent, "_compress_context", side_effect=_fake_compress) as mock_compress,
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation("hello", conversation_history=big_history)
+        finally:
+            set_interrupt(False)
+
+        mock_compress.assert_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "After preflight"
+
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True

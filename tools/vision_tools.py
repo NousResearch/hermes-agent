@@ -31,7 +31,11 @@ Usage:
 import base64
 import json
 import logging
+import math
 import os
+import shutil
+import subprocess
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1091,6 +1095,178 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     return f"data:{mime};base64,{encoded}"
 
 
+def _video_analysis_looks_unavailable(analysis: str) -> bool:
+    """Heuristic for wrapper-success/native-failure video responses.
+
+    Several providers accept the request shape but treat the `video_url` part as
+    text or unsupported media, returning a fluent explanation that the video or
+    local path is not accessible. In that case, the tool should fall back to
+    ffmpeg frame sampling instead of reporting false success.
+    """
+    if not isinstance(analysis, str) or not analysis.strip():
+        return True
+    text = analysis.lower().replace("’", "'").replace("‘", "'")
+    text_ascii = "".join(
+        ch for ch in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(ch)
+    )
+    unavailable_markers = (
+        "cannot access", "can't access", "cannot view", "can't view",
+        "unable to access", "unable to view", "do not have access",
+        "don't have access", "no access to", "not able to access",
+        "not able to view", "cannot directly access", "can't directly access",
+        "i can't see", "i cannot see", "i can't watch", "i cannot watch",
+        "can't see any video", "cannot see any video", "video or frames attached",
+        "please upload the video", "please upload the short video",
+        "local mp4", "local file", "file path", "video file was not provided",
+        "no video", "without the video", "video_url is not supported",
+        "does not support video", "not support video", "unsupported video",
+        # French/translated refusal strings from providers routed through Hermes.
+        "je n'ai pas acces", "pas acces a la video", "pas acces aux frames",
+        "aucune image extraite", "aucun frame", "aucune frame",
+        "impossible a determiner sans la video", "sans la video",
+    )
+    return any(marker in text or marker in text_ascii for marker in unavailable_markers)
+
+
+def _probe_video_duration_seconds(video_path: Path) -> Optional[float]:
+    """Best-effort ffprobe duration. Returns None when ffprobe is unavailable."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            logger.debug("ffprobe duration failed: %s", proc.stderr[:200])
+            return None
+        duration = float((proc.stdout or "").strip())
+        return duration if duration > 0 else None
+    except Exception as exc:
+        logger.debug("ffprobe duration failed: %s", exc)
+        return None
+
+
+def _build_video_contact_sheet(
+    video_path: Path,
+    output_path: Optional[Path] = None,
+    *,
+    max_frames: int = 12,
+    frame_width: int = 320,
+) -> Path:
+    """Extract sampled video frames into one JPEG contact sheet using ffmpeg.
+
+    The sheet is intentionally simple and dependency-light: no drawtext filter
+    (often missing on minimal ffmpeg builds), no OCR assumptions, and no GUI.
+    Frames are sampled approximately evenly by duration and laid out
+    left-to-right/top-to-bottom for downstream image vision analysis.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for video frame fallback but was not found in PATH")
+    if not video_path.is_file():
+        raise FileNotFoundError(str(video_path))
+
+    max_frames = max(1, min(int(max_frames or 12), 36))
+    frame_width = max(96, min(int(frame_width or 320), 960))
+    cols = max(1, int(math.ceil(math.sqrt(max_frames))))
+    rows = max(1, int(math.ceil(max_frames / cols)))
+    duration = _probe_video_duration_seconds(video_path)
+    # Use fps sampling instead of drawtext/select expressions because it works
+    # across more ffmpeg builds. For unknown/very-short duration, at least one
+    # frame per second is safe; tile flushes a partial sheet at EOF.
+    fps = max_frames / duration if duration and duration > 0 else 1.0
+    fps = max(0.05, min(fps, 8.0))
+
+    if output_path is None:
+        out_dir = get_hermes_dir("cache/video", "contact_sheets")
+        output_path = out_dir / f"video_contact_sheet_{uuid.uuid4()}.jpg"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    vf = (
+        f"fps=fps={fps:.4f}:round=up,"
+        f"scale={frame_width}:-1,"
+        f"tile={cols}x{rows}:padding=8:margin=8:color=black"
+    )
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(video_path),
+            "-an",
+            "-vf", vf,
+            "-frames:v", "1",
+            str(output_path),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+        raise RuntimeError(f"ffmpeg contact sheet failed: {proc.stderr[:500]}")
+    return output_path
+
+
+def _build_video_frame_fallback_prompt(user_prompt: str, video_path: Path) -> str:
+    """Prompt used when analyzing sampled video frames as an image."""
+    duration = _probe_video_duration_seconds(video_path)
+    duration_text = f" Duration: {duration:.2f}s." if duration else ""
+    return (
+        "This image is a contact sheet of frames sampled from a video. "
+        "Read it left-to-right, top-to-bottom as approximate timeline order. "
+        "Describe visible objects, text, colors, scene changes, and inferred motion. "
+        "Be explicit that this is frame-based analysis if temporal/audio details are uncertain."
+        f"{duration_text}\n\nQuestion about the original video:\n{user_prompt}"
+    )
+
+
+async def _analyze_video_via_frame_fallback(
+    video_path: Path,
+    user_prompt: str,
+    *,
+    source_video_url: str,
+    model: Optional[str] = None,
+    native_error: Optional[str] = None,
+) -> str:
+    """Analyze video by ffmpeg contact-sheet extraction plus vision_analyze_tool."""
+    sheet = _build_video_contact_sheet(video_path)
+    fallback_prompt = _build_video_frame_fallback_prompt(user_prompt, video_path)
+    vision_result_raw = await vision_analyze_tool(str(sheet), fallback_prompt, model)
+    try:
+        vision_result = json.loads(vision_result_raw)
+    except Exception:
+        vision_result = {"success": False, "analysis": vision_result_raw}
+
+    success = bool(vision_result.get("success"))
+    result = {
+        "success": success,
+        "analysis": vision_result.get("analysis") or "Frame fallback did not return an analysis.",
+        "fallback_used": True,
+        "fallback_method": "ffmpeg_contact_sheet_to_vision",
+        "contact_sheet_path": str(sheet),
+        "source_video_url": source_video_url[:500],
+    }
+    if native_error:
+        result["native_video_error"] = native_error[:1000]
+    if not success and vision_result.get("error"):
+        result["error"] = vision_result.get("error")
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
     """Download video from URL with SSRF protection and retry."""
     import asyncio
@@ -1289,20 +1465,48 @@ async def video_analyze_tool(
         if model:
             call_kwargs["model"] = model
 
-        response = await async_call_llm(**call_kwargs)
-        analysis = extract_content_or_reasoning(response)
-
-        if not analysis:
-            logger.warning("Empty video response, retrying once")
+        try:
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
+
+            if not analysis:
+                logger.warning("Empty video response, retrying once")
+                response = await async_call_llm(**call_kwargs)
+                analysis = extract_content_or_reasoning(response)
+        except Exception as native_exc:
+            logger.warning(
+                "Native video analysis failed; falling back to ffmpeg contact sheet: %s",
+                native_exc,
+                exc_info=True,
+            )
+            return await _analyze_video_via_frame_fallback(
+                temp_video_path,
+                user_prompt,
+                source_video_url=video_url,
+                model=model,
+                native_error=str(native_exc),
+            )
 
         analysis_length = len(analysis) if analysis else 0
         logger.info("Video analysis completed (%s characters)", analysis_length)
 
+        if _video_analysis_looks_unavailable(analysis or ""):
+            logger.warning(
+                "Native video analysis returned an unavailable/unsupported response; "
+                "falling back to ffmpeg contact sheet"
+            )
+            return await _analyze_video_via_frame_fallback(
+                temp_video_path,
+                user_prompt,
+                source_video_url=video_url,
+                model=model,
+                native_error=analysis or "empty native video response",
+            )
+
         result = {
             "success": True,
             "analysis": analysis or "There was a problem with the request and the video could not be analyzed.",
+            "fallback_used": False,
         }
 
         debug_call_data["success"] = True

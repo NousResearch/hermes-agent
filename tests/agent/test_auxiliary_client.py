@@ -659,15 +659,16 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="qwen/qwen3.6-plus") as mock_rec,
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
             from agent.auxiliary_client import _try_nous
 
             client, model = _try_nous()
 
         assert client is not None
-        assert model == "google/gemini-3-flash-preview"
+        assert model == "qwen/qwen3.6-plus"
+        assert mock_rec.call_args.kwargs["vision"] is False
         assert mock_openai.call_args.kwargs["api_key"] == "pooled-agent-key"
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
 
@@ -2094,7 +2095,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 return False
 
             def __iter__(self):
-                for _ in range(5):
+                for _ in range(50):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
 
@@ -2121,7 +2122,8 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5, f"timeout should interrupt the stream early, got {elapsed:.3f}s"
 
 
 # ---------------------------------------------------------------------------

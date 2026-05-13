@@ -75,6 +75,14 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "frontmost app's window or the whole screen."
                 ),
             },
+            "window_title": {
+                "type": "string",
+                "description": (
+                    "Optional capture filter. When several windows from the "
+                    "same app exist, choose the window whose title contains "
+                    "this text (case-insensitive), e.g. 'Hermes Computer Use Probe'."
+                ),
+            },
             # ── click / drag / scroll targeting ────────────────────
             "element": {
                 "type": "integer",

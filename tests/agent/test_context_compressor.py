@@ -575,29 +575,87 @@ class TestStreamingClosedFallback:
         assert mock_call.call_count == 2
         assert result is not None
 
-    def test_streaming_closed_on_main_uses_short_cooldown(self):
-        """When already on the main model, a streaming-closed error should use
-        the 30s cooldown, not the default 60s — these errors are transient."""
+    def test_streaming_closed_on_main_retries_same_provider_once_and_succeeds(self):
+        """When compression is already pinned to the main model, a premature
+        stream close should get one same-provider retry before falling back to
+        extractive context.  This covers Codex Responses `incomplete chunked
+        read` failures where there is no alternate model to fall back to."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary after same-provider retry"
         err = Exception("RemoteProtocolError: response ended prematurely")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
-                # No summary_model_override → no fallback path.
+                summary_model_override="main-model",  # explicit main pin
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "summary after same-provider retry" in result
+        assert c._summary_failure_cooldown_until == 0.0
+
+    def test_streaming_closed_on_main_uses_short_cooldown_after_retry_fails(self):
+        """When the same-provider retry also fails, keep the short cooldown and
+        allow the caller to insert the deterministic extractive fallback."""
+        err = Exception("RemoteProtocolError: response ended prematurely")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → no alternate fallback path.
                 quiet_mode=True,
             )
 
         with patch(
             "agent.context_compressor.call_llm",
             side_effect=err,
-        ), patch(
+        ) as mock_call, patch(
             "agent.context_compressor._is_connection_error",
             return_value=True,
         ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
             result = c._generate_summary(self._msgs())
 
+        assert mock_call.call_count == 2
         assert result is None
-        # Streaming-closed should use the 30s short cooldown.
+        # Streaming-closed should use the 30s short cooldown after retry failure.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+    def test_main_model_timeout_does_not_double_wait(self):
+        """A full timeout on the already-pinned main model should not trigger
+        another full timeout window.  Edward's compression timeout can be 900s,
+        so retrying full timeouts would turn one stall into two."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "would be too late"
+        err = TimeoutError("Codex auxiliary Responses stream exceeded 900.0s total timeout")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="main-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 1
+        assert result is None
         assert c._summary_failure_cooldown_until == 1030.0
 
     def test_non_streaming_unknown_error_still_uses_long_cooldown(self):
@@ -744,10 +802,17 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
         # Result must still be well-formed (fallback summary present).
-        assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+        fallback_contents = [
+            m.get("content", "")
             for m in result
-        )
+            if isinstance(m.get("content"), str)
+            and "Summary generation was unavailable" in m["content"]
+        ]
+        assert fallback_contents
+        # The fallback must preserve some extractive source context instead of
+        # replacing the whole compressed region with an opaque placeholder.
+        assert "Extractive fallback" in fallback_contents[0]
+        assert "msg 3" in fallback_contents[0]
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()

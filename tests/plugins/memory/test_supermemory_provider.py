@@ -36,6 +36,9 @@ class FakeClient:
         })
         return {"id": "mem_123"}
 
+    def create_memory(self, content, metadata=None, *, container_tag=None, is_static=False):
+        return self.add_memory(content, metadata=metadata, container_tag=container_tag)
+
     def search_memories(self, query, *, limit=5, container_tag=None, search_mode=None):
         return self.search_results
 

@@ -2809,6 +2809,18 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>16384</integer>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>
@@ -2854,7 +2866,32 @@ def refresh_launchd_plist_if_needed() -> bool:
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+    _wait_for_gateway_exit(timeout=15.0, force_after=5.0)
+    bootstrap = subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if bootstrap.returncode != 0 and not _probe_launchd_service_running():
+        import time
+
+        time.sleep(1.0)
+        bootstrap = subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    if bootstrap.returncode != 0 and not _probe_launchd_service_running():
+        raise subprocess.CalledProcessError(
+            bootstrap.returncode,
+            bootstrap.args,
+            output=bootstrap.stdout,
+            stderr=bootstrap.stderr,
+        )
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 

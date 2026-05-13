@@ -1032,6 +1032,8 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "echo_transcript": False,  # If true, gateway sends the transcript back before the agent reply
+        "echo_transcript_prefix": "🎤 Transcription",
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force

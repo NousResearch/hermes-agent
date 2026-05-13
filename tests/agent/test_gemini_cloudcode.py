@@ -912,6 +912,26 @@ class TestTranslateStreamEvent:
         )
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
+    def test_terminal_and_reasoning_chunks_have_stable_delta_shape(self):
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        chunks = _translate_stream_event(
+            {"response": {"candidates": [{
+                "content": {"parts": [{"thought": True, "text": "thinking"}]},
+                "finishReason": "STOP",
+            }]}},
+            model="m",
+            tool_call_counter=[0],
+        )
+
+        assert chunks
+        for chunk in chunks:
+            delta = chunk.choices[0].delta
+            assert hasattr(delta, "content")
+            assert hasattr(delta, "tool_calls")
+            assert hasattr(delta, "reasoning")
+            assert hasattr(delta, "reasoning_content")
+
 
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):

@@ -538,6 +538,36 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer.already_sent
 
     @pytest.mark.asyncio
+    async def test_retry_after_flood_does_not_immediately_final_edit_before_wait(self):
+        """A long RetryAfter should pause edits and use final-tail fallback, not retry edit immediately."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="flood_control:23"),
+            AssertionError("final edit should wait for retry_after, not fire immediately"),
+        ])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" world")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        assert adapter.edit_message.call_count == 1
+        assert adapter.send.call_count == 2
+        assert adapter.send.call_args_list[1][1]["content"].strip() == "world"
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
     async def test_segment_break_clears_failed_edit_fallback_state(self):
         """A tool boundary after edit failure must flush the undelivered tail
         without duplicating the prefix the user already saw (#8124)."""
@@ -1768,6 +1798,17 @@ class TestUtf16OverflowDetection:
         assert call_kwargs.get("len_fn") is utf16_len, (
             f"truncate_message called without utf16_len: {call_kwargs}"
         )
+
+    def test_split_text_chunks_respects_custom_len_fn_codepoint_budget(self):
+        """Fallback chunk splitting must not use UTF-16 budgets as codepoint indexes."""
+        from gateway.platforms.base import utf16_len
+
+        text = "🚀" * 800
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 1000, len_fn=utf16_len)
+
+        assert len(chunks) == 2
+        assert "".join(chunks) == text
+        assert all(utf16_len(chunk) <= 1000 for chunk in chunks)
 
     def test_codepoint_only_adapter_falls_back_to_len(self):
         """Adapters without message_len_fn override (or test MagicMocks)

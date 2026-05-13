@@ -450,9 +450,16 @@ def _make_stream_chunk(
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {"role": "assistant"}
-    if content:
-        delta_kwargs["content"] = content
+    # Downstream streaming code treats OpenAI-like deltas as having stable
+    # ``content``/``tool_calls`` attributes even on terminal or reasoning-only
+    # chunks. Keep the shape explicit instead of omitting empty attributes.
+    delta_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": content if content else None,
+        "tool_calls": None,
+        "reasoning": None,
+        "reasoning_content": None,
+    }
     if tool_call_delta is not None:
         delta_kwargs["tool_calls"] = [SimpleNamespace(
             index=tool_call_delta.get("index", 0),

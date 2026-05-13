@@ -10278,7 +10278,7 @@ class AIAgent:
                 self._last_compression_summary_warning = summary_error
                 self._emit_warning(
                     f"⚠ Compression summary failed: {summary_error}. "
-                    "Inserted a fallback context marker."
+                    "Inserted an extractive fallback context summary."
                 )
         else:
             # No hard failure — but did the configured aux model error out
@@ -11768,6 +11768,23 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
+
+        # Bind/clear the thread-scoped interrupt flag before *any* preflight
+        # work.  Preflight context compression and memory/provider hooks can
+        # call auxiliary LLMs before the main tool loop starts; the Codex
+        # auxiliary adapter polls tools.interrupt.is_interrupted() while
+        # streaming.  If we wait until the main loop to update
+        # _execution_thread_id, a cached gateway agent may carry a stale thread
+        # id/interrupt bit from a prior turn or restart and compression fails
+        # immediately with "Codex auxiliary Responses stream interrupted".
+        self._execution_thread_id = threading.current_thread().ident
+        _set_interrupt(False, self._execution_thread_id)
+        if self._interrupt_requested:
+            _set_interrupt(True, self._execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            self._interrupt_message = None
+            self._interrupt_thread_signal_pending = False
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

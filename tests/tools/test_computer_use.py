@@ -63,6 +63,12 @@ class TestSchema:
         assert props["element"]["type"] == "integer"
         assert props["coordinate"]["type"] == "array"
 
+    def test_schema_supports_window_title_filter_for_ambiguous_apps(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "window_title" in props
+        assert props["window_title"]["type"] == "string"
+
     def test_schema_lists_all_expected_actions(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
@@ -155,6 +161,121 @@ class TestDispatch:
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
 
+    def test_capture_after_reuses_active_window_when_backend_supports_it(self):
+        from tools.computer_use.backend import ActionResult, CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        fake_png = "iVBORw0KGgo="
+
+        class FakeBackend:
+            def __init__(self):
+                self.used_active_capture = False
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None):
+                return CaptureResult(mode=mode, width=800, height=600, png_b64=fake_png,
+                                     elements=[], app="LM Studio", window_title="wrong")
+            def capture_active(self, mode="som"):
+                self.used_active_capture = True
+                return CaptureResult(mode=mode, width=800, height=600, png_b64=fake_png,
+                                     elements=[], app="Google Chrome", window_title="right")
+            def click(self, **kw):
+                return ActionResult(ok=True, action="click", message="clicked")
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def set_value(self, value, element=None): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        backend = FakeBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({"action": "click", "element": 17, "capture_after": True})
+
+        assert backend.used_active_capture is True
+        assert isinstance(out, dict)
+        text_part = next(p for p in out["content"] if p.get("type") == "text")
+        assert "app=Google Chrome" in text_part["text"]
+        assert "right" in text_part["text"]
+
+    def test_capture_routes_window_title_filter_to_backend(self):
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use import tool as cu_tool
+
+        class FakeBackend:
+            def __init__(self):
+                self.capture_args = None
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None, window_title=None):
+                self.capture_args = {"mode": mode, "app": app, "window_title": window_title}
+                return CaptureResult(mode=mode, width=800, height=600, png_b64="iVBORw0KGgo=",
+                                     elements=[], app=app or "Google Chrome",
+                                     window_title=window_title or "")
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def set_value(self, value, element=None): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        backend = FakeBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            cu_tool.handle_computer_use({
+                "action": "capture", "mode": "som", "app": "Google Chrome",
+                "window_title": "Hermes Computer Use Probe",
+            })
+
+        assert backend.capture_args == {
+            "mode": "som", "app": "Google Chrome",
+            "window_title": "Hermes Computer Use Probe",
+        }
+
+    def test_cua_capture_filters_same_app_by_window_title(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def call_tool(self, name, args):
+                self.calls.append((name, args))
+                if name == "list_windows":
+                    return {
+                        "data": "",
+                        "images": [],
+                        "structuredContent": {
+                            "windows": [
+                                {"app_name": "Google Chrome", "pid": 111, "window_id": 11,
+                                 "is_on_screen": True, "title": "Mutual Dropshipping", "z_index": 0},
+                                {"app_name": "Google Chrome", "pid": 222, "window_id": 22,
+                                 "is_on_screen": True, "title": "Hermes Computer Use Probe - Google Chrome", "z_index": 1},
+                            ]
+                        },
+                        "isError": False,
+                    }
+                if name == "get_window_state":
+                    assert args == {"pid": 222, "window_id": 22}
+                    return {"data": '✅ Google Chrome — 0 elements\nAXWindow "Hermes Computer Use Probe - Google Chrome"',
+                            "images": ["iVBORw0KGgo="], "structuredContent": None, "isError": False}
+                raise AssertionError(name)
+
+        backend = CuaDriverBackend()
+        backend._session = FakeSession()
+
+        cap = backend.capture(mode="som", app="Google Chrome", window_title="Hermes Computer Use Probe")
+
+        assert backend._active_pid == 222
+        assert backend._active_window_id == 22
+        assert cap.window_title == "Hermes Computer Use Probe - Google Chrome"
+
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)
@@ -199,6 +320,27 @@ class TestSafetyGuards:
         out = handle_computer_use({"action": "type", "text": ""})
         parsed = json.loads(out)
         assert "error" not in parsed
+
+    def test_cua_backend_type_uses_installed_type_text_tool(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def call_tool(self, name, args):
+                self.calls.append((name, args))
+                return {"data": "typed", "images": [], "structuredContent": None, "isError": False}
+
+        backend = CuaDriverBackend()
+        fake_session = FakeSession()
+        backend._session = fake_session
+        backend._active_pid = 123
+
+        res = backend.type_text("hello")
+
+        assert res.ok is True
+        assert fake_session.calls == [("type_text", {"pid": 123, "text": "hello"})]
 
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,13 @@
 """Regression: hermes doctor must not run a generic Bearer-auth health
 check for providers that already have a dedicated check (Anthropic,
-OpenRouter, Bedrock).
+OpenRouter, Bedrock, Gemini).
 
 Anthropic's native API requires `x-api-key` + `anthropic-version` headers;
-the generic loop sends `Authorization: Bearer ...` which Anthropic answers
-with HTTP 404. The dedicated check at hermes_cli/doctor.py already covers
-Anthropic with the right headers, so the pluggable profile must be
-skipped by `_build_apikey_providers_list()`.
+the generic loop sends `Authorization: Bearer ...`, which Anthropic answers
+with HTTP 404. Gemini's native API uses `?key=<API_KEY>`, not Bearer auth.
+Dedicated checks at hermes_cli/doctor.py cover these providers with the right
+headers/auth, so the pluggable profiles must be skipped by
+`_build_apikey_providers_list()`.
 
 See: NousResearch/hermes-agent#22346
 """
@@ -35,6 +36,10 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
     assert not any("bedrock" in name for name in names), (
         f"Bedrock uses AWS SDK creds, not Bearer auth; generic loop must skip. "
         f"Got: {sorted(names)}"
+    )
+    assert not any("gemini" in name or "google" in name for name in names), (
+        f"Gemini native API-key auth uses ?key=, not Bearer auth; generic loop "
+        f"must skip it. Got: {sorted(names)}"
     )
 
 

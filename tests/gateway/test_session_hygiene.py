@@ -398,8 +398,8 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 @pytest.mark.asyncio
 async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypatch, tmp_path):
     """When auxiliary compression's summary LLM call fails, the compressor
-    inserts a static fallback and the dropped turns are unrecoverable.
-    Gateway must surface a visible ⚠️ warning to the user, including
+    inserts an extractive fallback and gateway surfaces the degradation.
+    Gateway must deliver a visible ⚠️ warning to the user, including
     thread_id metadata so it lands in the originating topic/thread."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -415,7 +415,7 @@ async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypa
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
             # Simulate a compressor that hit summary-generation failure
-            # and inserted the static fallback placeholder.
+            # and inserted the extractive fallback summary.
             self.context_compressor = SimpleNamespace(
                 _last_summary_fallback_used=True,
                 _last_summary_dropped_count=42,

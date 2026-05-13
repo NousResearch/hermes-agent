@@ -1042,9 +1042,14 @@ async def test_thread_fallback_only_fires_once():
 
 
 @pytest.mark.asyncio
-async def test_send_retries_retry_after_errors():
+async def test_send_retries_retry_after_errors(monkeypatch):
     """Telegram flood control should back off and retry instead of failing fast."""
     adapter = _make_adapter()
+    sleeps = []
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr("gateway.platforms.telegram.asyncio.sleep", fake_sleep)
 
     attempt = [0]
 
@@ -1061,3 +1066,74 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+    assert sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_edit_retries_retry_after_errors_before_markdown_fallback(monkeypatch):
+    """RetryAfter during a final Markdown edit is flood control, not a Markdown parse error."""
+    adapter = _make_adapter()
+    sleeps = []
+    calls = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    async def mock_edit_message_text(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise FakeRetryAfter(2)
+        return SimpleNamespace(message_id=301)
+
+    monkeypatch.setattr("gateway.platforms.telegram.asyncio.sleep", fake_sleep)
+    adapter._bot = SimpleNamespace(edit_message_text=mock_edit_message_text)
+
+    result = await adapter.edit_message(
+        chat_id="123",
+        message_id="456",
+        content="**final** message",
+        finalize=True,
+    )
+
+    assert result.success is True
+    assert result.message_id == "456"
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_continuation_retries_retry_after(monkeypatch):
+    """Overflow continuations must respect RetryAfter instead of stopping partial delivery."""
+    adapter = _make_adapter()
+    sleeps = []
+    send_calls = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    async def mock_edit_message_text(**kwargs):
+        return SimpleNamespace(message_id=300)
+
+    async def mock_send_message(**kwargs):
+        send_calls.append(dict(kwargs))
+        if len(send_calls) == 1:
+            raise FakeRetryAfter(2)
+        return SimpleNamespace(message_id=301)
+
+    monkeypatch.setattr("gateway.platforms.telegram.asyncio.sleep", fake_sleep)
+    adapter._bot = SimpleNamespace(
+        edit_message_text=mock_edit_message_text,
+        send_message=mock_send_message,
+    )
+
+    result = await adapter.edit_message(
+        chat_id="123",
+        message_id="456",
+        content="A" * 5000,
+        finalize=False,
+    )
+
+    assert result.success is True
+    assert result.message_id == "301"
+    assert len(send_calls) == 2
+    assert sleeps == [2.0]

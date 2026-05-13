@@ -337,8 +337,13 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        """Capture the frontmost on-screen window (optionally filtered by app name).
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+    ) -> CaptureResult:
+        """Capture the frontmost on-screen window (optionally filtered by app/title).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
@@ -376,6 +381,14 @@ class CuaDriverBackend(ComputerUseBackend):
         if app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            if filtered:
+                windows = filtered
+
+        # Filter by window title substring when requested. This prevents drift
+        # between multiple Chrome windows with the same app name.
+        if window_title:
+            title_lower = window_title.lower()
+            filtered = [w for w in windows if title_lower in (w.get("title") or "").lower()]
             if filtered:
                 windows = filtered
 
@@ -433,6 +446,77 @@ class CuaDriverBackend(ComputerUseBackend):
             mode=mode,
             width=width,
             height=height,
+            png_b64=png_b64,
+            elements=elements,
+            app=app_name,
+            window_title=window_title,
+            png_bytes_len=png_bytes_len,
+        )
+
+    def capture_active(self, mode: str = "som") -> CaptureResult:
+        """Capture the sticky pid/window_id selected by the last capture/focus.
+
+        Follow-up verification after background actions must inspect the same
+        target window. A plain capture() with no app filter can drift to the
+        user's frontmost app even when the action correctly hit the active pid.
+        """
+        if self._active_pid is None or self._active_window_id is None:
+            return self.capture(mode=mode)
+
+        pid = self._active_pid
+        window_id = self._active_window_id
+        app_name = ""
+
+        lw_out = self._session.call_tool("list_windows", {"on_screen_only": False})
+        sc = lw_out.get("structuredContent") or {}
+        raw_windows = sc.get("windows") if sc else None
+        if raw_windows:
+            for w in raw_windows:
+                try:
+                    if int(w.get("pid", 0)) == pid and int(w.get("window_id", 0)) == window_id:
+                        app_name = w.get("app_name", "") or ""
+                        break
+                except (TypeError, ValueError):
+                    continue
+
+        png_b64: Optional[str] = None
+        elements: List[UIElement] = []
+        window_title = ""
+
+        if mode == "vision":
+            sc_out = self._session.call_tool(
+                "screenshot",
+                {"window_id": window_id, "format": "jpeg", "quality": 85},
+            )
+            if sc_out["images"]:
+                png_b64 = sc_out["images"][0]
+        else:
+            gws_out = self._session.call_tool(
+                "get_window_state",
+                {"pid": pid, "window_id": window_id},
+            )
+            text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+            _, tree = _split_tree_text(text)
+            if tree and not gws_out["images"]:
+                elements = _parse_elements_from_tree(tree)
+            elif gws_out["images"]:
+                png_b64 = gws_out["images"][0]
+                elements = _parse_elements_from_tree(tree)
+            wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+            if wt:
+                window_title = wt.group(1)
+
+        png_bytes_len = 0
+        if png_b64:
+            try:
+                png_bytes_len = len(base64.b64decode(png_b64, validate=False))
+            except Exception:
+                png_bytes_len = len(png_b64) * 3 // 4
+
+        return CaptureResult(
+            mode=mode,
+            width=0,
+            height=0,
             png_b64=png_b64,
             elements=elements,
             app=app_name,
@@ -529,10 +613,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        return self._action("type_text", {"pid": pid, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid

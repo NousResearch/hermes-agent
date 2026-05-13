@@ -2935,6 +2935,53 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
 
+    def test_preflight_compression_clears_stale_interrupt_before_compress(self, agent):
+        """Preflight compression happens before the normal API loop, so it must
+        bind and clear this turn's interrupt flag first; otherwise a stale
+        gateway/restart interrupt can abort the Codex auxiliary summary stream."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.threshold_tokens = 1
+        agent.context_compressor.protect_first_n = 1
+        agent.context_compressor.protect_last_n = 3
+        agent.context_compressor.tail_token_budget = 10
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        history = []
+        for i in range(8):
+            history.extend([
+                {"role": "user", "content": f"old question {i}"},
+                {"role": "assistant", "content": f"old answer {i}"},
+            ])
+        interrupt_calls = []
+
+        def _record_interrupt(flag, thread_id=None):
+            interrupt_calls.append((flag, thread_id))
+
+        def _assert_interrupt_was_cleared(messages, system_message, **kwargs):
+            assert agent._execution_thread_id is not None
+            assert interrupt_calls
+            assert interrupt_calls[-1] == (False, agent._execution_thread_id)
+            agent.context_compressor.threshold_tokens = 999_999
+            return ([{"role": "user", "content": "hello"}], "compressed system prompt")
+
+        with (
+            patch("run_agent._set_interrupt", side_effect=_record_interrupt),
+            # Keep this regression focused on run_conversation's preflight
+            # interrupt binding, not the incidental legacy clear in todo
+            # hydration.
+            patch.object(agent, "_hydrate_todo_store", return_value=None),
+            patch.object(agent, "_compress_context", side_effect=_assert_interrupt_was_cleared) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=history)
+
+        mock_compress.assert_called_once()
+        assert result["final_response"] == "Final answer"
+
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)

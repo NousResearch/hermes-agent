@@ -37,6 +37,23 @@ def _no_restart_verify_sleep(monkeypatch):
     monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
 
 
+def _expire_service_active_polls(monkeypatch):
+    """Make cmd_update's systemd survival polling expire instantly.
+
+    These tests intentionally keep ``systemctl is-active`` inactive. Without
+    advancing monotonic time, each simulated failure waits for the real 10s
+    timeout and the suite-level alarm can interrupt before the terminal user
+    message is printed.
+    """
+    clock = {"now": 0.0}
+
+    def fake_monotonic():
+        clock["now"] += 11.0
+        return clock["now"]
+
+    monkeypatch.setattr(cli_main._time, "monotonic", fake_monotonic)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1545,6 +1562,7 @@ class TestCmdUpdateResetFailedBeforeRestart:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        _expire_service_active_polls(monkeypatch)
 
         # is-active toggles:
         #   first call (discovery / check active)  -> "active"
@@ -1623,6 +1641,7 @@ class TestCmdUpdateResetFailedBeforeRestart:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        _expire_service_active_polls(monkeypatch)
 
         is_active_calls = {"n": 0}
 

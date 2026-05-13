@@ -35,6 +35,8 @@ _PROVIDER_ENV_HINTS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
     "OPENAI_BASE_URL",
     "NOUS_API_KEY",
     "GLM_API_KEY",
@@ -249,7 +251,7 @@ def _build_apikey_providers_list() -> list:
     # API-key loop (with custom headers/auth). Skip their pluggable profiles
     # here so the generic Bearer-auth loop doesn't run a duplicate, broken
     # check (e.g. Anthropic native API requires x-api-key, not Bearer).
-    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock", "gemini"}
     _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
@@ -1409,6 +1411,67 @@ def run_doctor(args):
                 [],
             )
 
+    def _probe_gemini_api_key() -> _ConnectivityResult:
+        """Verify Google Gemini API-key auth with the documented REST shape.
+
+        Gemini's native API accepts API keys as a `?key=` query parameter, not
+        as `Authorization: Bearer`. Keep this separate from the generic
+        OpenAI-compatible provider loop to avoid false "invalid API key" doctor
+        failures when direct Gemini REST access is healthy.
+        """
+        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not key:
+            return _ConnectivityResult("Google / Gemini", [], [])
+        label = "Google / Gemini".ljust(20)
+        try:
+            import httpx
+
+            base = (os.getenv("GEMINI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            if base.rstrip("/").endswith("/openai"):
+                # Gemini's OpenAI-compatible endpoint accepts Bearer auth.
+                r = httpx.get(
+                    base + "/models",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "User-Agent": _HERMES_USER_AGENT,
+                    },
+                    timeout=10,
+                )
+            else:
+                # Native Gemini API-key auth: GET /models?key=<API_KEY>
+                r = httpx.get(
+                    base + "/models",
+                    params={"key": key},
+                    headers={"User-Agent": _HERMES_USER_AGENT},
+                    timeout=10,
+                )
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    "Google / Gemini",
+                    [(color("✓", Colors.GREEN), label, "")],
+                    [],
+                )
+            if r.status_code in (400, 401, 403):
+                return _ConnectivityResult(
+                    "Google / Gemini",
+                    [(color("✗", Colors.RED), label,
+                      color("(invalid API key)", Colors.DIM))],
+                    ["Check GOOGLE_API_KEY/GEMINI_API_KEY in .env"],
+                )
+            return _ConnectivityResult(
+                "Google / Gemini",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [],
+            )
+        except Exception as e:
+            return _ConnectivityResult(
+                "Google / Gemini",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
+
     def _probe_apikey_provider(pname, env_vars, default_url, base_env,
                                supports_health_check) -> _ConnectivityResult:
         key = ""
@@ -1539,6 +1602,7 @@ def run_doctor(args):
     # Build the probe submission list in display order
     _probes.append(("OpenRouter API", _probe_openrouter))
     _probes.append(("Anthropic API", _probe_anthropic))
+    _probes.append(("Google / Gemini", _probe_gemini_api_key))
 
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:

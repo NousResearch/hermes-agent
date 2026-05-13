@@ -601,6 +601,26 @@ class TelegramAdapter(BasePlatformAdapter):
         except ImportError:
             return False
 
+    @staticmethod
+    def _retry_after_seconds(error: Any) -> Optional[float]:
+        """Extract Telegram RetryAfter seconds from exceptions/SendResult-like errors."""
+        retry_after = getattr(error, "retry_after", None)
+        if retry_after is not None:
+            try:
+                return float(retry_after)
+            except (TypeError, ValueError):
+                return 1.0
+        text = str(error or "")
+        match = re.search(r"(?:flood_control|retry\s+after)[:\s]+(\d+(?:\.\d+)?)", text, re.I)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                return 1.0
+        if "retry after" in text.lower() or "flood" in text.lower():
+            return 1.0
+        return None
+
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
         cls,
@@ -1641,19 +1661,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             raise
                     except Exception as send_err:
-                        retry_after = getattr(send_err, "retry_after", None)
-                        if retry_after is not None or "retry after" in str(send_err).lower():
-                            if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
-                                logger.warning(
-                                    "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
-                                    self.name,
-                                    _send_attempt + 1,
-                                    wait,
-                                    send_err,
-                                )
-                                await asyncio.sleep(wait)
-                                continue
+                        retry_after = self._retry_after_seconds(send_err)
+                        if retry_after is not None and _send_attempt < 2:
+                            wait = float(retry_after)
+                            logger.warning(
+                                "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
+                                self.name,
+                                _send_attempt + 1,
+                                wait,
+                                send_err,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
                         raise
                 message_ids.append(str(msg.message_id))
             
@@ -1729,6 +1748,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                # RetryAfter is flood control, not a Markdown parse failure.
+                if self._retry_after_seconds(fmt_err) is not None:
+                    raise
                 # Fallback: retry without markdown formatting
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -1755,9 +1777,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+            retry_after = self._retry_after_seconds(e)
+            if retry_after is not None:
+                wait = float(retry_after)
                 logger.warning(
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
@@ -1832,6 +1854,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
                 except Exception as fmt_err:
+                    if self._retry_after_seconds(fmt_err) is not None:
+                        raise
                     if "not modified" not in str(fmt_err).lower():
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
@@ -1878,6 +1902,24 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as send_err:
+                    retry_after = self._retry_after_seconds(send_err)
+                    if retry_after is not None:
+                        logger.warning(
+                            "[%s] Overflow continuation hit flood control, retrying in %.1fs: %s",
+                            self.name, retry_after, send_err,
+                        )
+                        await asyncio.sleep(float(retry_after))
+                        try:
+                            text = self.format_message(chunk) if use_markdown else chunk
+                            sent_msg = await self._bot.send_message(
+                                chat_id=int(chat_id),
+                                text=text,
+                                parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
+                                reply_to_message_id=int(prev_id) if prev_id else None,
+                            )
+                            break
+                        except Exception as retry_err:
+                            send_err = retry_err
                     if "reply message not found" in str(send_err).lower():
                         # Drop the reply anchor and try again.
                         try:

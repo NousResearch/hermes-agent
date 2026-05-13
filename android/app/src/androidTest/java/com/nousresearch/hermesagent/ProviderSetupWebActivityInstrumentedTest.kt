@@ -83,7 +83,18 @@ class ProviderSetupWebActivityInstrumentedTest {
     fun providerSetupViewerStartsForApiKeyAndTokenProviders() {
         val context = ApplicationProvider.getApplicationContext<Context>()
 
-        listOf("openrouter", "alibaba", "alibaba-coding-plan", "qwen-oauth", "zai", "zai-coding-plan").forEach { providerId ->
+        listOf(
+            "openrouter",
+            "openai",
+            "chatgpt-web",
+            "anthropic",
+            "gemini",
+            "alibaba",
+            "alibaba-coding-plan",
+            "qwen-oauth",
+            "zai",
+            "zai-coding-plan",
+        ).forEach { providerId ->
             val target = requireNotNull(ProviderPresets.setupTarget(providerId, 0)) {
                 "Expected setup target for $providerId"
             }

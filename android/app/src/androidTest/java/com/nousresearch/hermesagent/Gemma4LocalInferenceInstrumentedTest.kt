@@ -70,6 +70,10 @@ class Gemma4LocalInferenceInstrumentedTest {
         assertTrue(health.toString(), health.has("image_input_supported"))
         assertTrue(health.toString(), health.has("audio_input_supported"))
         assertTrue(health.toString(), health.has("modality_policy"))
+        assertTrue(health.toString(), health.has("speculative_decoding"))
+        assertTrue(health.toString(), health.has("speculative_decoding_supported"))
+        assertTrue(health.toString(), health.has("mtp_policy"))
+        assertFalse(health.toString(), health.optString("mtp_policy").isBlank())
         if (health.optBoolean("multimodal_fallback", false)) {
             assertFalse(health.toString(), health.optBoolean("image_input_supported", true))
             assertFalse(health.toString(), health.optBoolean("audio_input_supported", true))

@@ -66,6 +66,7 @@ Usage:
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
 
+import datetime
 import json
 import logging
 
@@ -441,6 +442,23 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """
     from agent.skill_utils import parse_frontmatter
     return parse_frontmatter(content)
+
+
+def _strip_datetime(obj: Any) -> Any:
+    """Recursively strip datetime/date objects from a metadata dict for JSON serialization.
+
+    yaml.safe_load parses unquoted YAML dates into datetime.date or
+    datetime.datetime objects. json.dumps can't serialize these without
+    ``default=str``. Rather than relying on the json.dumps fallback everywhere,
+    we normalize at the source so returned metadata is always JSON-safe.
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_datetime(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_strip_datetime(item) for item in obj]
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    return obj
 
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
@@ -1396,9 +1414,9 @@ def skill_view(
         if frontmatter.get("compatibility"):
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):
-            result["metadata"] = metadata
+            result["metadata"] = _strip_datetime(metadata)
 
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False, default=str)
 
     except Exception as e:
         return tool_error(str(e), success=False)

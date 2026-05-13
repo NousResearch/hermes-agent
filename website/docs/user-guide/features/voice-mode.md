@@ -91,11 +91,19 @@ Add to `~/.hermes/.env`:
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
+XAI_API_KEY=your-key                  # xAI Grok STT (cloud, diarization)
+OPENROUTER_API_KEY=your-key           # OpenRouter — Whisper via your existing OpenRouter credits (#24415)
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 ```
+
+:::tip OpenRouter STT (#24415)
+If you already have `OPENROUTER_API_KEY` in your `.env` for LLM access, that same key now works for voice transcription — no separate Groq / OpenAI / xAI account needed. Hermes routes to OpenRouter's OpenAI-compatible `/api/v1/audio/transcriptions` endpoint and bills against the same credit pool. Default model is `openai/whisper-1`; override via `stt.openrouter.model` (`openai/gpt-4o-mini-transcribe`, `openai/gpt-4o-transcribe`).
+
+Auto-detect order: `local > groq > openai > xai > openrouter`. OpenRouter sits last in the cloud chain because it's a catch-all — if you also have a dedicated STT key it wins, so you keep that provider's pricing & routing.
+:::
 
 :::tip
 If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
@@ -422,12 +430,16 @@ tts:
 # pip install faster-whisper        # Free local STT — no API key needed
 GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
+XAI_API_KEY=...                    # xAI Grok STT (cloud, diarization)
+OPENROUTER_API_KEY=...             # OpenRouter Whisper — reuse your LLM key (#24415)
 
 # STT advanced overrides (optional)
-STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
-STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
+STT_GROQ_MODEL=whisper-large-v3-turbo            # Override default Groq STT model
+STT_OPENAI_MODEL=whisper-1                       # Override default OpenAI STT model
+STT_OPENROUTER_MODEL=openai/whisper-1            # Override default OpenRouter STT model (#24415)
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
+STT_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # Custom OpenRouter STT endpoint (#24415)
 
 # Text-to-Speech providers (Edge TTS and NeuTTS need no key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
@@ -492,7 +504,7 @@ The bot requires an @mention by default in server channels. Make sure you:
 
 ### Bot hears me but doesn't respond
 
-- Verify STT is available: install `faster-whisper` (no key needed) or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`
+- Verify STT is available: install `faster-whisper` (no key needed), set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` / `XAI_API_KEY`, or set `OPENROUTER_API_KEY` to reuse your existing OpenRouter LLM credits for transcription (#24415)
 - Check the LLM model is configured and accessible
 - Review gateway logs: `tail -f ~/.hermes/logs/gateway.log`
 

@@ -10,9 +10,10 @@ import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import {
+  COMPOSER_INPUT_MAX_VISUAL_LINES,
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
-  inputVisualHeight,
+  projectedInputVisualHeight,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -174,7 +175,7 @@ const ComposerPane = memo(function ComposerPane({
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth)
-  const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputHeight = projectedInputVisualHeight(composer.input, inputColumns, COMPOSER_INPUT_MAX_VISUAL_LINES)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -297,6 +298,7 @@ const ComposerPane = memo(function ComposerPane({
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   columns={inputColumns}
+                  maxVisualLines={COMPOSER_INPUT_MAX_VISUAL_LINES}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'
-import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import {
+  COMPOSER_COLLAPSE_MARKER,
+  composerPromptWidth,
+  cursorLayout,
+  inputVisualHeight,
+  projectComposerInput,
+  projectedInputVisualHeight,
+  stableComposerColumns
+} from '../lib/inputMetrics.js'
 
 describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
   it('places cursor mid-line at its column', () => {
@@ -61,6 +69,45 @@ describe('input metrics helpers', () => {
     expect(stableComposerColumns(100, 5)).toBe(91)
     expect(stableComposerColumns(10, 3)).toBe(5)
     expect(stableComposerColumns(6, 3)).toBe(1)
+  })
+})
+
+describe('projectComposerInput', () => {
+  it('leaves inputs at or below the visual-line limit untouched', () => {
+    const value = 'one two three'
+
+    expect(projectComposerInput(value, value.length, 20, 3)).toMatchObject({
+      collapsed: false,
+      cursor: value.length,
+      value
+    })
+    expect(projectedInputVisualHeight(value, 20, 3)).toBe(inputVisualHeight(value, 20))
+  })
+
+  it('collapses long tail input to a marker plus the final two visual lines', () => {
+    const value = 'aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk'
+    const projected = projectComposerInput(value, value.length, 8, 3)
+
+    expect(inputVisualHeight(value, 8)).toBeGreaterThan(3)
+    expect(projected.collapsed).toBe(true)
+    expect(projected.value.split('\n')[0]).toBe(COMPOSER_COLLAPSE_MARKER)
+    expect(inputVisualHeight(projected.value, 8)).toBeLessThanOrEqual(3)
+    expect(projected.cursor).toBe(projected.value.length)
+    expect(projected.sourceOffsetFromDisplayOffset(projected.cursor)).toBe(value.length)
+    expect(projectedInputVisualHeight(value, 8, 3)).toBeLessThanOrEqual(3)
+  })
+
+  it('keeps the cursor line visible when the cursor is in the hidden middle', () => {
+    const value = 'aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk'
+    const cursor = value.indexOf('fff') + 1
+    const projected = projectComposerInput(value, cursor, 8, 3)
+
+    expect(projected.collapsed).toBe(true)
+    expect(projected.value.split('\n')).toHaveLength(3)
+    expect(projected.value.startsWith(`${COMPOSER_COLLAPSE_MARKER}\n`)).toBe(true)
+    expect(projected.value.endsWith(`\n${COMPOSER_COLLAPSE_MARKER}`)).toBe(true)
+    expect(projected.sourceOffsetFromDisplayOffset(projected.cursor)).toBe(cursor)
+    expect(projected.value[projected.cursor]).toBe(value[cursor])
   })
 })
 

@@ -33,6 +33,29 @@ def test_restart_notification_pending_true_with_marker(tmp_path, monkeypatch):
     assert gateway_run._restart_notification_pending() is True
 
 
+def test_running_under_service_manager_detects_systemd(monkeypatch):
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+
+    assert gateway_run._running_under_service_manager() is True
+
+
+def test_running_under_service_manager_detects_launchd(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    assert gateway_run._running_under_service_manager() is True
+
+
+def test_running_under_service_manager_ignores_terminal_xpc_zero(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+    assert gateway_run._running_under_service_manager() is False
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 
@@ -89,6 +112,7 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
     """Without systemd, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -103,6 +127,29 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
 
     await runner._handle_restart_command(event)
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under macOS launchd, /restart uses via_service=True."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
 
 @pytest.mark.asyncio

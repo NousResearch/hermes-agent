@@ -369,10 +369,28 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+def _running_under_service_manager() -> bool:
+    """Return True when the gateway itself is running as a managed service.
+
+    systemd exposes ``INVOCATION_ID`` inside the unit. On macOS launchd,
+    service-managed jobs carry a non-zero ``XPC_SERVICE_NAME`` matching the
+    loaded label (manual Terminal launches typically inherit ``0`` instead).
+    """
+
+    if bool(os.environ.get("INVOCATION_ID")):
+        return True
+
+    if sys.platform == "darwin":
+        xpc_service_name = str(os.environ.get("XPC_SERVICE_NAME") or "").strip()
+        if xpc_service_name and xpc_service_name != "0":
+            return True
+
+    return False
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
-
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -9065,8 +9083,7 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        if _under_service:
+        if _running_under_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

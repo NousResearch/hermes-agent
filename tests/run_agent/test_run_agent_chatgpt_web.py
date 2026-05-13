@@ -790,6 +790,30 @@ def test_repair_terminal_completion_response_uses_yes_no_for_path_exists(monkeyp
     assert repaired == "yes"
 
 
+def test_repair_terminal_completion_response_returns_exact_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        (
+            "Use the terminal to run this shell command: printf 'HERMES_CHATGPT_WEB_TOOL_OK\\n'. "
+            "After the terminal result is available, reply with the exact text it printed and nothing else."
+        ),
+        "_TOOL_OK",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "HERMES_CHATGPT_WEB_TOOL_OK\n",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "HERMES_CHATGPT_WEB_TOOL_OK"
+
+
 def test_select_chatgpt_web_tools_stops_after_terminal_output_already_contains_whoami_result(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
@@ -996,6 +1020,25 @@ def test_chatgpt_web_tool_args_infers_followup_terminal_branch_step(monkeypatch)
     assert args == {
         "command": "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD"
     }
+
+
+def test_chatgpt_web_tool_args_extracts_run_command_after_colon(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "terminal",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Use the terminal to run this shell command: printf 'HERMES_CHATGPT_WEB_TOOL_OK\\n'. "
+                    "After the terminal result is available, reply with the exact text it printed."
+                ),
+            },
+        ],
+    )
+
+    assert args == {"command": "printf 'HERMES_CHATGPT_WEB_TOOL_OK\\n'"}
 
 
 def test_chatgpt_web_tool_args_infers_create_then_list_for_cron_sequence(monkeypatch):

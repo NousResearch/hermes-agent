@@ -103,3 +103,76 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, patch
+import sys
+import plugins.memory.honcho.client as _honcho_mod
+
+
+class TestGetHonchoClientToctouRace:
+    """Regression: get_honcho_client() must construct exactly one Honcho instance
+    even under concurrent load (double-checked locking guard)."""
+
+    def setup_method(self):
+        _honcho_mod._honcho_client = None
+
+    def teardown_method(self):
+        _honcho_mod._honcho_client = None
+
+    def _fake_cfg(self):
+        cfg = MagicMock()
+        cfg.api_key = "test-key"
+        cfg.base_url = None
+        cfg.workspace_id = "ws-test"
+        cfg.environment = "test"
+        cfg.timeout = 30.0
+        cfg.host = "app.honcho.dev"
+        cfg.raw = {}
+        return cfg
+
+    def _fake_honcho_module(self, counter: list):
+        class SpyHoncho:
+            def __init__(self, **kwargs):
+                counter.append(1)
+        fake_mod = type(sys)("honcho")
+        fake_mod.Honcho = SpyHoncho
+        return fake_mod
+
+    def test_concurrent_calls_return_same_instance(self):
+        n = 50
+        barrier = threading.Barrier(n)
+        results: list = []
+        counter: list = []
+        cfg = self._fake_cfg()
+        fake_mod = self._fake_honcho_module(counter)
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}):
+            def worker():
+                barrier.wait()
+                results.append(_honcho_mod.get_honcho_client(cfg))
+
+            with ThreadPoolExecutor(max_workers=n) as pool:
+                list(pool.map(lambda _: worker(), range(n)))
+
+        assert len(results) == n
+        assert all(r is results[0] for r in results), "multiple Honcho instances returned"
+
+    def test_only_one_honcho_constructed(self):
+        n = 50
+        barrier = threading.Barrier(n)
+        counter: list = []
+        cfg = self._fake_cfg()
+        fake_mod = self._fake_honcho_module(counter)
+
+        with patch.dict(sys.modules, {"honcho": fake_mod}):
+            def worker():
+                barrier.wait()
+                _honcho_mod.get_honcho_client(cfg)
+
+            with ThreadPoolExecutor(max_workers=n) as pool:
+                list(pool.map(lambda _: worker(), range(n)))
+
+        assert len(counter) == 1, f"Honcho constructed {len(counter)} times, expected 1"

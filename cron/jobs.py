@@ -380,14 +380,13 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 schedule.get("expr"),
             )
             return None
-        # Use last_run_at as the croniter base when available, consistent
-        # with interval jobs.  This ensures that after a crash/restart,
-        # the next run is anchored to the actual last execution time
-        # rather than to an arbitrary restart time.
-        base_time = now
-        if last_run_at:
-            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        # Use the current time as the croniter base so next_run always lands
+        # in the future.  Anchoring to last_run_at causes a bug: for cron
+        # expressions like \"*/5 * * * *\", if last_run is not aligned to the
+        # cron tick grid, croniter can return a time in the past — the
+        # scheduler then fast-forwards it, but re-computes the same past
+        # time, creating a stuck loop where the job never fires.
+        cron = croniter(schedule["expr"], now)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 

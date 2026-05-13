@@ -10401,6 +10401,25 @@ class AIAgent:
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
 
+        if self.reasoning_callback:
+            old_session_id = locals().get("old_session_id")
+            compression_message = {
+                "type": "context_compression",
+                "status": "completed",
+                "message": "Context compressed",
+                "session_id": self.session_id,
+                "parent_session_id": old_session_id,
+                "messages_before": _pre_msg_count,
+                "messages_after": len(compressed),
+                "tokens_before": approx_tokens,
+                "tokens_after": _compressed_est,
+                "compression_count": _cc,
+            }
+            try:
+                self.reasoning_callback(json.dumps(compression_message, default=str))
+            except Exception:
+                pass
+
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
         # file it needs the full content, not a "file unchanged" stub.

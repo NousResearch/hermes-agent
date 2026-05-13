@@ -1100,6 +1100,57 @@ class TestChatCompletionsEndpoint:
                 assert "/tmp" not in content
 
     @pytest.mark.asyncio
+    async def test_stream_surfaces_context_compression_reasoning_json(self, adapter):
+        """Compression reasoning JSON is surfaced as structured Hermes reasoning SSE data."""
+        app = _create_app(adapter)
+        compression_message = {
+            "type": "context_compression",
+            "status": "completed",
+            "message": "Context compressed",
+            "messages_before": 12,
+            "messages_after": 5,
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if reasoning_cb:
+                    reasoning_cb(json.dumps(compression_message))
+                if cb:
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "compress"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        reasoning_payloads = []
+        current_event = None
+        for line in body.splitlines():
+            if line.startswith("event: "):
+                current_event = line[len("event: "):]
+            elif current_event == "Hermes.reasoning.summary" and line.startswith("data: "):
+                raw_data = line[len("data: "):]
+                if raw_data != "[DONE]":
+                    reasoning_payloads.append(json.loads(raw_data))
+
+        assert reasoning_payloads
+        assert reasoning_payloads[0]["message"] == compression_message
+        assert reasoning_payloads[0]["delta"] == json.dumps(compression_message)
+
+    @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
         """Internal tools (``_thinking``-style) and ``completed`` events
         without a prior matching ``running`` must produce no lifecycle

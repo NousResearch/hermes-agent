@@ -1294,15 +1294,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 _stream_q.put(("__tool_output__", payload))
 
             def _on_reasoning_summary(text):
-                """Emit provider reasoning deltas as custom debug SSE events."""
+                """Emit provider/agent reasoning deltas as custom debug SSE events."""
                 if not text:
                     return
                 delta = str(text)
                 _reasoning_summary_parts.append(delta)
-                _stream_q.put(("__reasoning_summary__", {
+                payload: Dict[str, Any] = {
                     "delta": delta,
                     "summary": "".join(_reasoning_summary_parts),
-                }))
+                }
+                try:
+                    parsed_message = json.loads(delta)
+                except (TypeError, ValueError):
+                    parsed_message = None
+                if isinstance(parsed_message, dict) and parsed_message.get("type") == "context_compression":
+                    payload["message"] = parsed_message
+                _stream_q.put(("__reasoning_summary__", payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.

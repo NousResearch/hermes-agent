@@ -47,6 +47,7 @@ class Gemma4LocalInferenceInstrumentedTest {
 
     @Test
     fun aGemma4LiteRtLmLoadsAndAnswersLocally() {
+        waitForAppStartupToSettle()
         val modelFile = File(context.filesDir, MODEL_RELATIVE_PATH)
         assumeTrue("Gemma 4 LiteRT-LM model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
         assertEquals("Gemma 4 LiteRT-LM model size", MODEL_BYTES, modelFile.length())
@@ -94,6 +95,7 @@ class Gemma4LocalInferenceInstrumentedTest {
 
     @Test
     fun bDirectLiteRtLmProxyCanServeProvisionedGemma4Model() {
+        waitForAppStartupToSettle()
         val modelFile = File(context.filesDir, MODEL_RELATIVE_PATH)
         assumeTrue("Gemma 4 LiteRT-LM model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
         assertEquals("Gemma 4 LiteRT-LM model size", MODEL_BYTES, modelFile.length())
@@ -162,6 +164,10 @@ class Gemma4LocalInferenceInstrumentedTest {
                     .put("content", "Reply with exactly one short word: ok")
             )
         )
+        .put("temperature", 0.0)
+        .put("max_tokens", 64)
+        .put("timeout_ms", 300_000L)
+        .put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
         .put("stream", false)
         .toString()
         .toRequestBody(JSON_MEDIA_TYPE)
@@ -174,6 +180,10 @@ class Gemma4LocalInferenceInstrumentedTest {
         }
     }
 
+    private fun waitForAppStartupToSettle() {
+        Thread.sleep(APP_STARTUP_SETTLE_MS)
+    }
+
     private companion object {
         private const val MODEL_ID = "gemma-4-E2B-it"
         private const val MODEL_REPO = "litert-community/gemma-4-E2B-it-litert-lm"
@@ -183,6 +193,7 @@ class Gemma4LocalInferenceInstrumentedTest {
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/7fa1d78473894f7e736a21d920c3aa80f950c0db/gemma-4-E2B-it.litertlm"
         private const val MODEL_REVISION = "7fa1d78473894f7e736a21d920c3aa80f950c0db"
         private const val MODEL_BYTES = 2_583_085_056L
+        private const val APP_STARTUP_SETTLE_MS = 10_000L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

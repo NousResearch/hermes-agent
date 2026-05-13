@@ -68,7 +68,7 @@ object LiteRtLmOpenAiProxy {
         val policy: String,
     )
 
-    private const val DEFAULT_GENERATION_TIMEOUT_MS = 120_000L
+    private const val DEFAULT_GENERATION_TIMEOUT_MS = 300_000L
     private const val MIN_GENERATION_TIMEOUT_MS = 5_000L
     private const val MAX_GENERATION_TIMEOUT_MS = 300_000L
 

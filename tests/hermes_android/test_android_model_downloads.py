@@ -143,6 +143,7 @@ def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
     assert 'future.get(timeoutMs, TimeUnit.MILLISECONDS)' in proxy
     assert 'chatTemplateExtraContext(requestJson)' in proxy
     assert 'generationTimeoutMs(requestJson)' in proxy
+    assert 'private const val DEFAULT_GENERATION_TIMEOUT_MS = 300_000L' in proxy
     assert 'conversation.cancelProcess()' in proxy
     assert 'executor.shutdownNow()' in proxy
     assert 'LiteRT-LM generation timed out after' in proxy

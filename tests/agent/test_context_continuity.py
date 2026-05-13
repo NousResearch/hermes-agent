@@ -101,7 +101,7 @@ def test_automatic_compression_is_deferred_for_continuity_handoff_policy():
     assert "자동 압축" not in decision.reason
 
 
-def test_automatic_compression_is_deferred_even_before_handoff_threshold():
+def test_automatic_compression_is_not_deferred_before_handoff_threshold():
     status = ContextContinuityStatus(
         context_tokens=55_000,
         context_length=100_000,
@@ -109,9 +109,9 @@ def test_automatic_compression_is_deferred_even_before_handoff_threshold():
 
     decision = should_defer_automatic_compression(status)
 
-    assert decision.defer is True
+    assert decision.defer is False
     assert decision.recommended_action == "continue"
-    assert "자동 압축" not in decision.reason
+    assert "자동 압축" in decision.reason
     assert "/m" in decision.reason
 
 

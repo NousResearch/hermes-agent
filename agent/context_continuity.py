@@ -117,12 +117,12 @@ def recommend_continuity_action(
 def should_defer_automatic_compression(
     status: ContextContinuityStatus,
 ) -> AutomaticCompressionGate:
-    """Defer proactive automatic compression behind continuity policy.
+    """Decide whether proactive automatic compression should yield to handoff.
 
-    Automatic compression is lossy and can hide context loss from the user. For
-    proactive threshold checks, prefer visible checkpoint/handoff guidance and
-    let explicit ``/compress`` or emergency context-overflow recovery remain the
-    only compression paths.
+    Automatic compression is lossy, so high-risk handoff states should surface
+    visible `/h` or `/m` guidance instead. Lower-risk checkpoint/continue states
+    must not dead-code proactive compression; callers may still compact normally
+    when their own token threshold says it is time.
     """
 
     recommendation = recommend_continuity_action(status)
@@ -132,18 +132,25 @@ def should_defer_automatic_compression(
             "권장: /m으로 새 세션을 만들거나 /h로 이동 준비 인계문을 만드세요. "
             "같은 세션 유지가 꼭 필요할 때만 /c를 사용하세요."
         )
-    elif recommendation.recommended_action == "checkpoint":
+        return AutomaticCompressionGate(
+            defer=True,
+            recommended_action=recommendation.recommended_action,
+            usage_percent=recommendation.usage_percent,
+            reason=reason,
+        )
+
+    if recommendation.recommended_action == "checkpoint":
         reason = (
             f"{recommendation.reason} "
-            "다음 큰 단계 전에 /h 또는 /m으로 이어가기 지점을 준비하세요."
+            "다음 큰 단계 전에 /h 또는 /m으로 이어가기 지점을 준비할 수 있습니다."
         )
     else:
         reason = (
-            "현재 세션은 계속 사용할 수 있습니다. 단, 긴 작업에서는 /m 세션 이동이 "
-            "손실 압축보다 품질 보존에 유리합니다."
+            "현재 세션은 계속 사용할 수 있습니다. 필요 시 일반 자동 압축 경로를 유지합니다. "
+            "단, 긴 작업에서는 /m 세션 이동이 손실 압축보다 품질 보존에 유리합니다."
         )
     return AutomaticCompressionGate(
-        defer=True,
+        defer=False,
         recommended_action=recommendation.recommended_action,
         usage_percent=recommendation.usage_percent,
         reason=reason,

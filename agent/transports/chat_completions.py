@@ -47,6 +47,11 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 
+    # Gemini 3-Flash-Preview on v1beta rejects the thinking_config field.
+    # Omit it entirely to avoid HTTP 400. (#18422)
+    if normalized_model == "gemini-3-flash-preview":
+        return None
+
     # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
     # thought parts without risking request validation errors.
@@ -358,7 +363,7 @@ class ChatCompletionsTransport(ProviderTransport):
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
-        if provider_name == "gemini":
+        if provider_name in {"gemini", "google"}:
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)

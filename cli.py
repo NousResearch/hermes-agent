@@ -2594,6 +2594,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._deferred_slash_commands = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
         # don't auto-queue another continuation on top of a user-cancelled
@@ -6791,6 +6792,50 @@ class HermesCLI:
             return bool(cmd and cmd.name == "steer")
         except Exception:
             return False
+
+    def _should_defer_destructive_slash_command(self, text: str, has_images: bool = False) -> bool:
+        """Return True when a destructive slash command must wait for turn teardown."""
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name in {"new", "clear", "reset", "undo"})
+        except Exception:
+            return False
+
+    def _defer_destructive_slash_command(self, command: str) -> None:
+        """Interrupt the active turn, then run the slash command once it exits."""
+        if not command:
+            return
+        self._deferred_slash_commands.put(command)
+        try:
+            if self.agent is not None and hasattr(self.agent, "interrupt"):
+                self.agent.interrupt()
+        except Exception as exc:
+            _cprint(f"  {_DIM}Interrupt failed ({exc}) — will run after the current turn ends.{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}⚡ Interrupting current turn before {command.split()[0]}...{_RST}")
+
+    def _run_deferred_slash_commands(self) -> bool:
+        """Drain destructive slash commands queued during an active turn."""
+        ran_any = False
+        while True:
+            try:
+                command = self._deferred_slash_commands.get_nowait()
+            except queue.Empty:
+                break
+            if not command:
+                continue
+            ran_any = True
+            _cprint(f"\n⚙️  {command}")
+            if not self.process_command(command):
+                self._should_exit = True
+                break
+        return ran_any
 
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
@@ -11139,6 +11184,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._deferred_slash_commands = queue.Queue()  # Destructive slash commands deferred until the active turn unwinds
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.
         self._last_turn_interrupted = False
@@ -11344,6 +11390,15 @@ class HermesCLI:
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
                     self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
+                # Destructive slash commands must not queue behind the active
+                # turn. Interrupt first, then apply them after chat() fully
+                # unwinds so a trailing partial response cannot leak into the
+                # fresh/reset session.
+                if self._should_defer_destructive_slash_command(text, has_images=has_images):
+                    self._defer_destructive_slash_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
 
@@ -12987,6 +13042,9 @@ class HermesCLI:
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+
+                        if self._run_deferred_slash_commands():
+                            continue
 
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and

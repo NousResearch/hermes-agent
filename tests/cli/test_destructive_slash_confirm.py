@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import queue
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _bound(fn, instance):
@@ -209,3 +209,54 @@ def test_slash_confirm_display_fragments_include_choice_mapping():
     assert "[2] Always Approve" in rendered
     assert "[3] Cancel" in rendered
     assert "Type 1/2/3" in rendered
+
+
+def test_running_new_is_deferred_instead_of_queued_as_next_turn():
+    """Running /new must interrupt first, not ride the normal next-turn path."""
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace(_agent_running=True)
+
+    assert _bound(HermesCLI._should_defer_destructive_slash_command, self_)("/new")
+    assert _bound(HermesCLI._should_defer_destructive_slash_command, self_)("/clear")
+    assert _bound(HermesCLI._should_defer_destructive_slash_command, self_)("/reset")
+    assert _bound(HermesCLI._should_defer_destructive_slash_command, self_)("/undo")
+    assert not _bound(HermesCLI._should_defer_destructive_slash_command, self_)("/steer later")
+
+
+def test_deferred_destructive_slash_interrupts_without_replacement_message():
+    """The old turn should stop, but /new itself must not become interrupt text."""
+    from cli import HermesCLI
+
+    agent = SimpleNamespace(interrupt=MagicMock())
+    self_ = SimpleNamespace(
+        agent=agent,
+        _deferred_slash_commands=queue.Queue(),
+    )
+
+    _bound(HermesCLI._defer_destructive_slash_command, self_)("/new")
+
+    assert self_._deferred_slash_commands.get_nowait() == "/new"
+    agent.interrupt.assert_called_once_with()
+
+
+def test_deferred_destructive_slashes_run_after_turn_teardown():
+    """Deferred slash commands should execute only after chat() has unwound."""
+    from cli import HermesCLI
+
+    processed = []
+    deferred = queue.Queue()
+    deferred.put("/new")
+    deferred.put("/clear")
+
+    self_ = SimpleNamespace(
+        _deferred_slash_commands=deferred,
+        _should_exit=False,
+        process_command=lambda command: processed.append(command) or True,
+    )
+
+    result = _bound(HermesCLI._run_deferred_slash_commands, self_)()
+
+    assert result is True
+    assert processed == ["/new", "/clear"]
+    assert self_._should_exit is False

@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 
+import io
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from tools.skills_hub import ClawHubSource, SkillMeta
 
 
 class _MockResponse:
-    def __init__(self, status_code=200, json_data=None, text="", headers=None):
+    def __init__(self, status_code=200, json_data=None, text="", headers=None, content=b""):
         self.status_code = status_code
         self._json_data = json_data
         self.text = text
         self.headers = headers or {}
+        self.content = content
 
     def json(self):
         return self._json_data
+
+
+def _zip_bytes(files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
 
 
 class TestClawHubSource(unittest.TestCase):
@@ -277,7 +288,7 @@ class TestClawHubSource(unittest.TestCase):
                         "latestVersion": {"version": "1.0.1"},
                     },
                 )
-            if url.endswith("/download"):
+            if "/download" in url:
                 return _MockResponse(status_code=404)
             if url.endswith("/skills/caldav-calendar/versions/1.0.1"):
                 return _MockResponse(
@@ -297,6 +308,41 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(bundle)
         self.assertEqual(mock_get.call_count, 3)
+
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url")
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_blocks_private_zip_redirect(self, mock_get, mock_safe, _mock_policy):
+        zip_payload = _zip_bytes({"SKILL.md": "# Private Skill"})
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills/caldav-calendar"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "slug": "caldav-calendar",
+                        "latestVersion": {"version": "1.0.1"},
+                    },
+                )
+            if "/download" in url:
+                if kwargs.get("follow_redirects"):
+                    return _MockResponse(status_code=200, content=zip_payload)
+                return _MockResponse(
+                    status_code=302,
+                    headers={"location": "http://127.0.0.1/private-skill.zip"},
+                )
+            if url == "http://127.0.0.1/private-skill.zip":
+                raise AssertionError("private redirect target should not be fetched")
+            if url.endswith("/skills/caldav-calendar/versions/1.0.1"):
+                return _MockResponse(status_code=404, json_data={})
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+        mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
+
+        bundle = self.src.fetch("caldav-calendar")
+
+        self.assertIsNone(bundle)
 
 
 if __name__ == "__main__":

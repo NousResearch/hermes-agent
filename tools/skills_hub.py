@@ -2031,12 +2031,13 @@ class ClawHubSource(SkillSource):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
+                download_url = str(httpx.URL(
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
-                    timeout=30,
-                    follow_redirects=True,
-                )
+                ))
+                resp = _guarded_http_get(download_url, timeout=30)
+                if resp is None:
+                    return files
                 if resp.status_code == 429:
                     try:
                         retry_after = int(resp.headers.get("retry-after", "5"))

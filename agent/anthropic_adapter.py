@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -361,6 +362,26 @@ def _normalize_base_url_text(base_url) -> str:
     return str(base_url).strip()
 
 
+def _normalize_anthropic_sdk_base_url(base_url) -> str:
+    """Return a base URL safe to pass to the Anthropic SDK.
+
+    Anthropic's Python SDK appends ``/v1`` internally. If users configure the
+    native endpoint as ``https://api.anthropic.com/v1``, passing that through
+    produces requests to ``/v1/v1/messages``. Third-party Anthropic-compatible
+    endpoints may legitimately include ``/v1`` in their base URL, so only
+    normalize the official native API host.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized or not base_url_host_matches(normalized, "api.anthropic.com"):
+        return normalized
+
+    parts = urlsplit(normalized)
+    if parts.path.rstrip("/").lower() != "/v1":
+        return normalized
+
+    return urlunsplit((parts.scheme, parts.netloc, "", parts.query, parts.fragment)).rstrip("/")
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -553,7 +574,7 @@ def build_anthropic_client(
 
     from httpx import Timeout
 
-    normalized_base_url = _normalize_base_url_text(base_url)
+    normalized_base_url = _normalize_anthropic_sdk_base_url(base_url)
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
@@ -2075,5 +2096,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

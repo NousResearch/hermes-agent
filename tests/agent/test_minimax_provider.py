@@ -155,6 +155,31 @@ class TestMinimaxBetaHeaders:
         )
         assert self._TOOL_BETA in betas
 
+
+class TestAnthropicBaseUrlNormalization:
+    """Native Anthropic SDK appends /v1 internally; do not pass it twice."""
+
+    def _build_and_get_base_url(self, base_url):
+        from agent.anthropic_adapter import build_anthropic_client
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-real-key-here", base_url=base_url)
+            return mock_sdk.Anthropic.call_args[1].get("base_url")
+
+    def test_native_anthropic_strips_trailing_v1(self):
+        assert self._build_and_get_base_url(
+            "https://api.anthropic.com/v1"
+        ) == "https://api.anthropic.com"
+
+    def test_native_anthropic_strips_trailing_v1_slash(self):
+        assert self._build_and_get_base_url(
+            "https://api.anthropic.com/v1/"
+        ) == "https://api.anthropic.com"
+
+    def test_third_party_v1_base_url_is_preserved(self):
+        assert self._build_and_get_base_url(
+            "https://my-proxy.example.com/v1"
+        ) == "https://my-proxy.example.com/v1"
+
     # -- _common_betas_for_base_url unit tests ---------------------------
 
     def test_common_betas_none_url(self):

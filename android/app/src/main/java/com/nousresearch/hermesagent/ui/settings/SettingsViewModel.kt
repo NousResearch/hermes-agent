@@ -201,7 +201,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
-        val launch = HermesProviderSetupWebActivity.open(
+        val launch = HermesProviderSetupWebActivity.openInApp(
             context = getApplication(),
             uri = uri,
             title = "Open $providerLabel setup page",
@@ -266,9 +266,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         target: ProviderSetupTarget?,
     ): String {
         val cycleHint = if (target != null && target.total > 1) {
-            " in your browser ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
+            " in Hermes ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
         } else {
-            " in your browser. If this page stalls, copy the setup URL and paste it into another browser."
+            " in Hermes. If this page stalls, use Browser or Copy from the setup viewer."
         }
         val qwenLegacyHint = if (providerId == "qwen-oauth") {
             " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."

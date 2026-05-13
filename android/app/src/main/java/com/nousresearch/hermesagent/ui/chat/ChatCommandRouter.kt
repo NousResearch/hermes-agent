@@ -101,15 +101,15 @@ object ChatCommandRouter {
                         val feedback = when (method) {
                             "openrouter" -> {
                                 host.navigateToSection(AppSection.Accounts)
-                                "Opened OpenRouter OAuth in your browser. Approve Hermes to save a user-controlled API key, or paste an OpenRouter API key in Settings."
+                                "Opened OpenRouter OAuth in Hermes. Approve Hermes to save a user-controlled API key, or paste an OpenRouter API key in Settings."
                             }
                             "qwen-oauth" -> {
                                 host.navigateToSection(AppSection.Settings)
-                                "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page in your browser. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
+                                "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page in Hermes. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
                             }
                             else -> {
                                 host.navigateToSection(AppSection.Settings)
-                                "Prepared $method API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes."
+                                "Prepared $method API-key/token setup in Settings and opened the provider setup page in Hermes. Paste the provider credential there to power Hermes."
                             }
                         }
                         ChatCommandResult(handled = true, feedback = feedback)

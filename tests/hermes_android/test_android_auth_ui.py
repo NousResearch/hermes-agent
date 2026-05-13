@@ -306,7 +306,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "ProviderPresets.credentialInputHelp(providerId)" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(targetUrl)" in settings_view_model
-    assert "HermesProviderSetupWebActivity.open" in settings_view_model
+    assert "HermesProviderSetupWebActivity.openInApp" in settings_view_model
     assert "fun checkProviderKeyPage(url: String)" in settings_view_model
     assert "ProviderSetupUrlProbe::probe" in settings_view_model
     assert "ProviderSetupUrlProbe.MAX_STATUS_LENGTH" in settings_view_model

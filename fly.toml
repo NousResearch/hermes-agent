@@ -1,0 +1,52 @@
+# fly.toml — DeepParser Developer API on Fly.io
+# Deploy: fly deploy --config fly.toml
+# Secrets: fly secrets set ADMIN_PASSWORD=... DPCLI_FOLDER_ID=...
+
+app = "deepparser-api"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.deepparser"
+
+[env]
+  DB_PATH    = "/data/deepparser.db"
+  UPLOAD_DIR = "/data/uploads"
+  DPCLI_BIN  = "dp"
+
+# Single machine required: SQLite does not support concurrent writers.
+# If you need horizontal scale, migrate to Turso / LibSQL first.
+[[vm]]
+  size             = "shared-cpu-1x"
+  memory           = "512mb"
+
+[deploy]
+  strategy            = "immediate"  # no rolling — single instance, immediate swap
+  max_unavailable     = 0
+
+[http_service]
+  internal_port       = 8000
+  force_https         = true
+  auto_stop_machines  = "stop"
+  auto_start_machines = true
+  # max_machines_running=1 ensures SQLite single-writer guarantee holds.
+  # See E10 in design doc.
+  max_machines_running = 1
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 100
+    hard_limit = 150
+
+[[http_service.checks]]
+  grace_period  = "10s"
+  interval      = "30s"
+  method        = "GET"
+  path          = "/health"
+  protocol      = "http"
+  timeout       = "5s"
+
+[[mounts]]
+  source      = "deepparser_data"
+  destination = "/data"
+  initial_size = "1gb"

@@ -1,0 +1,148 @@
+name: DeepParser — Release
+
+# Triggers on semver tag push (v1.2.3) or manual dispatch for dry-runs.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip PyPI, Docker push, and Fly deploy)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ysh145/deepparser
+
+concurrency:
+  group: deepparser-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Unit tests
+  # -------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13974f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev deps
+        run: pip install ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -x -q --ignore=tests/integration
+
+  # -------------------------------------------------------------------------
+  # 2. Build Docker image and push to Docker Hub (amd64 + arm64)
+  # -------------------------------------------------------------------------
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13974f8d5  # v4
+
+      - name: Set up QEMU (for arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute tags
+        id: tags
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # e.g. v1.2.3
+          SEMVER="${TAG#v}"                  # e.g. 1.2.3
+          MAJOR="$(echo $SEMVER | cut -d. -f1)"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "semver=${SEMVER}"   >> "$GITHUB_OUTPUT"
+          echo "major=v${MAJOR}"    >> "$GITHUB_OUTPUT"
+          echo "tags<<EOF"          >> "$GITHUB_OUTPUT"
+          echo "${{ env.IMAGE_NAME }}:${SEMVER}"   >> "$GITHUB_OUTPUT"
+          echo "${{ env.IMAGE_NAME }}:v${MAJOR}"   >> "$GITHUB_OUTPUT"
+          echo "${{ env.IMAGE_NAME }}:latest"      >> "$GITHUB_OUTPUT"
+          echo "EOF"                >> "$GITHUB_OUTPUT"
+        # Only meaningful on a real tag push; workflow_dispatch uses sha
+        if: github.event_name == 'push'
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.event.inputs.dry_run != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.deepparser
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && github.event.inputs.dry_run != 'true' }}
+          tags: ${{ steps.tags.outputs.tags || format('{0}:test', env.IMAGE_NAME) }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.semver || 'dev' }}
+          cache-from: type=gha,scope=deepparser
+          cache-to: type=gha,mode=max,scope=deepparser
+
+  # -------------------------------------------------------------------------
+  # 3. Publish to PyPI
+  # -------------------------------------------------------------------------
+  pypi:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/deepparser
+    permissions:
+      id-token: write  # OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13974f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push' && github.event.inputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Uses OIDC trusted publishing — no PYPI_TOKEN secret needed.
+        # Configure at: https://pypi.org/manage/project/deepparser/settings/publishing/
+
+  # -------------------------------------------------------------------------
+  # 4. Deploy to Fly.io
+  # -------------------------------------------------------------------------
+  deploy:
+    needs: [docker, pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13974f8d5  # v4
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        if: github.event_name == 'push' && github.event.inputs.dry_run != 'true'
+        run: flyctl deploy --config fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

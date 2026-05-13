@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1.7
+# ---- build stage: install deps into a venv ----
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN pip install --no-cache-dir "setuptools>=61" "wheel"
+
+# Copy only manifests first — dep layer is cached unless pyproject.toml changes.
+COPY pyproject.toml ./
+# Stub out README so setuptools can stat it during build
+RUN mkdir -p deepparser && touch deepparser/README.md
+
+# Install all deps (SDK + server extras) into /opt/venv
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir ".[server]"
+
+# Install dp CLI (deepparser-cli provides the `dp` binary)
+RUN /opt/venv/bin/pip install --no-cache-dir "deepparser-cli"
+
+# Copy source and install the package itself (no-deps: deps already installed)
+COPY deepparser/ deepparser/
+COPY deepparser_api/ deepparser_api/
+RUN /opt/venv/bin/pip install --no-cache-dir --no-deps .
+
+# ---- runtime stage ----
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    # Server defaults — override at runtime or via fly secrets set
+    DB_PATH=/data/deepparser.db \
+    UPLOAD_DIR=/data/uploads \
+    DPCLI_BIN=dp
+
+# tini reaps zombie subprocesses from dp_cli invocations when running as PID 1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tini && \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root user; /data is the Fly.io persistent volume mount point
+RUN useradd -u 10001 -m -d /home/deepparser deepparser && \
+    mkdir -p /data && chown deepparser:deepparser /data
+
+COPY --from=builder /opt/venv /opt/venv
+
+USER deepparser
+WORKDIR /home/deepparser
+
+VOLUME ["/data"]
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["deepparser-server"]

@@ -4,7 +4,21 @@ import sqlite3
 
 import pytest
 
-from hermes_cli.workflow.store import add_event, connect, create_workflow, get_workflow, list_events, list_workflows
+from hermes_cli.workflow import WorkflowArtifact
+from hermes_cli.workflow.store import (
+    add_artifact,
+    add_event,
+    connect,
+    create_workflow,
+    get_workflow,
+    list_artifacts,
+    list_events,
+    list_workflows,
+)
+
+
+def test_public_workflow_package_exports_artifact_record():
+    assert WorkflowArtifact.__name__ == "WorkflowArtifact"
 
 
 def test_connect_initializes_schema_version_and_tables(tmp_path):
@@ -118,6 +132,67 @@ def test_add_and_list_events_preserves_actor_node_and_structured_data(tmp_path):
         "createdAt": 2.0,
     }
     assert [event.id for event in events] == ["evt_created", "evt_reviewed"]
+
+
+def test_add_and_list_artifacts_records_auditable_file_metadata(tmp_path):
+    artifact_path = tmp_path / "artifacts" / "dag.yaml"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("schema_version: 1\nkind: dag\n", encoding="utf-8")
+
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_artifacts", title="Artifacts")
+
+        artifact = add_artifact(
+            conn,
+            workflow_id="wf_artifacts",
+            artifact_id="art_dag",
+            kind="dag",
+            path=artifact_path,
+            mime_type="application/yaml",
+            schema_version=1,
+            created_by="decomposer",
+            metadata={"source": "test"},
+            now=3.5,
+        )
+        artifacts = list_artifacts(conn, "wf_artifacts")
+
+    assert artifact.id == "art_dag"
+    assert artifact.workflow_id == "wf_artifacts"
+    assert artifact.kind == "dag"
+    assert artifact.path == str(artifact_path)
+    assert artifact.sha256 == "fece7043be67c89251cb4088c07bd29e861debce78320cc6360881c631c87d51"
+    assert artifact.mime_type == "application/yaml"
+    assert artifact.created_by == "decomposer"
+    assert artifact.metadata == {"source": "test"}
+    assert artifact.to_dict()["createdAt"] == 3.5
+    assert [item.id for item in artifacts] == ["art_dag"]
+
+
+def test_add_artifact_rejects_unknown_workflow_and_missing_file(tmp_path):
+    missing_path = tmp_path / "missing.md"
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="workflow not found: wf_missing"):
+            add_artifact(conn, workflow_id="wf_missing", kind="dag", path=missing_path)
+
+        create_workflow(conn, workflow_id="wf_artifact_missing_file", title="Artifact missing file")
+        with pytest.raises(FileNotFoundError):
+            add_artifact(conn, workflow_id="wf_artifact_missing_file", kind="dag", path=missing_path)
+
+
+def test_delete_workflow_cascades_artifacts(tmp_path):
+    artifact_path = tmp_path / "dag.yaml"
+    artifact_path.write_text("kind: dag\n", encoding="utf-8")
+
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_delete_artifacts", title="Delete artifacts")
+        add_artifact(conn, workflow_id="wf_delete_artifacts", kind="dag", path=artifact_path)
+
+        conn.execute("DELETE FROM workflows WHERE id = ?", ("wf_delete_artifacts",))
+        conn.commit()
+
+        artifacts = list_artifacts(conn, "wf_delete_artifacts")
+
+    assert artifacts == []
 
 
 def test_add_event_rejects_unknown_workflow(tmp_path):

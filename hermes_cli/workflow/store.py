@@ -8,6 +8,7 @@ compose without parsing Kanban task prose.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -83,6 +84,36 @@ class WorkflowRecord:
             "policySnapshot": self.policy_snapshot,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "createdBy": self.created_by,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass(frozen=True)
+class WorkflowArtifact:
+    id: str
+    workflow_id: str
+    kind: str
+    path: str | None
+    sha256: str | None
+    mime_type: str | None
+    schema_version: int
+    status: str
+    created_at: float
+    created_by: str | None
+    metadata: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "workflowId": self.workflow_id,
+            "kind": self.kind,
+            "path": self.path,
+            "sha256": self.sha256,
+            "mimeType": self.mime_type,
+            "schemaVersion": self.schema_version,
+            "status": self.status,
+            "createdAt": self.created_at,
             "createdBy": self.created_by,
             "metadata": self.metadata,
         }
@@ -323,6 +354,70 @@ def list_workflows(conn: sqlite3.Connection, *, board: str | None = None, status
     return [_workflow_from_row(row) for row in rows]
 
 
+def add_artifact(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    kind: str,
+    path: str | Path,
+    mime_type: str | None = None,
+    schema_version: int = 1,
+    status: str = "active",
+    created_by: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    artifact_id: str | None = None,
+    now: float | None = None,
+) -> WorkflowArtifact:
+    """Record an auditable workflow artifact and compute its SHA-256."""
+
+    if get_workflow(conn, workflow_id) is None:
+        raise ValueError(f"workflow not found: {workflow_id}")
+    if not kind.strip():
+        raise ValueError("artifact kind must be non-empty")
+    artifact_path = Path(path).expanduser()
+    if not artifact_path.is_file():
+        raise FileNotFoundError(str(artifact_path))
+    ts = time.time() if now is None else now
+    aid = artifact_id or f"art_{secrets.token_hex(8)}"
+    digest = _sha256_file(artifact_path)
+    conn.execute(
+        """
+        INSERT INTO workflow_artifacts (
+          id, workflow_id, kind, path, sha256, mime_type, schema_version,
+          status, created_at, created_by, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            aid,
+            workflow_id,
+            kind.strip(),
+            str(artifact_path),
+            digest,
+            mime_type,
+            schema_version,
+            status,
+            ts,
+            created_by,
+            _json(metadata or {}),
+        ),
+    )
+    conn.commit()
+    return _artifact_from_row(conn.execute("SELECT * FROM workflow_artifacts WHERE id = ?", (aid,)).fetchone())
+
+
+def list_artifacts(conn: sqlite3.Connection, workflow_id: str, *, kind: str | None = None, limit: int = 100) -> list[WorkflowArtifact]:
+    clauses = ["workflow_id = ?"]
+    params: list[Any] = [workflow_id]
+    if kind:
+        clauses.append("kind = ?")
+        params.append(kind)
+    rows = conn.execute(
+        f"SELECT * FROM workflow_artifacts WHERE {' AND '.join(clauses)} ORDER BY created_at ASC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    return [_artifact_from_row(row) for row in rows]
+
+
 def add_event(
     conn: sqlite3.Connection,
     *,
@@ -382,6 +477,22 @@ def _workflow_from_row(row: sqlite3.Row) -> WorkflowRecord:
     )
 
 
+def _artifact_from_row(row: sqlite3.Row) -> WorkflowArtifact:
+    return WorkflowArtifact(
+        id=row["id"],
+        workflow_id=row["workflow_id"],
+        kind=row["kind"],
+        path=row["path"],
+        sha256=row["sha256"],
+        mime_type=row["mime_type"],
+        schema_version=row["schema_version"],
+        status=row["status"],
+        created_at=row["created_at"],
+        created_by=row["created_by"],
+        metadata=_loads(row["metadata_json"], {}),
+    )
+
+
 def _event_from_row(row: sqlite3.Row) -> WorkflowEvent:
     return WorkflowEvent(
         id=row["id"],
@@ -394,6 +505,14 @@ def _event_from_row(row: sqlite3.Row) -> WorkflowEvent:
         data=_loads(row["data_json"], {}),
         created_at=row["created_at"],
     )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _json(value: Any) -> str:

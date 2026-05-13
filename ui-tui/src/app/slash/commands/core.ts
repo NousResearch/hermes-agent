@@ -7,6 +7,7 @@ import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from 
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionInterruptResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -607,6 +608,30 @@ export const coreCommands: SlashCommand[] = [
           ctx.transcript.send(last)
         })
       )
+    }
+  },
+
+  {
+    aliases: ['cancel', 'stopop'],
+    help: 'interrupt the current in-flight operation (stops agent + all subagents)',
+    name: 'stop',
+    run: (_arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
+      ctx.gateway
+        .rpc<SessionInterruptResponse>('session.interrupt', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<SessionInterruptResponse>(r => {
+            if (r.ok) {
+              ctx.transcript.sys('operation interrupted')
+            } else {
+              ctx.transcript.sys('interrupt failed')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   }
 ]

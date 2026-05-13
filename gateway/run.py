@@ -7120,15 +7120,10 @@ class GatewayRunner:
             )
 
             # Read model + compression config from config.yaml.
-            # NOTE: hygiene threshold is intentionally HIGHER than the agent's
-            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
-            # sessions that grew too large between turns — it fires pre-agent
-            # to prevent API failures.  The agent's own compressor handles
-            # normal context management during its tool loop with accurate
-            # real token counts.  Having hygiene at 0.50 caused premature
-            # compression on every turn in long gateway sessions.
+            # NOTE: hygiene threshold at 40% of context — auto-compresses
+            # proactively before the agent starts to prevent API failures.
             _hyg_model = "anthropic/claude-sonnet-4.6"
-            _hyg_threshold_pct = 0.85
+            _hyg_threshold_pct = 0.40
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 400
             _hyg_config_context_length = None
@@ -7266,9 +7261,8 @@ class GatewayRunner:
                 if _needs_compress:
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                        "(threshold: %s%% of %s = %s tokens)",
+                        "(threshold: 40%% of %s = %s tokens)",
                         _msg_count, f"{_approx_tokens:,}", _token_source,
-                        int(_hyg_threshold_pct * 100),
                         f"{_hyg_context_length:,}",
                         f"{_compress_token_threshold:,}",
                     )

@@ -8,6 +8,7 @@ import type {
   RollbackDiffResponse,
   RollbackListResponse,
   RollbackRestoreResponse,
+  SessionInterruptResponse,
   SlashExecResponse,
   SpawnTreeListResponse,
   SpawnTreeLoadResponse,
@@ -63,16 +64,23 @@ interface SkillsReloadResponse {
 
 export const opsCommands: SlashCommand[] = [
   {
-    help: 'stop background processes',
+    aliases: ['cancel', 'stopop'],
+    help: 'interrupt the current in-flight operation (stops agent + all subagents)',
     name: 'stop',
     run: (_arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
       ctx.gateway
-        .rpc<ProcessStopResponse>('process.stop', {})
+        .rpc<SessionInterruptResponse>('session.interrupt', { session_id: ctx.sid })
         .then(
-          ctx.guarded<ProcessStopResponse>(r => {
-            const killed = Number(r.killed ?? 0)
-            const noun = killed === 1 ? 'process' : 'processes'
-            ctx.transcript.sys(`stopped ${killed} background ${noun}`)
+          ctx.guarded<SessionInterruptResponse>(r => {
+            if (r.ok) {
+              ctx.transcript.sys('operation interrupted')
+            } else {
+              ctx.transcript.sys('interrupt failed')
+            }
           })
         )
         .catch(ctx.guardedErr)

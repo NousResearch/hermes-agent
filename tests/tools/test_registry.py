@@ -296,6 +296,8 @@ class TestBuiltinDiscovery:
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
+            "tools.cohere_embed",
+            "tools.cohere_rerank",
             "tools.computer_use_tool",
             "tools.cronjob_tools",
             "tools.delegate_tool",

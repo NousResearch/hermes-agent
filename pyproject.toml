@@ -66,6 +66,11 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.86.0"]
+# Native Cohere provider — only needed when provider=cohere (uses Cohere's
+# native v2 chat API via cohere.ClientV2 for tool_plan / citations /
+# connectors / safety_mode / thinking, plus the cohere_embed and
+# cohere_rerank tools).
+cohere = ["cohere==5.13.0"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

@@ -199,6 +199,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Cohere — native v2 chat API via the cohere SDK (ClientV2). The
+    # transport is "cohere_chat" so determine_api_mode() routes through
+    # CohereTransport instead of the OpenAI chat_completions path.
+    "cohere": HermesOverlay(
+        transport="cohere_chat",
+        extra_env_vars=("COHERE_API_KEY", "CO_API_KEY"),
+        base_url_override="https://api.cohere.com",
+        base_url_env_var="COHERE_BASE_URL",
+    ),
 }
 
 
@@ -329,6 +338,12 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # cohere
+    "command": "cohere",
+    "command-r": "cohere",
+    "command-a": "cohere",
+    "cohere-ai": "cohere",
+
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
@@ -361,6 +376,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "cohere": "Cohere",
 }
 
 
@@ -371,6 +387,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "cohere_chat": "cohere_chat",
 }
 
 
@@ -500,6 +517,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
                 return "anthropic_messages"
             if "api.openai.com" in url_lower:
                 return "codex_responses"
+            if "api.cohere.com" in url_lower or "api.cohere.ai" in url_lower:
+                return "cohere_chat"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
@@ -516,6 +535,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "anthropic_messages"
         if hostname == "api.openai.com":
             return "codex_responses"
+        if hostname == "api.cohere.com" or hostname == "api.cohere.ai":
+            return "cohere_chat"
         if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
 

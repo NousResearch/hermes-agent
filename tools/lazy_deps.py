@@ -81,6 +81,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "provider.anthropic": ("anthropic==0.86.0",),
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
+    # Cohere native provider — chat (ClientV2), embed, rerank
+    "provider.cohere": ("cohere==5.13.0",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),

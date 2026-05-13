@@ -1267,7 +1267,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "cohere_chat"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -1297,6 +1297,14 @@ class AIAgent:
             # AWS Bedrock — auto-detect from provider name or base URL
             # (bedrock-runtime.<region>.amazonaws.com).
             self.api_mode = "bedrock_converse"
+        elif self.provider == "cohere" or (
+            provider_name is None
+            and self._base_url_hostname in ("api.cohere.com", "api.cohere.ai")
+        ):
+            # Cohere native v2 chat — routes through CohereTransport and
+            # cohere.ClientV2 instead of the OpenAI chat_completions path.
+            self.api_mode = "cohere_chat"
+            self.provider = "cohere"
         else:
             self.api_mode = "chat_completions"
 
@@ -1631,6 +1639,49 @@ class AIAgent:
             if not self.quiet_mode:
                 _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
                 print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
+        elif self.api_mode == "cohere_chat":
+            # Cohere native v2 chat — uses cohere.ClientV2 directly. No
+            # OpenAI client needed; client lifecycle is owned by the
+            # cohere SDK. Auth is API-key only.
+            from agent.cohere_adapter import build_cohere_client
+            self._cohere_api_key = api_key or ""
+            self._cohere_base_url = base_url or "https://api.cohere.com"
+            try:
+                self._cohere_client = build_cohere_client(
+                    self._cohere_api_key,
+                    self._cohere_base_url,
+                    timeout=_provider_timeout,
+                )
+            except ImportError:
+                # Defer the failure to first use rather than crashing
+                # at construction — keeps lazy-install paths usable.
+                self._cohere_client = None
+            # Snapshot Cohere-only request knobs from config.yaml so the
+            # transport can pass them through build_extra_body without
+            # an extra config read on every call.
+            self._cohere_runtime_config: dict = {}
+            try:
+                from hermes_cli.config import load_config as _load_co_cfg
+                _co = _load_co_cfg().get("cohere", {}) or {}
+                if isinstance(_co, dict):
+                    if isinstance(_co.get("safety_mode"), str) and _co["safety_mode"].strip():
+                        self._cohere_runtime_config["safety_mode"] = _co["safety_mode"].strip().upper()
+                    if isinstance(_co.get("citation_options"), dict) and _co["citation_options"]:
+                        self._cohere_runtime_config["citation_options"] = _co["citation_options"]
+                    if isinstance(_co.get("connectors"), list) and _co["connectors"]:
+                        self._cohere_runtime_config["connectors"] = _co["connectors"]
+                    if _co.get("force_single_step") is True:
+                        self._cohere_runtime_config["force_single_step"] = True
+                    if isinstance(_co.get("thinking_token_budget"), int) and _co["thinking_token_budget"] > 0:
+                        self._cohere_runtime_config["thinking_token_budget"] = _co["thinking_token_budget"]
+            except Exception:
+                pass
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Cohere native v2)")
+                if self._cohere_api_key and len(self._cohere_api_key) > 12:
+                    print(f"🔑 Using key: {self._cohere_api_key[:8]}...{self._cohere_api_key[-4:]}")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -2480,6 +2531,11 @@ class AIAgent:
                 "anthropic_api_key": self._anthropic_api_key,
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
+            })
+        elif self.api_mode == "cohere_chat":
+            self._primary_runtime.update({
+                "cohere_api_key": getattr(self, "_cohere_api_key", ""),
+                "cohere_base_url": getattr(self, "_cohere_base_url", ""),
             })
 
     def _get_session_db_for_recall(self):
@@ -7363,6 +7419,23 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _cohere_chat_create(self, api_kwargs: dict):
+        """Call ``cohere.ClientV2.chat`` for a non-streaming Cohere request.
+
+        The client is constructed once at __init__; this thin wrapper exists
+        so the dispatch site in ``_interruptible_api_call`` mirrors the
+        anthropic / bedrock branches symmetrically and so credential-refresh
+        hooks (if Cohere ever grows OAuth) have a single insertion point.
+        """
+        if self._cohere_client is None:
+            from agent.cohere_adapter import build_cohere_client
+            self._cohere_client = build_cohere_client(
+                self._cohere_api_key,
+                getattr(self, "_cohere_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
+        return self._cohere_client.chat(**api_kwargs)
+
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
 
@@ -7420,6 +7493,11 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "cohere_chat":
+                    # Cohere uses cohere.ClientV2 directly — no OpenAI client
+                    # needed. The transport already built api_kwargs in the
+                    # SDK's expected shape.
+                    result["response"] = self._cohere_chat_create(api_kwargs)
                 elif self.api_mode == "bedrock_converse":
                     # Bedrock uses boto3 directly — no OpenAI client needed.
                     # normalize_converse_response produces an OpenAI-compatible
@@ -7803,6 +7881,65 @@ class AIAgent:
                 t.join(timeout=0.3)
                 if self._interrupt_requested:
                     raise InterruptedError("Agent interrupted during Bedrock API call")
+            if result["error"] is not None:
+                raise result["error"]
+            return result["response"]
+
+        # Cohere v2 uses cohere.ClientV2.chat_stream() with SSE events; the
+        # adapter pump normalizes those into an OpenAI-shaped response so
+        # the rest of the agent loop is provider-agnostic.
+        if self.api_mode == "cohere_chat":
+            result = {"response": None, "error": None}
+            first_delta_fired = {"done": False}
+
+            def _fire_first_co():
+                if not first_delta_fired["done"] and on_first_delta:
+                    first_delta_fired["done"] = True
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
+
+            def _cohere_call():
+                try:
+                    from agent.cohere_adapter import stream_chat_with_callbacks
+                    if self._cohere_client is None:
+                        from agent.cohere_adapter import build_cohere_client
+                        self._cohere_client = build_cohere_client(
+                            self._cohere_api_key,
+                            getattr(self, "_cohere_base_url", None),
+                            timeout=get_provider_request_timeout(self.provider, self.model),
+                        )
+                    stream_iter = self._cohere_client.chat_stream(**api_kwargs)
+
+                    def _on_text(text):
+                        _fire_first_co()
+                        self._fire_stream_delta(text)
+
+                    def _on_tool(name):
+                        _fire_first_co()
+                        self._fire_tool_gen_started(name)
+
+                    def _on_reasoning(text):
+                        _fire_first_co()
+                        self._fire_reasoning_delta(text)
+
+                    result["response"] = stream_chat_with_callbacks(
+                        stream_iter,
+                        on_text_delta=_on_text if self._has_stream_consumers() else None,
+                        on_tool_start=_on_tool,
+                        on_reasoning_delta=_on_reasoning if self.reasoning_callback or self.stream_delta_callback else None,
+                        on_interrupt_check=lambda: self._interrupt_requested,
+                    )
+                except Exception as e:
+                    result["error"] = e
+
+            t = threading.Thread(target=_cohere_call, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if self._interrupt_requested:
+                    raise InterruptedError("Agent interrupted during Cohere API call")
             if result["error"] is not None:
                 raise result["error"]
             return result["response"]
@@ -9480,6 +9617,31 @@ class AIAgent:
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
+            )
+
+        # Cohere native v2 chat — bypasses the OpenAI client entirely. The
+        # transport handles OpenAI → Cohere conversion (tool-result document
+        # blocks, tool_plan reasoning, citations) and reads the runtime
+        # config snapshot captured at __init__ for Cohere-only knobs.
+        if self.api_mode == "cohere_chat":
+            from providers import get_provider_profile
+            _co_transport = self._get_transport()
+            _co_profile = get_provider_profile(self.provider or "cohere")
+            _co_runtime = getattr(self, "_cohere_runtime_config", {}) or {}
+            return _co_transport.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=tools_for_api,
+                max_tokens=self.max_tokens,
+                reasoning_config=self.reasoning_config,
+                session_id=getattr(self, "session_id", None),
+                provider_profile=_co_profile,
+                safety_mode=_co_runtime.get("safety_mode"),
+                citation_options=_co_runtime.get("citation_options"),
+                connectors=_co_runtime.get("connectors"),
+                force_single_step=_co_runtime.get("force_single_step"),
+                thinking_token_budget=_co_runtime.get("thinking_token_budget"),
+                documents=(self.request_overrides or {}).get("documents") if self.request_overrides else None,
             )
 
         if self.api_mode == "codex_responses":

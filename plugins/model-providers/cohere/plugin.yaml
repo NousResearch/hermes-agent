@@ -1,0 +1,5 @@
+name: cohere-provider
+kind: model-provider
+version: 1.0.0
+description: Cohere (Command R, Command A, Command A Reasoning) via the native v2 chat API
+author: Nous Research

@@ -70,6 +70,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Cohere Embed + Rerank — gated on COHERE_API_KEY via check_fn so they
+    # only appear in the schema for users who have configured Cohere.
+    "cohere_embed", "cohere_rerank",
 ]
 
 
@@ -104,6 +107,15 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "cohere": {
+        "description": (
+            "Cohere Embed + Rerank tools — vectorize batches of text and "
+            "rerank candidate passages against a query. Gated on COHERE_API_KEY."
+        ),
+        "tools": ["cohere_embed", "cohere_rerank"],
         "includes": []
     },
 

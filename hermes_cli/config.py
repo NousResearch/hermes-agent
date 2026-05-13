@@ -780,6 +780,34 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Cohere native v2 chat provider configuration.
+    # Only used when model.provider is "cohere" (api_mode="cohere_chat").
+    # These fields are forwarded by CohereTransport.build_kwargs() into
+    # cohere.ClientV2.chat() on every request. Leave defaults alone unless
+    # you want to opt in to a specific Cohere-only feature.
+    "cohere": {
+        # safety_mode: one of "CONTEXTUAL" (default), "STRICT", "OFF". STRICT
+        # enables Cohere's most restrictive content filtering; OFF disables it.
+        # See: https://docs.cohere.com/docs/safety-modes
+        "safety_mode": "CONTEXTUAL",
+        # citation_options.mode: "FAST" | "ACCURATE" | "OFF". When you pass
+        # documents=[...] via request_overrides, Cohere returns citation
+        # spans linking each generated phrase back to a source document.
+        "citation_options": {"mode": "ACCURATE"},
+        # force_single_step: when true, the model emits at most one tool
+        # call per turn. Leave false for multi-step / agentic loops.
+        "force_single_step": False,
+        # connectors: list of Cohere hosted retrievers attached to every
+        # request. Example: [{"id": "web-search"}] enables hosted web
+        # search; results are surfaced as citations.
+        "connectors": [],
+        # thinking_token_budget: override the budget for Command A Reasoning
+        # models. When unset, the budget is derived from
+        # reasoning_config.effort (low=2048 / medium=8192 / high=16384 /
+        # xhigh=32768). Set to a positive integer to pin a specific budget.
+        "thinking_token_budget": None,
+    },
+
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
@@ -1761,6 +1789,23 @@ OPTIONAL_ENV_VARS = {
     "GMI_BASE_URL": {
         "description": "GMI Cloud base URL override",
         "prompt": "GMI Cloud base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "COHERE_API_KEY": {
+        "description": "Cohere API key (enables provider=cohere, cohere_embed, cohere_rerank)",
+        "prompt": "Cohere API key",
+        "url": "https://dashboard.cohere.com/api-keys",
+        "password": True,
+        "tools": ["cohere_embed", "cohere_rerank"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "COHERE_BASE_URL": {
+        "description": "Cohere base URL override (defaults to https://api.cohere.com)",
+        "prompt": "Cohere base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

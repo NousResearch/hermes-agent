@@ -112,9 +112,11 @@ Firecrawl = _FirecrawlProxy()
 # ---------------------------------------------------------------------------
 # Client construction (direct vs managed-gateway)
 # ---------------------------------------------------------------------------
-
-_firecrawl_client: Any = None
-_firecrawl_client_config: Any = None
+#
+# The canonical cache slots live on :mod:`tools.web_tools` so tests that do
+# ``tools.web_tools._firecrawl_client = None`` between cases see fresh
+# state. The plugin reads/writes through that public module — see
+# :func:`_get_firecrawl_client` below.
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
@@ -257,10 +259,15 @@ def _get_firecrawl_client() -> Any:
 
 
 def _reset_client_for_tests() -> None:
-    """Drop the cached Firecrawl client so tests can re-instantiate cleanly."""
-    global _firecrawl_client, _firecrawl_client_config
-    _firecrawl_client = None
-    _firecrawl_client_config = None
+    """Drop the cached Firecrawl client so tests can re-instantiate cleanly.
+
+    Clears the canonical slots on :mod:`tools.web_tools` (where
+    :func:`_get_firecrawl_client` reads/writes them).
+    """
+    import tools.web_tools as _wt
+
+    _wt._firecrawl_client = None
+    _wt._firecrawl_client_config = None
 
 
 # ---------------------------------------------------------------------------

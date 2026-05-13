@@ -61,13 +61,14 @@ from typing import Any, Dict, List
 
 
 class WebSearchProvider(abc.ABC):
-    """Abstract base class for a web search/extract backend.
+    """Abstract base class for a web search/extract/crawl backend.
 
     Subclasses must implement :meth:`is_available` and at least one of
-    :meth:`search` / :meth:`extract`. The :meth:`supports_search` and
-    :meth:`supports_extract` capability flags let the registry route each
-    tool call to the right provider, and let multi-capability providers
-    (SearXNG, Firecrawl, Tavily, …) advertise both.
+    :meth:`search` / :meth:`extract` / :meth:`crawl`. The
+    :meth:`supports_search` / :meth:`supports_extract` / :meth:`supports_crawl`
+    capability flags let the registry route each tool call to the right
+    provider, and let multi-capability providers (Firecrawl, Tavily, Exa,
+    …) advertise multiple capabilities from a single class.
     """
 
     @property

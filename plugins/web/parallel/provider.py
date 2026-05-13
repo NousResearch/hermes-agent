@@ -36,13 +36,11 @@ from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
-# Module-level client caches mirroring the legacy `tools.web_tools._parallel_client`
-# / `_async_parallel_client` pattern. For tests, the canonical cache lives on
-# tools.web_tools so existing setup_method() handlers that reset
-# ``tools.web_tools._parallel_client = None`` keep working — we read/write
-# the cache via that module rather than these module-level globals.
-_parallel_client: Any = None
-_async_parallel_client: Any = None
+# Module-level note: the canonical cache slots ``_parallel_client`` and
+# ``_async_parallel_client`` live on :mod:`tools.web_tools` so tests that do
+# ``tools.web_tools._parallel_client = None`` between cases see fresh state.
+# The plugin reads/writes through that public module (see
+# :func:`_get_sync_client` / :func:`_get_async_client`).
 
 
 def _ensure_parallel_sdk_installed() -> None:
@@ -117,10 +115,15 @@ def _get_async_client() -> Any:
 
 
 def _reset_clients_for_tests() -> None:
-    """Drop both cached clients so tests can re-instantiate cleanly."""
-    global _parallel_client, _async_parallel_client
-    _parallel_client = None
-    _async_parallel_client = None
+    """Drop both cached clients so tests can re-instantiate cleanly.
+
+    Clears the canonical slots on :mod:`tools.web_tools` (where
+    :func:`_get_sync_client` / :func:`_get_async_client` read/write them).
+    """
+    import tools.web_tools as _wt
+
+    _wt._parallel_client = None
+    _wt._async_parallel_client = None
 
 
 # Backward-compatible aliases for the names that lived in tools.web_tools

@@ -1,4 +1,4 @@
-"""Tests that switch_model preserves config_context_length."""
+"""Tests that switch_model clears the stale config_context_length override."""
 
 from unittest.mock import MagicMock, patch
 
@@ -41,8 +41,11 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_preserves_config_context_length(mock_ctx_len):
-    """When switching models, config_context_length should be passed to get_model_context_length."""
+def test_switch_model_clears_stale_config_context_length(mock_ctx_len):
+    """When switching models, the previous model's config_context_length override
+    must be cleared so the new model's actual context window is resolved via the
+    full chain (custom_providers, endpoint probe, models.dev, etc.) instead of
+    inheriting the stale value. See #21509."""
     agent = _make_agent_with_compressor(config_context_length=32_768)
 
     assert agent.context_compressor.model == "primary-model"
@@ -51,10 +54,14 @@ def test_switch_model_preserves_config_context_length(mock_ctx_len):
     # Switch model
     agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
 
-    # Verify get_model_context_length was called with config_context_length
+    # Verify get_model_context_length was called with config_context_length=None
+    # (the stale override was cleared before the runtime field swap).
     mock_ctx_len.assert_called_once()
     call_kwargs = mock_ctx_len.call_args.kwargs
-    assert call_kwargs.get("config_context_length") == 32_768
+    assert call_kwargs.get("config_context_length") is None
+
+    # The agent attribute is also cleared so subsequent resolutions stay clean.
+    assert agent._config_context_length is None
 
     # Verify compressor was updated
     assert agent.context_compressor.model == "new-model"

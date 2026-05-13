@@ -1229,102 +1229,45 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch to the configured search backend
-        backend = _get_search_backend()
-        if backend == "parallel":
-            response_data = _parallel_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "exa":
-            response_data = _exa_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        # Plugin-backed providers (brave-free, ddgs, searxng) — dispatched
-        # through agent.web_search_registry. Inline providers (parallel,
-        # exa, tavily, firecrawl) keep their own branches below until they
-        # too migrate to plugins. Spike scope: only the three providers
-        # already living in tools/web_providers/ are moved to plugins; the
-        # rest follow in the real migration PR.
-        if backend in {"brave-free", "ddgs", "searxng"}:
-            from agent.web_search_registry import get_provider as _wsp_get_provider
-
-            provider = _wsp_get_provider(backend)
-            if provider is None or not provider.supports_search():
-                response_data = {
-                    "success": False,
-                    "error": (
-                        f"Web search provider '{backend}' is not registered. "
-                        "Run `hermes tools` to set up a provider."
-                    ),
-                }
-            else:
-                response_data = provider.search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "tavily":
-            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
-                "query": query,
-                "max_results": min(limit, 20),
-                "include_raw_content": False,
-                "include_images": False,
-            })
-            response_data = _normalize_tavily_search_results(raw)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
+        # Dispatch through the web search registry. All 7 providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # now live as plugins; the dispatcher is just a registry lookup +
+        # delegation. Sync only — every provider's search() is sync.
+        from agent.web_search_registry import (
+            get_active_search_provider,
+            get_provider as _wsp_get_provider,
         )
 
-        web_results = _extract_web_search_results(response)
-        results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
-        
-        # Build response with just search metadata (URLs, titles, descriptions)
-        response_data = {
-            "success": True,
-            "data": {
-                "web": web_results
+        backend = _get_search_backend()
+        provider = _wsp_get_provider(backend) if backend else None
+        if provider is None or not provider.supports_search():
+            # Fall back to availability-walked active provider when the
+            # configured backend isn't a registered search provider (typo,
+            # uninstalled plugin, or capability mismatch).
+            provider = get_active_search_provider()
+
+        if provider is None:
+            response_data = {
+                "success": False,
+                "error": (
+                    "No web search provider configured. "
+                    "Run `hermes tools` to set one up."
+                ),
             }
-        }
-        
-        # Capture debug information
-        debug_call_data["results_count"] = results_count
-        
-        # Convert to JSON
+        else:
+            logger.info(
+                "Web search via %s: '%s' (limit: %d)",
+                provider.name, query, limit,
+            )
+            response_data = provider.search(query, limit)
+
+        debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-        
         debug_call_data["final_response_size"] = len(result_json)
-        
-        # Log debug information
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
-        
         return result_json
-        
+
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
         logger.debug("%s", error_msg)
@@ -1415,129 +1358,68 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
-            elif backend == "exa":
-                results = _exa_extract(safe_urls)
-            elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            elif backend in {"searxng", "brave-free", "ddgs"}:
-                # These backends are search-only — they cannot extract URL content
-                _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
-                return json.dumps({
-                    "success": False,
-                    "error": f"{_label} is a search-only backend and cannot extract URL content. "
-                             "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
-                }, ensure_ascii=False)
+            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
+            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # registry lookup + delegation. Some providers' extract() is
+            # async (parallel, firecrawl), others sync (exa, tavily) — we
+            # detect coroutine functions and await; sync functions run
+            # inline (the policy gate, SSRF re-check, etc. live inside the
+            # provider itself for the firecrawl per-URL loop).
+            from agent.web_search_registry import (
+                get_active_extract_provider,
+                get_provider as _wsp_get_provider,
+            )
+
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_extract():
+                # When the configured name IS registered but doesn't support
+                # extract (search-only providers like brave-free / ddgs /
+                # searxng), surface that as a typed "search-only" error
+                # rather than silently switching backends. When the name
+                # isn't registered at all (typo / uninstalled plugin), fall
+                # through to the active-provider walk.
+                if provider is not None and not provider.supports_extract():
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"{provider.display_name} is a search-only "
+                                "backend and cannot extract URL content. "
+                                "Set web.extract_backend to firecrawl, "
+                                "tavily, exa, or parallel."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                provider = get_active_extract_provider()
+                if provider is None:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                "No web extract provider configured. "
+                                "Set web.extract_backend to firecrawl, "
+                                "tavily, exa, or parallel."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+            logger.info(
+                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
+            )
+
+            # Async-or-sync dispatch: parallel + firecrawl have async
+            # extract(); exa + tavily are sync.
+            import inspect
+            if inspect.iscoroutinefunction(provider.extract):
+                results = await provider.extract(safe_urls, format=format)
             else:
-                # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
-
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
-
-                from tools.interrupt import is_interrupted as _is_interrupted
-                for url in safe_urls:
-                    if _is_interrupted():
-                        results.append({"url": url, "error": "Interrupted", "title": ""})
-                        continue
-
-                    # Website policy check — block before fetching
-                    blocked = check_website_access(url)
-                    if blocked:
-                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
-                        results.append({
-                            "url": url, "title": "", "content": "",
-                            "error": blocked["message"],
-                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
-                        })
-                        continue
-
-                    try:
-                        logger.info("Scraping: %s", url)
-                        # Run synchronous Firecrawl scrape in a thread with a
-                        # 60s timeout so a hung fetch doesn't block the session.
-                        try:
-                            scrape_result = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    _get_firecrawl_client().scrape,
-                                    url=url,
-                                    formats=formats,
-                                ),
-                                timeout=60,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning("Firecrawl scrape timed out for %s", url)
-                            results.append({
-                                "url": url, "title": "", "content": "",
-                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
-                            })
-                            continue
-
-                        scrape_payload = _extract_scrape_payload(scrape_result)
-                        metadata = scrape_payload.get("metadata", {})
-                        title = ""
-                        content_markdown = scrape_payload.get("markdown")
-                        content_html = scrape_payload.get("html")
-
-                        # Ensure metadata is a dict (not an object)
-                        if not isinstance(metadata, dict):
-                            if hasattr(metadata, 'model_dump'):
-                                metadata = metadata.model_dump()
-                            elif hasattr(metadata, '__dict__'):
-                                metadata = metadata.__dict__
-                            else:
-                                metadata = {}
-
-                        # Get title from metadata
-                        title = metadata.get("title", "")
-
-                        # Re-check final URL after redirect
-                        final_url = metadata.get("sourceURL", url)
-                        final_blocked = check_website_access(final_url)
-                        if final_blocked:
-                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-                            results.append({
-                                "url": final_url, "title": title, "content": "", "raw_content": "",
-                                "error": final_blocked["message"],
-                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
-                            })
-                            continue
-
-                        # Choose content based on requested format
-                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-
-                        results.append({
-                            "url": final_url,
-                            "title": title,
-                            "content": chosen_content,
-                            "raw_content": chosen_content,
-                            "metadata": metadata  # Now guaranteed to be a dict
-                        })
-
-                    except Exception as scrape_err:
-                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                        results.append({
-                            "url": url,
-                            "title": "",
-                            "content": "",
-                            "raw_content": "",
-                            "error": str(scrape_err)
-                        })
+                # Run sync extract() in a thread so we don't block the
+                # event loop on network I/O.
+                results = await asyncio.to_thread(
+                    provider.extract, safe_urls, format=format
+                )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
@@ -1725,8 +1607,37 @@ async def web_crawl_tool(
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
 
-        # Tavily supports crawl via its /crawl endpoint
-        if backend == "tavily":
+        # Tavily (and any future plugin advertising supports_crawl=True)
+        # dispatches through agent.web_search_registry. The crawl response
+        # shape — {"results": [{"url", "title", "content", ...}]} — is then
+        # post-processed by the shared LLM-summarization path below.
+        from agent.web_search_registry import (
+            get_active_crawl_provider,
+            get_provider as _wsp_get_provider,
+        )
+
+        crawl_provider = _wsp_get_provider(backend) if backend else None
+        if crawl_provider is not None and not crawl_provider.supports_crawl():
+            # Configured name IS registered but doesn't support crawl
+            # (search-only providers like brave-free / ddgs / searxng).
+            # Surface a typed error rather than silently switching to a
+            # different crawl backend.
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"{crawl_provider.display_name} is a search-only "
+                        "backend and cannot crawl URLs. "
+                        "Set FIRECRAWL_API_KEY for crawling, or use "
+                        "web_search instead."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if crawl_provider is None:
+            crawl_provider = get_active_crawl_provider()
+
+        if crawl_provider is not None:
             # Ensure URL has protocol
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
@@ -1747,18 +1658,28 @@ async def web_crawl_tool(
             if _is_int():
                 return tool_error("Interrupted", success=False)
 
-            logger.info("Tavily crawl: %s", url)
-            payload: Dict[str, Any] = {
-                "url": url,
-                "limit": 20,
-                "extract_depth": depth,
-            }
-            if instructions:
-                payload["instructions"] = instructions
-            raw = _tavily_request("crawl", payload)
-            results = _normalize_tavily_documents(raw, fallback_url=url)
+            logger.info("Web crawl via %s: %s", crawl_provider.name, url)
 
-            response = {"results": results}
+            # Async-or-sync dispatch — Tavily's crawl is sync, but a future
+            # async-crawl provider works transparently.
+            import inspect
+            crawl_kwargs = {"depth": depth, "limit": 20}
+            if instructions:
+                crawl_kwargs["instructions"] = instructions
+
+            if inspect.iscoroutinefunction(crawl_provider.crawl):
+                response = await crawl_provider.crawl(url, **crawl_kwargs)
+            else:
+                response = await asyncio.to_thread(
+                    crawl_provider.crawl, url, **crawl_kwargs
+                )
+
+            # Provider returns {"results": [...]} matching what the shared
+            # LLM post-processing below expects.
+            if not isinstance(response, dict):
+                response = {"results": []}
+            response.setdefault("results", [])
+
             # Fall through to the shared LLM processing and trimming below
             # (skip the Firecrawl-specific crawl logic)
             pages_crawled = len(response.get('results', []))
@@ -1809,14 +1730,9 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
-        # SearXNG / Brave Search (free tier) / DuckDuckGo (ddgs) are search-only — they cannot crawl
-        if backend in {"searxng", "brave-free", "ddgs"}:
-            _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
-            return json.dumps({
-                "error": f"{_label} is a search-only backend and cannot crawl URLs. "
-                         "Set FIRECRAWL_API_KEY for crawling, or use web_search instead.",
-                "success": False,
-            }, ensure_ascii=False)
+        # No registered provider supports crawl. Fall through to the
+        # Firecrawl-via-summarize path below (legacy behavior) when
+        # Firecrawl credentials are configured.
 
         # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
         if not check_firecrawl_api_key():

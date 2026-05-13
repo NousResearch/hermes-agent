@@ -131,7 +131,7 @@ object ProviderPresets {
             label = "Qwen Coding Plan",
             baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
             modelHint = "qwen3-coder-plus",
-            apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline",
+            apiKeyUrl = "https://docs.qwencloud.com/developer-guides/clients-and-developer-tools/cline",
             fallbackSetupUrls = listOf(
                 "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
                 "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/",

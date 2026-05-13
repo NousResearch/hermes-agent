@@ -87,7 +87,7 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'https://openrouter.ai/keys' in presets
     assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
     assert 'apiKeyUrl = "https://home.qwencloud.com/api-keys"' in presets
-    assert 'apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline"' in presets
+    assert 'apiKeyUrl = "https://docs.qwencloud.com/developer-guides/clients-and-developer-tools/cline"' in presets
     assert 'apiKeyUrl = "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"' in presets
     assert 'apiKeyUrl = "https://z.ai/manage-apikey/apikey-list"' in presets
     assert 'fallbackSetupUrls = listOf(' in presets
@@ -243,7 +243,8 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert 'status = "Signed in with OpenRouter OAuth and saved the API key securely."' in openrouter_oauth
     assert "const val DEFAULT_PORT = 3000" in openrouter_loopback
     assert 'scheme("http")' in openrouter_loopback
-    assert 'encodedAuthority("localhost:$port")' in openrouter_loopback
+    assert 'encodedAuthority("$CALLBACK_HOST:$port")' in openrouter_loopback
+    assert 'private const val CALLBACK_HOST = "127.0.0.1"' in openrouter_loopback
     assert 'private const val CALLBACK_PATH = "/hermes/openrouter/callback"' in openrouter_loopback
     assert "OpenRouterOAuthClient.exchangeCallbackForSession" in openrouter_loopback
     assert "AuthRuntimeApplier.apply(context, session)" in openrouter_loopback

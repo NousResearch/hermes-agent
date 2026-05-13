@@ -173,7 +173,7 @@ class DeepAppUiVisualInstrumentedTest {
                     uri.path == "/auth" &&
                     uri.getQueryParameter("code_challenge_method") == "S256" &&
                     callbackUrl.scheme == "http" &&
-                    callbackUrl.host == "localhost" &&
+                    callbackUrl.host == "127.0.0.1" &&
                     callbackUrl.port == OpenRouterLoopbackOAuthServer.DEFAULT_PORT &&
                     callbackUrl.path == "/hermes/openrouter/callback" &&
                     callbackUrl.getQueryParameter("method") == "openrouter"

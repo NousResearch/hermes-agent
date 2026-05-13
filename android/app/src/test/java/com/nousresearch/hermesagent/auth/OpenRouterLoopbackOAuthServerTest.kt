@@ -14,12 +14,12 @@ import java.net.URL
 @RunWith(RobolectricTestRunner::class)
 class OpenRouterLoopbackOAuthServerTest {
     @Test
-    fun callbackUrlUsesLocalhostPort3000WithStateAndProviderMetadata() {
+    fun callbackUrlUsesDeviceLoopbackPort3000WithStateAndProviderMetadata() {
         val url = OpenRouterLoopbackOAuthServer.callbackUrlForState("state-123")
         val uri = Uri.parse(url)
 
         assertEquals("http", uri.scheme)
-        assertEquals("localhost", uri.host)
+        assertEquals("127.0.0.1", uri.host)
         assertEquals(3000, uri.port)
         assertEquals("/hermes/openrouter/callback", uri.path)
         assertEquals("openrouter", uri.getQueryParameter("method"))

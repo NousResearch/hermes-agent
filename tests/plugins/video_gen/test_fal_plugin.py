@@ -15,26 +15,61 @@ def _reset_registry():
 
 
 def test_fal_provider_registers():
-    from plugins.video_gen.fal import FALVideoGenProvider
+    from plugins.video_gen.fal import FALVideoGenProvider, DEFAULT_MODEL
 
     provider = FALVideoGenProvider()
     video_gen_registry.register_provider(provider)
 
     assert video_gen_registry.get_provider("fal") is provider
     assert provider.display_name == "FAL"
-    assert provider.default_model() == "veo3.1"
+    # DEFAULT_MODEL is the cheap-tier default
+    assert provider.default_model() == DEFAULT_MODEL
+    assert DEFAULT_MODEL in {"pixverse-v6", "ltx-2.3"}
 
 
 def test_fal_family_catalog():
-    """Each family declares both endpoints when both modalities are supported."""
+    """Each family declares both endpoints. The catalog covers the
+    cheap + premium tiers Teknium listed."""
     from plugins.video_gen.fal import FAL_FAMILIES
 
-    expected = {"veo3.1", "pixverse-v6", "kling-o3-standard"}
-    assert expected.issubset(set(FAL_FAMILIES.keys()))
+    expected = {
+        # cheap
+        "ltx-2.3", "pixverse-v6",
+        # premium
+        "veo3.1", "seedance-2.0", "kling-v3-4k", "happy-horse",
+    }
+    assert expected.issubset(set(FAL_FAMILIES.keys())), (
+        f"missing families: {expected - set(FAL_FAMILIES.keys())}"
+    )
     for fid, meta in FAL_FAMILIES.items():
         assert meta.get("text_endpoint"), f"{fid} missing text_endpoint"
         assert meta.get("image_endpoint"), f"{fid} missing image_endpoint"
         assert meta["text_endpoint"] != meta["image_endpoint"]
+        assert meta.get("tier") in {"cheap", "premium"}, (
+            f"{fid} has invalid tier"
+        )
+
+
+def test_kling_4k_uses_start_image_url():
+    """Kling v3 4K's image-to-video endpoint expects start_image_url,
+    not image_url. The family must declare image_param_key='start_image_url'."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["kling-v3-4k"]
+    assert meta.get("image_param_key") == "start_image_url"
+    payload = _build_payload(
+        meta,
+        prompt="x",
+        image_url="https://example.com/i.png",
+        duration=5,
+        aspect_ratio="16:9",
+        resolution="720p",
+        negative_prompt=None,
+        audio=None,
+        seed=None,
+    )
+    assert payload.get("start_image_url") == "https://example.com/i.png"
+    assert "image_url" not in payload
 
 
 def test_fal_list_models_advertises_both_modalities():
@@ -117,33 +152,63 @@ class TestFamilyRouting:
         assert with_fake_fal["arguments"]["image_url"] == "https://example.com/dog.png"
 
     def test_default_family_text_routing(self, with_fake_fal):
-        """No model arg → DEFAULT_MODEL (veo3.1) → text-to-video endpoint."""
-        from plugins.video_gen.fal import FALVideoGenProvider
+        """No model arg → DEFAULT_MODEL → text-to-video endpoint."""
+        from plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
 
         result = FALVideoGenProvider().generate("a dog")
         assert result["success"] is True
-        assert with_fake_fal["endpoint"] == "fal-ai/veo3.1"
+        expected_endpoint = FAL_FAMILIES[DEFAULT_MODEL]["text_endpoint"]
+        assert with_fake_fal["endpoint"] == expected_endpoint
 
     def test_default_family_image_routing(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
 
         result = FALVideoGenProvider().generate(
             "animate this",
             image_url="https://example.com/i.png",
         )
         assert result["success"] is True
-        assert with_fake_fal["endpoint"] == "fal-ai/veo3.1/image-to-video"
+        expected_endpoint = FAL_FAMILIES[DEFAULT_MODEL]["image_endpoint"]
+        assert with_fake_fal["endpoint"] == expected_endpoint
 
     def test_unknown_family_falls_back_to_default(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
 
         result = FALVideoGenProvider().generate(
             "x",
             model="not-a-real-family",
         )
         assert result["success"] is True
-        # Falls back to DEFAULT_MODEL = veo3.1 text endpoint
-        assert with_fake_fal["endpoint"] == "fal-ai/veo3.1"
+        expected_endpoint = FAL_FAMILIES[DEFAULT_MODEL]["text_endpoint"]
+        assert with_fake_fal["endpoint"] == expected_endpoint
+
+    def test_premium_seedance_routing(self, with_fake_fal):
+        """Sanity check the premium-tier seedance routes correctly."""
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "a dog",
+            model="seedance-2.0",
+            image_url="https://example.com/dog.png",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "bytedance/seedance-2.0/image-to-video"
+        # Seedance uses regular image_url (not start_image_url)
+        assert with_fake_fal["arguments"]["image_url"] == "https://example.com/dog.png"
+
+    def test_kling_4k_remaps_image_param(self, with_fake_fal):
+        """Kling v3 4K image-to-video receives start_image_url, not image_url."""
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "x",
+            model="kling-v3-4k",
+            image_url="https://example.com/frame.png",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "fal-ai/kling-video/v3/4k/image-to-video"
+        assert with_fake_fal["arguments"].get("start_image_url") == "https://example.com/frame.png"
+        assert "image_url" not in with_fake_fal["arguments"]
 
 
 class TestPayloadBuilder:
@@ -188,15 +253,15 @@ class TestPayloadBuilder:
         )
         assert p["duration"] == "15"
 
-    def test_kling_range_clamps_correctly(self):
+    def test_kling_4k_clamps_below_min(self):
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
-        meta = FAL_FAMILIES["kling-o3-standard"]
+        meta = FAL_FAMILIES["kling-v3-4k"]
         p = _build_payload(
             meta,
             prompt="x",
             image_url="https://i.png",
-            duration=2,         # below min (3) → 3
+            duration=1,         # below min (3) → 3
             aspect_ratio="16:9",
             resolution="720p",
             negative_prompt=None,
@@ -204,3 +269,46 @@ class TestPayloadBuilder:
             seed=None,
         )
         assert p["duration"] == "3"
+
+    def test_ltx_omits_duration_aspect_resolution(self):
+        """LTX 2.3 doesn't declare duration/aspect/resolution enums —
+        the payload should NOT include those keys (let FAL default)."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["ltx-2.3"]
+        p = _build_payload(
+            meta,
+            prompt="x",
+            image_url=None,
+            duration=8,
+            aspect_ratio="16:9",
+            resolution="720p",
+            negative_prompt="ugly",
+            audio=True,
+            seed=None,
+        )
+        assert "duration" not in p
+        assert "aspect_ratio" not in p
+        assert "resolution" not in p
+        # But audio + negative are advertised
+        assert p["generate_audio"] is True
+        assert p["negative_prompt"] == "ugly"
+
+    def test_happy_horse_minimal_payload(self):
+        """Happy Horse has sparse docs — payload should be minimal."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["happy-horse"]
+        p = _build_payload(
+            meta,
+            prompt="a horse galloping",
+            image_url=None,
+            duration=8,
+            aspect_ratio="16:9",
+            resolution="720p",
+            negative_prompt="watermark",
+            audio=True,
+            seed=None,
+        )
+        # Only prompt — no payload bloat for fields we can't verify
+        assert p == {"prompt": "a horse galloping"}

@@ -1,16 +1,23 @@
 """FAL.ai video generation backend.
 
-User-facing surface: pick a **model family** (e.g. "Pixverse v6", "Veo 3.1",
-"Kling O3 Standard"). The plugin auto-routes to the family's
-text-to-video endpoint when called without ``image_url``, and to its
-image-to-video endpoint when ``image_url`` is provided. The agent never
-sees the routing — it just calls ``video_generate(prompt=..., image_url=...)``.
+User-facing surface: pick a **model family** (e.g. "Pixverse v6",
+"Veo 3.1", "Seedance 2.0", "Kling v3 4K", "LTX 2.3", "Happy Horse").
+The plugin auto-routes to the family's text-to-video endpoint when
+called without ``image_url``, and to its image-to-video endpoint when
+``image_url`` is provided. The agent never sees the routing — it just
+calls ``video_generate(prompt=..., image_url=...)``.
 
 Model families (each with t2v + i2v endpoints):
 
-    veo3.1       fal-ai/veo3.1                                    /  fal-ai/veo3.1/image-to-video
-    pixverse-v6  fal-ai/pixverse/v6/text-to-video                 /  fal-ai/pixverse/v6/image-to-video
-    kling-o3     fal-ai/kling-video/o3/standard/text-to-video     /  fal-ai/kling-video/o3/standard/image-to-video
+  Cheap tier:
+    ltx-2.3       fal-ai/ltx-2.3-22b/text-to-video               /  fal-ai/ltx-2.3-22b/image-to-video
+    pixverse-v6   fal-ai/pixverse/v6/text-to-video               /  fal-ai/pixverse/v6/image-to-video
+
+  Premium tier:
+    veo3.1        fal-ai/veo3.1                                  /  fal-ai/veo3.1/image-to-video
+    seedance-2.0  bytedance/seedance-2.0/text-to-video           /  bytedance/seedance-2.0/image-to-video
+    kling-v3-4k   fal-ai/kling-video/v3/4k/text-to-video         /  fal-ai/kling-video/v3/4k/image-to-video
+    happy-horse   fal-ai/happy-horse/text-to-video               /  fal-ai/happy-horse/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
@@ -56,48 +63,104 @@ logger = logging.getLogger(__name__)
 #   negative       : True if negative_prompt is supported
 
 FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
-    "veo3.1": {
-        "display": "Veo 3.1",
-        "speed": "~60-120s",
-        "price": "$0.20-0.40/s",
-        "strengths": "Google DeepMind. Cinematic, native audio, strong prompt adherence.",
-        "text_endpoint": "fal-ai/veo3.1",
-        "image_endpoint": "fal-ai/veo3.1/image-to-video",
-        "aspect_ratios": ("16:9", "9:16"),
-        "resolutions": ("720p", "1080p"),
-        "durations": (4, 6, 8),  # enum
+    # ─── Cheap / fast tier ─────────────────────────────────────────────
+    "ltx-2.3": {
+        "display": "LTX 2.3 (22B)",
+        "speed": "~30-60s",
+        "price": "cheap",
+        "strengths": "22B model with native audio generation. Affordable.",
+        "tier": "cheap",
+        "text_endpoint": "fal-ai/ltx-2.3-22b/text-to-video",
+        "image_endpoint": "fal-ai/ltx-2.3-22b/image-to-video",
+        # LTX docs don't expose duration/aspect/resolution enums — leave
+        # blank so we don't send unrecognized payload keys.
+        "aspect_ratios": None,
+        "resolutions": None,
+        "durations": None,
         "audio": True,
         "negative": True,
     },
     "pixverse-v6": {
         "display": "Pixverse v6",
         "speed": "~30-90s",
-        "price": "$0.025-0.115/s",
+        "price": "cheap",
         "strengths": "Affordable. Negative prompts. 1-15s durations.",
+        "tier": "cheap",
         "text_endpoint": "fal-ai/pixverse/v6/text-to-video",
         "image_endpoint": "fal-ai/pixverse/v6/image-to-video",
         "aspect_ratios": None,
         "resolutions": ("360p", "540p", "720p", "1080p"),
-        "durations": (1, 15),  # range
+        "durations": (1, 15),
         "audio": True,
         "negative": True,
     },
-    "kling-o3-standard": {
-        "display": "Kling O3 Standard",
-        "speed": "~60-180s",
-        "price": "$0.20-0.40/s",
-        "strengths": "Cinematic motion, multi-shot, native audio, 3-15s.",
-        "text_endpoint": "fal-ai/kling-video/o3/standard/text-to-video",
-        "image_endpoint": "fal-ai/kling-video/o3/standard/image-to-video",
-        "aspect_ratios": None,
+    # ─── Expensive / premium tier ──────────────────────────────────────
+    "veo3.1": {
+        "display": "Veo 3.1",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "Google DeepMind. Cinematic, native audio, strong prompt adherence.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/veo3.1",
+        "image_endpoint": "fal-ai/veo3.1/image-to-video",
+        "aspect_ratios": ("16:9", "9:16"),
         "resolutions": ("720p", "1080p"),
-        "durations": (3, 15),  # range
+        "durations": (4, 6, 8),
         "audio": True,
         "negative": True,
+    },
+    "seedance-2.0": {
+        "display": "Seedance 2.0",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",
+        "tier": "premium",
+        "text_endpoint": "bytedance/seedance-2.0/text-to-video",
+        "image_endpoint": "bytedance/seedance-2.0/image-to-video",
+        # Seedance accepts "auto" too — we omit it from the enum so the
+        # agent can't pass it; the endpoint defaults handle the rest.
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "resolutions": ("480p", "720p", "1080p"),
+        "durations": (4, 15),
+        "audio": True,
+        "negative": False,
+    },
+    "kling-v3-4k": {
+        "display": "Kling v3 4K",
+        "speed": "~120-300s",
+        "price": "premium",
+        "strengths": "4K output, native audio (Chinese/English), 3-15s.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/kling-video/v3/4k/text-to-video",
+        "image_endpoint": "fal-ai/kling-video/v3/4k/image-to-video",
+        # Kling 4K image-to-video uses `start_image_url` instead of
+        # `image_url`. Handled in _build_payload via image_param_key.
+        "image_param_key": "start_image_url",
+        "aspect_ratios": ("16:9", "9:16", "1:1"),
+        "resolutions": None,  # 4K is implicit
+        "durations": (3, 15),
+        "audio": True,
+        "negative": True,
+    },
+    "happy-horse": {
+        "display": "Happy Horse 1.0",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "Alibaba. New model, sparse public docs — conservative defaults.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/happy-horse/text-to-video",
+        "image_endpoint": "fal-ai/happy-horse/image-to-video",
+        # Docs don't expose duration/aspect/resolution — let the endpoint
+        # apply its own defaults.
+        "aspect_ratios": None,
+        "resolutions": None,
+        "durations": None,
+        "audio": False,
+        "negative": False,
     },
 }
 
-DEFAULT_MODEL = "veo3.1"
+DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
 
 
 def _is_duration_range(durations: Any) -> bool:
@@ -186,7 +249,11 @@ def _build_payload(
     if prompt:
         payload["prompt"] = prompt
     if image_url:
-        payload["image_url"] = image_url
+        # Some endpoints (e.g. Kling v3 4K image-to-video) expect
+        # `start_image_url` instead of `image_url`. The family entry can
+        # declare an override.
+        key = family.get("image_param_key") or "image_url"
+        payload[key] = image_url
     if seed is not None:
         payload["seed"] = seed
 
@@ -274,6 +341,7 @@ class FALVideoGenProvider(VideoGenProvider):
                 "speed": meta["speed"],
                 "strengths": meta["strengths"],
                 "price": meta["price"],
+                "tier": meta.get("tier", "premium"),
                 "modalities": modalities,
             })
         return out
@@ -285,7 +353,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "Veo 3.1, Pixverse v6, Kling O3 — auto-routes text-to-video & image-to-video",
+            "tag": "LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",

@@ -11,6 +11,7 @@ import com.chaquo.python.Python
 import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
+import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.ProviderPresets
@@ -215,6 +216,40 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             _uiState.update {
                 it.copy(status = "Unable to open setup page (${launch.errorName.ifBlank { "setup_page_error" }}); copied the provider setup URLs.")
             }
+        }
+    }
+
+    fun checkProviderKeyPage(url: String) {
+        val requestedUrl = url.trim()
+        if (requestedUrl.isBlank()) {
+            return
+        }
+        val providerId = ProviderPresets.providerIdForSetupUrl(requestedUrl)
+        val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
+        val urls = providerId?.let { ProviderPresets.setupUrls(it) }
+            .orEmpty()
+            .ifEmpty { listOf(requestedUrl) }
+        copyProviderKeyPage(requestedUrl, updateSuccessStatus = false)
+        _uiState.update { it.copy(status = "Checking $providerLabel setup pages from this device...") }
+        viewModelScope.launch {
+            val results = withContext(Dispatchers.IO) {
+                urls.map(ProviderSetupUrlProbe::probe)
+            }
+            val reachable = results.filter { it.reachable }
+            val firstReachable = reachable.firstOrNull()
+            val status = if (firstReachable != null) {
+                val fallbackHint = if (reachable.size < results.size) {
+                    " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
+                } else {
+                    ""
+                }
+                "$providerLabel setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
+            } else {
+                val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
+                "No $providerLabel setup page responded from Hermes. Copied all setup URLs. $failureSummary"
+                    .take(ProviderSetupUrlProbe.MAX_STATUS_LENGTH)
+            }
+            _uiState.update { it.copy(status = status) }
         }
     }
 

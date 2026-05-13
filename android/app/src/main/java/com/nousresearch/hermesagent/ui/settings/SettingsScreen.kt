@@ -105,6 +105,7 @@ fun SettingsScreen(
                         onApiKeyChange = viewModel::updateApiKey,
                         onOpenProviderKeyPage = viewModel::openProviderKeyPage,
                         onCopyProviderKeyPage = viewModel::copyProviderKeyPage,
+                        onCheckProviderKeyPage = viewModel::checkProviderKeyPage,
                         onImportProviderCredential = viewModel::importSavedProviderCredential,
                         onSave = viewModel::save,
                         strings = strings,
@@ -162,6 +163,7 @@ private fun RemoteFallbackCard(
     onApiKeyChange: (String) -> Unit,
     onOpenProviderKeyPage: (String) -> Unit,
     onCopyProviderKeyPage: (String) -> Unit,
+    onCheckProviderKeyPage: (String) -> Unit,
     onImportProviderCredential: () -> Unit,
     onSave: () -> Unit,
     strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
@@ -208,6 +210,9 @@ private fun RemoteFallbackCard(
                     }
                     Button(onClick = { onCopyProviderKeyPage(apiKeyUrl) }) {
                         Text(strings.copyProviderSetupUrl())
+                    }
+                    Button(onClick = { onCheckProviderKeyPage(apiKeyUrl) }) {
+                        Text(strings.checkProviderSetupUrl())
                     }
                 }
             }

@@ -189,6 +189,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
     auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    provider_setup_probe = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/ProviderSetupUrlProbe.kt").read_text(encoding="utf-8")
 
     provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
@@ -216,13 +217,16 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
     assert "fun checkProviderSetupPages(methodId: String)" in auth_view_model
-    assert "probeProviderSetupUrl" in auth_view_model
-    assert "ProviderSetupProbeResult" in auth_view_model
+    assert "ProviderSetupUrlProbe::probe" in auth_view_model
+    assert "data class ProviderSetupProbeResult" in provider_setup_probe
+    assert "object ProviderSetupUrlProbe" in provider_setup_probe
     assert "Checking ${option.label} setup pages from this device" in auth_view_model
     assert "setup is reachable from Hermes" in auth_view_model
     assert "No ${option.label} setup page responded from Hermes" in auth_view_model
-    assert "PROVIDER_SETUP_PROBE_TIMEOUT_MS" in auth_view_model
-    assert "MAX_PROVIDER_SETUP_STATUS_LENGTH" in auth_view_model
+    assert "const val DEFAULT_TIMEOUT_MS = 6_000" in provider_setup_probe
+    assert "const val MAX_STATUS_LENGTH = 900" in provider_setup_probe
+    assert 'setRequestProperty("User-Agent", "HermesAgentAndroidProviderSetup/1.0")' in provider_setup_probe
+    assert "ProviderSetupUrlProbe.MAX_STATUS_LENGTH" in auth_view_model
     assert "private val providerSetupOpenIndexes = mutableMapOf<String, Int>()" in auth_view_model
     assert "ProviderPresets.setupTarget(providerId, nextIndex)" in auth_view_model
     assert "providerSetupOpenIndexes[providerId] = target.nextIndex" in auth_view_model
@@ -282,10 +286,17 @@ def test_settings_opens_official_provider_key_pages():
     assert "providerPreset?.apiKeyUrl" in settings_screen
     assert "viewModel::openProviderKeyPage" in settings_screen
     assert "viewModel::copyProviderKeyPage" in settings_screen
+    assert "viewModel::checkProviderKeyPage" in settings_screen
     assert "ProviderPresets.credentialInputHelp(providerId)" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(targetUrl)" in settings_view_model
     assert "HermesProviderSetupWebActivity.open" in settings_view_model
+    assert "fun checkProviderKeyPage(url: String)" in settings_view_model
+    assert "ProviderSetupUrlProbe::probe" in settings_view_model
+    assert "ProviderSetupUrlProbe.MAX_STATUS_LENGTH" in settings_view_model
+    assert "Checking $providerLabel setup pages from this device" in settings_view_model
+    assert "setup is reachable from Hermes" in settings_view_model
+    assert "No $providerLabel setup page responded from Hermes" in settings_view_model
     assert "class HermesProviderSetupWebActivity" in provider_setup_web_activity
     assert "WebView(this)" in provider_setup_web_activity
     assert "HermesExternalBrowserLauncher.open" in provider_setup_web_activity
@@ -304,6 +315,8 @@ def test_settings_opens_official_provider_key_pages():
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in browser_launcher
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "copyProviderSetupUrl()" in settings_screen
+    assert "onCheckProviderKeyPage(apiKeyUrl)" in settings_screen
+    assert "strings.checkProviderSetupUrl()" in settings_screen
     assert "importSavedProviderCredential()" in settings_screen
     assert "Use saved Hermes credential" in strings
     assert "Open $providerLabel setup page" in strings

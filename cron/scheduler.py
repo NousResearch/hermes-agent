@@ -1261,8 +1261,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         _job_workdir = None
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _registered_task_env_override = False
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(_cron_session_id, {"cwd": _job_workdir})
+            _registered_task_env_override = True
+        except Exception as _env_override_exc:
+            logger.warning(
+                "Job '%s': failed to register workdir override for cron task %s: %s",
+                job_id,
+                _cron_session_id,
+                _env_override_exc,
+            )
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
@@ -1483,7 +1495,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            task_id=_cron_session_id,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -1622,6 +1639,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        if _registered_task_env_override:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+                clear_task_env_overrides(_cron_session_id)
+            except Exception as _env_override_exc:
+                logger.debug(
+                    "Job '%s': failed to clear workdir override for cron task %s: %s",
+                    job_id,
+                    _cron_session_id,
+                    _env_override_exc,
+                )
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

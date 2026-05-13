@@ -264,15 +264,29 @@ class TestRunJobTerminalCwd:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                observed["session_id"] = kwargs.get("session_id")
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
                 observed["load_soul_identity"] = kwargs.get("load_soul_identity")
                 observed["terminal_cwd_during_init"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
 
-            def run_conversation(self, *_a, **_kw):
+            def run_conversation(self, *_a, **kwargs):
+                observed["run_task_id"] = kwargs.get("task_id")
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
+                )
+                from tools.terminal_tool import (
+                    _resolve_container_task_id,
+                    _task_env_overrides,
+                )
+
+                session_id = observed["session_id"]
+                observed["container_task_id_during_run"] = _resolve_container_task_id(
+                    session_id
+                )
+                observed["task_env_override_during_run"] = _task_env_overrides.get(
+                    session_id
                 )
                 return {"final_response": "done", "messages": []}
 
@@ -343,6 +357,37 @@ class TestRunJobTerminalCwd:
 
         # And it was restored to the original value in finally.
         assert os.environ["TERMINAL_CWD"] == "/original/cwd"
+
+    def test_workdir_registers_cron_task_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        import cron.scheduler as sched
+        from tools.terminal_tool import (
+            _resolve_container_task_id,
+            _task_env_overrides,
+        )
+
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        job = {
+            "id": "abc",
+            "name": "wd-job",
+            "workdir": str(tmp_path),
+            "schedule_display": "manual",
+        }
+
+        success, _output, response, error = sched.run_job(job)
+        assert success is True, f"run_job failed: error={error!r} response={response!r}"
+
+        session_id = observed["session_id"]
+        assert observed["run_task_id"] == session_id
+        assert observed["container_task_id_during_run"] == session_id
+        assert observed["task_env_override_during_run"]["cwd"] == str(
+            tmp_path.resolve()
+        )
+        assert _resolve_container_task_id(session_id) == "default"
+        assert session_id not in _task_env_overrides
 
     def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —

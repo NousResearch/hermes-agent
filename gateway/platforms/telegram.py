@@ -5085,7 +5085,8 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
-        DMs remain unrestricted. Group/supergroup messages are accepted when:
+        DMs remain unrestricted unless TELEGRAM_ALLOWED_USERS is set.
+        Group/supergroup messages are accepted when:
         - the chat passes the ``allowed_chats`` whitelist (when set), or
           ``guest_mode`` is enabled and the bot is explicitly mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
@@ -5105,6 +5106,12 @@ class TelegramAdapter(BasePlatformAdapter):
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
+            allowed = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            if allowed and message.from_user:
+                uid = str(message.from_user.id)
+                allowed_ids = {uid.strip() for uid in allowed.split(",") if uid.strip()}
+                if uid not in allowed_ids:
+                    return False
             return True
 
         thread_id = getattr(message, "message_thread_id", None)

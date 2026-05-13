@@ -245,6 +245,15 @@ TOOL_CATEGORIES = {
         "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
+        # Per-provider rows are injected at runtime from
+        # plugins.web.<vendor>.provider via _plugin_web_search_providers()
+        # in _visible_providers(). Only non-provider UX setup-flow rows
+        # for the firecrawl backend are listed here:
+        #   - "Nous Subscription" — managed Firecrawl billed via Nous
+        #     subscription (requires_nous_auth + override_env_vars).
+        #   - "Firecrawl Self-Hosted" — points firecrawl at a private
+        #     Docker instance via FIRECRAWL_API_URL only.
+        # See PR #25182 for the migration rationale.
         "providers": [
             {
                 "name": "Nous Subscription",
@@ -257,42 +266,6 @@ TOOL_CATEGORIES = {
                 "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
             },
             {
-                "name": "Firecrawl Cloud",
-                "badge": "★ recommended",
-                "tag": "Full-featured search, extract, and crawl",
-                "web_backend": "firecrawl",
-                "env_vars": [
-                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
-                ],
-            },
-            {
-                "name": "Exa",
-                "badge": "paid",
-                "tag": "Neural search with semantic understanding",
-                "web_backend": "exa",
-                "env_vars": [
-                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
-                ],
-            },
-            {
-                "name": "Parallel",
-                "badge": "paid",
-                "tag": "AI-powered search and extract",
-                "web_backend": "parallel",
-                "env_vars": [
-                    {"key": "PARALLEL_API_KEY", "prompt": "Parallel API key", "url": "https://parallel.ai"},
-                ],
-            },
-            {
-                "name": "Tavily",
-                "badge": "free tier",
-                "tag": "Search, extract, and crawl — 1000 free searches/mo",
-                "web_backend": "tavily",
-                "env_vars": [
-                    {"key": "TAVILY_API_KEY", "prompt": "Tavily API key", "url": "https://app.tavily.com/home"},
-                ],
-            },
-            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
@@ -300,32 +273,6 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
-            },
-            {
-                "name": "SearXNG",
-                "badge": "free · self-hosted · search only",
-                "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",
-                "web_backend": "searxng",
-                "env_vars": [
-                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
-                ],
-            },
-            {
-                "name": "Brave Search (Free Tier)",
-                "badge": "free tier · search only",
-                "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
-                "web_backend": "brave-free",
-                "env_vars": [
-                    {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search subscription token", "url": "https://brave.com/search/api/"},
-                ],
-            },
-            {
-                "name": "DuckDuckGo (ddgs)",
-                "badge": "free · no key · search only",
-                "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
-                "web_backend": "ddgs",
-                "env_vars": [],
-                "post_setup": "ddgs",
             },
         ],
     },
@@ -1577,28 +1524,27 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
-# plugin-registered web providers (brave-free / ddgs / searxng during the
-# spike) so they appear in the "Web Search & Extract" picker row. While
-# the legacy TOOL_CATEGORIES entries still cover those names, this helper
-# skip-lists them to avoid duplicate rows.
-#
-# When the migration PR drops the hardcoded entries, the skip-list can be
-# removed and this helper becomes the sole source of web-provider picker
-# rows (matching how Spotify / Google Meet are surfaced today purely from
-# their plugins).
-_WEB_PLUGIN_SKIPLIST = frozenset({
-    "brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl",
-})
-
-
+# every plugin-registered web provider so it appears in the
+# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
+# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# PR #25182 — this helper is the sole source of truth for the category's
+# provider rows. The hardcoded entries that used to drive the category
+# were deleted in the same PR; only the two non-provider UX rows
+# ("Nous Subscription" managed-gateway entry, "Firecrawl Self-Hosted")
+# remain in TOOL_CATEGORIES because they describe alternative *setup
+# flows* for the firecrawl backend rather than distinct providers.
 def _plugin_web_search_providers() -> list[dict]:
     """Build picker-row dicts from plugin-registered web search providers.
 
-    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
-    row but carries a ``web_search_plugin_name`` marker so downstream
-    code can route through ``agent.web_search_registry`` instead of the
-    legacy hardcoded dispatch. Names already covered by hardcoded picker
-    rows during the spike are skipped via :data:`_WEB_PLUGIN_SKIPLIST`.
+    Each returned dict is a regular ``TOOL_CATEGORIES`` provider row. It
+    populates both ``web_backend`` (legacy field consumed by setup +
+    selection helpers) and ``web_search_plugin_name`` (informational
+    marker) so the picker behaves identically whether a provider is
+    hardcoded or plugin-registered.
+
+    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
+    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    source of provider rows for the Web Search & Extract category.
     """
     try:
         from agent.web_search_registry import list_providers as _list_web_providers
@@ -1612,7 +1558,7 @@ def _plugin_web_search_providers() -> list[dict]:
     rows: list[dict] = []
     for provider in providers:
         name = getattr(provider, "name", None)
-        if not name or name in _WEB_PLUGIN_SKIPLIST:
+        if not name:
             continue
         try:
             schema = provider.get_setup_schema()
@@ -1620,15 +1566,18 @@ def _plugin_web_search_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "web_search_plugin_name": name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "web_backend": name,
+            "web_search_plugin_name": name,
+        }
+        # Optional pass-through fields the schema can opt into.
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1653,11 +1602,11 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     if cat.get("name") == "Video Generation":
         visible.extend(_plugin_video_gen_providers())
 
-    # Inject plugin-registered web search backends. During the spike the
-    # three migrated providers (brave-free, ddgs, searxng) still have
-    # hardcoded TOOL_CATEGORIES entries — the helper skips them so the
-    # picker doesn't show duplicates. When the migration PR deletes those
-    # hardcoded rows, this injection becomes the sole source of truth.
+    # Inject plugin-registered web search backends. After PR #25182, this
+    # is the SOLE source of provider rows for the Web Search & Extract
+    # category — the per-provider hardcoded entries were deleted. The two
+    # remaining hardcoded rows ("Nous Subscription", "Firecrawl
+    # Self-Hosted") are non-provider UX setup-flow rows for firecrawl.
     if cat.get("name") == "Web Search & Extract":
         visible.extend(_plugin_web_search_providers())
 

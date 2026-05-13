@@ -24,7 +24,30 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", "__pycache__"))
+
+# Directory-name prefixes that indicate backups / non-skill artifacts.
+# Any directory whose name starts with one of these prefixes is skipped
+# during skill discovery (e.g. "my-skill.bak-20260510" or
+# "my-skill.backup-v2").
+_EXCLUDED_DIR_PREFIXES = (".bak", ".backup-", "backup-")
+
+
+def _is_excluded_skill_dir(dirname: str) -> bool:
+    """Return True if *dirname* should be skipped during skill discovery.
+
+    Checks both the explicit ``EXCLUDED_SKILL_DIRS`` set and the
+    backup-prefix patterns in ``_EXCLUDED_DIR_PREFIXES``.
+    """
+    if dirname in EXCLUDED_SKILL_DIRS:
+        return True
+    # Match ".bak" anywhere in the name (covers "skill.bak-20260510")
+    # and prefix patterns (covers ".backup-v2", "backup-20260510").
+    lower = dirname.lower()
+    for prefix in _EXCLUDED_DIR_PREFIXES:
+        if prefix in lower:
+            return True
+    return False
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -482,7 +505,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        dirs[:] = [d for d in dirs if not _is_excluded_skill_dir(d)]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

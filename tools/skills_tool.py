@@ -100,7 +100,21 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", "__pycache__"))
+
+# Backup-directory prefixes — kept in sync with skill_utils._EXCLUDED_DIR_PREFIXES.
+_EXCLUDED_DIR_PREFIXES = (".bak", ".backup-", "backup-")
+
+
+def _is_excluded_skill_dir(dirname: str) -> bool:
+    """Return True if *dirname* should be skipped during skill discovery."""
+    if dirname in _EXCLUDED_SKILL_DIRS:
+        return True
+    lower = dirname.lower()
+    for prefix in _EXCLUDED_DIR_PREFIXES:
+        if prefix in lower:
+            return True
+    return False
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -573,7 +587,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            if any(_is_excluded_skill_dir(part) for part in skill_md.parts):
                 continue
 
             skill_dir = skill_md.parent

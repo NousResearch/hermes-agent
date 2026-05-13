@@ -3465,11 +3465,6 @@ class GatewayRunner:
                 default_agent=self.config.default_agent,
                 gateway=self,
             )
-            adapter.set_routing_context(
-                routes=self.config.routes,
-                default_agent=self.config.default_agent,
-                gateway=self,
-            )
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)

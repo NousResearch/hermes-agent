@@ -37,7 +37,7 @@ def get_hermes_home() -> Path:
     try:
         from agent.profile import get_active_profile  # noqa: WPS433 (lazy)
         profile = get_active_profile()
-    except Exception:
+    except ImportError:
         profile = None
     if profile is not None and profile.home_dir is not None:
         return Path(profile.home_dir).expanduser()

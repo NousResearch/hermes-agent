@@ -282,22 +282,26 @@ class TestTranscriptHistoryOffset:
             {"role": "user", "content": "Earlier question"},
             {"role": "assistant", "content": "Earlier answer"},
         ]
-        cool_turn = [
-            {"role": "user", "content": "cool"},
-            {"role": "assistant", "content": "Quote again"},
+        first_followup_turn = [
+            {"role": "user", "content": "First follow-up question"},
+            {"role": "assistant", "content": "First follow-up answer"},
         ]
-        order_turn = [
-            {"role": "user", "content": "how to make order?"},
-            {"role": "assistant", "content": "Deposit flow"},
+        second_followup_turn = [
+            {"role": "user", "content": "Second follow-up question"},
+            {"role": "assistant", "content": "Second follow-up answer"},
         ]
 
         current_result = {
             "history_offset": len(history_before_chain),
-            "messages": history_before_chain + cool_turn,
+            "messages": history_before_chain + first_followup_turn,
         }
         followup_result = {
-            "history_offset": len(history_before_chain + cool_turn),
-            "messages": history_before_chain + cool_turn + order_turn,
+            "history_offset": len(history_before_chain + first_followup_turn),
+            "messages": (
+                history_before_chain
+                + first_followup_turn
+                + second_followup_turn
+            ),
         }
 
         merged = _preserve_queued_followup_history_offset(
@@ -307,7 +311,7 @@ class TestTranscriptHistoryOffset:
         assert merged["history_offset"] == len(history_before_chain)
 
         persisted = merged["messages"][merged["history_offset"]:]
-        assert persisted == cool_turn + order_turn
+        assert persisted == first_followup_turn + second_followup_turn
 
     def test_recursive_queued_followup_preserves_smaller_existing_offset(self):
         """Do not widen the slice if the nested result is already conservative."""

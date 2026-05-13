@@ -461,7 +461,8 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                result = await adapter.send(chat_id=chat_id, content=chunk)
+                metadata = {"thread_id": thread_id} if thread_id else None
+                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

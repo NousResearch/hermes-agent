@@ -9850,7 +9850,18 @@ class AIAgent:
             model_extra = getattr(assistant_message, "model_extra", None) or {}
             if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
                 raw_reasoning_content = model_extra["reasoning_content"]
-        if raw_reasoning_content is not None:
+        try:
+            _rc = getattr(self, "reasoning_config", None)
+            _thinking_disabled = isinstance(_rc, dict) and _rc.get("enabled") is False
+            _is_xiaomi = (
+                (getattr(self, "provider", "") or "").strip().lower() in {"xiaomi", "mimo", "xiaomi-mimo"}
+                or base_url_host_matches(getattr(self, "base_url", ""), "xiaomimimo.com")
+            )
+        except Exception:
+            _thinking_disabled = False
+            _is_xiaomi = False
+
+        if raw_reasoning_content is not None and not (_thinking_disabled and _is_xiaomi):
             msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
         elif assistant_tool_calls and self._needs_thinking_reasoning_pad():
             # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
@@ -9888,7 +9899,11 @@ class AIAgent:
         #     so ``_copy_reasoning_content_for_api``'s cross-provider leak
         #     guard (#15748) and ``reasoning``→``reasoning_content``
         #     promotion tiers still apply at replay time.
-        if "reasoning_content" not in msg and reasoning_text:
+        # Xiaomi/MiMo disabled-thinking is intentionally excluded because live
+        # MiMo rejects replay after a tool-call turn if Hermes persists any
+        # ``reasoning_content`` on that assistant message, even though the next
+        # request says ``extra_body.thinking=disabled``.
+        if "reasoning_content" not in msg and reasoning_text and not (_thinking_disabled and _is_xiaomi):
             msg["reasoning_content"] = reasoning_text
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -10017,6 +10032,27 @@ class AIAgent:
         """Copy provider-facing reasoning fields onto an API replay message."""
         if source_msg.get("role") != "assistant":
             return
+
+        # Xiaomi/MiMo quirk: when thinking is explicitly disabled, do not replay
+        # any stale reasoning fields from a prior provider/session. MiMo appears
+        # to infer thinking-mode continuity from reasoning_content in history; if
+        # only some old assistant turns have it, the API rejects the whole replay
+        # with "reasoning_content in the thinking mode must be passed back" even
+        # though the current request sends thinking=disabled. Keep the API copy
+        # text-only so model switches into MiMo from GLM/Codex/etc. are clean.
+        try:
+            _rc = getattr(self, "reasoning_config", None)
+            _thinking_disabled = isinstance(_rc, dict) and _rc.get("enabled") is False
+            _is_xiaomi = (
+                (getattr(self, "provider", "") or "").strip().lower() in {"xiaomi", "mimo", "xiaomi-mimo"}
+                or base_url_host_matches(getattr(self, "base_url", ""), "xiaomimimo.com")
+            )
+            if _thinking_disabled and _is_xiaomi:
+                api_msg.pop("reasoning_content", None)
+                api_msg.pop("reasoning_details", None)
+                return
+        except Exception:
+            pass
 
         # 1. Explicit reasoning_content already set — preserve it verbatim
         # (includes DeepSeek/Kimi's own space-placeholder written at creation

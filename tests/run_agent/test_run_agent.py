@@ -1527,6 +1527,28 @@ class TestBuildAssistantMessage:
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["function"]["name"] == "web_search"
 
+    def test_xiaomi_disabled_thinking_does_not_persist_reasoning_content_on_tool_call(self, agent):
+        """MiMo rejects the next tool replay if disabled-thinking turns persist
+        ``reasoning_content`` despite sending ``extra_body.thinking=disabled``.
+        """
+        agent.provider = "xiaomi"
+        agent.base_url = "https://token-plan-sgp.xiaomimimo.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": False, "effort": "none"}
+        tc = _mock_tool_call(name="skill_view", arguments='{"name":"foxtech-client"}', call_id="c4")
+        msg = _mock_assistant_msg(
+            content="",
+            tool_calls=[tc],
+            reasoning_content="MiMo scratchpad",
+        )
+
+        result = agent._build_assistant_message(msg, "tool_calls")
+
+        assert result["tool_calls"]
+        assert result["reasoning"] == "MiMo scratchpad"
+        assert "reasoning_content" not in result
+        assert "reasoning_details" not in result
+
     def test_with_reasoning_details(self, agent):
         details = [{"type": "reasoning.summary", "text": "step1", "signature": "sig1"}]
         msg = _mock_assistant_msg(content="ans", reasoning_details=details)

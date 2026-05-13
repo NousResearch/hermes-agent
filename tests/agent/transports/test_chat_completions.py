@@ -444,6 +444,50 @@ class TestChatCompletionsBuildKwargs:
         assert "temperature" not in kw
 
 
+class TestChatCompletionsXiaomi:
+    """Regression tests for Xiaomi MiMo request-shape quirks."""
+
+    def test_xiaomi_thinking_disabled_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("xiaomi")
+        kw = transport.build_kwargs(
+            model="mimo-v2.5",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking"] == "disabled"
+
+    def test_xiaomi_omits_empty_assistant_content_on_tool_call_replay(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("xiaomi")
+        messages = [
+            {"role": "user", "content": "Use a tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ]
+        kw = transport.build_kwargs(
+            model="mimo-v2.5",
+            messages=messages,
+            provider_profile=profile,
+            reasoning_config={"enabled": False},
+        )
+        assert "content" not in kw["messages"][1]
+        assert kw["messages"][1]["tool_calls"] == messages[1]["tool_calls"]
+        # Avoid mutating caller-owned history.
+        assert messages[1]["content"] == ""
+
+
 class TestChatCompletionsKimi:
     """Regression tests for the Kimi/Moonshot quirks migrated into the transport."""
 

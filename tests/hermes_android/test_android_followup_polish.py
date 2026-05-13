@@ -322,7 +322,9 @@ def test_provider_setup_webview_errors_show_browser_copy_fallback():
     assert 'listOf("openrouter", "alibaba", "alibaba-coding-plan", "qwen-oauth", "zai", "zai-coding-plan")' in activity_test
     assert 'providerSetupOpenUsesExternalBrowserForQwenCloudWhenAvailable' in activity_test
     assert 'HermesExternalBrowserLauncher.createBrowserIntent' in activity_test
-    assert 'dumpsys activity activities' in activity_test
+    assert 'Intents.init()' in activity_test
+    assert 'Qwen Cloud setup browser intent' in activity_test
+    assert 'qwenDocsOpened.get()' in activity_test
 
 
 def test_device_backend_exposes_deeper_radio_control_actions_and_status():

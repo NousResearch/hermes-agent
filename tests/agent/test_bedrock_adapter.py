@@ -116,32 +116,34 @@ class TestResolveBedrocRegion:
         assert resolve_bedrock_region(env) == "ap-northeast-1"
 
     def test_defaults_to_us_east_1(self):
-        # `[bedrock]` extra moved out of `[all]` on 2026-05-12 (#24515) and is
-        # now resolved via lazy-install, so botocore can be absent from a
-        # fresh `pip install -e .[all,dev]`. Without this skip the patcher
-        # below fails to resolve `botocore.session` and the test errors.
-        pytest.importorskip("botocore")
+        # `[bedrock]` extra moved out of `[all]` on 2026-05-12 (#24515) and
+        # is now resolved via lazy-install, so botocore can be absent from
+        # a fresh `pip install -e .[all,dev]`. Stub `botocore.session` in
+        # `sys.modules` so the fallback path is still exercised on CI
+        # baselines without botocore — matches the same pattern used
+        # elsewhere in this file (TestResolveAwsAuthEnvVar).
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch.dict("sys.modules", {"botocore": MagicMock(), "botocore.session": MagicMock()}):
+            import botocore.session as _bs
+            _bs.get_session = MagicMock(return_value=mock_session)
             assert resolve_bedrock_region({}) == "us-east-1"
 
     def test_falls_back_to_botocore_profile_region(self):
-        pytest.importorskip("botocore")
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch.dict("sys.modules", {"botocore": MagicMock(), "botocore.session": MagicMock()}):
+            import botocore.session as _bs
+            _bs.get_session = MagicMock(return_value=mock_session)
             assert resolve_bedrock_region({}) == "eu-central-1"
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
-        pytest.importorskip("botocore")
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch
-        with patch("botocore.session.get_session", side_effect=Exception("no botocore")):
+        with patch.dict("sys.modules", {"botocore": MagicMock(), "botocore.session": MagicMock()}):
+            import botocore.session as _bs
+            _bs.get_session = MagicMock(side_effect=Exception("no botocore"))
             assert resolve_bedrock_region({}) == "us-east-1"
 
 

@@ -5,7 +5,7 @@ name: Sync upstream
 # and check out `main` to get a runtime-ready fork.
 #
 # `FEATURE_BRANCHES` carries fork patches that have an open upstream PR.
-# As of 2026-04-29 we carry the WhatsApp stack tip plus one independent branch:
+# As of 2026-05-14 we carry the WhatsApp stack tip plus several independent branches:
 #
 #   fix/busy-path-pre-gateway-dispatch-upstream  (stack tip)
 #     ← … ← feat/whatsapp-forward-owner-messages-upstream
@@ -23,6 +23,9 @@ name: Sync upstream
 #
 #   fix/diagnostic-status-leak-and-end-turn-nudge → open; diagnostic status
 #   leak fix + end-turn nudge path correction.
+#
+#   fix/queued-followup-media-delivery-upstream → #25119 preserve MEDIA-backed
+#   attachments when a queued follow-up arrives mid-reply.
 #
 # Drop a branch from FEATURE_BRANCHES (and delete it from the fork) once
 # its upstream PR merges — the cherry-pick becomes a no-op.
@@ -72,9 +75,10 @@ env:
   #   second so it cherry-picks after the busy-path stack.
   # - fix/launcher-symlink-clobber-upstream is independent (PR #20747);
   #   listed before fix/diagnostic-status-leak-and-end-turn-nudge.
-  # - fix/diagnostic-status-leak-and-end-turn-nudge is independent (open);
+  # - fix/diagnostic-status-leak-and-end-turn-nudge is independent (open).
+  # - fix/queued-followup-media-delivery-upstream is independent (PR #25119);
   #   listed last.
-  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/launcher-symlink-clobber-upstream fix/diagnostic-status-leak-and-end-turn-nudge"
+  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/launcher-symlink-clobber-upstream fix/diagnostic-status-leak-and-end-turn-nudge fix/queued-followup-media-delivery-upstream"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

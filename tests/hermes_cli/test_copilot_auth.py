@@ -88,6 +88,35 @@ class TestResolveToken:
         assert token == "gho_from_cli"
         assert source == "gh auth token"
 
+    def test_gh_cli_fallback_can_target_specific_user(self, monkeypatch):
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("COPILOT_GH_USER", "pearjelly")
+        monkeypatch.setattr("hermes_cli.copilot_auth._gh_cli_candidates", lambda: ["/usr/local/bin/gh"])
+
+        calls = []
+
+        class _Result:
+            returncode = 0
+            stdout = "gho_from_cli\n"
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
+
+        assert _try_gh_cli_token() == "gho_from_cli"
+        assert calls == [[
+            "/usr/local/bin/gh",
+            "auth",
+            "token",
+            "--user",
+            "pearjelly",
+        ]]
+
     def test_gh_cli_classic_pat_raises(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)

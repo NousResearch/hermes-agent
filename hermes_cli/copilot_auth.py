@@ -14,6 +14,10 @@ Credential search order (matching Copilot CLI behaviour):
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
   4. gh auth token  CLI fallback
+
+Optional GitHub CLI selectors:
+  COPILOT_GH_HOST  Host passed to ``gh auth token --hostname``
+  COPILOT_GH_USER  User passed to ``gh auth token --user``
 """
 
 from __future__ import annotations
@@ -41,6 +45,16 @@ COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+
+
+def _copilot_env_value(name: str) -> str:
+    """Read a Copilot-related env var from ~/.hermes/.env or process env."""
+    try:
+        from hermes_cli.config import get_env_value
+
+        return (get_env_value(name) or os.getenv(name, "")).strip()
+    except Exception:
+        return os.getenv(name, "").strip()
 
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
@@ -72,7 +86,7 @@ def resolve_copilot_token() -> tuple[str, str]:
     """
     # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
-        val = os.getenv(env_var, "").strip()
+        val = _copilot_env_value(env_var)
         if val:
             valid, msg = validate_copilot_token(val)
             if not valid:
@@ -120,11 +134,14 @@ def _try_gh_cli_token() -> Optional[str]:
     """Return a token from ``gh auth token`` when the GitHub CLI is available.
 
     When COPILOT_GH_HOST is set, passes ``--hostname`` so gh returns the
-    correct host's token.  Also strips GITHUB_TOKEN / GH_TOKEN from the
-    subprocess environment so ``gh`` reads from its own credential store
-    (hosts.yml) instead of just echoing the env var back.
+    correct host's token. When COPILOT_GH_USER is set, passes ``--user`` so
+    gh returns that account's token instead of the active account. Also strips
+    GITHUB_TOKEN / GH_TOKEN from the subprocess environment so ``gh`` reads
+    from its own credential store (hosts.yml) instead of just echoing the env
+    var back.
     """
-    hostname = os.getenv("COPILOT_GH_HOST", "").strip()
+    hostname = _copilot_env_value("COPILOT_GH_HOST")
+    username = _copilot_env_value("COPILOT_GH_USER")
 
     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
     clean_env = {k: v for k, v in os.environ.items()
@@ -134,6 +151,8 @@ def _try_gh_cli_token() -> Optional[str]:
         cmd = [gh_path, "auth", "token"]
         if hostname:
             cmd += ["--hostname", hostname]
+        if username:
+            cmd += ["--user", username]
         try:
             result = subprocess.run(
                 cmd,

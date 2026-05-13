@@ -478,6 +478,34 @@ class TestResolveApiKeyProviderCredentials:
         assert _try_gh_cli_token() == "gh-cli-secret"
         assert calls == [["/opt/homebrew/bin/gh", "auth", "token"]]
 
+    def test_try_gh_cli_token_passes_host_and_user_when_configured(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_GH_HOST", "github.com")
+        monkeypatch.setenv("COPILOT_GH_USER", "pearjelly")
+        monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: "/usr/local/bin/gh")
+
+        calls = []
+
+        class _Result:
+            returncode = 0
+            stdout = "gh-cli-secret\n"
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
+
+        assert _try_gh_cli_token() == "gh-cli-secret"
+        assert calls == [[
+            "/usr/local/bin/gh",
+            "auth",
+            "token",
+            "--hostname",
+            "github.com",
+            "--user",
+            "pearjelly",
+        ]]
+
     def test_resolve_copilot_acp_with_local_cli(self, monkeypatch):
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio")
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")

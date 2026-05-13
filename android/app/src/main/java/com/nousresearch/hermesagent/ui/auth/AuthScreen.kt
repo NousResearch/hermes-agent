@@ -270,6 +270,12 @@ fun AuthScreen(
                                     ) {
                                         Text(strings.copyProviderSetupUrl())
                                     }
+                                    Button(
+                                        modifier = Modifier.testTag("AuthProviderCheckSetup-${option.id}"),
+                                        onClick = { viewModel.checkProviderSetupPages(option.id) },
+                                    ) {
+                                        Text(strings.checkProviderSetupUrl())
+                                    }
                                 }
                                 if (option.signedIn) {
                                     Button(onClick = { viewModel.signOut(option.id) }) {

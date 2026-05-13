@@ -258,8 +258,23 @@ def test_replay_output_history_rerenders_callable_entries(monkeypatch):
     cli._replay_output_history()
 
     assert widths_seen == ["called"]
-    assert printed == ["top border", "body"]
+    assert printed == ["top border\nbody"]
     assert list(cli._OUTPUT_HISTORY) == [_render_current_width]
+
+
+def test_replay_output_history_batches_rendered_lines_into_one_print(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("first line")
+    cli._record_output_history("second line")
+    cli._record_output_history_entry(lambda: ["third line", "fourth line"])
+    printed = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda value: printed.append(value))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert printed == ["first line\nsecond line\nthird line\nfourth line"]
 
 
 def test_suspend_output_history_blocks_recording():

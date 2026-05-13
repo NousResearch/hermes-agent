@@ -1187,6 +1187,44 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
     assert pool.entries() == []
 
 
+def test_load_pool_removes_stale_copilot_gh_cli_entry_when_token_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "copilot": [
+                    {
+                        "id": "seeded-gh",
+                        "label": "gh auth token",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "gh_cli",
+                        "access_token": "stale-gho-token",
+                        "base_url": "https://api.githubcopilot.com",
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("", ""),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("copilot")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert auth_payload["credential_pool"]["copilot"] == []
+
+
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
     """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

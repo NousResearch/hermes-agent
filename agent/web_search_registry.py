@@ -114,7 +114,7 @@ _LEGACY_PREFERENCE = ("brave-free", "firecrawl", "searxng", "ddgs")
 
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
-    """Resolve the active provider for a capability ("search" | "extract").
+    """Resolve the active provider for a capability ("search" | "extract" | "crawl").
 
     Resolution rules (in order):
 
@@ -147,6 +147,8 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             return bool(p.supports_search())
         if capability == "extract":
             return bool(p.supports_extract())
+        if capability == "crawl":
+            return bool(p.supports_crawl())
         return False
 
     def _is_available_safe(p: WebSearchProvider) -> bool:
@@ -216,6 +218,20 @@ def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """
     explicit = _read_config_key("web", "extract_backend") or _read_config_key("web", "backend")
     return _resolve(explicit, capability="extract")
+
+
+def get_active_crawl_provider() -> Optional[WebSearchProvider]:
+    """Resolve the currently-active web crawl provider.
+
+    Reads ``web.crawl_backend`` (preferred) or ``web.backend`` (shared
+    fallback) from config.yaml; falls back per the module docstring.
+
+    Crawl is a niche capability — only Tavily implements it among built-in
+    providers. Most callers should expect ``None`` and fall back to a
+    different strategy (e.g. summarize-via-LLM).
+    """
+    explicit = _read_config_key("web", "crawl_backend") or _read_config_key("web", "backend")
+    return _resolve(explicit, capability="crawl")
 
 
 def _reset_for_tests() -> None:

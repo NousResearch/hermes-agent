@@ -164,6 +164,18 @@ const countNewlines = (text: string, end: number) => {
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
 
+const COMPOSER_PASTE_MULTILINE_LIMIT = 3
+
+export const normalizeComposerPasteText = (text: string, multilineLimit = COMPOSER_PASTE_MULTILINE_LIMIT) => {
+  const normalized = stripTrailingPasteNewlines(text.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
+
+  if (!/[^\n]/.test(normalized) || normalized.split('\n').length <= multilineLimit) {
+    return normalized
+  }
+
+  return normalized.replace(/[ \t]*\n+[ \t]*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
 export const toolTrailLabel = (name: string) =>
   name
     .split('_')

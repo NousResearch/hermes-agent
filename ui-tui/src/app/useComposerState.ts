@@ -17,7 +17,7 @@ import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
-import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
+import { normalizeComposerPasteText, pasteTokenLabel } from '../lib/text.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
@@ -142,7 +142,7 @@ export function useComposerState({
       text,
       value
     }: Omit<PasteEvent, 'hotkey'>): Promise<null | { cursor: number; value: string }> => {
-      const cleanedText = stripTrailingPasteNewlines(text)
+      const cleanedText = normalizeComposerPasteText(text)
 
       if (!cleanedText || !/[^\n]/.test(cleanedText)) {
         if (bracketed) {

@@ -22,6 +22,7 @@ from typing import Any
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", ".hermes")).resolve()
 REPORT_DIR = HERMES_HOME / "reports" / "bounty-candidates"
 WORKSPACE = HERMES_HOME / "bounty-workspace"
+WATCHLIST_FILE = HERMES_HOME / "config" / "bounty-watchlist.json"
 
 LANGUAGES = ("Python", "TypeScript", "Rust", "Go")
 LIMIT_PER_QUERY = int(os.environ.get("BOUNTY_SCOUT_LIMIT_PER_QUERY", "18"))
@@ -122,6 +123,17 @@ class Candidate:
     risk_flags: list[str] = field(default_factory=list)
 
 
+@dataclass
+class WatchResult:
+    target: dict[str, Any]
+    status: str
+    action: str
+    issue_url: str
+    existing_prs: list[str]
+    reasons: list[str]
+    next_command: str
+
+
 def run_json(args: list[str]) -> Any:
     completed = subprocess.run(args, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
@@ -133,6 +145,19 @@ def run_json(args: list[str]) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return []
+
+
+def load_watchlist() -> list[dict[str, Any]]:
+    if not WATCHLIST_FILE.exists():
+        return []
+    try:
+        data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = data.get("watchlist") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def notify() -> None:
@@ -271,13 +296,106 @@ def enrich(candidate: Candidate) -> Candidate:
         candidate.linked_pr_count = len(
             set(
                 re.findall(
-                    r"(?:/pull/|PR\s*#|pull request\s*#|#)(\d+)",
+                    r"(?:/pull/|PR\s*#|pull request\s*#)(\d+)",
                     candidate.comments_text,
                     flags=re.I,
                 )
             )
         )
     return candidate
+
+
+def inspect_watch_target(target: dict[str, Any]) -> WatchResult:
+    repo = str(target.get("repo") or "").strip()
+    issue = target.get("issue")
+    title = str(target.get("title") or target.get("id") or "watch target")
+    configured_url = str(target.get("url") or "").strip()
+    reasons = [str(target.get("notes") or "").strip()] if target.get("notes") else []
+    existing_prs: list[str] = []
+    issue_url = configured_url
+    status = str(target.get("initial_status") or "WATCH")
+    action = "WATCH"
+
+    if repo and issue:
+        issue_data = run_json(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(issue),
+                "--repo",
+                repo,
+                "--json",
+                "title,url,state,body,labels,comments,createdAt,updatedAt,closedByPullRequestsReferences",
+            ]
+        )
+        if isinstance(issue_data, dict):
+            issue_url = issue_data.get("url") or issue_url
+            state = str(issue_data.get("state") or "?").upper()
+            comments = issue_data.get("comments") or []
+            closed_refs = issue_data.get("closedByPullRequestsReferences") or []
+            comments_text = "\n".join(str(comment.get("body") or "") for comment in comments)
+            linked = sorted(set(re.findall(r"(?:/pull/|PR\s*#|pull request\s*#)(\d+)", comments_text, re.I)))
+            existing_prs.extend(f"#{number}" for number in linked[:8])
+            for ref in closed_refs[:8]:
+                if isinstance(ref, dict) and ref.get("url"):
+                    existing_prs.append(str(ref["url"]))
+            if state != "OPEN":
+                action = "SKIP"
+                reasons.append(f"issue state is {state}")
+            elif len(comments) >= 15 or len(existing_prs) >= 3:
+                action = "WATCH"
+                reasons.append("crowded issue or multiple linked PR/attempt signals")
+            else:
+                action = "ANALYZE"
+                reasons.append("open issue with manageable competition; read-only repo analysis may be useful")
+            status = state
+
+        pr_query = f"{title} repo:{repo}"
+        pr_data = run_json(
+            [
+                "gh",
+                "search",
+                "prs",
+                pr_query,
+                "--state",
+                "open",
+                "--limit",
+                "10",
+                "--json",
+                "title,url,state",
+            ]
+        )
+        if isinstance(pr_data, list):
+            for pr in pr_data[:5]:
+                if isinstance(pr, dict) and pr.get("url"):
+                    existing_prs.append(str(pr["url"]))
+            if pr_data:
+                reasons.append(f"{len(pr_data)} open PR search results for target title")
+                if action == "ANALYZE":
+                    action = "WATCH"
+    else:
+        action = "LOW_PRIORITY_WATCH" if configured_url else "SKIP"
+        reasons.append("no GitHub repo/issue configured; keep as Algora/public-listing verification only")
+
+    next_command = (
+        f"gh issue view {issue} --repo {repo} --json title,url,state,labels,comments,updatedAt"
+        if repo and issue
+        else "Use public Algora page only; do not rely on deep links or browser bypasses."
+    )
+    return WatchResult(
+        target=target,
+        status=status,
+        action=action,
+        issue_url=issue_url,
+        existing_prs=sorted(set(existing_prs))[:10],
+        reasons=[reason for reason in reasons if reason],
+        next_command=next_command,
+    )
+
+
+def inspect_watchlist() -> list[WatchResult]:
+    return [inspect_watch_target(target) for target in load_watchlist()]
 
 
 def has_amount(text: str) -> bool:
@@ -409,8 +527,11 @@ def report_header(now: str, gate: str, take: Candidate | None) -> list[str]:
         "",
         "## Safety Envelope",
         "- Scout + Score + Repo Analysis Gate + Report during unattended runs.",
+        "- Actual available workflow used: GitHub CLI search/issue inspection plus local deterministic scoring/reporting.",
+        "- Agent skills are not loaded during this no-agent cron script; code-review/TDD/debugging skills are reserved for user-confirmed follow-up work.",
         "- May clone or fetch candidate repositories into the local bounty workspace for inspection and reporting.",
-        "- After explicit TAKE confirmation in this thread, the follow-up workflow should claim/reserve the bounty when public rules allow it, create a working branch, make the minimal code change, commit, push, and open a PR/submission when permitted by the repository and bounty terms.",
+        "- After explicit TAKE confirmation in this thread, code changes may be prepared in the local cloned workspace only.",
+        "- Claiming/reserving bounties, creating branches, committing, pushing, or opening PRs still requires separate explicit user instruction and must be allowed by the repository and bounty terms.",
         "- Must not run unauthorized scanning, spam comments, disclose private vulnerabilities publicly, fabricate findings, bypass platform rules, or publish payout-sensitive data.",
         "",
         "## Gate Result",
@@ -419,10 +540,39 @@ def report_header(now: str, gate: str, take: Candidate | None) -> list[str]:
     ]
 
 
-def render(candidates: list[Candidate], take: Candidate | None, cloned: Path | None) -> str:
+def render(
+    candidates: list[Candidate],
+    take: Candidate | None,
+    cloned: Path | None,
+    watch_results: list[WatchResult],
+) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     gate = take.gate if take else ("WATCH" if any(c.gate == "WATCH" for c in candidates) else "SKIP")
     lines = report_header(now, gate, take)
+
+    if watch_results:
+        lines.extend(["", "## Manual Watchlist"])
+        for idx, result in enumerate(watch_results, 1):
+            target = result.target
+            skills = ", ".join(str(skill) for skill in target.get("skills", [])) or "unknown"
+            existing_prs = ", ".join(result.existing_prs) if result.existing_prs else "none found by read-only check"
+            lines.extend(
+                [
+                    f"{idx}. {target.get('title') or target.get('id')}",
+                    f"   - Repo: `{target.get('repo') or 'unknown / Algora-only'}`",
+                    f"   - Issue / bounty link: {result.issue_url or target.get('url') or 'unknown'}",
+                    f"   - Bounty amount: `{target.get('bounty') or 'unknown'}`",
+                    f"   - Current status: `{result.status}`",
+                    f"   - Required skills: {skills}",
+                    f"   - Estimated difficulty: `{target.get('estimated_difficulty') or 'unknown until repo analysis'}`",
+                    f"   - Competition risk: `{'high' if result.existing_prs else 'medium/unknown'}`",
+                    f"   - Existing PR already exists: {existing_prs}",
+                    f"   - Recommended action: `{result.action}`",
+                    f"   - Reason: {'; '.join(result.reasons) or 'none'}",
+                    f"   - Next safe read-only command: `{result.next_command}`",
+                ]
+            )
+
     lines.extend(["", "## Ranked Candidates"])
 
     if not candidates:
@@ -461,18 +611,19 @@ def render(candidates: list[Candidate], take: Candidate | None, cloned: Path | N
                 f"- Likely files: {likely_files}",
                 f"- Local clone/fetch: `{cloned}`" if cloned else "- Local clone/fetch: not available",
                 "- Tests to run: project-specific unit tests, lint/typecheck, and the smallest regression test for the touched behavior.",
-                "- Claim/reservation path: claim or reserve only if the public issue/bounty rules permit it, using a concise non-spam maintainer-facing comment.",
-                "- Branch/commit/push/PR path: after TAKE confirmation, create a working branch, make the minimal patch, commit, push, and open the PR/submission when repository rules permit it.",
+                "- Claim/reservation path: do not claim or reserve during the unattended run. Only do this after separate explicit user instruction and only if public issue/bounty rules permit it.",
+                "- Branch/commit/push/PR path: do not create branches, commit, push, or open PRs during the unattended run. After separate explicit instruction, use the repository's contribution rules.",
                 "",
                 "## Validation Checklist",
                 "- [ ] User confirms this TAKE target in the current thread",
                 "- [ ] Re-read issue body and maintainer comments for payout and acceptance terms",
                 "- [ ] Inspect local clone/fetch without code changes first",
-                "- [ ] Confirm claim/reservation, branch, push, and PR actions are allowed by public repository or bounty terms",
+                "- [ ] Confirm any claim/reservation, branch, push, or PR action has separate explicit user instruction",
+                "- [ ] Confirm those actions are allowed by public repository or bounty terms",
                 "- [ ] Identify minimal files and tests",
-                "- [ ] Prepare the minimal code change on a working branch",
+                "- [ ] Prepare the minimal code change locally only after TAKE confirmation",
                 "- [ ] Run local verification before any submission",
-                "- [ ] Commit, push, and open PR/submission if verification passes and rules allow it",
+                "- [ ] Commit, push, or open PR/submission only after separate explicit instruction, passing verification, and rule confirmation",
                 "",
                 "## Rollback / Debug Path",
                 f"- Remove cloned workspace: `rm -rf {cloned}`" if cloned else "- No cloned workspace to remove",
@@ -511,7 +662,8 @@ def main() -> int:
     ranked = sorted(enriched, key=lambda c: c.score, reverse=True)
     take = next((candidate for candidate in ranked if candidate.gate == "TAKE"), None)
     cloned = maybe_clone(take)
-    report = render(ranked, take, cloned)
+    watch_results = inspect_watchlist()
+    report = render(ranked, take, cloned, watch_results)
     report_path = REPORT_DIR / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-github-bounty-income-30m.md"
     report_path.write_text(report, encoding="utf-8")
 

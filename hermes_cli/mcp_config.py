@@ -548,10 +548,15 @@ def cmd_mcp_test(args):
     if auth_type == "oauth":
         _info("Auth: OAuth 2.1 PKCE")
     elif headers:
+        # Check ALL header values for unresolved env var references, regardless
+        # of the header name, so that tokens stored under non-standard names
+        # (e.g. "X-Api-Token") are also caught.  Warn once per header, then
+        # display masked values only for credential-bearing headers.
         for k, v in headers.items():
-            if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value
-                resolved = _interpolate_value(v)
+            if not isinstance(v, str):
+                continue
+            resolved = _interpolate_value(v, server_name=name)
+            if "key" in k.lower() or "auth" in k.lower():
                 if len(resolved) > 8:
                     masked = resolved[:4] + "***" + resolved[-4:]
                 else:
@@ -581,10 +586,30 @@ def cmd_mcp_test(args):
     print()
 
 
-def _interpolate_value(value: str) -> str:
-    """Resolve ``${ENV_VAR}`` references in a string."""
+def _interpolate_value(value: str, *, server_name: Optional[str] = None) -> str:
+    """Resolve ``${ENV_VAR}`` references in a string.
+
+    Warns when a referenced environment variable is not set, since
+    this typically indicates a misconfiguration that will cause
+    authentication failures at runtime.
+
+    Args:
+        value: The string to interpolate.
+        server_name: Optional MCP server name, included in the warning
+            message to help users identify which server is misconfigured.
+    """
     def _replace(m):
-        return os.getenv(m.group(1), "")
+        var_name = m.group(1)
+        resolved = os.getenv(var_name)
+        if resolved is None:
+            server_context = f" (server: '{server_name}')" if server_name else ""
+            _warning(
+                f"Environment variable ${{{var_name}}} is not set{server_context} — "
+                f"authentication will fail at runtime"
+            )
+            return ""
+        return resolved
+
     return re.sub(r"\$\{(\w+)\}", _replace, value)
 
 

@@ -285,6 +285,12 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         pass
 
+    # Sanitize PYTHONHOME/PYTHONPATH — they can cause the subprocess to load
+    # the wrong Python interpreter (e.g. uv's Python instead of conda's), which
+    # breaks tools like conda that rely on finding their own stdlib packages.
+    run_env.pop("PYTHONHOME", None)
+    run_env.pop("PYTHONPATH", None)
+
     return run_env
 
 

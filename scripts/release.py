@@ -963,6 +963,7 @@ AUTHOR_MAP = {
     "info@glesperance.com": "glesperance",  # PR #19443
     "lxl694522264@gmail.com": "EvilDrag0n",  # PR #20651
     # v0.13.0 additions
+    "02356abc@users.noreply.github.com": "02356abc",  # PR #25008 (single gateway multi-agent)
     "clode@clo5de.info": "jackey8616",  # via PR salvage
     "james.russo@heygen.com": "jrusso1020",  # via PR salvage
     "leon@sgp43.com": "LeonSGP43",  # PR #18739 salvage of #14570

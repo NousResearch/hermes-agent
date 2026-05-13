@@ -1,0 +1,8 @@
+name: maindex
+version: 1.0.0
+description: "Maindex — structured memory graph with semantic + relational recall via the Expert REST API."
+pip_dependencies:
+  - httpx
+hooks:
+  - on_pre_compress
+  - on_memory_write

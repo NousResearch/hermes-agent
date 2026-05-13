@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
@@ -32,7 +33,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Draining 1 active agent(s) before restart..."
+    assert result == t("gateway.draining", count=1)
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 

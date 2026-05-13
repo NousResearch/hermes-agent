@@ -95,7 +95,10 @@ class DDGSWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "DuckDuckGo (ddgs)",
-            "badge": "free",
-            "tag": "No API key — community ddgs package (pip install ddgs).",
+            "badge": "free · no key · search only",
+            "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
             "env_vars": [],
+            # Trigger `_run_post_setup("ddgs")` after the user picks this row
+            # so the ddgs Python package gets pip-installed on first selection.
+            "post_setup": "ddgs",
         }

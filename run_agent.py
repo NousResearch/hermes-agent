@@ -11542,7 +11542,8 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=hermes-agent"]
+                from agent.portal_tags import nous_portal_tags as _portal_tags
+                summary_extra_body["tags"] = _portal_tags()
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)

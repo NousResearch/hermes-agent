@@ -96,7 +96,10 @@ class TestBundledPluginsRegister:
             ("exa", True, True, False),
             ("parallel", True, True, False),
             ("tavily", True, True, True),
-            ("firecrawl", True, True, False),
+            # firecrawl: search + extract + crawl. Crawl was originally
+            # disabled in the migration (fell through to a legacy inline
+            # path); the follow-up commit enabled it natively.
+            ("firecrawl", True, True, True),
         ],
     )
     def test_capability_flags_match_spec(
@@ -451,3 +454,22 @@ class TestErrorResponseShapes:
         assert isinstance(result["results"], list)
         if result["results"]:
             assert "error" in result["results"][0]
+
+    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self) -> None:
+        """firecrawl crawl is async (wraps SDK in to_thread); error must be
+        surfaced via the per-page result shape, not raised."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.crawl)
+        result = asyncio.run(p.crawl("https://example.com"))
+        assert isinstance(result, dict)
+        assert "results" in result
+        assert isinstance(result["results"], list)
+        # Without FIRECRAWL_API_KEY, the plugin's _get_firecrawl_client()
+        # raises ValueError which is caught and returned as a per-page error.
+        assert len(result["results"]) >= 1
+        assert "error" in result["results"][0]
+        assert result["results"][0]["url"] == "https://example.com"

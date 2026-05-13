@@ -1,0 +1,3 @@
+name: openbrain
+version: 0.1.0
+description: "Open Brain / OB1 governed agent memory provider for Hermes using the configured open-brain MCP server."

@@ -1765,6 +1765,7 @@ def select_provider_and_model(args=None):
 
     # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
     all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
+    known_provider_keys = {key for key, _ in all_providers}
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         from hermes_cli.config import read_raw_config
@@ -1872,6 +1873,8 @@ def select_provider_and_model(args=None):
         config
     )  # key → {name, base_url, api_key}
     for key, provider_info in _custom_provider_map.items():
+        if key in known_provider_keys:
+            continue
         name = provider_info["name"]
         base_url = provider_info["base_url"]
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")

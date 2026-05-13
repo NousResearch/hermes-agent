@@ -301,3 +301,51 @@ def test_leave_unchanged_replaces_cancel_label(tmp_path, monkeypatch):
     assert "Leave unchanged" in labels
     assert "Cancel" not in labels, "Cancel label should be replaced"
     assert any("Configure auxiliary models" in label for label in labels)
+
+
+def test_provider_menu_dedupes_canonical_user_provider_entries(tmp_path, monkeypatch):
+    """Canonical providers should not be duplicated by compatibility-layer provider rows."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".hermes").mkdir(exist_ok=True)
+
+    from hermes_cli import main as main_mod
+
+    captured: list[list[str]] = []
+
+    def fake_prompt(choices, *, default=0):
+        captured.append(list(choices))
+        for i, label in enumerate(choices):
+            if label == "Leave unchanged":
+                return i
+        raise AssertionError("Leave unchanged not in provider list")
+
+    monkeypatch.setattr(
+        "hermes_cli.models.CANONICAL_PROVIDERS",
+        [
+            SimpleNamespace(slug="minimax-cn", tui_desc="MiniMax CN"),
+            SimpleNamespace(slug="deepseek", tui_desc="DeepSeek"),
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_compatible_custom_providers",
+        lambda _cfg: [
+            {
+                "name": "minimax-cn",
+                "base_url": "https://example.com/v1",
+                "provider_key": "minimax-cn",
+                "model": "",
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider_key: provider_key)
+    monkeypatch.setattr(main_mod, "_prompt_provider_choice", fake_prompt)
+
+    main_mod.select_provider_and_model()
+
+    assert captured, "provider menu never rendered"
+    labels = captured[0]
+    assert labels.count("MiniMax CN") == 1

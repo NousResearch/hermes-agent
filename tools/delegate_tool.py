@@ -1904,6 +1904,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1996,9 +1998,12 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
-        ]
+        st = {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+        if model:
+            st["model"] = model
+        if provider:
+            st["provider"] = provider
+        task_list = [st]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2043,11 +2048,11 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=t.get("model") or creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=t.get("provider") or creds["provider"],
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2669,6 +2674,20 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Per-task model override (e.g. deepseek-v4-pro). "
+                    "Overrides delegation.model for this task only."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Per-task provider override (e.g. deepseek). "
+                    "Overrides delegation.provider for this task only."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2696,6 +2715,20 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'deepseek-v4-pro'). "
+                                "Overrides delegation.model for this task only."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'deepseek'). "
+                                "Overrides delegation.provider for this task only."
+                            ),
                         },
                         "role": {
                             "type": "string",
@@ -2759,6 +2792,8 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

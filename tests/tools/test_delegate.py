@@ -414,6 +414,21 @@ class TestDelegateTask(unittest.TestCase):
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
+    @patch("run_agent.AIAgent")
+    def test_per_task_model_override(self, MockAgent):
+        """Per-task model overrides the global delegation model."""
+        mock_child = MagicMock()
+        mock_child.run_conversation.return_value = {
+            "final_response": "done", "completed": True, "api_calls": 1
+        }
+        MockAgent.return_value = mock_child
+        parent = _make_mock_parent(depth=0)
+
+        delegate_task(tasks=[{"goal": "test", "model": "deepseek-v4-pro"}], parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "deepseek-v4-pro")
+
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""

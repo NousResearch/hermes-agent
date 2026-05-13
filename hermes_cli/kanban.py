@@ -1691,6 +1691,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "auto_blocked": res.auto_blocked,
+            "auto_remediated": [
+                {"review_task_id": rid, "remediation_task_id": rem, "rereview_task_id": rr}
+                for (rid, rem, rr) in res.auto_remediated
+            ],
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
@@ -1710,6 +1714,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    print(f"Auto-remediated: {len(res.auto_remediated)}")
+    for rid, rem, rr in res.auto_remediated:
+        tag = " (dry)" if args.dry_run else ""
+        print(f"  - review {rid}  ->  remediation {rem or '-'}  ->  re-review {rr or '-'}{tag}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -1821,7 +1829,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked
+            or res.spawned or res.auto_blocked or res.auto_remediated
         )
         if did_work:
             print(
@@ -1829,7 +1837,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"auto_blocked={len(res.auto_blocked)} "
+                f"auto_remediated={len(res.auto_remediated)}",
                 flush=True,
             )
 

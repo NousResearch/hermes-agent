@@ -2893,12 +2893,211 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 
 
+_REVIEW_ASSIGNEE_RE = re.compile(r"\b(review|reviewer|qa|quality|test|tester)\b", re.I)
+_REVIEW_TITLE_RE = re.compile(r"\b(review|re-review|qa|quality assurance|test)\b", re.I)
+_DEFECT_BLOCKER_RE = re.compile(
+    r"\b("
+    r"bug|defect|regression|broken|fails?|failing|failure|error|exception|"
+    r"traceback|lint|typecheck|ci|test(?:s)?|red|fix(?:able)?|needs? changes?|"
+    r"missing|incorrect|wrong|not working|review finding|qa finding|flaky"
+    r")\b",
+    re.I,
+)
+_HUMAN_BLOCKER_RE = re.compile(
+    r"\b("
+    r"approval|approve|human|operator|decision|choose|credential|credentials|"
+    r"secret|token|api key|password|login|auth|oauth|access|permission|"
+    r"clarify|clarification|user input|which profile|paywall|blocked by user"
+    r")\b",
+    re.I,
+)
+_FRONTEND_RE = re.compile(r"\b(frontend|front-end|ui|ux|react|vue|svelte|css|html|browser)\b", re.I)
+_BACKEND_RE = re.compile(r"\b(backend|back-end|api|server|db|database|sql|worker|queue|railway)\b", re.I)
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|secret|api[_ -]?key|authorization)\b\s*[:=]\s*\S+"
+)
+
+
+def _is_review_task(task: Task) -> bool:
+    haystack = " ".join(str(x or "") for x in (task.assignee, task.title, task.body))
+    return bool(_REVIEW_ASSIGNEE_RE.search(str(task.assignee or "")) or _REVIEW_TITLE_RE.search(haystack))
+
+
+def _is_actionable_review_blocker(task: Task, reason: str) -> bool:
+    if not _is_review_task(task):
+        return False
+    text = " ".join(str(x or "") for x in (task.title, task.body, reason))
+    has_defect = bool(_DEFECT_BLOCKER_RE.search(text))
+    has_human = bool(_HUMAN_BLOCKER_RE.search(reason or ""))
+    # Human/credential/approval blockers must not auto-reroute unless the
+    # same reason also names a concrete defect signal. This keeps genuine
+    # approval waits parked for a human while still handling "tests failed"
+    # / "needs changes" review blocks without an operator.
+    return has_defect and not has_human
+
+
+def _sanitize_blocker_text(text: Optional[str], *, max_chars: int = 1200) -> str:
+    s = (text or "").strip()
+    if not s:
+        return "(no reason supplied)"
+    s = _SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", s)
+    if len(s) > max_chars:
+        s = s[: max_chars - 1].rstrip() + "…"
+    return s
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    run = latest_run(conn, task_id)
+    if run and run.outcome == "blocked" and run.summary:
+        return str(run.summary)
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row and row["payload"]:
+        try:
+            payload = json.loads(row["payload"])
+            reason = payload.get("reason") if isinstance(payload, dict) else None
+            if reason:
+                return str(reason)
+        except Exception:
+            pass
+    return ""
+
+
+def _task_already_auto_remediated(conn: sqlite3.Connection, review_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'auto_remediated' LIMIT 1",
+        (review_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _choose_remediation_assignee(conn: sqlite3.Connection, review_task: Task, reason: str) -> str:
+    parent_rows = conn.execute(
+        """
+        SELECT p.*
+          FROM task_links l
+          JOIN tasks p ON p.id = l.parent_id
+         WHERE l.child_id = ?
+         ORDER BY COALESCE(p.completed_at, p.created_at) DESC, p.created_at DESC
+        """,
+        (review_task.id,),
+    ).fetchall()
+    for row in parent_rows:
+        parent = Task.from_row(row)
+        if parent.assignee and not _is_review_task(parent):
+            return parent.assignee
+    text = " ".join(str(x or "") for x in (review_task.title, review_task.body, reason))
+    if _FRONTEND_RE.search(text):
+        return "frontend-eng"
+    if _BACKEND_RE.search(text):
+        return "backend-eng"
+    return "backend-eng"
+
+
+def auto_remediate_blocked_reviews(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Route actionable blocked review/QA findings into fix + re-review tasks.
+
+    Human-only blockers (approval, credentials, access, explicit decisions) are
+    intentionally left alone. Idempotency keys and an ``auto_remediated`` event
+    make dispatcher retries safe and prevent remediation/re-review loops.
+    Returns ``(review_id, remediation_id, rereview_id)`` tuples. In dry-run mode
+    ids are empty strings because no rows are created.
+    """
+    blocked = conn.execute(
+        "SELECT * FROM tasks WHERE status = 'blocked' ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    routed: list[tuple[str, str, str]] = []
+    for row in blocked:
+        review = Task.from_row(row)
+        if _task_already_auto_remediated(conn, review.id):
+            continue
+        reason = _latest_block_reason(conn, review.id)
+        if not _is_actionable_review_blocker(review, reason):
+            continue
+        target = _choose_remediation_assignee(conn, review, reason)
+        if dry_run:
+            routed.append((review.id, "", ""))
+            continue
+
+        safe_reason = _sanitize_blocker_text(reason)
+        rem_key = f"kanban:auto-remediation:{review.id}:fix"
+        rereview_key = f"kanban:auto-remediation:{review.id}:rereview"
+        rem_title = f"Remediate review findings from {review.id}: {review.title}"
+        rem_body = (
+            f"Auto-created from blocked review/QA task {review.id}.\n\n"
+            f"Original review title: {review.title}\n"
+            f"Blocked reason/findings:\n{safe_reason}\n\n"
+            "Fix the actionable defects only; do not proceed if the blocker is actually "
+            "waiting on credentials, approval, or a human decision. Complete with tests run "
+            "and changed files so the follow-up re-review has enough context."
+        )
+        rem_id = create_task(
+            conn,
+            title=rem_title,
+            body=rem_body,
+            assignee=target,
+            created_by="kanban-auto-remediation",
+            workspace_kind=review.workspace_kind or "scratch",
+            workspace_path=review.workspace_path if review.workspace_kind == "dir" else None,
+            tenant=review.tenant,
+            priority=max(int(review.priority or 0), 0),
+            idempotency_key=rem_key,
+        )
+        rereview_title = f"Re-review remediation for {review.id}: {review.title}"
+        rereview_body = (
+            f"Auto-created after remediation task {rem_id} for blocked review {review.id}.\n\n"
+            "Verify the remediation resolved the blocked findings and either complete "
+            "with approval or block with any remaining actionable defects."
+        )
+        rereview_id = create_task(
+            conn,
+            title=rereview_title,
+            body=rereview_body,
+            assignee=review.assignee,
+            created_by="kanban-auto-remediation",
+            workspace_kind=review.workspace_kind or "scratch",
+            workspace_path=review.workspace_path if review.workspace_kind == "dir" else None,
+            tenant=review.tenant,
+            priority=max(int(review.priority or 0) - 1, 0),
+            parents=[rem_id],
+            idempotency_key=rereview_key,
+        )
+        add_comment(
+            conn,
+            review.id,
+            "kanban-auto-remediation",
+            f"Actionable review blocker auto-routed: remediation {rem_id} assigned to {target}; fresh re-review {rereview_id} will start after remediation completes.",
+        )
+        with write_txn(conn):
+            _append_event(
+                conn,
+                review.id,
+                "auto_remediated",
+                {"remediation_task_id": rem_id, "rereview_task_id": rereview_id, "assignee": target},
+            )
+        routed.append((review.id, rem_id, rereview_id))
+    return routed
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
 
     reclaimed: int = 0
     promoted: int = 0
+    auto_remediated: list[tuple[str, str, str]] = field(default_factory=list)
+    """Blocked review ids routed to ``(remediation_task_id, rereview_task_id)``.
+
+    In dispatcher dry-run mode the task ids are empty strings because no rows
+    are created; the tuple still records that the blocked review is actionable.
+    """
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -3746,6 +3945,9 @@ def dispatch_once(
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+    result.auto_remediated = auto_remediate_blocked_reviews(conn, dry_run=dry_run)
+    if result.auto_remediated:
+        result.promoted += recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

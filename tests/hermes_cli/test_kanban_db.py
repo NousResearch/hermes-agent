@@ -748,6 +748,79 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     assert res.reclaimed == 1
 
 
+def test_dispatch_dry_run_surfaces_actionable_blocked_review_without_mutation(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        impl = kb.create_task(conn, title="Implement API", assignee="backend-eng")
+        kb.complete_task(conn, impl)
+        review = kb.create_task(
+            conn, title="Review API implementation", assignee="reviewer", parents=[impl]
+        )
+        kb.claim_task(conn, review)
+        kb.block_task(conn, review, reason="Tests are failing: missing API validation")
+        before_count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        after_count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+        comments = kb.list_comments(conn, review)
+        events = [e.kind for e in kb.list_events(conn, review)]
+
+    assert res.auto_remediated == [(review, "", "")]
+    assert after_count == before_count
+    assert comments == []
+    assert "auto_remediated" not in events
+
+
+def test_auto_remediate_blocked_review_creates_fix_and_rereview_idempotently(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        impl = kb.create_task(conn, title="Implement backend endpoint", assignee="backend-eng")
+        kb.complete_task(conn, impl)
+        review = kb.create_task(
+            conn, title="QA review backend endpoint", assignee="reviewer", parents=[impl]
+        )
+        kb.claim_task(conn, review)
+        kb.block_task(conn, review, reason="Review finding: test failure in validation path")
+
+        routed = kb.auto_remediate_blocked_reviews(conn)
+        assert len(routed) == 1
+        assert routed[0][0] == review
+        rem_id, rereview_id = routed[0][1], routed[0][2]
+
+        remediation = kb.get_task(conn, rem_id)
+        rereview = kb.get_task(conn, rereview_id)
+        assert remediation.assignee == "backend-eng"
+        assert remediation.status == "ready"
+        assert remediation.idempotency_key == f"kanban:auto-remediation:{review}:fix"
+        assert rereview.assignee == "reviewer"
+        assert rereview.status == "todo"
+        parents = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?", (rereview_id,)
+        ).fetchall()
+        assert [p["parent_id"] for p in parents] == [rem_id]
+        assert any("auto-routed" in c.body for c in kb.list_comments(conn, review))
+        assert "auto_remediated" in [e.kind for e in kb.list_events(conn, review)]
+
+        assert kb.auto_remediate_blocked_reviews(conn) == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 4
+
+
+def test_auto_remediate_ignores_human_approval_blocker(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        review = kb.create_task(title="Review deployment", assignee="reviewer", conn=conn)
+        kb.claim_task(conn, review)
+        kb.block_task(conn, review, reason="Need human approval before deployment")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        assert res.auto_remediated == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

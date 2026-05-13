@@ -29,7 +29,7 @@ from .session import SessionSource
 class DeliveryTarget:
     """
     A single delivery target.
-    
+
     Represents where a message should be sent:
     - "origin" → back to source
     - "local" → save to local files
@@ -41,6 +41,7 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    agent_id: Optional[str] = None  # Agent profile for delivery context
     
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -63,6 +64,7 @@ class DeliveryTarget:
                     chat_id=origin.chat_id,
                     thread_id=origin.thread_id,
                     is_origin=True,
+                    agent_id=origin.agent_id,
                 )
             else:
                 # Fallback to local if no origin
@@ -109,22 +111,24 @@ class DeliveryTarget:
 class DeliveryRouter:
     """
     Routes messages to appropriate destinations.
-    
+
     Handles the logic of resolving delivery targets and dispatching
     messages to the right platform adapters.
     """
-    
-    def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None):
+
+    def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None, registry=None):
         """
         Initialize the delivery router.
-        
+
         Args:
             config: Gateway configuration
             adapters: Dict mapping platforms to their adapter instances
+            registry: Optional Dict[str, AgentProfile] for multi-agent context.
         """
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_hermes_home() / "cron" / "output"
+        self._registry = registry or {}
     
     async def deliver(
         self,
@@ -151,11 +155,23 @@ class DeliveryRouter:
         
         for target in targets:
             try:
-                if target.platform == Platform.LOCAL:
-                    result = self._deliver_local(content, job_id, job_name, metadata)
+                # Set the active profile for this delivery target so path getters
+                # and adapter context resolve to the correct agent's home dir.
+                _agent_id = target.agent_id or "main"
+                _profile = self._registry.get(_agent_id)
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    with use_profile(_profile):
+                        if target.platform == Platform.LOCAL:
+                            result = self._deliver_local(content, job_id, job_name, metadata)
+                        else:
+                            result = await self._deliver_to_platform(target, content, metadata)
                 else:
-                    result = await self._deliver_to_platform(target, content, metadata)
-                
+                    if target.platform == Platform.LOCAL:
+                        result = self._deliver_local(content, job_id, job_name, metadata)
+                    else:
+                        result = await self._deliver_to_platform(target, content, metadata)
+
                 results[target.to_string()] = {
                     "success": True,
                     "result": result

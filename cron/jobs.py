@@ -34,16 +34,27 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
-CRON_DIR = HERMES_DIR / "cron"
-JOBS_FILE = CRON_DIR / "jobs.json"
-
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
-OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _get_cron_dir() -> Path:
+    """Resolve cron directory dynamically via get_hermes_home so per-agent
+    ContextVar overrides are honoured."""
+    return get_hermes_home() / "cron"
+
+
+def _get_jobs_file() -> Path:
+    """Resolve jobs.json path dynamically."""
+    return _get_cron_dir() / "jobs.json"
+
+
+def _get_output_dir() -> Path:
+    """Resolve cron output directory dynamically."""
+    return _get_cron_dir() / "output"
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -150,10 +161,12 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    cron_dir = _get_cron_dir()
+    output_dir = _get_output_dir()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(output_dir)
 
 
 # =============================================================================
@@ -401,17 +414,18 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    jobs_file = _get_jobs_file()
+    if not jobs_file.exists():
         return []
-    
+
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
@@ -430,14 +444,15 @@ def load_jobs() -> List[Dict[str, Any]]:
 def save_jobs(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    jobs_file = _get_jobs_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jobs_file)
+        _secure_file(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -496,6 +511,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -540,6 +556,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        agent_id: Optional agent ID to stamp on the job. When omitted, falls
+                back to the current active profile (via ContextVar) or "main".
 
     Returns:
         The created job dict
@@ -594,6 +612,18 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
+    # Resolve agent_id: explicit param > current ContextVar > "main"
+    if agent_id is None:
+        try:
+            from agent.profile import get_active_profile
+            _profile = get_active_profile()
+            if _profile:
+                agent_id = _profile.id
+        except Exception:
+            pass
+        agent_id = agent_id or "main"
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -627,6 +657,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "agent_id": agent_id,
     }
 
     jobs = load_jobs()
@@ -758,7 +789,7 @@ def remove_job(job_id: str) -> bool:
     if len(jobs) < original_len:
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir = _get_output_dir() / job_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -867,16 +898,23 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
-def get_due_jobs() -> List[Dict[str, Any]]:
+def get_due_jobs(agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
     For recurring jobs (cron/interval), if the scheduled time is stale
     (more than one period in the past, e.g. because the gateway was down),
     the job is fast-forwarded to the next future run instead of firing
     immediately.  This prevents a burst of missed jobs on gateway restart.
+
+    Args:
+        agent_id: If provided, filter to jobs belonging to that agent.
+                  If omitted, returns jobs from the current profile's cron dir.
     """
     with _jobs_file_lock:
-        return _get_due_jobs_locked()
+        jobs = _get_due_jobs_locked()
+    if agent_id is not None:
+        jobs = [j for j in jobs if j.get("agent_id", "main") == agent_id]
+    return jobs
 
 
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
@@ -972,7 +1010,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir = _get_output_dir() / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     
@@ -995,6 +1033,49 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+# =============================================================================
+# Multi-agent job loading (gateway-wide tick)
+# =============================================================================
+
+def load_all_jobs(registry: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Load jobs from ALL agent profiles for a gateway-wide tick.
+
+    When the gateway runs multiple agents, each profile has its own
+    cron/jobs.json.  This function visits every profile directory,
+    temporarily switches the ContextVar, loads that profile's jobs,
+    stamps each with its agent_id, and returns the combined list.
+
+    Args:
+        registry: Optional agent registry (Dict[str, AgentProfile]).
+                  If omitted, falls back to loading from the current
+                  profile only (backward-compatible single-agent mode).
+
+    Returns:
+        Combined list of job dicts, each with an ``agent_id`` key.
+    """
+    if registry is None:
+        # Backward-compatible single-profile path
+        jobs = load_jobs()
+        for j in jobs:
+            if "agent_id" not in j:
+                j["agent_id"] = "main"
+        return jobs
+
+    all_jobs: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                jobs = load_jobs()
+                for j in jobs:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_jobs.extend(jobs)
+        except Exception as e:
+            logger.warning("Failed to load cron jobs for agent '%s': %s", agent_id, e)
+    return all_jobs
 
 
 # =============================================================================

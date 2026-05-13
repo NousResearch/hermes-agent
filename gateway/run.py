@@ -1187,13 +1187,12 @@ class GatewayRunner:
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
-        self.delivery_router = DeliveryRouter(self.config)
-
         # Build the AgentProfile registry from config.agents.  Always returns
         # at least {"main": AgentProfile()}, so single-agent installs see
         # zero behavior change.
         from agent.profile import load_agent_registry
         self._agent_registry = load_agent_registry(self.config)
+        self.delivery_router = DeliveryRouter(self.config, registry=self._agent_registry)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -16080,15 +16079,19 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, registry=None):
     """
     Background thread that ticks the cron scheduler at a regular interval.
-    
+
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
 
     When ``adapters`` and ``loop`` are provided, passes them through to the
     cron delivery path so live adapters can be used for E2EE rooms.
+
+    ``registry`` is the agent profile registry for multi-agent mode; when
+    present, cron jobs are loaded from ALL agent profiles and each job runs
+    under its own profile context.
 
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache + expired ``hermes debug share`` pastes
@@ -16107,7 +16110,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            cron_tick(verbose=False, adapters=adapters, loop=loop, registry=registry)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 
@@ -16499,7 +16502,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={
+            "adapters": runner.adapters,
+            "loop": asyncio.get_running_loop(),
+            "registry": getattr(runner, "_agent_registry", None),
+        },
         daemon=True,
         name="cron-ticker",
     )

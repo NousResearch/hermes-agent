@@ -73,8 +73,30 @@ class _ThreadContextCache:
 
 
 def check_slack_requirements() -> bool:
-    """Check if Slack dependencies are available."""
-    return SLACK_AVAILABLE
+    """Check if Slack dependencies are available.
+
+    Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
+    on first call if not present.
+    """
+    global SLACK_AVAILABLE, AsyncApp, AsyncSocketModeHandler, AsyncWebClient
+    if SLACK_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.slack", prompt=False)
+    except Exception:
+        return False
+    try:
+        from slack_bolt.async_app import AsyncApp as _App
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler as _Handler
+        from slack_sdk.web.async_client import AsyncWebClient as _Client
+    except ImportError:
+        return False
+    AsyncApp = _App
+    AsyncSocketModeHandler = _Handler
+    AsyncWebClient = _Client
+    SLACK_AVAILABLE = True
+    return True
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:

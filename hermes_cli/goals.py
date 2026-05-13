@@ -307,7 +307,7 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False
 
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False
@@ -336,6 +336,7 @@ def judge_goal(
             temperature=0,
             max_tokens=200,
             timeout=timeout,
+            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)

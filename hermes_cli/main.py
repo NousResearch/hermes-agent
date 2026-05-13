@@ -2320,7 +2320,7 @@ def _aux_flow_provider_model(
 
 def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
-    import getpass
+    from hermes_cli.cli_output import read_secret_line
 
     display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
@@ -2354,7 +2354,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         return
     model = model or current_model
     try:
-        api_key = getpass.getpass(
+        api_key = read_secret_line(
             "API key (optional, blank = use OPENAI_API_KEY): "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -2426,9 +2426,9 @@ def _model_flow_openrouter(config, current_model=""):
         print("Get one at: https://openrouter.ai/keys")
         print()
         try:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            key = getpass.getpass("OpenRouter API key (or Enter to cancel): ").strip()
+            key = read_secret_line("OpenRouter API key (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -2488,9 +2488,9 @@ def _model_flow_ai_gateway(config, current_model=""):
         print("Add a payment method to get $5 in free credits.")
         print()
         try:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            key = getpass.getpass("AI Gateway API key (or Enter to cancel): ").strip()
+            key = read_secret_line("AI Gateway API key (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -3004,9 +3004,9 @@ def _model_flow_custom(config):
         base_url = input(
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
-        import getpass
+        from hermes_cli.cli_output import read_secret_line
 
-        api_key = getpass.getpass(
+        api_key = read_secret_line(
             f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3293,7 +3293,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_config,
     )
     from hermes_cli import azure_detect
-    import getpass
+    from hermes_cli.cli_output import read_secret_line
 
     # ── Load current Azure Foundry configuration ─────────────────────
     model_cfg = config.get("model", {})
@@ -3349,7 +3349,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     # ── Step 2: API key ──────────────────────────────────────────────
     print()
     try:
-        api_key = getpass.getpass(
+        api_key = read_secret_line(
             f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3889,9 +3889,9 @@ def _model_flow_copilot(config, current_model=""):
                 return
         elif choice == "2":
             try:
-                import getpass
+                from hermes_cli.cli_output import read_secret_line
 
-                new_key = getpass.getpass("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+                new_key = read_secret_line("  Token (COPILOT_GITHUB_TOKEN): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -4140,7 +4140,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    import getpass
+    from hermes_cli.cli_output import read_secret_line
 
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import save_env_value
@@ -4153,7 +4153,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         else:
             prompt = f"{key_env} (or Enter to cancel): "
         try:
-            entered = getpass.getpass(prompt).strip()
+            entered = read_secret_line(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
@@ -4463,9 +4463,9 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print(f"  Endpoint: {mantle_base_url}")
         print()
         try:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            api_key = getpass.getpass("  Bedrock API Key: ").strip()
+            api_key = read_secret_line("  Bedrock API Key: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -5006,9 +5006,9 @@ def _run_anthropic_oauth_flow(save_env_value):
         print("  If the setup-token was displayed above, paste it here:")
         print()
         try:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            manual_token = getpass.getpass(
+            manual_token = read_secret_line(
                 "  Paste setup-token (or Enter to cancel): "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -5037,9 +5037,9 @@ def _run_anthropic_oauth_flow(save_env_value):
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
         try:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+            token = read_secret_line("  Setup-token (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
@@ -5140,9 +5140,9 @@ def _model_flow_anthropic(config, current_model=""):
             print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
             try:
-                import getpass
+                from hermes_cli.cli_output import read_secret_line
 
-                api_key = getpass.getpass("  API key (sk-ant-...): ").strip()
+                api_key = read_secret_line("  API key (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return

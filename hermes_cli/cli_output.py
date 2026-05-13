@@ -41,6 +41,27 @@ def print_header(text: str) -> None:
 # ─── Input Prompts ────────────────────────────────────────────────────────────
 
 
+def read_secret_line(prompt: str = "") -> str:
+    """Read a password/secret line with ASCII control characters stripped.
+
+    Wraps ``getpass.getpass()`` and removes ``\\x00``-``\\x1f`` from the
+    returned string.
+
+    On Windows, ``getpass.getpass()`` uses ``msvcrt.getwch()``, which emits
+    ``\\x00`` (or ``\\xe0``) followed by a scan code for special keys
+    (arrow keys, function keys, etc.) instead of filtering them out. An
+    inadvertent arrow keypress just before/during paste therefore injects
+    e.g. ``\\x00K`` (Left Arrow) into the value. When that value is later
+    assigned to ``os.environ`` it raises ``ValueError: embedded null
+    character``; when sent as an HTTP header it fails ASCII encoding.
+
+    The caller is responsible for ``.strip()`` if needed — callers that
+    feed the value through additional sanitization (e.g. paste cleanup)
+    may want the raw, control-char-free string.
+    """
+    return getpass.getpass(prompt).translate({i: None for i in range(32)})
+
+
 def prompt(
     question: str,
     default: str | None = None,
@@ -59,7 +80,7 @@ def prompt(
 
     try:
         if password:
-            value = getpass.getpass(display)
+            value = read_secret_line(display)
         else:
             value = input(display)
         value = value.strip()

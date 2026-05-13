@@ -267,8 +267,8 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
 
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"  {name}: ").strip()
+                from hermes_cli.cli_output import read_secret_line
+                value = read_secret_line(f"  {name}: ").strip()
             else:
                 value = input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):

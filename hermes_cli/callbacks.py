@@ -8,9 +8,9 @@ with the TUI.
 
 import queue
 import time as _time
-import getpass
 
 from hermes_cli.banner import cprint, _DIM, _RST
+from hermes_cli.cli_output import read_secret_line
 from hermes_cli.config import save_env_value_secure
 from hermes_constants import display_hermes_home
 
@@ -75,7 +75,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         if not hasattr(cli, "_secret_deadline"):
             cli._secret_deadline = 0
         try:
-            value = getpass.getpass(f"{prompt} (hidden, ESC or empty Enter to skip): ")
+            value = read_secret_line(f"{prompt} (hidden, ESC or empty Enter to skip): ")
         except (EOFError, KeyboardInterrupt):
             value = ""
 

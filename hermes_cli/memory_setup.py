@@ -7,11 +7,11 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
 from pathlib import Path
 
+from hermes_cli.cli_output import read_secret_line
 from hermes_constants import get_hermes_home
 
 
@@ -41,7 +41,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
         if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
+            val = read_secret_line(prompt="")
         else:
             val = sys.stdin.readline().strip()
     else:

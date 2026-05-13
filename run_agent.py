@@ -3287,6 +3287,29 @@ class AIAgent:
                 # fall back to the client's base_url hostname.
                 _main_model = getattr(self, "model", "") or "?"
                 _main_provider = getattr(self, "provider", "") or ""
+                # When provider was resolved to "openrouter" but the
+                # actual base_url points at a native vendor host (the
+                # user set model.base_url to api.openai.com/v1, etc.),
+                # the "openrouter" label is misleading. Prefer a label
+                # derived from the live base_url's hostname so the user
+                # can tell at a glance which vendor is actually being
+                # hit. Cosmetic only — routing is unchanged.
+                _main_base_url = getattr(self, "base_url", "") or ""
+                if _main_base_url:
+                    _hostname_label_map = (
+                        ("api.openai.com",    "openai"),
+                        ("api.anthropic.com", "anthropic"),
+                        ("api.x.ai",          "xai"),
+                        ("api.deepseek.com",  "deepseek"),
+                        ("api.mistral.ai",    "mistral"),
+                        ("api.groq.com",      "groq"),
+                        ("api.cohere.com",    "cohere"),
+                        ("api.cohere.ai",     "cohere"),
+                    )
+                    for _domain, _label in _hostname_label_map:
+                        if base_url_host_matches(_main_base_url, _domain):
+                            _main_provider = _label
+                            break
                 _aux_provider_label = (
                     _aux_cfg_provider
                     if _aux_cfg_provider and _aux_cfg_provider != "auto"

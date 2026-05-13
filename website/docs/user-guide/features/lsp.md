@@ -92,6 +92,13 @@ manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
 
+A few servers are installed alongside a peer dependency that npm
+won't auto-pull. The current case is `typescript-language-server`,
+which requires the `typescript` SDK importable from the same
+`node_modules` tree — Hermes installs both packages together when you
+run `hermes lsp install typescript` or auto-install fires on first
+use.
+
 ## CLI
 
 ```
@@ -206,6 +213,24 @@ lsp:
 The binary isn't on PATH and isn't in `<HERMES_HOME>/lsp/bin/`. Run
 `hermes lsp install <server_id>` to attempt an auto-install, or
 install the binary manually through the language's normal toolchain.
+
+**`Backend warnings` section in `hermes lsp status`**
+
+Some servers ship as thin wrappers around an external CLI for actual
+diagnostics — they spawn cleanly and accept requests but never emit
+errors when the sidecar binary is missing. The most common case is
+`bash-language-server`, which delegates diagnostics to `shellcheck`.
+When `hermes lsp status` shows a `Backend warnings` section, install
+the named tool through your OS package manager:
+
+```
+apt install shellcheck      # Debian / Ubuntu
+brew install shellcheck     # macOS
+scoop install shellcheck    # Windows
+```
+
+The same warning is logged once at server spawn time in
+`~/.hermes/logs/agent.log`.
 
 **Server starts but never returns diagnostics**
 

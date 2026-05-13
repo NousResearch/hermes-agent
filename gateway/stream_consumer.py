@@ -528,6 +528,18 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if (
+                                not self._final_response_sent
+                                and self._visible_matches_final(self._accumulated)
+                            ):
+                                # The final content is already visible from a
+                                # prior streamed edit; only the finalize edit
+                                # failed.  Suppress the base gateway's normal
+                                # final send so it does not post the same
+                                # answer again as a fresh Slack/Discord/etc.
+                                # message.  Best-effort strip any stuck cursor.
+                                await self._try_strip_cursor()
+                                self._final_response_sent = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
@@ -661,6 +673,20 @@ class GatewayStreamConsumer:
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()
         return final_text
+
+    def _visible_matches_final(self, final_text: str) -> bool:
+        """Return True when the currently visible stream already equals final.
+
+        Finalize edits are best-effort on platforms like Slack.  A transient
+        ``chat.update``/rate-limit failure can happen after the previous
+        streamed edit already displayed the complete answer (usually with only
+        the cursor removed by ``_visible_prefix()``).  In that case the normal
+        gateway fallback must *not* resend the full answer as a new message, or
+        the user sees a duplicate final reply.
+        """
+        final_clean = self._clean_for_display(final_text).strip()
+        visible_clean = self._visible_prefix().strip()
+        return bool(final_clean and visible_clean and visible_clean == final_clean)
 
     @staticmethod
     def _split_text_chunks(

@@ -133,6 +133,53 @@ class TestFinalizeCapabilityGate:
         assert picky.edit_message.call_args[1]["finalize"] is True
 
 
+class TestFinalizeDuplicateSuppression:
+    """Regression coverage for duplicate final replies after finalize failures."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_edit_failure_does_not_resend_when_visible_matches_final(self):
+        """If the streamed preview already shows the final text, suppress fallback.
+
+        Slack can transiently fail the final ``chat.update`` after the prior
+        streaming edit already displayed the complete answer with only the
+        cursor still present.  The stream consumer must mark final delivery as
+        confirmed so the gateway does not post the same answer again as a new
+        message.
+        """
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg_1",
+        ))
+        adapter.edit_message = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="rate_limited"),
+            SimpleNamespace(success=True, message_id="msg_1"),
+        ])
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta("Complete answer")
+        for _ in range(50):
+            if adapter.send.await_count:
+                break
+            await asyncio.sleep(0.01)
+
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert consumer.final_response_sent is True
+        assert adapter.send.await_count == 1
+        # First edit is the failed finalize; second is best-effort cursor strip.
+        assert adapter.edit_message.await_count == 2
+        assert adapter.edit_message.await_args_list[0].kwargs["finalize"] is True
+
+
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 

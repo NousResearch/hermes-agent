@@ -948,6 +948,39 @@ class TestEnvironmentHints:
                 f"info is suppressed in the system prompt"
             )
 
+    def test_build_environment_hints_prefers_terminal_cwd(self, monkeypatch):
+        """TERMINAL_CWD env var should take precedence over os.getcwd()."""
+        import os as _os
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("TERMINAL_CWD", "/custom/configured/path")
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Current working directory: /custom/configured/path" in result
+        # Ensure os.getcwd() is NOT used when TERMINAL_CWD is set
+        assert f"Current working directory: {_os.getcwd()}" not in result or _os.getcwd() == "/custom/configured/path"
+
+    def test_build_environment_hints_falls_back_to_getcwd(self, monkeypatch):
+        """When TERMINAL_CWD is not set, fall back to os.getcwd()."""
+        import os as _os
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Current working directory:" in result
+        assert f"Current working directory: {_os.getcwd()}" in result
+
 
 # =========================================================================
 # Conditional skill activation

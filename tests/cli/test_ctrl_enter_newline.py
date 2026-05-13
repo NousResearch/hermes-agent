@@ -22,6 +22,13 @@ def test_native_windows_preserves_newline():
         assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_native_macos_preserves_newline():
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
 def test_ssh_session_preserves_newline_on_linux():
     import cli as cli_mod
     with patch.object(sys, "platform", "linux"):

@@ -267,17 +267,14 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
         "session_key": "agent:main:telegram:group:-100:42",
     }
 
-    await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
+    await runner._inject_watch_notification("[Background process matched]", evt)
 
-    adapter.handle_message.assert_awaited_once()
-    synth_event = adapter.handle_message.await_args.args[0]
-    assert synth_event.internal is True
-    assert synth_event.source.platform == Platform.TELEGRAM
-    assert synth_event.source.chat_id == "-100"
-    assert synth_event.source.chat_type == "group"
-    assert synth_event.source.thread_id == "42"
-    assert synth_event.source.user_id == "123"
-    assert synth_event.source.user_name == "Emiliyan"
+    adapter.send.assert_awaited_once_with(
+        "-100",
+        "[Background process matched]",
+        metadata={"thread_id": "42"},
+    )
+    adapter.handle_message.assert_not_awaited()
 
 
 def test_build_process_event_source_falls_back_to_session_key_chat_type(monkeypatch, tmp_path):
@@ -358,19 +355,71 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
         )
     )
 
-    # The evt dict carries the correct session_key — NOT a foreground event
+    # The evt dict carries the correct session_key, not a foreground event.
     evt = {
         "session_id": "proc_cross_thread",
         "session_key": "agent:main:telegram:group:-100:42",
     }
 
-    await runner._inject_watch_notification("[SYSTEM: watch match]", evt)
+    await runner._inject_watch_notification("[Background process watch match]", evt)
 
-    adapter.handle_message.assert_awaited_once()
-    synth_event = adapter.handle_message.await_args.args[0]
-    # Must route to thread 42 (process origin), NOT some other thread
-    assert synth_event.source.thread_id == "42"
-    assert synth_event.source.user_id == "proc_owner"
+    adapter.send.assert_awaited_once_with(
+        "-100",
+        "[Background process watch match]",
+        metadata={"thread_id": "42"},
+    )
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_off_mode_does_not_reenter_message_handler(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="make test")]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_direct_sends_without_inbound_reentry(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="make test")]
+    fake_registry = _FakeRegistry(sessions)
+    fake_registry.is_completion_consumed = lambda _sid: False
+    monkeypatch.setattr(pr_module, "process_registry", fake_registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "result")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict(thread_id="42")
+    watcher["session_key"] = "agent:main:telegram:group:123:42"
+    watcher["user_id"] = "u1"
+    watcher["user_name"] = "owner"
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_awaited_once()
+    assert "completed" in adapter.send.await_args.args[1]
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "42"}
+    adapter.handle_message.assert_not_awaited()
 
 
 def test_build_process_event_source_returns_none_for_empty_evt(monkeypatch, tmp_path):

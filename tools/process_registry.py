@@ -160,8 +160,9 @@ class ProcessRegistry:
 
         # Notification queue — unified queue for all background process events.
         # Completion notifications (notify_on_complete) and watch pattern matches
-        # both land here, distinguished by "type" field.  CLI process_loop and
-        # gateway drain this after each agent turn to auto-trigger new turns.
+        # both land here, distinguished by "type" field.  CLI and gateway drain
+        # this as a notification side channel only; consumers must not feed these
+        # events back into the normal user-input path.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -467,6 +468,18 @@ class ProcessRegistry:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return "/tmp"
 
+    @staticmethod
+    def _wrap_background_shell_command(command: str) -> str:
+        """Wrap a local background command so shell options stay contained.
+
+        Local background commands run via the user's login shell.  If the user
+        command executes ``set -u`` / ``set -o nounset`` directly in that shell,
+        the option can affect shell rc/logout cleanup after the command returns.
+        Running the user command in a subshell preserves the command's exit code
+        while preventing option leakage into the wrapper shell.
+        """
+        return f"set +m; (\n{command}\n); _hermes_bg_status=$?; exit \"$_hermes_bg_status\""
+
     def spawn_local(
         self,
         command: str,
@@ -506,7 +519,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lic", self._wrap_background_shell_command(command)],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -547,7 +560,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", self._wrap_background_shell_command(command)],
             text=True,
             cwd=session.cwd,
             env=bg_env,

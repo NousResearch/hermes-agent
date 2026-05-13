@@ -1040,20 +1040,20 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
+    """Format a process notification for direct user-visible delivery."""
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
 
-    if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+    if evt_type in ("watch_disabled", "watch_overflow_tripped", "watch_overflow_released"):
+        return f"[Background process notice: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
+            f"[Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -7750,23 +7750,31 @@ class GatewayRunner:
             # Drain watch pattern notifications that arrived during the agent run.
             # Watch events and completions share the same queue; completions are
             # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
+            # deliver watch-type events here.  Delivery is notification-only and
+            # must not re-enter _handle_message as fake user/internal input.
             try:
                 from tools.process_registry import process_registry as _pr
+                notify_mode = self._load_background_notifications_mode()
                 _watch_events = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
-                    if evt_type in {"watch_match", "watch_disabled"}:
+                    if evt_type in (
+                        "watch_match",
+                        "watch_disabled",
+                        "watch_overflow_tripped",
+                        "watch_overflow_released",
+                    ) and notify_mode == "all":
                         _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
+                    # else: completion events are handled by the watcher task;
+                    # filtered watch events are intentionally discarded.
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
                         try:
-                            await self._inject_watch_notification(synth_text, evt)
+                            await self._send_process_notification(synth_text, evt)
                         except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                            logger.error("Watch notification delivery error: %s", e2)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -13325,43 +13333,41 @@ class GatewayRunner:
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+    async def _send_process_notification(self, synth_text: str, evt: dict) -> None:
+        """Send a process notification directly to the originating chat/thread.
 
-        Routing must come from the queued watch event itself, not from whatever
-        foreground message happened to be active when the queue was drained.
+        This is intentionally delivery-only.  Do not call
+        ``adapter.handle_message(MessageEvent(..., internal=True))`` here:
+        that routes the notification through the normal inbound-message path
+        and can turn process output into fake user input.
         """
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
-                "Dropping watch notification with no routing metadata for process %s",
+                "Dropping process notification with no routing metadata for process %s",
                 evt.get("session_id", "unknown"),
             )
             return
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = None
         for p, a in self.adapters.items():
-            if p.value == platform_name:
+            if p == source.platform or p.value == platform_name:
                 adapter = a
                 break
-        if not adapter:
+        if not adapter or not source.chat_id:
             return
-        try:
-            synth_event = MessageEvent(
-                text=synth_text,
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
-                platform_name,
-                source.chat_id,
-                source.thread_id,
-            )
-            await adapter.handle_message(synth_event)
-        except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+        send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+        logger.info(
+            "Process notification — delivering for %s chat=%s thread=%s",
+            platform_name,
+            source.chat_id,
+            source.thread_id,
+        )
+        await adapter.send(source.chat_id, synth_text, metadata=send_meta)
+
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+        """Backward-compatible wrapper for direct watch notification delivery."""
+        await self._send_process_notification(synth_text, evt)
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
@@ -13392,9 +13398,10 @@ class GatewayRunner:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
+        if notify_mode == "off":
             # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+            # push any messages to the user.  notify_on_complete must not
+            # bypass an explicit off setting or re-enter as a fake user turn.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)
@@ -13416,19 +13423,25 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
-                # --- Agent-triggered completion: inject synthetic message ---
-                # Skip if the agent already consumed the result via wait/poll/log
+                # --- Agent-triggered completion: direct notification only ---
+                # Skip if the agent already consumed the result via wait/poll/log.
+                # Do not route through adapter.handle_message(), which would
+                # re-enter the inbound user-message path.
                 from tools.process_registry import process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                agent_should_notify = agent_notify and (
+                    notify_mode in ("all", "result")
+                    or (notify_mode == "error" and session.exit_code not in (0, None))
+                )
+                if agent_should_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
                     synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
+                        f"[Background process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
                     )
-                    source = self._build_process_event_source({
+                    await self._send_process_notification(synth_text, {
                         "session_id": session_id,
                         "session_key": session_key,
                         "platform": platform_name,
@@ -13437,36 +13450,6 @@ class GatewayRunner:
                         "user_id": user_id,
                         "user_name": user_name,
                     })
-                    if not source:
-                        logger.warning(
-                            "Dropping completion notification with no routing metadata for process %s",
-                            session_id,
-                        )
-                        break
-
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
-                            break
-                    if adapter and source.chat_id:
-                        try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                            )
-                            logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
-                                session_id,
-                                session_key,
-                                source.chat_id,
-                                source.thread_id,
-                            )
-                            await adapter.handle_message(synth_event)
-                        except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
                     break
 
                 # --- Normal text-only notification ---

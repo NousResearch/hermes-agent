@@ -348,3 +348,18 @@ class TestCompletionConsumed:
         result = registry.poll("proc_running")
         assert result["status"] == "running"
         assert not registry.is_completion_consumed("proc_running")
+
+
+class TestBackgroundShellWrapper:
+    def test_wrap_background_shell_command_contains_user_command_in_subshell(self):
+        wrapped = ProcessRegistry._wrap_background_shell_command('set -u; printf ok')
+
+        assert wrapped.startswith('set +m; (\n')
+        assert 'set -u; printf ok' in wrapped
+        assert wrapped.endswith('exit "$_hermes_bg_status"')
+
+    def test_wrap_background_shell_command_preserves_exit_code(self):
+        wrapped = ProcessRegistry._wrap_background_shell_command('exit 7')
+
+        assert '_hermes_bg_status=$?' in wrapped
+        assert 'exit "$_hermes_bg_status"' in wrapped

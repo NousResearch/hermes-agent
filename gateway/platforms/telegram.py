@@ -4761,6 +4761,27 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
+        """Clear all reactions from a Telegram message.
+
+        Calling ``set_message_reaction`` with ``reaction=None`` (or an empty
+        sequence) is the documented Bot API way to remove all bot-set
+        reactions on a message — equivalent to Bot API 10.0's
+        ``deleteMessageReaction`` but supported in PTB 22.6 already.
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reaction=None,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] clear reactions failed: %s", self.name, e)
+            return False
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -4775,12 +4796,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
+
+        On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
+        interrupted mid-flight), we explicitly clear the 👀 in-progress
+        reaction so it doesn't linger on the user's message indefinitely.
+        Without this clear, the only way to remove the 👀 was to wait for
+        another agent run to swap it to 👍/👎 — which never happens if the
+        cancellation was the last activity in the chat.
         """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
-        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
+        if not (chat_id and message_id):
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self._clear_reactions(chat_id, message_id)
+        else:
             await self._set_reaction(
                 chat_id,
                 message_id,

@@ -698,8 +698,8 @@ class TestAssignAgentRoutingRejection:
         assert "acp_command" in parsed["error"]
         assert "PR1" in parsed["error"]
 
-    def test_rejects_runner_mode_inline(self, global_agents_dir):
-        """Agents with runner.mode set to a non-delegate_task value must be rejected."""
+    def test_rejects_unknown_runner_mode_inline(self, global_agents_dir):
+        """Agents with unsupported runner.mode values must be rejected."""
         make_agent(global_agents_dir / "runner-agent.md", "runner-agent",
                    description="Inline runner agent",
                    routing={"mode": "inherit", "runner": {"mode": "subprocess"}})
@@ -713,7 +713,250 @@ class TestAssignAgentRoutingRejection:
         parsed = json.loads(result)
         assert parsed.get("success") is False
         assert "runner.mode='subprocess'" in parsed["error"]
-        assert "PR1" in parsed["error"]
+        assert "delegate_task, cli" in parsed["error"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# assign_agent — CLI runner execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAssignAgentCliRunner:
+    """Tests for trusted CLI-backed named agents."""
+
+    def test_cli_runner_invokes_trusted_configured_command(self, global_agents_dir, monkeypatch):
+        (global_agents_dir / "cli-agent.md").write_text("""---
+schema_version: 1
+name: cli-agent
+description: CLI-backed agent
+runner:
+  mode: cli
+  name: claude-cli
+  continue: off
+---
+
+You are a CLI agent.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "parent-session"
+        recorded = {}
+
+        class Completed:
+            returncode = 0
+            stdout = '{"session_id":"external-123","result":"ok"}\n'
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            recorded["kwargs"] = kwargs
+            return Completed()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "claude-cli": {
+                    "type": "cli",
+                    "command": "claude",
+                    "args": ["-p", "--output-format", "stream-json"],
+                    "resume_arg": "--resume",
+                    "allowed_from_project_agents": True,
+                }
+            }
+        })
+
+        result = assign_agent(
+            agent_name="cli-agent",
+            task="Review the diff",
+            context="Only inspect files.",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is True
+        assert parsed["runner"]["mode"] == "cli"
+        assert parsed["runner"]["name"] == "claude-cli"
+        assert recorded["cmd"] == ["claude", "-p", "--output-format", "stream-json"]
+        assert "Review the diff" in recorded["kwargs"]["input"]
+        assert "You are a CLI agent." in recorded["kwargs"]["input"]
+        assert parsed["external_session_id"] == "external-123"
+        assert "command" not in parsed
+
+    def test_cli_runner_auto_resume_uses_stored_external_session(self, global_agents_dir, monkeypatch):
+        (global_agents_dir / "resume-agent.md").write_text("""---
+schema_version: 1
+name: resume-agent
+description: Resume CLI agent
+runner:
+  mode: cli
+  name: gemini-cli
+  continue: auto
+---
+
+You resume external CLI sessions.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "parent-session"
+        recorded = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            return Completed()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "gemini-cli": {
+                    "type": "cli",
+                    "command": "gemini",
+                    "args": ["--output-format", "stream-json"],
+                    "resume_arg": "--resume",
+                    "allowed_from_project_agents": True,
+                }
+            }
+        })
+        from agent import agent_runner
+        monkeypatch.setattr(agent_runner.CliSessionStore, "get", lambda self, **kw: "gemini-session-777")
+
+        result = assign_agent(
+            agent_name="resume-agent",
+            task="Continue",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is True
+        assert parsed["runner"]["resumed"] is True
+        assert recorded["cmd"] == ["gemini", "--output-format", "stream-json", "--resume", "gemini-session-777"]
+
+    def test_cli_runner_require_continuation_fails_without_stored_session(self, global_agents_dir, monkeypatch):
+        (global_agents_dir / "require-agent.md").write_text("""---
+schema_version: 1
+name: require-agent
+description: Require resume CLI agent
+runner:
+  mode: cli
+  name: claude-cli
+  continue: require
+---
+
+You require an existing external session.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "parent-session"
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "claude-cli": {
+                    "type": "cli",
+                    "command": "claude",
+                    "args": ["-p"],
+                    "resume_arg": "--resume",
+                    "allowed_from_project_agents": True,
+                }
+            }
+        })
+
+        result = assign_agent(
+            agent_name="require-agent",
+            task="Continue",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is False
+        assert "requires an existing CLI session" in parsed["error"]
+
+    def test_cli_runner_session_persistence_failure_is_nonfatal(self, global_agents_dir, monkeypatch):
+        """A successful CLI run still succeeds if persisting external session id fails."""
+        (global_agents_dir / "store-fail-agent.md").write_text("""---
+schema_version: 1
+name: store-fail-agent
+description: Store failure CLI agent
+runner:
+  mode: cli
+  name: claude-cli
+  continue: off
+---
+
+You are a CLI agent.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "parent-session"
+
+        class Completed:
+            returncode = 0
+            stdout = '{"session_id":"external-123","result":"ok"}\n'
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Completed())
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "claude-cli": {
+                    "type": "cli",
+                    "command": "claude",
+                    "args": ["-p"],
+                    "allowed_from_project_agents": True,
+                }
+            }
+        })
+        from agent import agent_runner
+        monkeypatch.setattr(agent_runner.CliSessionStore, "set", lambda self, **kw: (_ for _ in ()).throw(OSError("disk full")))
+
+        result = assign_agent(
+            agent_name="store-fail-agent",
+            task="Review",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is True
+        assert parsed["external_session_id"] == "external-123"
+        assert "warning" in parsed
+        assert "Failed to persist CLI session" in parsed["warning"]
+
+    def test_project_cli_runner_must_be_allowed_by_trusted_config(self, project_agents_dir, project_root, monkeypatch):
+        (project_agents_dir / "project-cli.md").write_text("""---
+schema_version: 1
+name: project-cli
+description: Project CLI agent
+runner:
+  mode: cli
+  name: locked-cli
+  continue: off
+---
+
+Project agent prompt.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "parent-session"
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "locked-cli": {
+                    "type": "cli",
+                    "command": "locked",
+                    "args": [],
+                    "allowed_from_project_agents": False,
+                }
+            }
+        })
+
+        result = assign_agent(
+            agent_name="project-cli",
+            task="Run",
+            parent_agent=mock_parent,
+            workdir=str(project_root),
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is False
+        assert "not allowed for project-local agents" in parsed["error"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

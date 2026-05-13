@@ -70,6 +70,7 @@ When done, summarize your findings in a concise report.
 | `tags` | No | Labels used by the `agents_list(category=...)` filter. |
 | `tools.mode` / `tools.allow_toolsets` | No | Optional toolset restriction for the delegated worker. |
 | `delegation.role` | No | Optional child role (`leaf` or `orchestrator`) passed to the delegation layer. |
+| `runner.mode` / `runner.name` / `runner.continue` | No | Optional execution runner. Defaults to `delegate_task`; `cli` uses a trusted runner from `agent_runners` config. |
 
 :::warning No secrets in frontmatter
 Do not put API keys, tokens, or other secrets in agent frontmatter. Secrets belong in `~/.hermes/.env` or your environment, not in files that may be checked into version control.
@@ -85,6 +86,46 @@ assign_agent(agent_name="code-reviewer", task="Review PR #42 in /home/nuuair/myp
 
 The agent runs with its own isolated context. Only the final result is returned — intermediate tool calls and thoughts stay private to the subagent.
 
+### CLI-backed agents
+
+By default, `assign_agent` uses the in-process `delegate_task` runner. Advanced users can route a named agent to a trusted external CLI runner by adding `runner` frontmatter:
+
+```markdown
+---
+schema_version: 1
+name: code-architect
+description: "Architecture planner backed by an external CLI"
+runner:
+  mode: cli
+  name: gemini-cli
+  continue: auto   # off | auto | require
+---
+
+You are a careful software architect.
+```
+
+The executable command is **not** read from the agent file. It must come from trusted user-owned config:
+
+```yaml
+agent_runners:
+  gemini-cli:
+    type: cli
+    command: gemini
+    args: ["--output-format", "stream-json"]
+    resume_arg: "--resume"
+    allowed_from_project_agents: true
+```
+
+Continuation modes:
+
+| Mode | Behavior |
+|------|----------|
+| `off` | Always start a fresh external CLI session. |
+| `auto` | Resume when Hermes has a stored external session id for this parent session, agent, runner, and workdir; otherwise start fresh. |
+| `require` | Fail closed unless a stored external CLI session exists. |
+
+External CLI session ids are stored under `$HERMES_HOME/agent-runner-sessions.json`. Project-local agents may request a runner by name, but they cannot define commands, args, env vars, or executable paths.
+ 
 ### Delegation Toolset
 
 `assign_agent` lives in the `delegation` toolset alongside `delegate_task`. Enable it with:
@@ -123,17 +164,17 @@ agent_view(name="code-reviewer", workdir="/path/to/project")
 
 - **Agents toolset is read-only.** You can list and view agents, but cannot create, edit, or delete them via tools.
 - **`assign_agent` is in the delegation toolset**, not the agents toolset. It requires explicit enablement.
-- **Project-local agents cannot set arbitrary CLI or ACP command execution.** They are scoped to the toolsets they declare.
+- **Project-local agents cannot define arbitrary CLI or ACP commands.** CLI commands, args, resume flags, and executable paths must come from trusted `agent_runners` config. Project-local agents can only request a configured runner by name, and only when that runner sets `allowed_from_project_agents: true`.
 - **Secrets in frontmatter are rejected** at load time. Never put credentials in agent files.
 
-## PR1 Limitations
+## Current Limitations
 
-Named agents are a new capability (PR1). Current limitations:
+Named agents are a new capability. Current limitations:
 
 - **No `spawn_agent` / background execution.** Agents run synchronously via `assign_agent` and return when complete.
 - **No marketplace or install wizard.** Agent files are created and managed by hand.
 - **No edit or update tools.** To change an agent, edit its Markdown file directly.
-- **PR1 routing only.** Explicit routing to specific models or CLI runner modes is rejected. Agents use inherited delegation routing via `delegate_task`.
+- **Limited routing.** `delegate_task` agents inherit delegation routing; `cli` agents can use trusted external runners from `agent_runners`; arbitrary per-agent provider/model routing is not implemented yet.
 - **No agent-to-agent chaining.** You cannot currently have one agent spawn another as a subagent.
 
 These limitations will be addressed in future releases.

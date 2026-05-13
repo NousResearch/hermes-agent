@@ -86,9 +86,11 @@ class AgentRouting:
     runner_continue: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AgentRouting:
+    def from_dict(cls, data: dict[str, Any] | None, runner: dict[str, Any] | None = None) -> AgentRouting:
         if data is None:
-            return cls()
+            data = {}
+        routing_runner = data.get("runner") if isinstance(data.get("runner"), dict) else None
+        runner_data = runner if isinstance(runner, dict) else routing_runner
         return cls(
             mode=data.get("mode", "inherit"),
             provider=data.get("provider"),
@@ -98,9 +100,9 @@ class AgentRouting:
             reasoning_effort=data.get("reasoning_effort"),
             acp_command=data.get("acp_command"),
             acp_args=data.get("acp_args"),
-            runner_mode=data.get("runner", {}).get("mode") if isinstance(data.get("runner"), dict) else None,
-            runner_name=data.get("runner", {}).get("name") if isinstance(data.get("runner"), dict) else None,
-            runner_continue=data.get("runner", {}).get("continue") if isinstance(data.get("runner"), dict) else None,
+            runner_mode=runner_data.get("mode") if isinstance(runner_data, dict) else None,
+            runner_name=runner_data.get("name") if isinstance(runner_data, dict) else None,
+            runner_continue=runner_data.get("continue") if isinstance(runner_data, dict) else None,
         )
 
 
@@ -243,6 +245,11 @@ class AgentDefinition:
                 "reasoning_effort": self.routing.reasoning_effort,
                 "acp_command": self.routing.acp_command,
                 "acp_args": self.routing.acp_args,
+                "runner": {
+                    "mode": self.routing.runner_mode or "delegate_task",
+                    "name": self.routing.runner_name,
+                    "continue": self.routing.runner_continue or "off",
+                },
             },
             "tools": {
                 "mode": self.tools.mode,
@@ -290,6 +297,11 @@ class AgentDefinition:
                 "mode": self.routing.mode,
                 "model": self.routing.model,
                 "provider": self.routing.provider,
+                "runner": {
+                    "mode": self.routing.runner_mode or "delegate_task",
+                    "name": self.routing.runner_name,
+                    "continue": self.routing.runner_continue or "off",
+                },
             },
             "toolsets": list(self.tools.allow_toolsets) if self.tools.allow_toolsets else None,
             "role": self.delegation_role,
@@ -550,7 +562,7 @@ def load_agent_file(path: Path, source: Literal["global", "project"]) -> AgentDe
     warnings: list[str] = []
     known_top_fields = {
         "schema_version", "name", "display_name", "description", "enabled",
-        "tags", "routing", "tools", "skills", "limits",
+        "tags", "routing", "runner", "tools", "skills", "limits",
         "delegation", "security", "compatibility", "extensions",
     }
     for key in frontmatter:
@@ -566,7 +578,7 @@ def load_agent_file(path: Path, source: Literal["global", "project"]) -> AgentDe
     if isinstance(tags_raw, list):
         tags = [str(t) for t in tags_raw]
 
-    routing = AgentRouting.from_dict(frontmatter.get("routing"))
+    routing = AgentRouting.from_dict(frontmatter.get("routing"), frontmatter.get("runner"))
     # Warn about unknown routing fields (non-secret only)
     routing_raw = frontmatter.get("routing")
     if isinstance(routing_raw, dict):
@@ -602,6 +614,9 @@ def load_agent_file(path: Path, source: Literal["global", "project"]) -> AgentDe
             reasoning_effort=routing.reasoning_effort,
             acp_command=None,
             acp_args=None,
+            runner_mode=routing.runner_mode,
+            runner_name=routing.runner_name,
+            runner_continue=routing.runner_continue,
         )
 
     security = AgentSecurity.from_dict(frontmatter.get("security"))

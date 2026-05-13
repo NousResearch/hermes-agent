@@ -1082,6 +1082,18 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Trusted named-agent runners. Agent files may request runner.name, but
+    # executable command, args, env, and resume flag live here in user-owned
+    # config. Example:
+    # agent_runners:
+    #   gemini-cli:
+    #     type: cli
+    #     command: gemini
+    #     args: ["--output-format", "stream-json"]
+    #     resume_arg: "--resume"
+    #     allowed_from_project_agents: true
+    "agent_runners": {},
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

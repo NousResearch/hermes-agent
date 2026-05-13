@@ -292,17 +292,51 @@ def assign_agent(
             ensure_ascii=False,
         )
 
-    # ── Reject unsupported runner metadata in PR1 ─────────────────────────
-    # runner_mode != None/"delegate_task" requires the full runner infrastructure.
-    runner_mode = agent.routing.runner_mode
-    if runner_mode is not None and runner_mode not in ("delegate_task",):
+    # ── Handle runner execution modes ─────────────────────────────────────
+    # delegate_task remains the default in-process runner.  CLI-backed agents
+    # are executed via trusted agent_runners config; agent files only name the
+    # runner and continuity preference.
+    runner_mode = agent.routing.runner_mode or "delegate_task"
+    if runner_mode == "cli":
+        try:
+            from agent.agent_runner import run_cli_agent
+
+            parent_session_id = (
+                str(getattr(parent_agent, "session_id", "") or "")
+                or str(getattr(parent_agent, "task_id", "") or "")
+            )
+            if not parent_session_id:
+                import os
+
+                parent_session_id = os.environ.get("HERMES_SESSION_ID") or "default"
+            cli_result = run_cli_agent(
+                agent=agent,
+                task=task,
+                context=context,
+                workdir=effective_workdir,
+                parent_session_id=parent_session_id,
+            )
+            payload = cli_result.to_dict()
+            payload["agent"] = agent.list_summary()
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("assign_agent cli runner failed: %s", exc)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"CLI runner failed: {exc}",
+                    "agent": agent.list_summary(),
+                },
+                ensure_ascii=False,
+            )
+
+    if runner_mode != "delegate_task":
         return json.dumps(
             {
                 "success": False,
                 "error": (
                     f"Agent '{agent_name}' has runner.mode='{runner_mode}' which is "
-                    "not supported in the PR1 native registry. "
-                    "Use delegate_task for custom runner modes."
+                    "not supported. Supported runner modes: delegate_task, cli."
                 ),
             },
             ensure_ascii=False,

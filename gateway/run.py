@@ -7758,10 +7758,28 @@ class GatewayRunner:
                 ))
                 or ("400" in _err_str_for_classify and len(history) > 50)
             )
+            # Reasoning echo-back failures (DeepSeek, Kimi, Xiaomi MiMo):
+            # The provider requires reasoning_content on every assistant
+            # message in thinking mode. When replaying stale history that
+            # lacks it, the API returns 400 deterministically — retrying
+            # the same session will always fail. Treat as non-recoverable.
+            is_reasoning_echo_failure = agent_failed_early and any(
+                p in _err_str_for_classify for p in (
+                    "reasoning_content", "thinking mode",
+                    "must be passed back",
+                )
+            )
+
             if is_context_overflow_failure:
                 logger.info(
                     "Skipping transcript persistence for context-overflow "
                     "failure in session %s to prevent session growth loop.",
+                    session_entry.session_id,
+                )
+            elif is_reasoning_echo_failure:
+                logger.warning(
+                    "Non-recoverable reasoning echo-back failure in session %s "
+                    "— resetting session to prevent infinite retry loop.",
                     session_entry.session_id,
                 )
             elif agent_failed_early:
@@ -7775,10 +7793,11 @@ class GatewayRunner:
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
-            if agent_result.get("compression_exhausted") and session_entry and session_key:
+            if (agent_result.get("compression_exhausted") or is_reasoning_echo_failure) and session_entry and session_key:
                 logger.info(
-                    "Auto-resetting session %s after compression exhaustion.",
+                    "Auto-resetting session %s after %s.",
                     session_entry.session_id,
+                    "reasoning echo-back failure" if is_reasoning_echo_failure else "compression exhaustion",
                 )
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
@@ -7797,7 +7816,7 @@ class GatewayRunner:
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
-            if is_context_overflow_failure:
+            if is_context_overflow_failure or is_reasoning_echo_failure:
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
@@ -7816,7 +7835,7 @@ class GatewayRunner:
             # Use the filtered history length (history_offset) that was actually
             # passed to the agent, not len(history) which includes session_meta
             # entries that were stripped before the agent saw them.
-            if is_context_overflow_failure:
+            if is_context_overflow_failure or is_reasoning_echo_failure:
                 pass  # handled above — skip all transcript writes
             elif agent_failed_early:
                 # Transient failure (429/timeout/5xx): persist only the user

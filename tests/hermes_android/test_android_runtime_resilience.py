@@ -27,8 +27,9 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert "ContextCompat.startForegroundService(context, intent)" in runtime_service
 
     assert 'runCatching {' in boot_view_model
-    assert 'startupDelayMillis = if (firstRefresh) 1000L else 0L' in boot_view_model
+    assert 'startupDelayMillis = if (firstRefresh) FIRST_LAUNCH_RUNTIME_WARMUP_DELAY_MS else 0L' in boot_view_model
     assert 'delay(startupDelayMillis)' in boot_view_model
+    assert 'FIRST_LAUNCH_RUNTIME_WARMUP_DELAY_MS = 30_000L' in boot_view_model
     assert 'checkHealth(runtime.baseUrl, runtime.apiKey)' in boot_view_model
     assert 'Hermes backend health check failed' in boot_view_model
     assert 'init {' not in boot_view_model

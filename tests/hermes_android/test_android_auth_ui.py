@@ -147,8 +147,9 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'HermesExternalBrowserLauncher.open' in auth_view_model
     open_auth_start_page = auth_view_model.split("private fun openAuthStartPage", 1)[1].split("fun copyPendingSignInUrl", 1)[0]
-    assert "return HermesExternalBrowserLauncher.open" in open_auth_start_page
-    assert "HermesProviderSetupWebActivity.openInApp" not in open_auth_start_page
+    assert "preferInApp: Boolean = false" in open_auth_start_page
+    assert "HermesProviderSetupWebActivity.openInApp" in open_auth_start_page
+    assert "HermesExternalBrowserLauncher.open" in open_auth_start_page
     assert 'Intent.createChooser' in browser_launcher
     assert 'putExtra(Browser.EXTRA_APPLICATION_ID' in browser_launcher
     assert 'copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)' in auth_view_model
@@ -274,7 +275,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "const val DEFAULT_PORT = 3000" in openrouter_loopback
     assert 'scheme("http")' in openrouter_loopback
     assert 'encodedAuthority("$CALLBACK_HOST:$port")' in openrouter_loopback
-    assert 'private const val CALLBACK_HOST = "127.0.0.1"' in openrouter_loopback
+    assert 'private const val CALLBACK_HOST = "localhost"' in openrouter_loopback
     assert 'private const val CALLBACK_PATH = "/hermes/openrouter/callback"' in openrouter_loopback
     assert "OpenRouterOAuthClient.exchangeCallbackForSession" in openrouter_loopback
     assert "AuthRuntimeApplier.apply(context, session)" in openrouter_loopback

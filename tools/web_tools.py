@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import threading
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
 # NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
@@ -358,7 +359,9 @@ def _get_firecrawl_client():
 # ─── Parallel Client ─────────────────────────────────────────────────────────
 
 _parallel_client = None
+_parallel_client_lock = threading.Lock()
 _async_parallel_client = None
+_async_parallel_client_lock = threading.Lock()
 
 def _get_parallel_client():
     """Get or create the Parallel sync client (lazy initialization).
@@ -375,13 +378,15 @@ def _get_parallel_client():
     from parallel import Parallel
     global _parallel_client
     if _parallel_client is None:
-        api_key = os.getenv("PARALLEL_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "PARALLEL_API_KEY environment variable not set. "
-                "Get your API key at https://parallel.ai"
-            )
-        _parallel_client = Parallel(api_key=api_key)
+        with _parallel_client_lock:
+            if _parallel_client is None:
+                api_key = os.getenv("PARALLEL_API_KEY")
+                if not api_key:
+                    raise ValueError(
+                        "PARALLEL_API_KEY environment variable not set. "
+                        "Get your API key at https://parallel.ai"
+                    )
+                _parallel_client = Parallel(api_key=api_key)
     return _parallel_client
 
 
@@ -400,13 +405,15 @@ def _get_async_parallel_client():
     from parallel import AsyncParallel
     global _async_parallel_client
     if _async_parallel_client is None:
-        api_key = os.getenv("PARALLEL_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "PARALLEL_API_KEY environment variable not set. "
-                "Get your API key at https://parallel.ai"
-            )
-        _async_parallel_client = AsyncParallel(api_key=api_key)
+        with _async_parallel_client_lock:
+            if _async_parallel_client is None:
+                api_key = os.getenv("PARALLEL_API_KEY")
+                if not api_key:
+                    raise ValueError(
+                        "PARALLEL_API_KEY environment variable not set. "
+                        "Get your API key at https://parallel.ai"
+                    )
+                _async_parallel_client = AsyncParallel(api_key=api_key)
     return _async_parallel_client
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
@@ -1007,6 +1014,7 @@ def clean_base64_images(text: str) -> str:
 # ─── Exa Client ──────────────────────────────────────────────────────────────
 
 _exa_client = None
+_exa_client_lock = threading.Lock()
 
 def _get_exa_client():
     """Get or create the Exa client (lazy initialization).
@@ -1023,14 +1031,16 @@ def _get_exa_client():
     from exa_py import Exa
     global _exa_client
     if _exa_client is None:
-        api_key = os.getenv("EXA_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "EXA_API_KEY environment variable not set. "
-                "Get your API key at https://exa.ai"
-            )
-        _exa_client = Exa(api_key=api_key)
-        _exa_client.headers["x-exa-integration"] = "hermes-agent"
+        with _exa_client_lock:
+            if _exa_client is None:
+                api_key = os.getenv("EXA_API_KEY")
+                if not api_key:
+                    raise ValueError(
+                        "EXA_API_KEY environment variable not set. "
+                        "Get your API key at https://exa.ai"
+                    )
+                _exa_client = Exa(api_key=api_key)
+                _exa_client.headers["x-exa-integration"] = "hermes-agent"
     return _exa_client
 
 

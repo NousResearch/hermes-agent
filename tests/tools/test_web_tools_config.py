@@ -12,7 +12,9 @@ import importlib
 import json
 import os
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -625,3 +627,220 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+# ─── TOCTOU Race Regression Tests (Issue #24736) ─────────────────────────────
+
+class TestParallelClientToctouRace:
+    """50-thread barrier tests for _get_parallel_client() double-checked locking."""
+
+    def setup_method(self):
+        import tools.web_tools as wt
+        wt._parallel_client = None
+
+    def test_concurrent_calls_return_same_instance(self, monkeypatch):
+        """All 50 concurrent callers must receive the exact same client object."""
+        monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        fake_parallel = MagicMock(name="fake_parallel")
+        fake_module = types.ModuleType("parallel")
+        fake_module.Parallel = lambda api_key: fake_parallel
+        fake_module.AsyncParallel = MagicMock()
+
+        with patch.dict(sys.modules, {"parallel": fake_module}):
+            barrier = threading.Barrier(50)
+            results: list = []
+            lock = threading.Lock()
+
+            def call():
+                barrier.wait()
+                c = wt._get_parallel_client()
+                with lock:
+                    results.append(c)
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert len(results) == 50
+        first = results[0]
+        assert all(r is first for r in results), (
+            f"Expected 1 unique client, got {len(set(id(r) for r in results))}"
+        )
+
+    def test_only_one_client_created(self, monkeypatch):
+        """Parallel() constructor must be called exactly once under concurrency."""
+        monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        call_count = 0
+        call_lock = threading.Lock()
+        fake_parallel = MagicMock(name="fake_parallel")
+
+        def counting_constructor(api_key):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+            return fake_parallel
+
+        fake_module = types.ModuleType("parallel")
+        fake_module.Parallel = counting_constructor
+        fake_module.AsyncParallel = MagicMock()
+
+        with patch.dict(sys.modules, {"parallel": fake_module}):
+            barrier = threading.Barrier(50)
+
+            def call():
+                barrier.wait()
+                wt._get_parallel_client()
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert call_count == 1, f"Parallel() called {call_count} times (expected 1)"
+
+
+class TestAsyncParallelClientToctouRace:
+    """50-thread barrier tests for _get_async_parallel_client() double-checked locking."""
+
+    def setup_method(self):
+        import tools.web_tools as wt
+        wt._async_parallel_client = None
+
+    def test_concurrent_calls_return_same_instance(self, monkeypatch):
+        monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        fake_client = MagicMock(name="fake_async_parallel")
+        fake_module = types.ModuleType("parallel")
+        fake_module.Parallel = MagicMock()
+        fake_module.AsyncParallel = lambda api_key: fake_client
+
+        with patch.dict(sys.modules, {"parallel": fake_module}):
+            barrier = threading.Barrier(50)
+            results: list = []
+            lock = threading.Lock()
+
+            def call():
+                barrier.wait()
+                c = wt._get_async_parallel_client()
+                with lock:
+                    results.append(c)
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert len(results) == 50
+        first = results[0]
+        assert all(r is first for r in results), (
+            f"Expected 1 unique client, got {len(set(id(r) for r in results))}"
+        )
+
+    def test_only_one_client_created(self, monkeypatch):
+        monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        call_count = 0
+        call_lock = threading.Lock()
+
+        def counting_constructor(api_key):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+            return MagicMock()
+
+        fake_module = types.ModuleType("parallel")
+        fake_module.Parallel = MagicMock()
+        fake_module.AsyncParallel = counting_constructor
+
+        with patch.dict(sys.modules, {"parallel": fake_module}):
+            barrier = threading.Barrier(50)
+
+            def call():
+                barrier.wait()
+                wt._get_async_parallel_client()
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert call_count == 1, f"AsyncParallel() called {call_count} times (expected 1)"
+
+
+class TestExaClientToctouRace:
+    """50-thread barrier tests for _get_exa_client() double-checked locking."""
+
+    def setup_method(self):
+        import tools.web_tools as wt
+        wt._exa_client = None
+
+    def test_concurrent_calls_return_same_instance(self, monkeypatch):
+        monkeypatch.setenv("EXA_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        fake_exa = MagicMock(name="fake_exa")
+        fake_exa.headers = {}
+
+        fake_module = types.ModuleType("exa_py")
+        fake_module.Exa = lambda api_key: fake_exa
+
+        with patch.dict(sys.modules, {"exa_py": fake_module}):
+            barrier = threading.Barrier(50)
+            results: list = []
+            lock = threading.Lock()
+
+            def call():
+                barrier.wait()
+                c = wt._get_exa_client()
+                with lock:
+                    results.append(c)
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert len(results) == 50
+        first = results[0]
+        assert all(r is first for r in results), (
+            f"Expected 1 unique client, got {len(set(id(r) for r in results))}"
+        )
+
+    def test_only_one_client_created(self, monkeypatch):
+        monkeypatch.setenv("EXA_API_KEY", "test-key")
+        import tools.web_tools as wt
+
+        call_count = 0
+        call_lock = threading.Lock()
+
+        def counting_constructor(api_key):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+            m = MagicMock()
+            m.headers = {}
+            return m
+
+        fake_module = types.ModuleType("exa_py")
+        fake_module.Exa = counting_constructor
+
+        with patch.dict(sys.modules, {"exa_py": fake_module}):
+            barrier = threading.Barrier(50)
+
+            def call():
+                barrier.wait()
+                wt._get_exa_client()
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert call_count == 1, f"Exa() called {call_count} times (expected 1)"

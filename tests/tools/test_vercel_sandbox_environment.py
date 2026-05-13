@@ -335,7 +335,7 @@ class TestFileSync:
             }
         ]
 
-    def test_cleanup_syncs_back_snapshots_closes_and_is_idempotent(
+    def test_cleanup_skips_credentials_snapshots_closes_and_is_idempotent(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
     ):
         hermes_home = tmp_path / ".hermes"
@@ -373,8 +373,8 @@ class TestFileSync:
         env.cleanup()
         env.cleanup()
 
-        assert src.read_text() == "remote-token"
-        assert (tmp_path / "new.txt").read_text() == "new-remote"
+        assert src.read_text() == "host-token"
+        assert not (tmp_path / "new.txt").exists()
         assert not (tmp_path / "skip.txt").exists()
         assert len(sandbox.snapshot_calls) == 1
         assert len(sandbox.stop_calls) == 1  # always stop after snapshot to avoid resource leaks

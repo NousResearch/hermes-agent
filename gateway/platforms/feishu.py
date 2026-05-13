@@ -1343,8 +1343,25 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
 
 def check_feishu_requirements() -> bool:
-    """Check if Feishu/Lark dependencies are available."""
-    return FEISHU_AVAILABLE
+    """Check if Feishu/Lark dependencies are available.
+
+    Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
+    on first call if not present.
+    """
+    global FEISHU_AVAILABLE
+    if FEISHU_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.feishu", prompt=False)
+    except Exception:
+        return False
+    try:
+        import lark_oapi  # noqa: F401
+    except ImportError:
+        return False
+    FEISHU_AVAILABLE = True
+    return True
 
 
 class FeishuAdapter(BasePlatformAdapter):

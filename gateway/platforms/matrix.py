@@ -224,7 +224,11 @@ def _check_e2ee_deps() -> bool:
 
 
 def check_matrix_requirements() -> bool:
-    """Return True if the Matrix adapter can be used."""
+    """Return True if the Matrix adapter can be used.
+
+    Lazy-installs mautrix via ``tools.lazy_deps.ensure("platform.matrix")``
+    on first call if not present.
+    """
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
     password = os.getenv("MATRIX_PASSWORD", "")
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
@@ -238,10 +242,15 @@ def check_matrix_requirements() -> bool:
     try:
         import mautrix  # noqa: F401
     except ImportError:
-        logger.warning(
-            "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
-        )
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.matrix", prompt=False)
+            import mautrix  # noqa: F401, F811
+        except Exception:
+            logger.warning(
+                "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
+            )
+            return False
 
     # If encryption is requested, verify E2EE deps are available at startup
     # rather than silently degrading to plaintext-only at connect time.

@@ -284,7 +284,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "alibaba": ProviderConfig(
         id="alibaba",
-        name="Alibaba Cloud (DashScope)",
+        name="Qwen Cloud",
         auth_type="api_key",
         inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         api_key_env_vars=("DASHSCOPE_API_KEY",),

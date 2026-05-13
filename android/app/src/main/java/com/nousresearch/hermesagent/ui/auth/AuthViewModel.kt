@@ -11,6 +11,7 @@ import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
 import com.nousresearch.hermesagent.auth.Corr3xtAuthClient
 import com.nousresearch.hermesagent.auth.OpenRouterLoopbackOAuthServer
 import com.nousresearch.hermesagent.auth.OpenRouterOAuthClient
+import com.nousresearch.hermesagent.auth.ProviderSetupProbeResult
 import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
@@ -448,6 +449,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(globalStatus = providerSetupOpenedStatus(option.label, option.runtimeProvider, target))
             }
+            probeProviderSetupPages(option.label, option.runtimeProvider)
         } else {
             copyProviderSetupUrl(methodId, updateStatus = false)
             _uiState.update {
@@ -465,25 +467,40 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         copyProviderSetupUrl(methodId, updateStatus = false)
         _uiState.update { it.copy(globalStatus = "Checking ${option.label} setup pages from this device...") }
+        probeProviderSetupPages(option.label, option.runtimeProvider)
+    }
+
+    private fun probeProviderSetupPages(optionLabel: String, providerId: String) {
+        val urls = ProviderPresets.setupUrls(providerId)
+        if (urls.isEmpty()) {
+            return
+        }
         viewModelScope.launch {
             val results = withContext(Dispatchers.IO) {
                 urls.map(ProviderSetupUrlProbe::probe)
             }
-            val reachable = results.filter { it.reachable }
-            val firstReachable = reachable.firstOrNull()
-            val status = if (firstReachable != null) {
-                val fallbackHint = if (reachable.size < results.size) {
-                    " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
-                } else {
-                    ""
-                }
-                "${option.label} setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
-            } else {
-                val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
-                "No ${option.label} setup page responded from Hermes. Copied all setup URLs. $failureSummary"
-                    .take(ProviderSetupUrlProbe.MAX_STATUS_LENGTH)
-            }
+            val status = providerSetupProbeStatus(optionLabel, results)
             _uiState.update { it.copy(globalStatus = status) }
+        }
+    }
+
+    private fun providerSetupProbeStatus(
+        optionLabel: String,
+        results: List<ProviderSetupProbeResult>,
+    ): String {
+        val reachable = results.filter { it.reachable }
+        val firstReachable = reachable.firstOrNull()
+        return if (firstReachable != null) {
+            val fallbackHint = if (reachable.size < results.size) {
+                " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
+            } else {
+                ""
+            }
+            "$optionLabel setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
+        } else {
+            val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
+            "No $optionLabel setup page responded from Hermes. Copied all setup URLs. $failureSummary"
+                .take(ProviderSetupUrlProbe.MAX_STATUS_LENGTH)
         }
     }
 

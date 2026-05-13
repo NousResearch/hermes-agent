@@ -233,12 +233,13 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
     assert "fun checkProviderSetupPages(methodId: String)" in auth_view_model
+    assert "probeProviderSetupPages(option.label, option.runtimeProvider)" in auth_view_model
     assert "ProviderSetupUrlProbe::probe" in auth_view_model
     assert "data class ProviderSetupProbeResult" in provider_setup_probe
     assert "object ProviderSetupUrlProbe" in provider_setup_probe
     assert "Checking ${option.label} setup pages from this device" in auth_view_model
     assert "setup is reachable from Hermes" in auth_view_model
-    assert "No ${option.label} setup page responded from Hermes" in auth_view_model
+    assert "No $optionLabel setup page responded from Hermes" in auth_view_model
     assert "const val DEFAULT_TIMEOUT_MS = 6_000" in provider_setup_probe
     assert "const val MAX_STATUS_LENGTH = 900" in provider_setup_probe
     assert 'setRequestProperty("User-Agent", "HermesAgentAndroidProviderSetup/1.0")' in provider_setup_probe
@@ -309,6 +310,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "HermesProviderSetupWebActivity.open(" in settings_view_model
     assert "HermesProviderSetupWebActivity.openInApp" not in settings_view_model
     assert "fun checkProviderKeyPage(url: String)" in settings_view_model
+    assert "probeProviderKeyPages(providerLabel, urlsForProviderKeyPage(providerId, requestedUrl))" in settings_view_model
     assert "ProviderSetupUrlProbe::probe" in settings_view_model
     assert "ProviderSetupUrlProbe.MAX_STATUS_LENGTH" in settings_view_model
     assert "Checking $providerLabel setup pages from this device" in settings_view_model

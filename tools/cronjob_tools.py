@@ -352,6 +352,17 @@ def cronjob(
                             success=False,
                         )
 
+            # Resolve agent_id from the active profile ContextVar so the job
+            # is stored in the correct per-agent cron directory.
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _profile = get_active_profile()
+                if _profile:
+                    _agent_id = _profile.id
+            except Exception:
+                pass
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -368,6 +379,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                agent_id=_agent_id,
             )
             return json.dumps(
                 {

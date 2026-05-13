@@ -34,9 +34,14 @@ TOOL_SHORT_DESCRIPTIONS = {
 IGNORED_TOOLS = {
     "tool_backpack",
     "skill_backpack",
+    "clarify",
+    "delegate_task",
+    "memory",
+    "session_search",
     "skill_view",
     "skills_list",
     "skill_manage",
+    "todo",
 }
 
 
@@ -120,7 +125,7 @@ def tool_backpack(args: dict[str, Any], **_kwargs: Any) -> str:
         return _response(
             status="blocked",
             decision="blocked",
-            message="Use Backpack candidate hints when present, or call tool_backpack with select <id|tool_name>[,<id|tool_name>...]. Call index only when candidates are insufficient.",
+            message="tool_backpack requires select <id|tool_name>[,<id|tool_name>...].",
         )
 
     selected_tool_names = _selected_tool_names(request)

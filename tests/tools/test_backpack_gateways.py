@@ -95,14 +95,41 @@ def test_tool_backpack_index_only_lists_available_tools(monkeypatch):
     assert "tool_backpack -" not in index
 
 
-def test_tool_backpack_empty_request_mentions_candidate_hints_not_prompt_index():
+def test_tool_backpack_empty_request_does_not_advertise_fallback_paths():
     import tools.tool_backpack as tb
 
     result = json.loads(tb.tool_backpack({"request": ""}))
 
     assert result["status"] == "blocked"
-    assert "candidate hints" in result["message"].lower()
-    assert "index is visible" not in result["message"].lower()
+    assert "candidate hints" not in result["message"].lower()
+    assert "index" not in result["message"].lower()
+
+
+def test_tool_backpack_index_omits_stateful_agent_loop_tools(monkeypatch):
+    import tools.tool_backpack as tb
+
+    names = {
+        "memory",
+        "session_search",
+        "todo",
+        "clarify",
+        "delegate_task",
+        "search_files",
+        "read_file",
+        "tool_backpack",
+    }
+    monkeypatch.setattr(tb.registry, "get_all_tool_names", lambda: names)
+    monkeypatch.setattr(
+        tb.registry,
+        "get_definitions",
+        lambda requested, quiet=True: [
+            {"function": {"name": name}} for name in sorted(requested)
+        ],
+    )
+
+    indexed_names = set(tb._all_index_tool_names())
+
+    assert indexed_names == {"search_files", "read_file"}
 
 
 def test_skill_backpack_indexes_only_backpack_tree(monkeypatch, tmp_path):

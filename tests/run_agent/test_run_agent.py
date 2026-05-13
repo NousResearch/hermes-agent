@@ -958,7 +958,7 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
-    def test_includes_backpack_gateway_guidance_without_full_index_when_gateway_available(self):
+    def test_does_not_include_global_backpack_gateway_guidance_when_gateway_available(self):
         with (
             patch(
                 "run_agent.get_tool_definitions",
@@ -978,9 +978,9 @@ class TestBuildSystemPrompt:
             prompt = agent._build_system_prompt()
 
         assert "Tool Backpack index:" not in prompt
-        assert "Backpack candidate hints" in prompt
-        assert "tool_backpack" in prompt
-        assert "skill_backpack" in prompt
+        assert "Backpack candidate hints" not in prompt
+        assert "Backpack gateways are available" not in prompt
+        assert "Use index only as a fallback" not in prompt
 
     def test_backpack_candidate_hints_are_injected_into_current_user_message_only(self):
         with (
@@ -1011,7 +1011,7 @@ class TestBuildSystemPrompt:
         sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
         sent_user = next(msg for msg in sent_messages if msg.get("role") == "user")
         assert sent_user["content"].startswith("Read README.md")
-        assert "Backpack candidate hints:" in sent_user["content"]
+        assert "Backpack candidate hints" in sent_user["content"]
         assert "tool.read_file" in sent_user["content"]
         assert agent._cached_system_prompt is not None
         assert "tool.read_file" not in agent._cached_system_prompt

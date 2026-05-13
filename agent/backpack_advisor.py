@@ -6,14 +6,6 @@ from typing import Any
 
 BACKPACK_SYSTEM_VERSION = "v0"
 
-BACKPACK_GATEWAY_GUIDANCE = (
-    "Backpack gateways are available. Backpack candidate hints are injected into "
-    "the current user turn when useful. Treat them as hints only: prefer the first "
-    "3 candidates when they fit, use lower-ranked candidates as backups, and select "
-    "explicitly through tool_backpack or skill_backpack. Use index only as a fallback "
-    "when the candidates are insufficient or the user asks to list everything."
-)
-
 STOP_WORDS = {
     "a",
     "an",

@@ -6766,7 +6766,10 @@ class GatewayRunner:
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                # Only voice messages should be transcribed via STT.
+                # Audio file attachments (MessageType.AUDIO) are preserved as
+                # file references in the message text, not transcribed (#24870).
+                if mtype.startswith("audio/") and event.message_type == MessageType.VOICE:
                     audio_paths.append(path)
 
             if image_paths:

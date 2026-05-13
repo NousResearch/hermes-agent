@@ -4247,7 +4247,9 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
 
-        # Download voice/audio messages to cache for STT transcription
+        # Download voice messages to cache for STT transcription.
+        # Audio file attachments (msg.audio) are cached as regular files
+        # and should NOT be sent to the STT pipeline (issue #24870).
         if msg.voice:
             try:
                 file_obj = await msg.voice.get_file()

@@ -389,6 +389,11 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # System crontab modification — agents should use Hermes's internal
+    # cron scheduler (/cron) instead of touching the OS crontab.
+    # Covers crontab -r (wipe), crontab - (stdin replace), crontab -e,
+    # crontab -u, and any other invocation.  (#25271)
+    (r'\bcrontab\b', "modify system crontab (use hermes /cron instead)"),
 ]
 
 

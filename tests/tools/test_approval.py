@@ -1102,3 +1102,36 @@ class TestDetectSudoStdin:
             "make 2>&1 | tee build.log"
         )
         assert is_dangerous is False
+
+
+class TestDetectDangerousCrontab:
+    """crontab commands must be blocked; agents should use hermes /cron. (#25271)"""
+
+    def test_crontab_remove_flag(self):
+        is_dangerous, key, desc = detect_dangerous_command("crontab -r")
+        assert is_dangerous is True
+        assert "crontab" in desc.lower()
+
+    def test_crontab_stdin_replace(self):
+        is_dangerous, _, _ = detect_dangerous_command("crontab -")
+        assert is_dangerous is True
+
+    def test_crontab_edit(self):
+        is_dangerous, _, _ = detect_dangerous_command("crontab -e")
+        assert is_dangerous is True
+
+    def test_crontab_list(self):
+        """Even crontab -l (list) is blocked; agents should use hermes /cron."""
+        is_dangerous, _, _ = detect_dangerous_command("crontab -l")
+        assert is_dangerous is True
+
+    def test_crontab_pipe_pattern(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            '(crontab -l 2>/dev/null; echo "0 * * * * cmd") | crontab -'
+        )
+        assert is_dangerous is True
+
+    def test_crontab_word_boundary(self):
+        """Ensure 'mycrontab_tool' does not trigger."""
+        is_dangerous, _, _ = detect_dangerous_command("mycrontab_tool --list")
+        assert is_dangerous is False

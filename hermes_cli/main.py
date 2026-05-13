@@ -9503,6 +9503,37 @@ def main():
     # gateway list
     gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
 
+    # gateway send-message
+    gateway_send = gateway_subparsers.add_parser(
+        "send-message",
+        help="Send a text message to a connected messaging platform",
+        description=(
+            "Send a text message through the gateway to any configured platform. "
+            "If only one platform is connected, the target defaults to it automatically."
+        ),
+    )
+    gateway_send.add_argument(
+        "message",
+        nargs="?",
+        help="Message text to send",
+    )
+    gateway_send.add_argument(
+        "-t",
+        "--target",
+        default="",
+        help=(
+            "Target channel. Examples: 'telegram', 'discord:#general', "
+            "'slack:#engineering', 'telegram:-1001234567890:17585'"
+        ),
+    )
+    gateway_send.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        dest="list_targets",
+        help="List available messaging targets instead of sending",
+    )
+
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 

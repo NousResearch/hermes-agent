@@ -1,5 +1,6 @@
 """Tests for hermes_cli.gateway."""
 
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, call
@@ -559,3 +560,321 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+
+
+class TestGatewaySendMessage:
+    def test_list_targets_prints_targets(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: json.dumps(
+                {"targets": "Available messaging targets:\n\nTelegram:\n  telegram:#general\n\nDiscord:\n  discord:#bot-home\n\nUse these as the \"target\" parameter when sending.\nBare platform name (e.g. \"telegram\") sends to home channel."}
+            ),
+        )
+
+        args = SimpleNamespace(gateway_command="send-message", list_targets=True)
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert "Available messaging targets:" in out
+        assert "telegram:#general" in out
+        assert "discord:#bot-home" in out
+
+    def test_list_targets_no_targets_prints_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: json.dumps({"targets": ""}),
+        )
+
+        args = SimpleNamespace(gateway_command="send-message", list_targets=True)
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert "No messaging targets available." in out
+        assert "hermes gateway setup" in out
+
+    def test_missing_message_exits_with_error(self, capsys):
+        args = SimpleNamespace(gateway_command="send-message", message="", target="", list_targets=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "message is required" in out
+
+    def test_no_connected_platforms_exits(self, monkeypatch, capsys):
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return []
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+
+        args = SimpleNamespace(gateway_command="send-message", message="hi", target="", list_targets=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "no platforms are connected" in out
+
+    def test_multiple_platforms_requires_target(self, monkeypatch, capsys):
+        from gateway.config import Platform
+
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return [Platform.TELEGRAM, Platform.DISCORD]
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+
+        args = SimpleNamespace(gateway_command="send-message", message="hi", target="", list_targets=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "multiple platforms are connected" in out
+        assert "telegram" in out
+        assert "discord" in out
+
+    def test_single_platform_auto_defaults_target(self, monkeypatch, capsys):
+        from gateway.config import Platform
+
+        calls = []
+
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return [Platform.TELEGRAM]
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: (calls.append(args), json.dumps({"success": True, "note": "home channel"}))[1],
+        )
+
+        args = SimpleNamespace(gateway_command="send-message", message="hello", target="", list_targets=False)
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert calls == [{"action": "send", "target": "telegram", "message": "hello"}]
+        assert "Sent" in out
+
+    def test_explicit_target_used(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: (calls.append(args), json.dumps({"success": True}))[1],
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="discord:#general",
+            list_targets=False,
+        )
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert calls == [{"action": "send", "target": "discord:#general", "message": "hello"}]
+        assert "Sent." in out
+
+    def test_send_error_prints_error_and_exits(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: json.dumps({"error": "Adapter send failed: rate limited"}),
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="telegram",
+            list_targets=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "Adapter send failed: rate limited" in out
+
+    def test_send_skipped_prints_note(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: json.dumps(
+                {"success": True, "skipped": True, "note": "Skipped because of duplicate target."}
+            ),
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="telegram",
+            list_targets=False,
+        )
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert "Skipped because of duplicate target." in out
+
+    def test_piped_stdin_message(self, monkeypatch, capsys):
+        calls = []
+
+        class FakeStdin:
+            def isatty(self):
+                return False
+            def read(self):
+                return "  piped content  "
+
+        monkeypatch.setattr(gateway.sys, "stdin", FakeStdin())
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: (calls.append(args), json.dumps({"success": True}))[1],
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="",
+            target="telegram",
+            list_targets=False,
+        )
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert calls == [{"action": "send", "target": "telegram", "message": "piped content"}]
+        assert "Sent." in out
+
+    def test_empty_piped_stdin_exits_with_error(self, monkeypatch, capsys):
+        class FakeStdin:
+            def isatty(self):
+                return False
+            def read(self):
+                return "   "
+
+        monkeypatch.setattr(gateway.sys, "stdin", FakeStdin())
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="",
+            target="telegram",
+            list_targets=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "message is required" in out
+        assert "pipe a message" in out
+
+    def test_target_all_broadcasts_to_all_platforms(self, monkeypatch, capsys):
+        from gateway.config import Platform
+
+        calls = []
+
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return [Platform.TELEGRAM, Platform.DISCORD]
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: (calls.append(args), json.dumps({"success": True}))[1],
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="all",
+            list_targets=False,
+        )
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert len(calls) == 2
+        assert {"action": "send", "target": "telegram", "message": "hello"} in calls
+        assert {"action": "send", "target": "discord", "message": "hello"} in calls
+        assert "Sent to 2 platform(s):" in out
+        assert "telegram" in out
+        assert "discord" in out
+
+    def test_target_all_with_some_failures_reports_them(self, monkeypatch, capsys):
+        from gateway.config import Platform
+
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return [Platform.TELEGRAM, Platform.DISCORD]
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+
+        def mock_send(args, **kw):
+            if args.get("target") == "telegram":
+                return json.dumps({"success": True})
+            return json.dumps({"error": "rate limited"})
+
+        monkeypatch.setattr("tools.send_message_tool.send_message_tool", mock_send)
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="all",
+            list_targets=False,
+        )
+        gateway._gateway_send_message(args)
+
+        out = capsys.readouterr().out
+        assert "Sent to 1 platform(s):" in out
+        assert "Failed on 1 platform(s):" in out
+        assert "rate limited" in out
+
+    def test_target_all_all_failures_exits_nonzero(self, monkeypatch, capsys):
+        from gateway.config import Platform
+
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return [Platform.TELEGRAM]
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+        monkeypatch.setattr(
+            "tools.send_message_tool.send_message_tool",
+            lambda args, **kw: json.dumps({"error": "network down"}),
+        )
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="all",
+            list_targets=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "network down" in out
+        assert "Failed on 1 platform(s):" in out
+
+    def test_target_all_no_connected_platforms_exits(self, monkeypatch, capsys):
+        def fake_load_config():
+            class FakeConfig:
+                def get_connected_platforms(self):
+                    return []
+            return FakeConfig()
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", fake_load_config)
+
+        args = SimpleNamespace(
+            gateway_command="send-message",
+            message="hello",
+            target="all",
+            list_targets=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            gateway._gateway_send_message(args)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "no platforms are connected" in out

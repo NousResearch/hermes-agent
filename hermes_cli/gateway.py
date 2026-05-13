@@ -1,10 +1,11 @@
 """
 Gateway subcommand for hermes CLI.
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
+Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup|send-message]
 """
 
 import asyncio
+import json
 import os
 import shutil
 import signal
@@ -4976,6 +4977,147 @@ def gateway_setup():
     print()
 
 
+def _send_to_single_target(target: str, message: str) -> dict:
+    """Send a message to one target and return the parsed response dict."""
+    from tools.send_message_tool import send_message_tool
+    result = send_message_tool({"action": "send", "target": target, "message": message})
+    return json.loads(result)
+
+
+def _gateway_send_message(args):
+    """Handle 'hermes gateway send-message' subcommand."""
+    list_targets = getattr(args, "list_targets", False)
+
+    if list_targets:
+        try:
+            from tools.send_message_tool import send_message_tool
+            result = send_message_tool({"action": "list"})
+            data = json.loads(result)
+        except Exception as exc:
+            print(f"Failed to list targets: {exc}")
+            sys.exit(1)
+
+        targets = data.get("targets", "")
+        if not targets:
+            print("No messaging targets available.")
+            print("Configure platforms with: hermes gateway setup")
+            return
+
+        if isinstance(targets, str):
+            print(targets)
+        else:
+            for line in targets:
+                print(f"  {line}")
+        return
+
+    message = getattr(args, "message", "") or ""
+    target = getattr(args, "target", "") or ""
+
+    # Allow piping a message via stdin when no positional argument is given
+    if not message and not sys.stdin.isatty():
+        try:
+            message = sys.stdin.read().strip()
+        except Exception:
+            message = ""
+
+    if not message:
+        print("Error: message is required.")
+        print("Example: hermes gateway send-message 'Hi there' --target telegram")
+        print("Or pipe a message: echo 'Hi there' | hermes gateway send-message --target telegram")
+        sys.exit(1)
+
+    # --target all: broadcast to every connected platform's home channel
+    if target.lower() == "all":
+        try:
+            from gateway.config import load_gateway_config
+            config = load_gateway_config()
+            connected = config.get_connected_platforms()
+        except Exception as exc:
+            print(f"Error: could not load gateway config: {exc}")
+            sys.exit(1)
+
+        if not connected:
+            print("Error: no platforms are connected.")
+            print("Configure platforms with: hermes gateway setup")
+            sys.exit(1)
+
+        successes: list[str] = []
+        failures: list[str] = []
+
+        for plat in connected:
+            plat_target = plat.value
+            try:
+                data = _send_to_single_target(plat_target, message)
+            except Exception as exc:
+                failures.append(f"{plat_target}: {exc}")
+                continue
+
+            if data.get("success"):
+                note = data.get("note", "")
+                label = f"{plat_target} ({note})" if note else plat_target
+                successes.append(label)
+            elif data.get("skipped"):
+                successes.append(f"{plat_target} (skipped)")
+            else:
+                error = data.get("error", "Unknown error")
+                failures.append(f"{plat_target}: {error}")
+
+        if successes:
+            print(f"Sent to {len(successes)} platform(s):")
+            for label in successes:
+                print(f"  ✓ {label}")
+        if failures:
+            print(f"Failed on {len(failures)} platform(s):")
+            for label in failures:
+                print(f"  ✗ {label}")
+        if failures and not successes:
+            sys.exit(1)
+        return
+
+    # Auto-default target when only one platform is connected
+    if not target:
+        try:
+            from gateway.config import load_gateway_config
+            config = load_gateway_config()
+            connected = config.get_connected_platforms()
+            if len(connected) == 1:
+                target = connected[0].value
+            elif len(connected) == 0:
+                print("Error: no platforms are connected.")
+                print("Configure platforms with: hermes gateway setup")
+                sys.exit(1)
+            else:
+                print("Error: multiple platforms are connected; --target is required.")
+                print("Available platforms:")
+                for plat in connected:
+                    print(f"  {plat.value}")
+                sys.exit(1)
+        except Exception as exc:
+            print(f"Error: could not determine default target: {exc}")
+            sys.exit(1)
+
+    try:
+        data = _send_to_single_target(target, message)
+    except Exception as exc:
+        print(f"Send failed: {exc}")
+        sys.exit(1)
+
+    if data.get("success"):
+        note = data.get("note", "")
+        if note:
+            print(f"Sent ({note}).")
+        else:
+            print("Sent.")
+        if data.get("mirrored"):
+            print("  (mirrored into gateway session)")
+    elif data.get("skipped"):
+        print(data.get("note", "Skipped."))
+    else:
+        error = data.get("error", "Unknown error")
+        print(f"Error: {error}")
+        sys.exit(1)
+
+
 # =============================================================================
 # Main Command Handler
 # =============================================================================
@@ -5386,6 +5528,9 @@ def _gateway_command_inner(args):
 
     elif subcmd == "list":
         _gateway_list()
+
+    elif subcmd == "send-message":
+        _gateway_send_message(args)
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

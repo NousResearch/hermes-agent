@@ -7,12 +7,13 @@ automatic memory extraction, and session management.
 Original PR #3369 by Mibayy, rewritten to use the full OpenViking session
 lifecycle instead of read-only search endpoints.
 
-Config via environment variables (profile-scoped via each profile's .env):
+Config via environment variables (profile-scoped via each profile's .env)
+or a linked OpenViking CLI config:
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: default)
-  OPENVIKING_USER      — Tenant user (default: default)
-  OPENVIKING_AGENT   — Tenant agent (default: hermes)
+  OPENVIKING_ACCOUNT   — Optional tenant account override
+  OPENVIKING_USER      — Optional tenant user override
+  OPENVIKING_AGENT     — Tenant agent (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -44,6 +45,18 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
+_DEFAULT_ACCOUNT = ""
+_DEFAULT_USER = ""
+_DEFAULT_AGENT = "hermes"
+_OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
+_OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
+_OPENVIKING_ENV_KEYS = (
+    "OPENVIKING_ENDPOINT",
+    "OPENVIKING_API_KEY",
+    "OPENVIKING_ACCOUNT",
+    "OPENVIKING_USER",
+    "OPENVIKING_AGENT",
+)
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
@@ -108,27 +121,21 @@ class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
     def __init__(self, endpoint: str, api_key: str = "",
-                 account: str = "", user: str = "", agent: str = ""):
+                 account: Optional[str] = None, user: Optional[str] = None,
+                 agent: Optional[str] = None):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
-        self._agent = agent or os.environ.get("OPENVIKING_AGENT", "hermes")
+        self._account = account if account is not None else os.environ.get("OPENVIKING_ACCOUNT", _DEFAULT_ACCOUNT)
+        self._user = user if user is not None else os.environ.get("OPENVIKING_USER", _DEFAULT_USER)
+        self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        # Always send tenant headers when account/user are configured.
-        # OpenViking 0.3.x requires X-OpenViking-Account and X-OpenViking-User
-        # for ROOT API key requests to tenant-scoped APIs — omitting them
-        # causes INVALID_ARGUMENT errors even when account="default".
-        # User-level keys can omit them (server derives tenancy from the key),
-        # but ROOT keys must always include them explicitly.
-        h = {
-            "Content-Type": "application/json",
-            "X-OpenViking-Agent": self._agent,
-        }
+        h = {"Content-Type": "application/json"}
+        if self._agent:
+            h["X-OpenViking-Agent"] = self._agent
         if self._account:
             h["X-OpenViking-Account"] = self._account
         if self._user:
@@ -405,6 +412,156 @@ def _path_from_file_uri(uri: str) -> Path | str:
     return Path(url2pathname(parsed.path)).expanduser()
 
 
+def _clean_config_value(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _default_ovcli_config_path() -> Path:
+    return Path.home() / _OVCLI_DEFAULT_RELATIVE_PATH
+
+
+def _resolve_ovcli_config_path(config_path: str = "") -> Path:
+    if config_path:
+        return Path(config_path).expanduser()
+    env_path = os.environ.get(_OVCLI_CONFIG_ENV, "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return _default_ovcli_config_path()
+
+
+def _load_ovcli_config(path: Optional[Path] = None) -> dict:
+    config_path = path or _resolve_ovcli_config_path()
+    if not config_path.exists():
+        return {}
+    with config_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"OpenViking CLI config must be a JSON object: {config_path}")
+    return data
+
+
+def _connection_values_from_ovcli(data: dict) -> dict:
+    return {
+        "endpoint": _clean_config_value(data.get("url")) or _DEFAULT_ENDPOINT,
+        "api_key": _clean_config_value(data.get("api_key")),
+        "account": _clean_config_value(data.get("account") or data.get("account_id")),
+        "user": _clean_config_value(data.get("user") or data.get("user_id")),
+        "agent": _clean_config_value(data.get("agent_id")),
+    }
+
+
+def _load_hermes_openviking_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
+        provider_config = memory_config.get("openviking", {}) if isinstance(memory_config, dict) else {}
+        return dict(provider_config) if isinstance(provider_config, dict) else {}
+    except Exception:
+        return {}
+
+
+def _env_value(name: str) -> Optional[str]:
+    return os.environ[name].strip() if name in os.environ else None
+
+
+def _first_nonempty(*values: Optional[str], default: str = "") -> str:
+    for value in values:
+        if value:
+            return value
+    return default
+
+
+def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict:
+    provider_config = dict(provider_config or {})
+    ovcli_values: dict = {}
+    if provider_config.get("use_ovcli_config"):
+        ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+        ovcli_values = _connection_values_from_ovcli(_load_ovcli_config(ovcli_path))
+
+    endpoint_env = _env_value("OPENVIKING_ENDPOINT")
+    api_key_env = _env_value("OPENVIKING_API_KEY")
+    account_env = _env_value("OPENVIKING_ACCOUNT")
+    user_env = _env_value("OPENVIKING_USER")
+    agent_env = _env_value("OPENVIKING_AGENT")
+
+    return {
+        "endpoint": _first_nonempty(endpoint_env, ovcli_values.get("endpoint"), default=_DEFAULT_ENDPOINT),
+        "api_key": api_key_env if api_key_env is not None else ovcli_values.get("api_key", ""),
+        "account": account_env if account_env is not None else ovcli_values.get("account", ""),
+        "user": user_env if user_env is not None else ovcli_values.get("user", ""),
+        "agent": _first_nonempty(agent_env, ovcli_values.get("agent"), default=_DEFAULT_AGENT),
+    }
+
+
+def _env_writes_from_connection_values(values: dict) -> dict:
+    writes = {}
+    mapping = {
+        "OPENVIKING_ENDPOINT": "endpoint",
+        "OPENVIKING_API_KEY": "api_key",
+        "OPENVIKING_ACCOUNT": "account",
+        "OPENVIKING_USER": "user",
+        "OPENVIKING_AGENT": "agent",
+    }
+    for env_key, value_key in mapping.items():
+        value = _clean_config_value(values.get(value_key))
+        if value:
+            writes[env_key] = value
+    return writes
+
+
+def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    remove_set = set(remove_keys) - set(env_writes)
+    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    updated_keys = set()
+    new_lines = []
+    for line in existing_lines:
+        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
+        if key_match in remove_set:
+            continue
+        if key_match in env_writes:
+            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            updated_keys.add(key_match)
+        else:
+            new_lines.append(line)
+    for key, val in env_writes.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={val}")
+    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+
+
+def _remember_ovcli_path(provider_config: dict, ovcli_path: Path) -> None:
+    default_path = _default_ovcli_config_path().expanduser()
+    if os.environ.get(_OVCLI_CONFIG_ENV, "").strip() or ovcli_path.expanduser() != default_path:
+        provider_config["ovcli_config_path"] = str(ovcli_path)
+    else:
+        provider_config.pop("ovcli_config_path", None)
+
+
+def _ovcli_data_from_connection_values(values: dict) -> dict:
+    data = {"url": _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT}
+    api_key = _clean_config_value(values.get("api_key"))
+    account = _clean_config_value(values.get("account"))
+    user = _clean_config_value(values.get("user"))
+    agent = _clean_config_value(values.get("agent")) or _DEFAULT_AGENT
+    if api_key:
+        data["api_key"] = api_key
+    if account:
+        data["account"] = account
+    if user:
+        data["user"] = user
+    if agent:
+        data["agent_id"] = agent
+    return data
+
+
+def _write_ovcli_config(path: Path, values: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -429,7 +586,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if OpenViking endpoint is configured. No network calls."""
-        return bool(os.environ.get("OPENVIKING_ENDPOINT"))
+        if os.environ.get("OPENVIKING_ENDPOINT"):
+            return True
+        provider_config = _load_hermes_openviking_config()
+        if not provider_config.get("use_ovcli_config"):
+            return False
+        try:
+            ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+            return bool(_connection_values_from_ovcli(_load_ovcli_config(ovcli_path)).get("endpoint"))
+        except Exception:
+            return False
 
     def get_config_schema(self):
         return [
@@ -448,14 +614,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "account",
-                "description": "OpenViking tenant account ID ([default], used when local mode, OPENVIKING_API_KEY is empty)",
-                "default": "default",
+                "description": "OpenViking tenant account ID (blank for user API keys)",
                 "env_var": "OPENVIKING_ACCOUNT",
             },
             {
                 "key": "user",
-                "description": "OpenViking user ID within the account ([default], used when local mode, OPENVIKING_API_KEY is empty)",
-                "default": "default",
+                "description": "OpenViking user ID within the account (blank for user API keys)",
                 "env_var": "OPENVIKING_USER",
             },
             {
@@ -466,12 +630,132 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
         ]
 
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        """Custom setup that can reuse OpenViking's shared CLI config."""
+        from hermes_cli.config import save_config
+        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup, _prompt
+
+        hermes_home_path = Path(hermes_home)
+        env_path = hermes_home_path / ".env"
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        provider_config = config["memory"].get("openviking", {})
+        if not isinstance(provider_config, dict):
+            provider_config = {}
+
+        ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+
+        print("\n  Configuring OpenViking memory:\n")
+
+        if ovcli_path.exists():
+            try:
+                ovcli_values = _connection_values_from_ovcli(_load_ovcli_config(ovcli_path))
+            except Exception as e:
+                print(f"\n  Could not read OpenViking CLI config: {e}")
+                print("  No changes saved.\n")
+                return
+
+            setup_options = [
+                ("Link to ovcli.conf", "Hermes follows the active OpenViking CLI config"),
+                ("Copy once", "Hermes won't follow future ovcli.conf changes"),
+            ]
+            choice = _curses_select(
+                "  OpenViking config source",
+                setup_options,
+                default=0,
+                cancel_returns=_CANCELLED,
+            )
+            if choice == _CANCELLED:
+                _print_cancelled_setup()
+                return
+
+            if choice == 0:
+                provider_config["use_ovcli_config"] = True
+                _remember_ovcli_path(provider_config, ovcli_path)
+                _write_env_vars(env_path, {}, remove_keys=_OPENVIKING_ENV_KEYS)
+                config["memory"]["provider"] = "openviking"
+                config["memory"]["openviking"] = provider_config
+                save_config(config)
+                print(f"\n  Memory provider: openviking")
+                print(f"  Linked config: {ovcli_path}")
+                print("  Start a new session to activate.\n")
+                return
+
+            provider_config["use_ovcli_config"] = False
+            provider_config.pop("ovcli_config_path", None)
+            config["memory"]["provider"] = "openviking"
+            config["memory"]["openviking"] = provider_config
+            save_config(config)
+            _write_env_vars(
+                env_path,
+                _env_writes_from_connection_values(ovcli_values),
+                remove_keys=_OPENVIKING_ENV_KEYS,
+            )
+            print(f"\n  Memory provider: openviking")
+            print("  Connection saved to .env")
+            print("  Start a new session to activate.\n")
+            return
+
+        setup_options = [
+            ("Create ovcli.conf and link", "Recommended"),
+            ("Configure Hermes only", "Write OpenViking values to Hermes .env"),
+        ]
+        choice = _curses_select(
+            "  OpenViking config source",
+            setup_options,
+            default=0,
+            cancel_returns=_CANCELLED,
+        )
+        if choice == _CANCELLED:
+            _print_cancelled_setup()
+            return
+
+        defaults = {
+            "endpoint": _DEFAULT_ENDPOINT,
+            "api_key": "",
+            "account": "",
+            "user": "",
+            "agent": _DEFAULT_AGENT,
+        }
+        values = {
+            "endpoint": _prompt("OpenViking server URL", default=defaults["endpoint"]),
+            "api_key": _prompt("OpenViking API key", secret=True),
+            "account": _prompt("OpenViking account", default=defaults["account"]),
+            "user": _prompt("OpenViking user", default=defaults["user"]),
+            "agent": _prompt("OpenViking agent", default=defaults["agent"]),
+        }
+
+        config["memory"]["provider"] = "openviking"
+        if choice == 0:
+            _write_ovcli_config(ovcli_path, values)
+            provider_config["use_ovcli_config"] = True
+            _remember_ovcli_path(provider_config, ovcli_path)
+            config["memory"]["openviking"] = provider_config
+            save_config(config)
+            _write_env_vars(env_path, {}, remove_keys=_OPENVIKING_ENV_KEYS)
+            print(f"\n  Memory provider: openviking")
+            print(f"  Created config: {ovcli_path}")
+        else:
+            provider_config["use_ovcli_config"] = False
+            provider_config.pop("ovcli_config_path", None)
+            config["memory"]["openviking"] = provider_config
+            save_config(config)
+            _write_env_vars(
+                env_path,
+                _env_writes_from_connection_values(values),
+                remove_keys=_OPENVIKING_ENV_KEYS,
+            )
+            print(f"\n  Memory provider: openviking")
+            print("  Connection saved to .env")
+        print("  Start a new session to activate.\n")
+
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
-        self._api_key = os.environ.get("OPENVIKING_API_KEY", "")
-        self._account = os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = os.environ.get("OPENVIKING_USER", "default")
-        self._agent = os.environ.get("OPENVIKING_AGENT", "hermes")
+        settings = _resolve_connection_settings(_load_hermes_openviking_config())
+        self._endpoint = settings["endpoint"]
+        self._api_key = settings["api_key"]
+        self._account = settings["account"]
+        self._user = settings["user"]
+        self._agent = settings["agent"]
         self._session_id = session_id
         self._turn_count = 0
 

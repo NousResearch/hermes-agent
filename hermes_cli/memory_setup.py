@@ -15,24 +15,40 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
+_CANCELLED = -1
+
 
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
 # ---------------------------------------------------------------------------
 
-def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
+def _curses_select(
+    title: str,
+    items: list[tuple[str, str]],
+    default: int = 0,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
     """Interactive single-select with arrow keys.
 
     items: list of (label, description) tuples.
-    Returns selected index, or default on escape/quit.
+    Returns selected index, or cancel_returns/default on escape/quit.
     """
     from hermes_cli.curses_ui import curses_radiolist
+
+    if cancel_returns is None:
+        cancel_returns = default
+
     # Format (label, desc) tuples into display strings
     display_items = [
         f"{label}  {desc}" if desc else label
         for label, desc in items
     ]
-    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
+    return curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)
+
+
+def _print_cancelled_setup() -> None:
+    print("\n  Cancelled. No changes saved.\n")
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -241,14 +257,17 @@ def cmd_setup(args) -> None:
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
+    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    if selected == _CANCELLED:
+        _print_cancelled_setup()
+        return
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
     # Built-in only
-    if selected >= len(providers) or selected < 0:
+    if selected >= len(providers):
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
@@ -309,7 +328,10 @@ def cmd_setup(args) -> None:
                 current_idx = 0
                 if current and current in choices:
                     current_idx = choices.index(current)
-                sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
+                sel = _curses_select(f"  {desc}", choice_items, default=current_idx, cancel_returns=_CANCELLED)
+                if sel == _CANCELLED:
+                    _print_cancelled_setup()
+                    return
                 provider_config[key] = choices[sel]
             elif is_secret:
                 # Prompt for secret

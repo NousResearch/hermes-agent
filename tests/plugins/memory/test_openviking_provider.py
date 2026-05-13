@@ -8,6 +8,281 @@ import pytest
 from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 
+def _clear_openviking_env(monkeypatch):
+    for key in (
+        "OPENVIKING_ENDPOINT",
+        "OPENVIKING_API_KEY",
+        "OPENVIKING_ACCOUNT",
+        "OPENVIKING_USER",
+        "OPENVIKING_AGENT",
+        "OPENVIKING_CLI_CONFIG_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-one.local",
+            "api_key": "key-one",
+            "account": "acct-one",
+            "user": "alice",
+            "agent_id": "agent-one",
+        }),
+        encoding="utf-8",
+    )
+    provider_config = {"use_ovcli_config": True, "ovcli_config_path": str(ovcli_path)}
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-one.local",
+        "api_key": "key-one",
+        "account": "acct-one",
+        "user": "alice",
+        "agent": "agent-one",
+    }
+
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-two.local",
+            "api_key": "key-two",
+            "agent_id": "agent-two",
+        }),
+        encoding="utf-8",
+    )
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-two.local",
+        "api_key": "key-two",
+        "account": "",
+        "user": "",
+        "agent": "agent-two",
+    }
+
+
+def test_openviking_env_overrides_linked_ovcli_config(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking.local",
+            "api_key": "file-key",
+            "account": "file-account",
+            "user": "file-user",
+            "agent_id": "file-agent",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://env.local")
+    monkeypatch.setenv("OPENVIKING_API_KEY", "env-key")
+    monkeypatch.setenv("OPENVIKING_ACCOUNT", "env-account")
+    monkeypatch.setenv("OPENVIKING_USER", "env-user")
+    monkeypatch.setenv("OPENVIKING_AGENT", "env-agent")
+
+    settings = openviking_module._resolve_connection_settings({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+    })
+
+    assert settings == {
+        "endpoint": "http://env.local",
+        "api_key": "env-key",
+        "account": "env-account",
+        "user": "env-user",
+        "agent": "env-agent",
+    }
+
+
+def test_post_setup_link_existing_ovcli_clears_hermes_env(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    env_path.write_text(
+        "OPENVIKING_ENDPOINT=http://old.local\n"
+        "OPENVIKING_ACCOUNT=old-account\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(json.dumps({"url": "http://openviking.local"}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 0)
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is True
+    assert config["memory"]["openviking"]["ovcli_config_path"] == str(ovcli_path)
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_" not in env_text
+    assert "OTHER_KEY=keep" in env_text
+
+
+def test_post_setup_copy_existing_ovcli_writes_hermes_env(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking.local",
+            "api_key": "test-key",
+            "account": "acct",
+            "user": "alice",
+            "agent_id": "agent",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 1)
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is False
+    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
+    assert "OPENVIKING_ENDPOINT=http://openviking.local" in env_text
+    assert "OPENVIKING_API_KEY=test-key" in env_text
+    assert "OPENVIKING_ACCOUNT=acct" in env_text
+    assert "OPENVIKING_USER=alice" in env_text
+    assert "OPENVIKING_AGENT=agent" in env_text
+
+
+def test_post_setup_cancel_existing_ovcli_writes_nothing(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    original_env = "OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n"
+    env_path.write_text(original_env, encoding="utf-8")
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(json.dumps({"url": "http://openviking.local"}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: -1)
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def test_post_setup_invalid_existing_ovcli_writes_nothing(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    original_env = "OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n"
+    env_path.write_text(original_env, encoding="utf-8")
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(
+        memory_setup,
+        "_curses_select",
+        MagicMock(side_effect=AssertionError("picker should not open for invalid ovcli.conf")),
+    )
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def test_post_setup_creates_minimal_ovcli_and_links(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "missing" / "ovcli.conf"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        memory_setup,
+        "_prompt",
+        lambda label, default=None, secret=False: default or "",
+    )
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is True
+    data = json.loads(ovcli_path.read_text(encoding="utf-8"))
+    assert data == {
+        "url": "http://127.0.0.1:1933",
+        "agent_id": "hermes",
+    }
+    env_path = hermes_home / ".env"
+    if env_path.exists():
+        assert env_path.read_text(encoding="utf-8") == ""
+
+
+def test_post_setup_cancel_missing_ovcli_does_not_prompt_or_create(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "missing" / "ovcli.conf"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: -1)
+    monkeypatch.setattr(
+        memory_setup,
+        "_prompt",
+        MagicMock(side_effect=AssertionError("prompts should not run after cancel")),
+    )
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert not ovcli_path.exists()
+    assert not (hermes_home / ".env").exists()
+
+
 def test_tool_search_sorts_by_raw_score_across_buckets():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -371,9 +646,7 @@ def test_viking_client_headers_send_tenant_when_default():
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
-    # Empty account/user strings fall back to "default" via the constructor.
-    # Headers are sent even for the default value — ROOT API keys need them.
+def test_viking_client_headers_omit_tenant_when_empty():
     client = _VikingClient(
         "https://example.com",
         api_key="",
@@ -382,8 +655,9 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Agent"] == "hermes"
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 

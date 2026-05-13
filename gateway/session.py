@@ -14,12 +14,112 @@ import os
 import json
 import threading
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _tool_call_id_from_entry(entry: Any) -> Optional[str]:
+    """Best-effort extraction of a tool call id from dict/object transcript rows."""
+    if isinstance(entry, dict):
+        return entry.get("id") or entry.get("call_id")
+    return getattr(entry, "id", None) or getattr(entry, "call_id", None)
+
+
+def _repair_transcript_sequence(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+    """Repair malformed transcript rows before handing them back to the gateway.
+
+    Goal: preserve any valid assistant(tool_calls) ↔ tool_result adjacency and
+    prevent the specific broken shape that triggered the Discord regression:
+
+      assistant(tool_calls) ... tool_result(s) ... user ... user
+
+    followed by a resumed turn. That shape causes providers like Anthropic to
+    reject the next request with:
+      "tool_use ids were found without tool_result blocks immediately after"
+
+    Repairs are intentionally conservative:
+      1. Drop stray tool rows whose ``tool_call_id`` is not currently expected.
+      2. Merge adjacent plain-text user messages so interrupted/retried input
+         doesn't produce ``user, user`` tails.
+
+    Returns ``(repaired_messages, repair_count)``.
+    """
+    if not messages:
+        return messages, 0
+
+    repairs = 0
+    filtered: List[Dict[str, Any]] = []
+    expected_tool_ids: set[str] = set()
+
+    for raw in messages:
+        if not isinstance(raw, dict):
+            filtered.append(raw)
+            continue
+
+        msg = deepcopy(raw)
+        role = msg.get("role")
+
+        if role == "assistant":
+            expected_tool_ids = {
+                tool_id
+                for tool_id in (
+                    _tool_call_id_from_entry(tc)
+                    for tc in (msg.get("tool_calls") or [])
+                )
+                if tool_id
+            }
+            filtered.append(msg)
+            continue
+
+        if role == "tool":
+            tc_id = msg.get("tool_call_id")
+            if tc_id and tc_id in expected_tool_ids:
+                filtered.append(msg)
+            else:
+                repairs += 1
+            continue
+
+        if role == "user":
+            previous = filtered[-1] if filtered else None
+            if (
+                isinstance(previous, dict)
+                and previous.get("role") == "assistant"
+                and not (previous.get("tool_calls") or [])
+            ):
+                expected_tool_ids = set()
+
+        filtered.append(msg)
+
+    merged: List[Dict[str, Any]] = []
+    for msg in filtered:
+        if (
+            len(merged) >= 2
+            and isinstance(msg, dict)
+            and msg.get("role") == "user"
+            and isinstance(merged[-1], dict)
+            and merged[-1].get("role") == "user"
+            and isinstance(merged[-2], dict)
+            and merged[-2].get("role") == "tool"
+        ):
+            prev = merged[-1]
+            prev_content = prev.get("content", "")
+            new_content = msg.get("content", "")
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                prev["content"] = (
+                    f"{prev_content}\n\n{new_content}"
+                    if prev_content and new_content
+                    else (prev_content or new_content)
+                )
+                repairs += 1
+                continue
+        merged.append(msg)
+
+    return merged, repairs
 
 
 def _now() -> datetime:
@@ -1304,10 +1404,25 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            return self._db.get_messages_as_conversation(session_id)
+            messages = self._db.get_messages_as_conversation(session_id)
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []
+
+        repaired_messages, repairs = _repair_transcript_sequence(messages)
+        if repairs > 0:
+            logger.warning(
+                "Session %s: repaired %d malformed transcript row(s) during load",
+                session_id,
+                repairs,
+            )
+            try:
+                self.rewrite_transcript(session_id, repaired_messages)
+            except Exception as e:
+                logger.debug("Failed to persist repaired transcript for %s: %s", session_id, e)
+            return repaired_messages
+
+        return messages
 
 
 def build_session_context(

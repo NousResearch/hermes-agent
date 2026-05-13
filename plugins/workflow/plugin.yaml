@@ -1,0 +1,4 @@
+name: workflow
+version: 0.1.0
+description: "Hermes workflow orchestration primitives: policy, DAGs, gates, and Kanban materialization."
+category: orchestration

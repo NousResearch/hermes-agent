@@ -319,6 +319,89 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
+        """/sessions with no args prints the recent-sessions table (TUI parity).
+
+        Regression test: `sessions` was registered in the central command
+        registry and surfaced by /help and tab-completion, but the classic
+        CLI dispatcher had no elif branch for it, so the canonical name fell
+        through and printed `Unknown command: sessions`.
+        """
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        # Drive it through the public dispatcher to also lock in the
+        # process_command wiring, not just the handler in isolation.
+        cli.process_command("/sessions")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "20260401_201329_d85961" in output
+
+    def test_sessions_list_subcommand_lists_recent_sessions(self, capsys):
+        """/sessions list is an explicit alias for the no-arg list view."""
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.process_command("/sessions list")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+
+    def test_sessions_with_target_delegates_to_resume(self):
+        """/sessions <id_or_title> behaves identically to /resume <id_or_title>.
+
+        We intercept `_handle_resume_command` rather than the full resume
+        machinery (which would otherwise require simulating an entire session
+        switch). The contract under test is the dispatch wiring.
+        """
+        cli = _make_cli()
+        with patch.object(cli, "_handle_resume_command") as mock_resume:
+            cli.process_command("/sessions Checking Running Hermes Agent")
+
+        mock_resume.assert_called_once_with(
+            "/resume Checking Running Hermes Agent"
+        )
+
+    def test_sessions_command_is_dispatched(self):
+        """/sessions must hit _handle_sessions_command, not fall through.
+
+        Direct test that the process_command elif chain routes the canonical
+        name to the handler. Without this wiring, /sessions printed
+        `Unknown command: sessions` even though it was a registered command.
+        """
+        cli = _make_cli()
+        cli._session_db = None  # exercise the no-db path too
+
+        with patch.object(cli, "_handle_sessions_command") as mock_handler:
+            cli.process_command("/sessions")
+
+        mock_handler.assert_called_once()
+        called_with = mock_handler.call_args.args[0]
+        assert called_with.lower().startswith("/sessions")
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

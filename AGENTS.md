@@ -871,6 +871,21 @@ file will silently overwrite recent fixes on main when squashed. Verify
 with `git diff HEAD~1..HEAD` after merging — unexpected deletions are a
 red flag.
 
+### Before opening a PR, check for an existing PR on the same fix topic
+Codex/Claude/Hermes runs can accidentally open duplicate PRs for the same
+issue. Before `gh pr create`, list open PRs for your branch/author/topic and
+reuse the existing PR when the changed files or issue number overlap.
+
+Minimum check:
+```bash
+gh pr list --author @me --state open --limit 100 \
+  --json number,title,headRefName,url
+```
+
+If an open PR already covers the same issue or same core files, push new
+commits to that branch/PR or close the duplicate instead of opening another
+one. Keep exactly one canonical PR per fix topic.
+
 ### Don't wire in dead code without E2E validation
 Unused code that was never shipped was dead for a reason. Before wiring an
 unused module into a live code path, E2E test the real resolution chain

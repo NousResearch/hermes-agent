@@ -43,6 +43,7 @@ import logging
 import os
 import random
 import re
+import threading
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -71,6 +72,7 @@ HttpError: Any = Exception  # type: ignore
 MediaFileUpload: Any = None  # type: ignore
 
 _google_modules_loaded: bool = False
+_google_modules_lock = threading.Lock()
 
 
 def _load_google_modules() -> bool:
@@ -92,29 +94,32 @@ def _load_google_modules() -> bool:
     global AuthorizedHttp, build_service, HttpError, MediaFileUpload
     if _google_modules_loaded:
         return GOOGLE_CHAT_AVAILABLE
-    _google_modules_loaded = True
-    try:
-        import httplib2 as _httplib2
-        from google.cloud import pubsub_v1 as _pubsub_v1
-        from google.api_core import exceptions as _gax_exceptions
-        from google.oauth2 import service_account as _service_account
-        from google_auth_httplib2 import AuthorizedHttp as _AuthorizedHttp
-        from googleapiclient.discovery import build as _build_service
-        from googleapiclient.errors import HttpError as _HttpError
-        from googleapiclient.http import MediaFileUpload as _MediaFileUpload
-    except ImportError:
-        GOOGLE_CHAT_AVAILABLE = False
-        return False
-    httplib2 = _httplib2
-    pubsub_v1 = _pubsub_v1
-    gax_exceptions = _gax_exceptions
-    service_account = _service_account
-    AuthorizedHttp = _AuthorizedHttp
-    build_service = _build_service
-    HttpError = _HttpError
-    MediaFileUpload = _MediaFileUpload
-    GOOGLE_CHAT_AVAILABLE = True
-    return True
+    with _google_modules_lock:
+        if _google_modules_loaded:
+            return GOOGLE_CHAT_AVAILABLE
+        try:
+            import httplib2 as _httplib2
+            from google.cloud import pubsub_v1 as _pubsub_v1
+            from google.api_core import exceptions as _gax_exceptions
+            from google.oauth2 import service_account as _service_account
+            from google_auth_httplib2 import AuthorizedHttp as _AuthorizedHttp
+            from googleapiclient.discovery import build as _build_service
+            from googleapiclient.errors import HttpError as _HttpError
+            from googleapiclient.http import MediaFileUpload as _MediaFileUpload
+        except ImportError:
+            _google_modules_loaded = True
+            return False
+        httplib2 = _httplib2
+        pubsub_v1 = _pubsub_v1
+        gax_exceptions = _gax_exceptions
+        service_account = _service_account
+        AuthorizedHttp = _AuthorizedHttp
+        build_service = _build_service
+        HttpError = _HttpError
+        MediaFileUpload = _MediaFileUpload
+        GOOGLE_CHAT_AVAILABLE = True
+        _google_modules_loaded = True
+    return GOOGLE_CHAT_AVAILABLE
 
 from gateway.config import Platform, PlatformConfig
 

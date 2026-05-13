@@ -15,7 +15,9 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2866,3 +2868,59 @@ class TestGoogleChatStandaloneSend:
         assert "error" in result
         # The error names the expected resource shape so plugin authors can self-correct
         assert "spaces/" in result["error"] or "users/" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU race regression — _load_google_modules() double-checked locking
+# ---------------------------------------------------------------------------
+
+class TestLoadGoogleModulesToctouRace:
+    """Verify _load_google_modules() is safe under concurrent first-call contention."""
+
+    def setup_method(self):
+        import plugins.platforms.google_chat.adapter as gc
+        self._orig_loaded = gc._google_modules_loaded
+        self._orig_lock = gc._google_modules_lock
+        self._orig_available = gc.GOOGLE_CHAT_AVAILABLE
+        # Reset to uninitialized state for each test
+        gc._google_modules_loaded = False
+        gc._google_modules_lock = threading.Lock()
+        gc.GOOGLE_CHAT_AVAILABLE = False
+
+    def teardown_method(self):
+        import plugins.platforms.google_chat.adapter as gc
+        gc._google_modules_loaded = self._orig_loaded
+        gc._google_modules_lock = self._orig_lock
+        gc.GOOGLE_CHAT_AVAILABLE = self._orig_available
+
+    def test_concurrent_calls_return_consistent_result(self):
+        """50 threads racing on first call must all see the same return value."""
+        import plugins.platforms.google_chat.adapter as gc
+        barrier = threading.Barrier(50)
+
+        def call_load():
+            barrier.wait()
+            return gc._load_google_modules()
+
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            futures = [pool.submit(call_load) for _ in range(50)]
+            results = [f.result() for f in futures]
+
+        # All threads must agree on the result (True or False, deps installed or not)
+        assert len(set(results)) == 1, (
+            f"_load_google_modules() returned inconsistent values under concurrency: {set(results)}"
+        )
+
+    def test_flag_set_after_globals_assigned(self):
+        """_google_modules_loaded must be True only after all module globals are set."""
+        import plugins.platforms.google_chat.adapter as gc
+
+        # Simulate the ImportError path — flag must still be set (no infinite retry)
+        with patch.dict("sys.modules", {"httplib2": None}):
+            # Reset again
+            gc._google_modules_loaded = False
+            gc._google_modules_lock = threading.Lock()
+            gc.GOOGLE_CHAT_AVAILABLE = False
+            # Call should not raise and must mark as loaded
+            gc._load_google_modules()
+            assert gc._google_modules_loaded is True

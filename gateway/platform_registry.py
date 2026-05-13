@@ -30,7 +30,7 @@ Usage (gateway side):
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,23 @@ class PlatformEntry:
     # platform as a valid ``deliver=<name>`` target and reads the env var to
     # resolve the default chat/room ID.  Empty = no cron home-channel support.
     cron_deliver_env_var: str = ""
+
+    # ── Standalone (out-of-process) sending ──
+    # Optional: async coroutine that delivers a message without a live
+    # gateway adapter.  Called by ``tools/send_message_tool._send_via_adapter``
+    # when ``cron`` runs in a separate process from the gateway and the
+    # in-process adapter weakref is therefore ``None``.
+    #
+    # Signature:
+    #     async (pconfig, chat_id, message, *, thread_id=None,
+    #            media_files=None, force_document=False) -> dict
+    #
+    # Returns ``{"success": True, "message_id": ...}`` on success or
+    # ``{"error": str}`` on failure.  Plugin authors typically open an
+    # ephemeral connection / acquire a fresh OAuth token, send, and close.
+    # Without this hook, plugin platforms cannot serve as cron ``deliver=``
+    # targets when the gateway is not co-resident with the cron process.
+    standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
 
 class PlatformRegistry:

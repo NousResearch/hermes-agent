@@ -71,6 +71,56 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Plugin developer debug logging
+# ---------------------------------------------------------------------------
+#
+# Set ``HERMES_PLUGINS_DEBUG=1`` to surface verbose plugin-discovery logs to
+# stderr in addition to ~/.hermes/logs/agent.log. Aimed at plugin authors
+# trying to figure out why their plugin isn't showing up: which directories
+# were scanned, which manifests parsed, which plugins were skipped (and why),
+# what each ``register(ctx)`` call registered, and full tracebacks on load
+# failure.
+#
+# The env var is read once at import time; tests that need to flip it
+# mid-process can call ``_install_plugin_debug_handler(force=True)``.
+
+_PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+_DEBUG_HANDLER_INSTALLED = False
+
+
+def _install_plugin_debug_handler(force: bool = False) -> None:
+    """When HERMES_PLUGINS_DEBUG is on, tee plugin logs to stderr at DEBUG.
+
+    Idempotent: only attaches the handler once per process unless ``force``
+    is passed. Does not touch the root logger or other Hermes loggers.
+    """
+    global _DEBUG_HANDLER_INSTALLED, _PLUGINS_DEBUG
+    if force:
+        _PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    if not _PLUGINS_DEBUG or _DEBUG_HANDLER_INSTALLED:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("[plugins] %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    # Don't double-emit through the root logger when the central logging
+    # config also writes to stderr. agent.log still captures everything.
+    logger.propagate = True
+    _DEBUG_HANDLER_INSTALLED = True
+    logger.debug(
+        "HERMES_PLUGINS_DEBUG=1 — verbose plugin discovery logging enabled"
+    )
+
+
+_install_plugin_debug_handler()
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -240,6 +290,27 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        # Lazy-built host-owned LLM facade — see ctx.llm property below.
+        self._llm: Any = None
+
+    # -- host-owned LLM access ----------------------------------------------
+
+    @property
+    def llm(self) -> Any:
+        """Return the plugin's :class:`agent.plugin_llm.PluginLlm` facade.
+
+        Lets trusted plugins run host-owned chat or structured completions
+        against the user's active model and auth without bringing their
+        own provider keys. Override capability (model, agent id, auth
+        profile) is fail-closed by default and gated through
+        ``plugins.entries.<plugin_id>.llm.*`` config keys.
+
+        See :mod:`agent.plugin_llm` for the full surface."""
+        if self._llm is None:
+            from agent.plugin_llm import PluginLlm
+            plugin_id = self.manifest.key or self.manifest.name
+            self._llm = PluginLlm(plugin_id=plugin_id)
+        return self._llm
 
     # -- tool registration --------------------------------------------------
 
@@ -653,28 +724,43 @@ class PluginManager:
         # is a category holding platform adapters (scanned one level deeper
         # below).
         repo_plugins = get_bundled_plugins_dir()
-        manifests.extend(
-            self._scan_directory(
-                repo_plugins,
-                source="bundled",
-                skip_names={"memory", "context_engine", "platforms", "model-providers"},
-            )
+        logger.debug("Scanning bundled plugins: %s", repo_plugins)
+        bundled = self._scan_directory(
+            repo_plugins,
+            source="bundled",
+            skip_names={"memory", "context_engine", "platforms", "model-providers"},
         )
-        manifests.extend(
-            self._scan_directory(repo_plugins / "platforms", source="bundled")
+        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
+        manifests.extend(bundled)
+        bundled_platforms = self._scan_directory(
+            repo_plugins / "platforms", source="bundled"
         )
+        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
+        manifests.extend(bundled_platforms)
 
         # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"
-        manifests.extend(self._scan_directory(user_dir, source="user"))
+        logger.debug("Scanning user plugins: %s", user_dir)
+        user_manifests = self._scan_directory(user_dir, source="user")
+        logger.debug("  user: %d manifest(s)", len(user_manifests))
+        manifests.extend(user_manifests)
 
         # 3. Project plugins (./.hermes/plugins/)
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
             project_dir = Path.cwd() / ".hermes" / "plugins"
-            manifests.extend(self._scan_directory(project_dir, source="project"))
+            logger.debug("Scanning project plugins: %s", project_dir)
+            project_manifests = self._scan_directory(project_dir, source="project")
+            logger.debug("  project: %d manifest(s)", len(project_manifests))
+            manifests.extend(project_manifests)
+        else:
+            logger.debug(
+                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
+            )
 
         # 4. Pip / entry-point plugins
-        manifests.extend(self._scan_entry_points())
+        ep_manifests = self._scan_entry_points()
+        logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
+        manifests.extend(ep_manifests)
 
         # Load each manifest (skip user-disabled plugins).
         # Later sources override earlier ones on key collision — user
@@ -738,7 +824,7 @@ class PluginManager:
             # Bundled platform plugins (gateway adapters like IRC) auto-load
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
+            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
                 self._load_plugin(manifest)
                 continue
 
@@ -870,7 +956,7 @@ class PluginManager:
             if yaml is None:
                 logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                 return None
-            data = yaml.safe_load(manifest_file.read_text()) or {}
+            data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
@@ -923,6 +1009,10 @@ class PluginManager:
                     except Exception:
                         pass
 
+            logger.debug(
+                "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
+                key, name, kind, source, plugin_dir,
+            )
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),
@@ -937,7 +1027,9 @@ class PluginManager:
                 key=key,
             )
         except Exception as exc:
-            logger.warning("Failed to parse %s: %s", manifest_file, exc)
+            logger.warning(
+                "Failed to parse %s: %s", manifest_file, exc, exc_info=_PLUGINS_DEBUG,
+            )
             return None
 
     # -----------------------------------------------------------------------
@@ -977,9 +1069,13 @@ class PluginManager:
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
+        logger.debug(
+            "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
+            manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
+        )
 
         try:
-            if manifest.source in ("user", "project", "bundled"):
+            if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)
@@ -1019,10 +1115,23 @@ class PluginManager:
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
+                logger.debug(
+                    "  registered: %d tool(s), %d hook(s), %d slash command(s), %d CLI command(s)",
+                    len(loaded.tools_registered),
+                    len(loaded.hooks_registered),
+                    len(loaded.commands_registered),
+                    sum(
+                        1 for c in self._cli_commands
+                        if self._cli_commands[c].get("plugin") == manifest.name
+                    ),
+                )
 
         except Exception as exc:
             loaded.error = str(exc)
-            logger.warning("Failed to load plugin '%s': %s", manifest.name, exc)
+            logger.warning(
+                "Failed to load plugin '%s': %s",
+                manifest.name, exc, exc_info=_PLUGINS_DEBUG,
+            )
 
         self._plugins[manifest.key or manifest.name] = loaded
 

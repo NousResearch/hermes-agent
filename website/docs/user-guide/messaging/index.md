@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -34,6 +34,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
+| LINE | — | ✅ | ✅ | — | — | ✅ | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -133,6 +134,7 @@ hermes gateway status --system         # Linux only: inspect the system service 
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
+| `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
 | `/approve` | Approve a pending dangerous command |
 | `/deny` | Reject a pending dangerous command |
@@ -219,6 +221,33 @@ hermes pairing revoke telegram 123456789  # Remove access
 ```
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Slash Command Access Control
+
+Once users are allowed in, you can split them into **admins** (full slash command access) and **regular users** (only the slash commands you explicitly enable). This applies per platform and per scope (DM vs group/channel) and works through the live command registry, so it covers built-in AND plugin-registered slash commands without per-feature wiring.
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        allow_from: ["111", "222", "333"]
+        allow_admin_from: ["111"]                    # admins → all slash commands
+        user_allowed_commands: [status, model]       # what non-admins may run
+        # Optional: separate group/channel scope
+        group_allow_admin_from: ["111"]
+        group_user_allowed_commands: [status]
+```
+
+Behavior:
+
+- A user in `allow_admin_from` for a scope can run **every** registered slash command.
+- A user in `allow_from` but not in `allow_admin_from` can only run commands in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat is unaffected. Non-admins can still talk to the agent normally; they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply group/channel admin status. Each scope has its own admin list.
+
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/docs/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/docs/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 
 ## Interrupting the Agent
 
@@ -386,7 +415,7 @@ Each platform has its own toolset:
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | Slack | `hermes-slack` | Full tools including terminal |
-| Google Chat | `hermes-google-chat` | Full tools including terminal |
+| Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
 | SMS | `hermes-sms` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
@@ -402,7 +431,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
-| API Server | `hermes` (default) | Full tools including terminal |
+| API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
 ## Next Steps
@@ -427,5 +456,6 @@ Each platform has its own toolset:
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
 - [Microsoft Teams Setup](teams.md)
+- [Teams Meetings Pipeline](teams-meetings.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)

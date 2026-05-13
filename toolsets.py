@@ -61,10 +61,13 @@ _HERMES_CORE_TOOLS = [
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
-    # spawned as a kanban worker (HERMES_KANBAN_TASK env set), otherwise
-    # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
-    "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+    # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
+    # profile explicitly enables the kanban toolset. Gated via check_fn in
+    # tools/kanban_tools.py.
+    "kanban_show", "kanban_list",
+    "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
+    "kanban_unblock",
     # Browser sidecar — only in schema when the user opted in AND the
     # Hermesdeploy-provisioned sidecar container is reachable (check_fn
     # in tools/browser_sidecar.py probes /health). Listed here so the
@@ -77,6 +80,8 @@ _HERMES_CORE_TOOLS = [
     "browser_wait_for", "browser_assert_visible", "browser_get_text",
     "browser_screenshot",
     "browser_run_named_flow",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    "computer_use",
 ]
 
 
@@ -113,7 +118,17 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "computer_use": {
+        "description": (
+            "Background macOS desktop control via cua-driver — screenshots, "
+            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
+            "or keyboard focus. Works with any tool-capable model."
+        ),
+        "tools": ["computer_use"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
@@ -257,12 +272,13 @@ TOOLSETS = {
             "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
             "tasks done with structured handoffs, block for human input, "
             "heartbeat during long ops, comment on threads, and (for "
-            "orchestrators) fan out into child tasks."
+            "orchestrators) list, unblock, and fan out tasks."
         ),
         "tools": [
-            "kanban_show", "kanban_complete", "kanban_block",
+            "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
+            "kanban_unblock",
         ],
         "includes": [],
     },

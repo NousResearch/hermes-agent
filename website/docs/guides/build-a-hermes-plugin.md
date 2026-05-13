@@ -311,6 +311,36 @@ Plugins (1):
   ✓ calculator v1.0.0 (2 tools, 1 hooks)
 ```
 
+### Debugging plugin discovery
+
+If your plugin doesn't show up — or shows up but isn't loading — set `HERMES_PLUGINS_DEBUG=1` to get verbose discovery logs on stderr:
+
+```bash
+HERMES_PLUGINS_DEBUG=1 hermes plugins list
+```
+
+You'll see, for every plugin source (bundled, user, project, entry-points):
+
+- which directories were scanned and how many manifests each yielded
+- per manifest: resolved key, name, kind, source, on-disk path
+- skip reasons: `disabled via config`, `not enabled in config`, `exclusive plugin`, `no plugin.yaml, depth cap reached`
+- on load: the plugin being imported, plus a one-line summary of what `register(ctx)` registered (tools, hooks, slash commands, CLI commands)
+- on parse failure: a full traceback for the exception (YAML scanner errors, etc.)
+- on `register()` failure: a full traceback pointing at the line in your `__init__.py` that raised
+
+The same logs are always written to `~/.hermes/logs/agent.log` at WARNING level (failures only) and DEBUG level (everything) when the env var is set. So if you can't run with the env var (e.g. from inside the gateway), tail the log file instead:
+
+```bash
+hermes logs --level WARNING | grep -i plugin
+```
+
+Common reasons a plugin doesn't appear:
+
+- **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
+- **Wrong directory layout** — must be `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or `~/.hermes/plugins/<category>/<plugin-name>/plugin.yaml` (one level of category nesting, max). Anything deeper is ignored.
+- **Missing `__init__.py`** — the plugin directory needs both `plugin.yaml` and `__init__.py` with a `register(ctx)` function.
+- **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
+
 ## Your plugin's final structure
 
 ```

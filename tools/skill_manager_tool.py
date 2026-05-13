@@ -780,7 +780,7 @@ def skill_manage(
             if action == "create":
                 if is_background_review():
                     mark_agent_created(name)
-            elif action in ("patch", "edit", "write_file", "remove_file"):
+            elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
             elif action == "delete":
                 forget(name)

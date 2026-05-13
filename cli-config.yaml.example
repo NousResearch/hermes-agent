@@ -203,6 +203,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
+#   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
+#   # Example: add a Linux capability not included by default
+#   # docker_extra_args:
+#   #   - "--cap-add"
+#   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -500,6 +506,7 @@ group_sessions_per_user: true
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -656,6 +663,10 @@ platform_toolsets:
 # platforms:
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
+#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
+#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
+#     guest_mode: false
+#     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 
@@ -941,6 +952,9 @@ display:
   #   true:  Stream tokens as they arrive (default)
   #   false: Wait for the full response before rendering
   streaming: true
+
+  # Show [HH:MM] timestamps on user input and assistant response labels.
+  # timestamps: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

@@ -1,9 +1,12 @@
 name: Lint (ruff + ty)
 
-# Surface ruff and ty diagnostics as a diff vs the target branch.
-# This check is advisory only ATM it always exits zero and never blocks merge.
-# It posts a Markdown summary to the workflow run and, for pull requests,
-# comments the same summary on the PR.
+# Two things here:
+#   1. Advisory diff — ruff + ty diagnostics as a diff vs the target branch.
+#      Posts a Markdown summary and a PR comment. Exit zero always.
+#   2. Blocking ``ruff check .`` — enforces the explicit rules in
+#      ``[tool.ruff.lint.select]`` (currently PLW1514). Failure blocks merge.
+#      Separate job so the advisory diff still runs and posts even when
+#      enforcement fails.
 
 on:
   push:
@@ -119,7 +122,8 @@ jobs:
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
@@ -149,3 +153,50 @@ jobs:
                 body: fullBody,
               });
             }
+
+
+  ruff-blocking:
+    # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
+    # PLW1514 (unspecified-encoding) — catches bare ``open()`` /
+    # ``read_text()`` / ``write_text()`` calls that default to locale
+    # encoding on Windows. Failure here blocks merge; the advisory
+    # ``lint-diff`` job above runs independently so reviewers still get
+    # the diff comment even when enforcement fails.
+    name: ruff enforcement (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install ruff
+        run: uv tool install ruff
+
+      - name: ruff check .
+        # No --exit-zero, no || true. Exit code propagates to the job,
+        # which propagates to the required-check gate.
+        run: |
+          ruff check .
+
+  windows-footguns:
+    # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
+    # os.killpg, os.setsid, signal.SIGKILL without getattr fallback,
+    # shebang scripts via subprocess, bare open() without encoding=, etc.
+    # See scripts/check-windows-footguns.py for the full rule list.
+    name: Windows footguns (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run footgun checker
+        run: python scripts/check-windows-footguns.py --all

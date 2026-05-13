@@ -693,6 +693,56 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
+        """Regression guard for #24451: completion callback must signal SSE EOS."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            class _FakeTask:
+                def __init__(self):
+                    self.callbacks = []
+
+                def add_done_callback(self, cb):
+                    self.callbacks.append(cb)
+
+            fake_task = _FakeTask()
+
+            def _fake_ensure_future(coro):
+                # We short-circuit task scheduling in this unit test.
+                coro.close()
+                return fake_task
+
+            with (
+                patch.object(
+                    adapter,
+                    "_run_agent",
+                    new=AsyncMock(
+                        return_value=(
+                            {"final_response": "ok", "messages": [], "api_calls": 1},
+                            {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        )
+                    ),
+                ),
+                patch("gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
+                patch.object(adapter, "_write_sse_chat_completion", new_callable=AsyncMock) as mock_write_sse,
+            ):
+                mock_write_sse.return_value = web.Response(status=200, text="ok")
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+
+            assert len(fake_task.callbacks) == 1
+            stream_q = mock_write_sse.call_args.args[4]
+            assert stream_q.empty()
+            fake_task.callbacks[0](fake_task)
+            assert stream_q.get_nowait() is None
+
+    @pytest.mark.asyncio
     async def test_stream_sends_keepalive_during_quiet_tool_gap(self, adapter):
         """Idle SSE streams should send keepalive comments while tools run silently."""
         import asyncio
@@ -1711,6 +1761,52 @@ class TestResponsesStreaming:
                 assert " world" in body
 
     @pytest.mark.asyncio
+    async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):
+        """Regression guard for #24451 on /v1/responses streaming path."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            class _FakeTask:
+                def __init__(self):
+                    self.callbacks = []
+
+                def add_done_callback(self, cb):
+                    self.callbacks.append(cb)
+
+            fake_task = _FakeTask()
+
+            def _fake_ensure_future(coro):
+                # We short-circuit task scheduling in this unit test.
+                coro.close()
+                return fake_task
+
+            with (
+                patch.object(
+                    adapter,
+                    "_run_agent",
+                    new=AsyncMock(
+                        return_value=(
+                            {"final_response": "ok", "messages": [], "api_calls": 1},
+                            {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        )
+                    ),
+                ),
+                patch("gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
+                patch.object(adapter, "_write_sse_responses", new_callable=AsyncMock) as mock_write_sse,
+            ):
+                mock_write_sse.return_value = web.Response(status=200, text="ok")
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+
+            assert len(fake_task.callbacks) == 1
+            stream_q = mock_write_sse.call_args.kwargs["stream_q"]
+            assert stream_q.empty()
+            fake_task.callbacks[0](fake_task)
+            assert stream_q.get_nowait() is None
+
+    @pytest.mark.asyncio
     async def test_stream_emits_function_call_and_output_items(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2453,6 +2549,109 @@ class TestTruncation:
 
 
 # ---------------------------------------------------------------------------
+# Response-side truncation / failure handling (issue #22496)
+# ---------------------------------------------------------------------------
+
+
+class TestChatCompletionsAgentIncomplete:
+    """When the agent run yields a partial / failed result, the API server
+    must NOT pretend it succeeded. Either signal truncation via
+    finish_reason='length' (with the partial text), or 502 with an OpenAI
+    error envelope (no usable text). Issue #22496."""
+
+    @pytest.mark.asyncio
+    async def test_truncation_with_partial_text_uses_length_finish_reason(self, adapter):
+        """Partial text + truncation marker → finish_reason='length', 200 OK,
+        plus hermes extras + headers."""
+        mock_result = {
+            "final_response": "Here is part one of the answer",
+            "completed": False,
+            "partial": True,
+            "error": "Response truncated due to output length limit",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "tell me everything"}]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "length"
+            assert data["choices"][0]["message"]["content"] == "Here is part one of the answer"
+            assert data["hermes"]["partial"] is True
+            assert data["hermes"]["completed"] is False
+            assert data["hermes"]["error_code"] == "output_truncated"
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+            assert resp.headers.get("X-Hermes-Partial") == "true"
+
+    @pytest.mark.asyncio
+    async def test_failure_with_no_text_returns_502_error_envelope(self, adapter):
+        """No usable assistant text + failure → 502 with OpenAI error envelope.
+
+        Pre-fix behavior: the failure string ('Response remained truncated...')
+        was substituted into message.content with finish_reason='stop',
+        making API clients think the agent had answered.
+        """
+        mock_result = {
+            "final_response": None,
+            "completed": False,
+            "partial": True,
+            "failed": True,
+            "error": "Response remained truncated after 3 continuation attempts",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "x"}]},
+                )
+            # Hard fail: SDK clients will raise on this status
+            assert resp.status == 502
+            data = await resp.json()
+            assert data["error"]["code"] == "agent_incomplete"
+            assert "truncated" in data["error"]["message"].lower()
+            assert data["error"]["hermes"]["partial"] is True
+            assert data["error"]["hermes"]["failed"] is True
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+
+    @pytest.mark.asyncio
+    async def test_normal_completion_unchanged(self, adapter):
+        """Sanity: a completed-True result still returns finish_reason='stop'
+        and no hermes extras (preserves the existing happy-path contract)."""
+        mock_result = {
+            "final_response": "All good.",
+            "completed": True,
+            "partial": False,
+            "failed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "stop"
+            assert data["choices"][0]["message"]["content"] == "All good."
+            assert "hermes" not in data
+            assert "X-Hermes-Completed" not in resp.headers
+
+
+# ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
 
@@ -2992,4 +3191,3 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
-

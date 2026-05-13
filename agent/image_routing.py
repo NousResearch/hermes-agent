@@ -76,7 +76,7 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     base_url = str(vision.get("base_url") or "").strip()
 
     # "auto" / "" / blank = not explicit
-    if provider in ("", "auto") and not model and not base_url:
+    if provider in {"", "auto"} and not model and not base_url:
         return False
     return True
 
@@ -163,7 +163,7 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     if raw.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     # GIF87a / GIF89a
-    if raw[:6] in (b"GIF87a", b"GIF89a"):
+    if raw[:6] in {b"GIF87a", b"GIF89a"}:
         return "image/gif"
     # WEBP: "RIFF" .... "WEBP"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
@@ -172,9 +172,9 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     if raw.startswith(b"BM"):
         return "image/bmp"
     # HEIC/HEIF: ftypheic / ftypheix / ftypmif1 / ftypmsf1 etc.
-    if len(raw) >= 12 and raw[4:8] == b"ftyp" and raw[8:12] in (
+    if len(raw) >= 12 and raw[4:8] == b"ftyp" and raw[8:12] in {
         b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
-    ):
+    }:
         return "image/heic"
     return None
 

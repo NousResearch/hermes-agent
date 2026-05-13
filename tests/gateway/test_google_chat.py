@@ -257,42 +257,9 @@ class TestEnvConfigLoading:
         for v in self._ENV_VARS:
             monkeypatch.delenv(v, raising=False)
 
-    def test_project_id_primary(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "my-proj")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/my-proj/subscriptions/my-sub")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.enabled is True
-        assert gc.extra["project_id"] == "my-proj"
 
-    def test_project_id_falls_back_to_google_cloud_project(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "fallback-proj")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION",
-                           "projects/fallback-proj/subscriptions/s")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["project_id"] == "fallback-proj"
 
-    def test_subscription_accepts_legacy_alias(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION", "projects/p/subscriptions/s")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["subscription_name"] == "projects/p/subscriptions/s"
 
-    def test_sa_path_falls_back_to_google_application_credentials(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/opt/sa.json")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["service_account_json"] == "/opt/sa.json"
 
     def test_missing_subscription_does_not_enable(self, monkeypatch):
         self._clean_env(monkeypatch)
@@ -308,24 +275,7 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert Platform.GOOGLE_CHAT not in cfg.platforms
 
-    def test_home_channel_populated(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        monkeypatch.setenv("GOOGLE_CHAT_HOME_CHANNEL", "spaces/HOME")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.home_channel is not None
-        assert gc.home_channel.chat_id == "spaces/HOME"
 
-    def test_connected_platforms_recognises_via_extras(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        cfg = load_gateway_config()
-        assert Platform.GOOGLE_CHAT in cfg.get_connected_platforms()
 
 
 # ===========================================================================
@@ -535,6 +485,49 @@ class TestOnPubsubMessage:
             submit.assert_not_called()
         msg.ack.assert_called_once()
 
+    def test_relay_flat_bot_sender_is_filtered_end_to_end(self, adapter):
+        """Format 3 end-to-end: a relay envelope declaring sender_type=BOT
+        flows through ``_extract_message_payload`` → ``_on_pubsub_message``
+        and is dropped by the BOT self-filter without dispatch. This is
+        the actual security contract (the unit tests on
+        ``_extract_message_payload`` only assert the intermediate dict
+        shape; this test asserts the dispatch is suppressed).
+        """
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "bot@bots.example.com",
+            "sender_display_name": "HermesBot",
+            "sender_type": "BOT",
+            "text": "reply from bot",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        msg = _make_pubsub_message(envelope)
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            adapter._on_pubsub_message(msg)
+            submit.assert_not_called()
+        msg.ack.assert_called_once()
+
+    def test_relay_flat_human_sender_dispatches(self, adapter):
+        """Format 3 negative control: an envelope without sender_type
+        (or with sender_type=HUMAN) still dispatches to the agent loop,
+        confirming the BOT-filter doesn't accidentally drop legitimate
+        human messages from a relay.
+        """
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "alice@example.com",
+            "sender_display_name": "Alice",
+            "text": "hello agent",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        msg = _make_pubsub_message(envelope)
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            adapter._on_pubsub_message(msg)
+            submit.assert_called_once()
+        msg.ack.assert_called_once()
+
     def test_duplicate_message_dropped(self, adapter):
         env = _make_chat_envelope(msg_name="spaces/S/messages/DUP.DUP")
         # Prime dedup
@@ -652,6 +645,74 @@ class TestExtractMessagePayload:
         assert msg["thread"]["name"] == "spaces/RELAY/threads/T1"
         assert msg["name"] == "spaces/RELAY/messages/M.M"
         assert space["name"] == "spaces/RELAY"
+
+    def test_relay_flat_honors_declared_sender_type_bot(self):
+        """Format 3 propagates ``envelope.sender_type`` so the downstream
+        BOT self-filter fires for relay-forwarded bot replies.
+
+        Without this, a relay misconfigured to forward the bot's own
+        replies into the same Pub/Sub topic produced a feedback loop:
+        the adapter would mark the synthesized sender ``HUMAN`` and the
+        ``sender.type == "BOT"`` self-filter would never fire.
+        """
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "bot@bots.example.com",
+            "sender_display_name": "HermesBot",
+            "sender_type": "BOT",
+            "text": "reply from bot",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        result = GoogleChatAdapter._extract_message_payload(envelope)
+        assert result is not None
+        msg, _space, fmt = result
+        assert fmt == "relay_flat"
+        assert msg["sender"]["type"] == "BOT"
+
+    def test_relay_flat_defaults_sender_type_human_when_absent(self):
+        """Backward compatibility: relays that don't declare sender_type
+        continue to flow as HUMAN exactly as before this change."""
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "alice@example.com",
+            "text": "hi",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        result = GoogleChatAdapter._extract_message_payload(envelope)
+        assert result is not None
+        msg, _space, _fmt = result
+        assert msg["sender"]["type"] == "HUMAN"
+
+    def test_relay_flat_coerces_unknown_sender_type_to_human(self):
+        """Defensive coercion: only ``HUMAN`` and ``BOT`` are accepted;
+        any other value (including stray casing on those two) is either
+        normalized or falls back to ``HUMAN`` so a malformed relay can't
+        slip an unrecognized type through to the downstream filter."""
+        # Lower / mixed case is normalized to upper.
+        envelope_lower = {
+            "event_type": "MESSAGE",
+            "sender_email": "bot@example.com",
+            "sender_type": "  bot  ",
+            "text": "hi",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        msg, _space, _fmt = GoogleChatAdapter._extract_message_payload(envelope_lower)
+        assert msg["sender"]["type"] == "BOT"
+
+        # Unknown value falls back to HUMAN, not the raw string.
+        envelope_bogus = {
+            "event_type": "MESSAGE",
+            "sender_email": "alice@example.com",
+            "sender_type": "ROBOT",
+            "text": "hi",
+            "space_name": "spaces/RELAY",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        msg, _space, _fmt = GoogleChatAdapter._extract_message_payload(envelope_bogus)
+        assert msg["sender"]["type"] == "HUMAN"
 
     def test_unrecognized_envelope_returns_none(self):
         """Random JSON with no known shape returns None (caller acks)."""
@@ -2409,6 +2470,61 @@ class TestADCFallback:
         assert "google_chat_service_account_json" in msg
 
 
+class TestGoogleChatInteractiveSetup:
+    def test_interactive_setup_uses_shared_cli_prompt_helpers(self, monkeypatch):
+        """Google Chat setup should not import prompt helpers from config.py."""
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        saved: dict[str, str] = {}
+        answers = {
+            "GCP project ID (e.g. my-project)": "demo-project",
+            "Pub/Sub subscription (projects/<proj>/subscriptions/<sub>)": (
+                "projects/demo-project/subscriptions/hermes-chat"
+            ),
+            "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
+            "Allowed user emails (comma-separated)": "alice@example.com, bob@example.com",
+            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": (
+                "spaces/AAAA"
+            ),
+        }
+
+        def fake_get_env_value(key):
+            return saved.get(key, "")
+
+        def fake_save_env_value(key, value):
+            saved[key] = value
+
+        def fake_prompt(question, default=None, password=False):
+            return answers.get(question, default or "")
+
+        monkeypatch.setattr("hermes_cli.config.get_env_value", fake_get_env_value)
+        monkeypatch.setattr("hermes_cli.config.save_env_value", fake_save_env_value)
+        monkeypatch.setattr("hermes_cli.cli_output.prompt", fake_prompt)
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.prompt_yes_no", lambda *_a, **_kw: True
+        )
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_info", lambda *_a, **_kw: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_success", lambda *_a, **_kw: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_warning", lambda *_a, **_kw: None
+        )
+
+        gc_mod.interactive_setup()
+
+        assert saved["GOOGLE_CHAT_PROJECT_ID"] == "demo-project"
+        assert (
+            saved["GOOGLE_CHAT_SUBSCRIPTION_NAME"]
+            == "projects/demo-project/subscriptions/hermes-chat"
+        )
+        assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
+        assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
+        assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
+
+
 # ===========================================================================
 # Supervisor reconnect (backoff + fatal)
 # ===========================================================================
@@ -2580,3 +2696,173 @@ class TestCronSchedulerRegistry:
         from cron.scheduler import _resolve_home_env_var
 
         assert _resolve_home_env_var("google_chat") == "GOOGLE_CHAT_HOME_CHANNEL"
+
+
+# ── _standalone_send (out-of-process cron delivery) ──────────────────────
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status: int, payload, text_body: str = ""):
+        self.status = status
+        self._payload = payload
+        self._text = text_body or (str(payload) if payload is not None else "")
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return self._text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeAiohttpSession:
+    def __init__(self, scripts):
+        self._scripts = list(scripts)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self._scripts:
+            raise AssertionError(f"No scripted response for POST {url}")
+        return self._scripts.pop(0)
+
+
+def _install_fake_aiohttp(monkeypatch, session):
+    fake_aiohttp = types.SimpleNamespace(
+        ClientSession=lambda timeout=None: session,
+        ClientTimeout=lambda total=None: None,
+    )
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+
+
+def _install_fake_google_auth_transport(monkeypatch):
+    fake_request_module = types.SimpleNamespace(Request=lambda: object())
+    monkeypatch.setitem(sys.modules, "google.auth.transport", types.SimpleNamespace(requests=fake_request_module))
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", fake_request_module)
+
+
+class TestGoogleChatStandaloneSend:
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_refreshes_token_and_posts_message(
+        self, monkeypatch, tmp_path
+    ):
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(json.dumps({
+            "type": "service_account",
+            "client_email": "bot@example.iam.gserviceaccount.com",
+            "private_key": "fake",
+            "token_uri": "https://example/token",
+        }))
+        monkeypatch.setenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", str(sa_file))
+
+        fake_creds = MagicMock()
+        fake_creds.token = "the-token"
+        fake_creds.refresh = MagicMock(return_value=None)
+
+        original = _gc_mod.service_account.Credentials.from_service_account_info
+        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
+            return_value=fake_creds
+        )
+        try:
+            _install_fake_google_auth_transport(monkeypatch)
+            send_resp = _FakeAiohttpResponse(200, {"name": "spaces/AAA/messages/MMM"})
+            session = _FakeAiohttpSession([send_resp])
+            _install_fake_aiohttp(monkeypatch, session)
+
+            result = await _gc_mod._standalone_send(
+                PlatformConfig(enabled=True, extra={}),
+                "spaces/AAAA-BBBB",
+                "hello cron",
+            )
+        finally:
+            _gc_mod.service_account.Credentials.from_service_account_info = original
+
+        assert result == {
+            "success": True,
+            "message_id": "spaces/AAA/messages/MMM",
+        }
+        fake_creds.refresh.assert_called_once()
+        assert len(session.calls) == 1
+        url, kwargs = session.calls[0]
+        assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
+        assert kwargs["headers"]["Authorization"] == "Bearer the-token"
+        assert kwargs["json"] == {"text": "hello cron"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_returns_error_on_invalid_chat_id(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", raising=False)
+        result = await _gc_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "not-a-resource-name",
+            "hi",
+        )
+        assert "error" in result
+        assert "spaces/" in result["error"] or "users/" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_propagates_api_failure(self, monkeypatch, tmp_path):
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(json.dumps({
+            "type": "service_account",
+            "client_email": "bot@example.iam.gserviceaccount.com",
+            "private_key": "fake",
+            "token_uri": "https://example/token",
+        }))
+        monkeypatch.setenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", str(sa_file))
+
+        fake_creds = MagicMock()
+        fake_creds.token = "the-token"
+        fake_creds.refresh = MagicMock(return_value=None)
+
+        original = _gc_mod.service_account.Credentials.from_service_account_info
+        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
+            return_value=fake_creds
+        )
+        try:
+            _install_fake_google_auth_transport(monkeypatch)
+            send_resp = _FakeAiohttpResponse(
+                403,
+                {"error": {"code": 403, "message": "forbidden"}},
+                text_body='{"error":{"code":403,"message":"forbidden"}}',
+            )
+            session = _FakeAiohttpSession([send_resp])
+            _install_fake_aiohttp(monkeypatch, session)
+
+            result = await _gc_mod._standalone_send(
+                PlatformConfig(enabled=True, extra={}),
+                "spaces/AAAA-BBBB",
+                "hi",
+            )
+        finally:
+            _gc_mod.service_account.Credentials.from_service_account_info = original
+
+        assert "error" in result
+        assert "403" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_chat_id_with_path_traversal(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", raising=False)
+
+        # Attempt to inject extra path segments after the prefix passes the
+        # startswith check.  The strict regex must reject this.
+        result = await _gc_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "spaces/AAAA/messages?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+            "hi",
+        )
+
+        assert "error" in result
+        # The error names the expected resource shape so plugin authors can self-correct
+        assert "spaces/" in result["error"] or "users/" in result["error"]

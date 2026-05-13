@@ -835,7 +835,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
         # Extract unique categories
         categories = sorted(
-            set(s.get("category") for s in all_skills if s.get("category"))
+            {s.get("category") for s in all_skills if s.get("category")}
         )
 
         return json.dumps(
@@ -1266,7 +1266,7 @@ def skill_view(
                             available_files["assets"].append(rel)
                         elif rel.startswith("scripts/"):
                             available_files["scripts"].append(rel)
-                        elif f.suffix in [
+                        elif f.suffix in {
                             ".md",
                             ".py",
                             ".yaml",
@@ -1274,7 +1274,7 @@ def skill_view(
                             ".json",
                             ".tex",
                             ".sh",
-                        ]:
+                        }:
                             available_files["other"].append(rel)
 
                 # Remove empty categories

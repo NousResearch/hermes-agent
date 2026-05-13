@@ -553,13 +553,14 @@ export interface ModelsAnalyticsResponse {
 
 export interface CronJob {
   id: string;
-  name?: string;
-  prompt: string;
-  schedule: { kind: string; expr: string; display: string };
-  schedule_display: string;
+  name?: string | null;
+  prompt?: string | null;
+  script?: string | null;
+  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule_display?: string | null;
   enabled: boolean;
-  state: string;
-  deliver?: string;
+  state?: string | null;
+  deliver?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;

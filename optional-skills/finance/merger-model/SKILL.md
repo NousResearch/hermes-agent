@@ -4,6 +4,7 @@ description: Build accretion/dilution (merger) models in Excel — pro-forma P&L
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [finance, m-and-a, merger, accretion-dilution, excel, openpyxl, modeling, investment-banking]

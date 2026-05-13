@@ -99,12 +99,33 @@ def get_sandbox_dir() -> Path:
 
 
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
-    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks."""
+    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
+
+    On Windows, text-mode stdin (``text=True`` / ``encoding="utf-8"``)
+    translates ``\\n`` → ``\\r\\n`` as the data flows through the pipe —
+    which corrupts every write_file / patch call because the bytes that
+    land on disk include injected carriage returns.  The file IS created,
+    but every subsequent byte-count / content compare against the
+    caller's ``\\n``-only string fails.
+
+    Workaround: write through ``proc.stdin.buffer`` (the underlying byte
+    buffer), encoding to UTF-8 ourselves.  That bypasses Python's
+    newline translation entirely on every platform.  No behaviour change
+    on POSIX — the byte sequence is identical to what text-mode would
+    produce there.
+    """
 
     def _write():
         try:
-            proc.stdin.write(data)
-            proc.stdin.close()
+            # proc.stdin is a TextIOWrapper when text=True was set on the
+            # Popen.  Its ``.buffer`` attribute is the raw BufferedWriter
+            # that bypasses newline translation.  When Popen was created
+            # in byte mode, proc.stdin is already a BufferedWriter with
+            # no ``.buffer`` attribute — fall back to .write() directly.
+            raw = data.encode("utf-8") if isinstance(data, str) else data
+            target = getattr(proc.stdin, "buffer", proc.stdin)
+            target.write(raw)
+            target.close()
         except (BrokenPipeError, OSError):
             pass
 
@@ -137,7 +158,7 @@ def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
@@ -146,7 +167,7 @@ def _load_json_store(path: Path) -> dict:
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
@@ -339,15 +360,24 @@ class BaseEnvironment(ABC):
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
         _quoted_cwd = shlex.quote(self.cwd)
+        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
+        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
+        # tripping on drive letters.  On POSIX this is a no-op (no colons /
+        # special chars in a /tmp path).  Previously unquoted interpolation
+        # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
+        # errors on Windows, leaking via stderr (merged into stdout on Linux
+        # backends) into every terminal-tool response.
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            f"export -p > {self._snapshot_path}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
-            f"alias -p >> {self._snapshot_path}\n"
-            f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
-            f"echo 'set +e' >> {self._snapshot_path}\n"
-            f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"export -p > {_quoted_snap}\n"
+            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
+            f"alias -p >> {_quoted_snap}\n"
+            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
+            f"echo 'set +e' >> {_quoted_snap}\n"
+            f"echo 'set +u' >> {_quoted_snap}\n"
             f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
+            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
@@ -389,6 +419,13 @@ class BaseEnvironment(ABC):
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
+        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
+        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
+        # tripping on drive letters.  POSIX paths are unaffected.  See
+        # :meth:`init_session` for the same fix on the bootstrap block.
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        _quoted_cwd_file = shlex.quote(self._cwd_file)
+
         parts = []
 
         # Source snapshot (env vars from previous commands).
@@ -399,7 +436,7 @@ class BaseEnvironment(ABC):
         # silent here, but the redirect is harmless.
         if self._snapshot_ready:
             parts.append(
-                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
+                f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
@@ -414,10 +451,10 @@ class BaseEnvironment(ABC):
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
-            parts.append(f"export -p > {self._snapshot_path} 2>/dev/null || true")
+            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {self._cwd_file} 2>/dev/null || true")
+        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this

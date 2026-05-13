@@ -1251,9 +1251,10 @@ class MCPServerTask:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
-                        try:
-                            os.kill(pid, 0)  # signal 0: probe liveness only
-                        except (ProcessLookupError, PermissionError, OSError):
+                        # ``os.kill(pid, 0)`` is NOT a no-op on Windows
+                        # (bpo-14484). Use the cross-platform check.
+                        from gateway.status import _pid_exists
+                        if not _pid_exists(pid):
                             continue  # process already exited — nothing to do
                         _orphan_stdio_pids.add(pid)
 
@@ -1992,7 +1993,7 @@ def _snapshot_child_pids() -> set:
     # Linux: read from /proc
     try:
         children_path = f"/proc/{my_pid}/task/{my_pid}/children"
-        with open(children_path) as f:
+        with open(children_path, encoding="utf-8") as f:
             return {int(p) for p in f.read().split() if p.strip()}
     except (FileNotFoundError, OSError, ValueError):
         pass
@@ -3369,16 +3370,20 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows. Use the cross-platform
+    # existence check before escalating to SIGKILL.
+    from gateway.status import _pid_exists
     for pid, server_name in pids.items():
+        if not _pid_exists(pid):
+            continue  # Good — exited after SIGTERM
         try:
-            os.kill(pid, 0)  # Check if still alive
             os.kill(pid, _sigkill)
             logger.warning(
                 "Force-killed MCP process %d (%s) after SIGTERM timeout",
                 pid, server_name,
             )
         except (ProcessLookupError, PermissionError, OSError):
-            pass  # Good — exited after SIGTERM
+            pass
 
 
 def _stop_mcp_loop():

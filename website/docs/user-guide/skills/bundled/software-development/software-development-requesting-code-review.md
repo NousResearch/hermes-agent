@@ -19,6 +19,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | Version | `2.0.0` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
 | Related skills | [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
 

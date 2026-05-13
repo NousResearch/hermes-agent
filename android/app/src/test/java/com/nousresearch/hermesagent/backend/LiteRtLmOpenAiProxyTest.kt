@@ -178,6 +178,62 @@ class LiteRtLmOpenAiProxyTest {
         assertTrue(decision.policy, decision.policy.contains("does not advertise support"))
     }
 
+    @Test
+    fun engineTokenBudget_clampsLargeGemma4ContextOnX86Emulator() {
+        val budget = LiteRtLmOpenAiProxy.decideEngineTokenBudget(
+            requestedMaxTokens = 4_000,
+            requestedMaxContextLength = 32_000,
+            totalRamBytes = 8_000_000_000L,
+            modelBytes = 2_583_085_056L,
+            isX86Device = true,
+        )
+
+        assertEquals(1_024, budget.value)
+        assertTrue(budget.policy, budget.policy.contains("x86 emulator/device"))
+    }
+
+    @Test
+    fun engineTokenBudget_keepsArmGemma4MemorySafeContext() {
+        val budget = LiteRtLmOpenAiProxy.decideEngineTokenBudget(
+            requestedMaxTokens = 4_000,
+            requestedMaxContextLength = 32_000,
+            totalRamBytes = 8_000_000_000L,
+            modelBytes = 2_583_085_056L,
+            isX86Device = false,
+        )
+
+        assertEquals(8_192, budget.value)
+        assertTrue(budget.policy, budget.policy.contains("clamped requested context window"))
+    }
+
+    @Test
+    fun engineTokenBudget_usesSmallDefaultOnX86WhenModelHasBackendDefault() {
+        val budget = LiteRtLmOpenAiProxy.decideEngineTokenBudget(
+            requestedMaxTokens = -1,
+            requestedMaxContextLength = -1,
+            totalRamBytes = 16_000_000_000L,
+            modelBytes = 2_583_085_056L,
+            isX86Device = true,
+        )
+
+        assertEquals(1_024, budget.value)
+        assertTrue(budget.policy, budget.policy.contains("x86 emulator/device"))
+    }
+
+    @Test
+    fun engineTokenBudget_preservesBackendDefaultOnArmWhenUnspecified() {
+        val budget = LiteRtLmOpenAiProxy.decideEngineTokenBudget(
+            requestedMaxTokens = -1,
+            requestedMaxContextLength = -1,
+            totalRamBytes = 16_000_000_000L,
+            modelBytes = 2_583_085_056L,
+            isX86Device = false,
+        )
+
+        assertNull(budget.value)
+        assertEquals("backend default", budget.policy)
+    }
+
     private fun validateModelArtifact(file: File): String? {
         val method = LiteRtLmOpenAiProxy::class.java.getDeclaredMethod(
             "validateModelArtifact",

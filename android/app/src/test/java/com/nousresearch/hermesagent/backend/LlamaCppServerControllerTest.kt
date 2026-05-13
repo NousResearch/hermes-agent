@@ -7,7 +7,7 @@ class LlamaCppServerControllerTest {
     @Test
     fun launchOptionsUseCompactContextForTinyQwenGguf() {
         val options = LlamaCppServerController.launchOptionsForModel(
-            modelPath = "/models/Qwen3.5-0.8B-Q4_K_M.gguf",
+            modelPath = "/models/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
             availableProcessors = 8,
         )
 

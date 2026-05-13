@@ -126,6 +126,24 @@ class NativeAppChatAndToolInstrumentedTest {
     }
 
     @Test
+    fun qwenGgufBackendStartsOnDevice() {
+        val modelFile = File(
+            app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            "models/$QWEN_GGUF_FILE_NAME",
+        )
+        assumeTrue("Qwen GGUF model is not provisioned at ${modelFile.absolutePath}", modelFile.isFile)
+        assertEquals("Qwen GGUF model size", QWEN_GGUF_BYTES, modelFile.length())
+        seedPreferredQwenGgufModel(modelFile)
+
+        val runtime = HermesRuntimeManager.ensureStarted(app)
+        val backendStatus = assumeQwenBackendReady(runtime)
+
+        assertEquals(BackendKind.LLAMA_CPP, backendStatus.backendKind)
+        assertEquals(modelFile.absolutePath, backendStatus.sourceModelPath)
+        assertTrue(backendStatus.statusMessage, backendStatus.statusMessage.contains("llama.cpp is serving locally"))
+    }
+
+    @Test
     fun nativeAppChatUsesQwenGgufAndFileWriteToolOnDevice() {
         val modelFile = File(
             app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),

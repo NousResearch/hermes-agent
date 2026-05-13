@@ -280,6 +280,8 @@ val prepareHermesAndroidNativeLibs = tasks.register<Exec>("prepareHermesAndroidN
     description = "Expose embedded Linux launchers through Android's executable native-library directory."
     dependsOn(prepareHermesAndroidLinuxAssets)
     val outputDir = generatedHermesNativeLibsDir.get().asFile
+    inputs.file(repoRoot.resolve("scripts/prepare_android_native_libs.py"))
+    inputs.dir(generatedHermesLinuxAssetsDir)
     outputs.dir(outputDir)
     doFirst {
         outputDir.mkdirs()

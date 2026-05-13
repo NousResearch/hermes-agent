@@ -28,8 +28,8 @@ def test_prepare_android_linux_assets_script_exists_and_is_wired_into_gradle():
     assert "create_bionic_llama_server_launcher" in script
     assert "patch_android_spawn_needed_to_libc" in script
     assert "libandroid-spawn.so" in script
-    assert "libhermes_android_bash.so" not in native_script
-    assert "libhermes_android_llama_server.so" not in native_script
+    assert "libhermes_android_bash.so" in native_script
+    assert "libhermes_android_llama_server.so" in native_script
 
 
 def test_prepare_android_linux_assets_script_imports_from_android_workdir():
@@ -147,7 +147,7 @@ def test_android_linux_subsystem_records_embedded_fallback_reason():
 
     assert "private data class ShellLaunchProbe" in bridge
     assert 'put("fallback_reason", fallbackReason.take(1200))' in bridge
-    assert "llama.cpp is not available in native Android shell mode: $fallbackReason" in llama
+    assert "llama.cpp executable is not available at $llamaServerPath" in llama
 
 
 def test_android_gguf_launchers_use_extracted_prefix_directory():
@@ -163,8 +163,9 @@ def test_android_gguf_launchers_use_extracted_prefix_directory():
     native_script = (REPO_ROOT / "scripts/prepare_android_native_libs.py").read_text(encoding="utf-8")
 
     assert "scripts/prepare_android_native_libs.py" in gradle
-    assert "libhermes_android_bash.so" not in native_script
-    assert "libhermes_android_llama_server.so" not in native_script
+    assert "libhermes_android_bash.so" in native_script
+    assert "libhermes_android_llama_server.so" in native_script
+    assert "libhermes_android_llama_server_bionic_spawn.so" in native_script
     assert "llama-server-bionic" in bridge
     assert 'put("shell_path", bashPath)' in bridge
     assert 'put("native_llama_server_path", llamaServerPath)' in bridge
@@ -172,7 +173,9 @@ def test_android_gguf_launchers_use_extracted_prefix_directory():
     assert 'put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())' in bridge
     assert 'optString("native_llama_server_path").ifBlank { "llama-server" }' in llama
     assert 'optString("bionic_llama_server_path")' in llama
+    assert 'execution_mode") == "android_system_shell"' in llama
     assert "selectLlamaServerPath(context, linuxState)" in llama
     assert "ANDROID_16K_PAGE_SIZE_BYTES" in llama
     assert ".readTimeout(750, TimeUnit.MILLISECONDS)" in llama
-    assert "repeat(360)" in llama
+    assert "LLAMA_CPP_READY_CHECKS = 720" in llama
+    assert "--no-warmup" in llama

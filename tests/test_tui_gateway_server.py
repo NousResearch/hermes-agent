@@ -743,6 +743,11 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         "_notify_session_boundary",
         lambda event, session_id: calls["hooks"].append((event, session_id)),
     )
+    monkeypatch.setattr(
+        server,
+        "_submit_session_close_cleanup",
+        lambda session, end_reason="tui_close": server._cleanup_closed_session(session, end_reason),
+    )
 
     try:
         resp = server.handle_request(
@@ -752,6 +757,36 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         assert calls["history"] == [{"role": "user", "content": "hello"}]
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_close_returns_before_slow_finalize(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    cleaned = threading.Event()
+
+    def slow_cleanup(session, end_reason="tui_close"):
+        started.set()
+        release.wait(timeout=2)
+        cleaned.set()
+
+    monkeypatch.setattr(server, "_cleanup_closed_session", slow_cleanup)
+    server._sessions["sid"] = _session(history=[{"role": "user", "content": "hello"}])
+
+    try:
+        t0 = time.monotonic()
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
+        )
+        elapsed = time.monotonic() - t0
+        assert resp["result"]["closed"] is True
+        assert elapsed < 0.5
+        assert "sid" not in server._sessions
+        assert started.wait(timeout=1)
+        assert not cleaned.is_set()
+    finally:
+        release.set()
+        cleaned.wait(timeout=2)
         server._sessions.pop("sid", None)
 
 

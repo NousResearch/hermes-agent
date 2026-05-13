@@ -318,15 +318,41 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
 
+def _cleanup_closed_session(session: dict, end_reason: str = "tui_close") -> None:
+    """Finalize and release a TUI session after it has been removed.
+
+    Session finalization can run slow provider hooks (memory extraction / context
+    engine flushes).  Keep the cleanup grouped so ``session.close`` can hand it
+    off without blocking interactive session switches such as ``/new``.
+    """
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session["session_key"])
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+
+
+def _submit_session_close_cleanup(session: dict, end_reason: str = "tui_close"):
+    return _pool.submit(_cleanup_closed_session, session, end_reason)
+
+
 def _shutdown_sessions() -> None:
     for session in list(_sessions.values()):
-        _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+        _cleanup_closed_session(session, end_reason="tui_shutdown")
 
 
 atexit.register(_shutdown_sessions)
@@ -2635,25 +2661,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+    _submit_session_close_cleanup(session)
     return _ok(rid, {"closed": True})
 
 

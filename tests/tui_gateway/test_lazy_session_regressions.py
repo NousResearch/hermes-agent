@@ -266,6 +266,76 @@ class TestGatewaySurfacesNullResponse:
 
         assert result, "Silent-drop turn must surface a user-facing hint"
 
+    def test_end_turn_tool_batch_synthetic_empty_is_silent(self):
+        """Synthetic ``(empty)`` should still stay silent for end_turn batches."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "end_turn_tool_batch",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "(empty)",
+                    "_empty_terminal_sentinel": True,
+                }
+            ],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert response == ""
+
+    def test_synthetic_empty_response_surfaces_retry_message(self):
+        """Synthetic ``(empty)`` should become a warning on non-end_turn exits."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "empty_response_exhausted",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "(empty)",
+                    "_empty_terminal_sentinel": True,
+                }
+            ],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert "didn't produce a reply this time" in response
+        assert "/model" in response and "continue" in response
+
+    def test_literal_empty_string_text_passes_through(self):
+        """Literal model text ``(empty)`` is not Hermes' synthetic sentinel."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 1,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "messages": [{"role": "assistant", "content": "(empty)"}],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert response == "(empty)"
+
 
 # ===========================================================================
 # Prune: finalize_orphaned_compression_sessions

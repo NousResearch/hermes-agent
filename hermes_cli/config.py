@@ -997,25 +997,41 @@ DEFAULT_CONFIG = {
             # Popular monolingual: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             # Popular multilingual: AvaMultilingualNeural, AndrewMultilingualNeural,
             #                       EmmaMultilingualNeural, BrianMultilingualNeural
+            # Optional per-language voice routing (auto-detected from text):
+            #   voice_by_language:
+            #     ru: ru-RU-SvetlanaNeural
+            #     zh: zh-CN-XiaoxiaoNeural
+            #     ja: ja-JP-NanamiNeural
+            #     ko: ko-KR-SunHiNeural
+            #     ar: ar-SA-ZariyahNeural
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+            # Optional per-language voice routing (voice_by_language: {ru: <voice_id>, ...})
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # gpt-4o-mini-tts voices are already multilingual; per-language
+            # routing here is for "different vibe per script" preferences:
+            #   voice_by_language: {ru: nova, ja: shimmer, ...}
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
+            # When ``language`` is omitted, Hermes auto-detects from the
+            # text (ru / zh / ja / ko / ar via Unicode-block heuristic)
+            # and falls back to "en" for Latin scripts.
             "language": "en",
             "sample_rate": 24000,
             "bit_rate": 128000,
+            # Optional per-language voice routing (voice_by_language: {ru: <voice_id>, ...})
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+            # Optional per-language voice routing (voice_by_language: {ru: <voice_id>, ...})
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)

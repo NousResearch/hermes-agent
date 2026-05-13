@@ -1050,7 +1050,12 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
 
     el_config = tts_config.get("elevenlabs", {})
-    voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
+    # ElevenLabs uses ``voice_id`` (not ``voice``).  Per-language voice
+    # routing reads the same ``voice_by_language`` block but keyed on
+    # voice_id values.
+    voice_id = _resolve_voice_for_text(
+        el_config, DEFAULT_ELEVENLABS_VOICE_ID, text, voice_key="voice_id",
+    )
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
     # Determine output format based on file extension
@@ -1095,7 +1100,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
-    voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    # OpenAI's gpt-4o-tts voices are already multilingual, so this is
+    # mostly a no-op for the default install. Surfaced here so users
+    # can still pin a different voice per language (different vibe per
+    # script) via ``tts.openai.voice_by_language``.
+    voice = _resolve_voice_for_text(oai_config, DEFAULT_OPENAI_VOICE, text)
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
@@ -1144,8 +1153,20 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
 
     xai_config = tts_config.get("xai", {})
-    voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
-    language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+    voice_id = str(
+        _resolve_voice_for_text(
+            xai_config, DEFAULT_XAI_VOICE_ID, text, voice_key="voice_id",
+        )
+    ).strip() or DEFAULT_XAI_VOICE_ID
+    # xAI accepts an explicit ``language`` hint.  If the user did not
+    # pin one and the text is non-Latin, prefer the auto-detected
+    # script so the synth doesn't read e.g. Russian text using English
+    # phonemes.  Latin / unknown still falls back to the configured /
+    # default language.
+    language = str(xai_config.get("language", "")).strip()
+    if not language:
+        _detected = _detect_language(text)
+        language = _detected or DEFAULT_XAI_LANGUAGE
     sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
     bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
     base_url = str(
@@ -1219,7 +1240,9 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
-    voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    voice_id = _resolve_voice_for_text(
+        mm_config, DEFAULT_MINIMAX_VOICE_ID, text, voice_key="voice_id",
+    )
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
 
     payload = {
@@ -1289,7 +1312,9 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     mi_config = tts_config.get("mistral", {})
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
-    voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
+    voice_id = _resolve_voice_for_text(
+        mi_config, DEFAULT_MISTRAL_TTS_VOICE_ID, text, voice_key="voice_id",
+    )
 
     if output_path.endswith(".ogg"):
         response_format = "opus"

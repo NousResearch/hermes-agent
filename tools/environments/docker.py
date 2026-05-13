@@ -151,22 +151,55 @@ def find_docker() -> Optional[str]:
 #   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
 #       user via `gosu`, which requires these caps. Combined with
 #       `no-new-privileges`, gosu still cannot escalate back to root after
-#       the drop, so the security posture is preserved.
+#       the drop, so the security posture is preserved. Omitted entirely
+#       when the container starts as a non-root user via --user, since
+#       no gosu drop is needed in that mode.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
-_SECURITY_ARGS = [
+_BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--cap-add", "SETUID",
-    "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+# Extra caps needed when the container starts as root and an entrypoint
+# must drop privileges via gosu/su. Skipped when --user is passed because
+# the container already starts unprivileged and never needs to switch.
+_GOSU_CAP_ARGS = [
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
+]
+
+
+def _build_security_args(run_as_host_user: bool) -> list[str]:
+    """Return the security/cap/tmpfs args tailored to the privilege mode."""
+    if run_as_host_user:
+        return list(_BASE_SECURITY_ARGS)
+    return list(_BASE_SECURITY_ARGS) + list(_GOSU_CAP_ARGS)
+
+
+def _resolve_host_user_spec() -> Optional[str]:
+    """Return ``<uid>:<gid>`` for the current host user, or ``None`` on platforms
+    where this is not meaningful (e.g. Windows without posix ids).
+
+    We intentionally read ``os.getuid()``/``os.getgid()`` directly rather than
+    going through ``getpass``/``pwd`` so this stays cheap and never raises on
+    nameless UIDs (nss lookups can fail inside sandboxed launchers).
+    """
+    get_uid = getattr(os, "getuid", None)
+    get_gid = getattr(os, "getgid", None)
+    if get_uid is None or get_gid is None:
+        return None
+    try:
+        return f"{get_uid()}:{get_gid()}"
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
@@ -266,6 +299,8 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        run_as_host_user: bool = False,
+        extra_args: list = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -421,8 +456,45 @@ class DockerEnvironment(BaseEnvironment):
         for key in sorted(self._env):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
 
+        # Optional: run the container as the host user so files written into
+        # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
+        # owned by that user on the host instead of by root. Skip cleanly on
+        # platforms without POSIX uid/gid (e.g. native Windows Docker).
+        user_args: list[str] = []
+        if run_as_host_user:
+            user_spec = _resolve_host_user_spec()
+            if user_spec is not None:
+                user_args = ["--user", user_spec]
+                logger.info("Docker: running container as host user %s", user_spec)
+            else:
+                logger.warning(
+                    "docker_run_as_host_user is enabled but this platform does "
+                    "not expose POSIX uid/gid; container will start as its "
+                    "image default user."
+                )
+                # Fall back to the full cap set — without --user, an image's
+                # entrypoint may still need gosu/su to drop privileges.
+        security_args = _build_security_args(run_as_host_user and bool(user_args))
+
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
+        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
+        # Appended last so they can override defaults if needed.
+        validated_extra = []
+        for arg in (extra_args or []):
+            if not isinstance(arg, str):
+                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                continue
+            validated_extra.append(arg)
+
+        all_run_args = (
+            security_args
+            + user_args
+            + writable_args
+            + resource_args
+            + volume_args
+            + env_args
+            + validated_extra
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when

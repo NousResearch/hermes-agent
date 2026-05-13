@@ -1,13 +1,14 @@
 ---
 name: design-md
-description: Author, validate, diff, and export DESIGN.md files — Google's open-source format spec that gives coding agents a persistent, structured understanding of a design system (tokens + rationale in one file). Use when building a design system, porting style rules between projects, generating UI with consistent brand, or auditing accessibility/contrast.
+description: Author/validate/export Google's DESIGN.md token spec files.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [design, design-system, tokens, ui, accessibility, wcag, tailwind, dtcg, google]
-    related_skills: [popular-web-designs, excalidraw, architecture-diagram]
+    related_skills: [popular-web-designs, claude-design, excalidraw, architecture-diagram]
 ---
 
 # DESIGN.md Skill
@@ -31,7 +32,9 @@ diffs versions for regressions, and exports to Tailwind or W3C DTCG JSON.
 - User wants contrast / WCAG accessibility validation on their color palette
 
 For purely visual inspiration or layout examples, use `popular-web-designs`
-instead. This skill is for the *formal spec file* itself.
+instead. For *process and taste* when designing a one-off HTML artifact
+from scratch (prototype, deck, landing page, component lab), use
+`claude-design`. This skill is for the *formal spec file* itself.
 
 ## File anatomy
 

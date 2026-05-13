@@ -690,7 +690,7 @@ def _extract_docs_links(replies: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             except (json.JSONDecodeError, TypeError):
                 continue
         for elem in content.get("elements", []):
-            if elem.get("type") not in ("docs_link", "link"):
+            if elem.get("type") not in {"docs_link", "link"}:
                 continue
             link_data = elem.get("docs_link") or elem.get("link") or {}
             url = link_data.get("url", "")
@@ -974,7 +974,6 @@ def build_whole_comment_prompt(
 
 def _resolve_model_and_runtime() -> Tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
-    import os
     from gateway.run import _load_gateway_config, _resolve_gateway_model
 
     user_config = _load_gateway_config()
@@ -1032,7 +1031,7 @@ def _save_session_history(key: str, messages: List[Dict[str, Any]]) -> None:
     # Only keep user/assistant messages (strip system messages and tool internals)
     cleaned = [
         m for m in messages
-        if m.get("role") in ("user", "assistant") and m.get("content")
+        if m.get("role") in {"user", "assistant"} and m.get("content")
     ]
     # Keep last N
     if len(cleaned) > _SESSION_MAX_MESSAGES:
@@ -1171,7 +1170,7 @@ async def handle_drive_comment_event(
     rule = resolve_rule(comments_cfg, file_type, file_token)
 
     # If no exact match and config has wiki keys, try reverse-lookup
-    if rule.match_source in ("wildcard", "top") and has_wiki_keys(comments_cfg):
+    if rule.match_source in {"wildcard", "top"} and has_wiki_keys(comments_cfg):
         wiki_token = await _reverse_lookup_wiki_token(client, file_type, file_token)
         if wiki_token:
             rule = resolve_rule(comments_cfg, file_type, file_token, wiki_token=wiki_token)

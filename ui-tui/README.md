@@ -41,7 +41,7 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/node_modules` to exist. If the TUI deps are missing:
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
 
 ```bash
 cd ui-tui

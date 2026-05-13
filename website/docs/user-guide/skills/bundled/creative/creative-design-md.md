@@ -1,14 +1,14 @@
 ---
-title: "Design Md — Author, validate, diff, and export DESIGN"
+title: "Design Md — Author/validate/export Google's DESIGN"
 sidebar_label: "Design Md"
-description: "Author, validate, diff, and export DESIGN"
+description: "Author/validate/export Google's DESIGN"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Design Md
 
-Author, validate, diff, and export DESIGN.md files — Google's open-source format spec that gives coding agents a persistent, structured understanding of a design system (tokens + rationale in one file). Use when building a design system, porting style rules between projects, generating UI with consistent brand, or auditing accessibility/contrast.
+Author/validate/export Google's DESIGN.md token spec files.
 
 ## Skill metadata
 
@@ -19,8 +19,9 @@ Author, validate, diff, and export DESIGN.md files — Google's open-source form
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `design`, `design-system`, `tokens`, `ui`, `accessibility`, `wcag`, `tailwind`, `dtcg`, `google` |
-| Related skills | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) |
+| Related skills | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) |
 
 ## Reference: full SKILL.md
 
@@ -49,7 +50,9 @@ diffs versions for regressions, and exports to Tailwind or W3C DTCG JSON.
 - User wants contrast / WCAG accessibility validation on their color palette
 
 For purely visual inspiration or layout examples, use `popular-web-designs`
-instead. This skill is for the *formal spec file* itself.
+instead. For *process and taste* when designing a one-off HTML artifact
+from scratch (prototype, deck, landing page, component lab), use
+`claude-design`. This skill is for the *formal spec file* itself.
 
 ## File anatomy
 

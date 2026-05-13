@@ -8,12 +8,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_signal_scheduler():
+    """Drop the process-wide attachment scheduler so each test gets a
+    fresh token bucket."""
+    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    _reset_scheduler()
+    yield
+    _reset_scheduler()
+
 from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
+    _send_signal,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -127,6 +140,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -165,6 +179,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_mirror_receives_current_session_user_id(self):
@@ -470,7 +485,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -725,6 +740,64 @@ class TestSendTelegramHtmlDetection:
         assert result["success"] is True
         assert bot.send_message.await_count == 2
         sleep_mock.assert_awaited_once()
+
+
+class TestSendTelegramThreadIdMapping:
+    """General-topic mapping in _send_telegram (issue #22267).
+
+    Telegram forum supergroups address the General topic as
+    ``message_thread_id="1"`` on incoming updates, but the Bot API rejects
+    sends with ``message_thread_id=1`` ("Message thread not found"). The
+    gateway adapter's ``_message_thread_id_for_send`` helper maps "1" to
+    ``None`` for that reason; the standalone ``_send_telegram`` helper used
+    by the ``send_message`` tool needs the same mapping.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        return bot
+
+    def test_general_topic_thread_id_omitted(self, monkeypatch):
+        """thread_id="1" must be dropped before calling the Bot API."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="1"))
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_non_general_topic_thread_id_preserved(self, monkeypatch):
+        """Real forum-topic thread ids (>1) still pass through as ints."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="17585"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["message_thread_id"] == 17585
+
+    def test_no_thread_id_no_kwarg(self, monkeypatch):
+        """With no thread_id, message_thread_id must not appear in kwargs."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_general_topic_thread_id_int_input_also_dropped(self, monkeypatch):
+        """thread_id passed as the int 1 (not str) must still be dropped."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id=1))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -1621,3 +1694,641 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+
+
+# ---------------------------------------------------------------------------
+# _send_signal — chunking + 429 retry (mirrors gateway adapter behavior)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSignalHttp:
+    """Stand-in for httpx.AsyncClient used as an async context manager.
+
+    Pops a response from the queue per `post` call. Each entry is either
+    a dict (returned from .json()) or an exception instance (raised).
+    Captures (url, payload) per call.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, *_a, **_kw):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def post(self, url, json=None):
+        self.calls.append({"url": url, "payload": json})
+        if not self.responses:
+            raise AssertionError("Unexpected extra POST")
+        item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        resp = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda data=item: data,
+        )
+        return resp
+
+
+def _install_signal_http(monkeypatch, fake):
+    """Patch httpx.AsyncClient at the module level so the lazy import in
+    _send_signal picks it up.
+    """
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", fake)
+
+
+def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
+    """Mock asyncio.sleep + time.monotonic in the signal_rate_limit
+    module so the scheduler's acquire loop sees synthetic time advancing
+    during sleep calls, and report_rpc_duration sees the same clock.
+
+    Zero-second sleeps (event-loop yields from fake HTTP posts) are
+    delegated to the real asyncio.sleep so they don't pollute the
+    capture list.
+    """
+    import asyncio as _aio
+    _real_sleep = _aio.sleep
+    offset = [0.0]
+
+    async def fake_sleep(seconds):
+        if seconds > 0:
+            capture.append(seconds)
+            offset[0] += seconds
+        else:
+            await _real_sleep(0)
+
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+    )
+
+
+class TestSendSignalChunking:
+    def test_text_only_single_rpc(self, monkeypatch):
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "hello",
+            )
+        )
+
+        assert result == {"success": True, "platform": "signal", "chat_id": "+15557654321"}
+        assert len(fake.calls) == 1
+        params = fake.calls[0]["payload"]["params"]
+        assert params["message"] == "hello"
+        assert "attachments" not in params
+
+    def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
+        """33 attachments → 2 batches; text only on first batch. Batch 1
+        only needs 1 token and 18 remain after batch 0, so no sleep."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+        )
+
+        paths = []
+        for i in range(33):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"result": {"timestamp": 1}},   # batch 0
+            {"result": {"timestamp": 2}},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "Caption goes here",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2
+        assert len(sleep_calls) == 0
+
+        first = fake.calls[0]["payload"]["params"]
+        assert first["message"] == "Caption goes here"
+        assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        second = fake.calls[1]["payload"]["params"]
+        assert second["message"] == ""  # caption only on batch 0
+        assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+    def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
+        """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
+        than the 18 remaining after batch 0 — 56s wait crossing the 10s
+        notice threshold."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+            SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
+            SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
+        )
+
+        paths = []
+        for i in range(64):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"result": {"timestamp": 1}},   # batch 0
+            {"result": {"timestamp": 99}},  # pacing notice
+            {"result": {"timestamp": 2}},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 3
+        notice = fake.calls[1]["payload"]["params"]
+        assert "More images coming" in notice["message"]
+        assert "attachments" not in notice
+        # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
+        expected = (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG
+            - (SIGNAL_RATE_LIMIT_BUCKET_CAPACITY - SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        assert sleep_calls == [pytest.approx(expected, abs=1.0)]
+
+    def test_429_with_retry_after_drives_exact_backoff(self, tmp_path, monkeypatch):
+        """signal-cli ≥ v0.14.3 surfaces Retry-After under
+        error.data.response.results[*].retryAfterSeconds. The scheduler
+        calibrates its refill rate from that value; the retry of n=1
+        sleeps the per-token interval."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {
+                "error": {
+                    "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                    "message": "Failed to send message due to rate limiting",
+                    "data": {
+                        "response": {
+                            "timestamp": 0,
+                            "results": [
+                                {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 42},
+                            ],
+                        }
+                    },
+                }
+            },
+            {"result": {"timestamp": 7}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2  # initial + retry
+        assert sleep_calls == [pytest.approx(42.0, abs=1.0)]
+
+    def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
+        The scheduler keeps its default rate (1 token / 4s)."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "Failed: [429] Rate Limited"}},
+            {"result": {"timestamp": 7}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert sleep_calls == [pytest.approx(SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)]
+
+    def test_429_retry_exhaust_continues_to_next_batch(self, tmp_path, monkeypatch):
+        """Both attempts on batch 0 fail; batch 1 still gets a chance.
+        The scheduler's natural pacing (no more cooldown gate) lets the
+        second batch through after its acquire wait."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        paths = []
+        for i in range(33):  # forces 2 batches
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        rate_limit_err = {
+            "error": {
+                "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                "message": "Failed to send message due to rate limiting",
+                "data": {
+                    "response": {
+                        "timestamp": 0,
+                        "results": [
+                            {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 4},
+                        ],
+                    }
+                },
+            }
+        }
+
+        fake = _FakeSignalHttp([
+            rate_limit_err,                  # batch 0, attempt 1
+            rate_limit_err,                  # batch 0, attempt 2 (exhaust)
+            {"result": {"timestamp": 9}},    # batch 1 succeeds
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "many",
+                media_files=paths,
+            )
+        )
+
+        # Partial success: batch 0 lost but batch 1 went through.
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("rate-limited" in w for w in result["warnings"])
+        # 2 attempts on batch 0 + 1 successful batch 1 = 3 calls
+        assert len(fake.calls) == 3
+
+    def test_non_rate_limit_error_returns_immediately(self, tmp_path, monkeypatch):
+        """A non-429 RPC error should not retry — it returns an error result."""
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "UntrustedIdentityException"}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert "error" in result
+        assert "UntrustedIdentityException" in result["error"]
+        assert len(fake.calls) == 1  # no retry on non-429
+
+    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
+        good = tmp_path / "ok.png"
+        good.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "msg",
+                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        # Only the existing file made it into the RPC
+        params = fake.calls[0]["payload"]["params"]
+        assert len(params["attachments"]) == 1
+
+
+# ── _send_via_adapter standalone fallback ────────────────────────────────
+
+
+class _FakePlatform:
+    """Stand-in for the gateway.config.Platform enum.  Holds the .value
+    attribute consulted by ``_send_via_adapter`` for registry lookups."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class TestSendViaAdapterStandaloneFallback:
+    """Coverage for the out-of-process plugin-platform send path.
+
+    When the gateway runner is not in this process (e.g. ``hermes cron``
+    runs separately from ``hermes gateway``), ``_send_via_adapter`` should
+    fall through to the plugin's ``standalone_sender_fn`` registered on
+    its ``PlatformEntry``.  Without the hook, the existing error string
+    is returned (with a more helpful tail).
+    """
+
+    @staticmethod
+    def _make_entry(send_fn):
+        from gateway.platform_registry import PlatformEntry
+
+        return PlatformEntry(
+            name="fakeplatform",
+            label="Fake",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=send_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):
+        """Registry has hook, runner ref returns None: the hook is awaited."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            recorded["pconfig"] = pconfig
+            recorded["chat_id"] = chat_id
+            recorded["message"] = message
+            recorded["kwargs"] = kwargs
+            return {"success": True, "message_id": "msg-42"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            pconfig = SimpleNamespace(extra={})
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                pconfig,
+                "room/123",
+                "hello cron",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"success": True, "message_id": "msg-42"}
+        assert recorded["chat_id"] == "room/123"
+        assert recorded["message"] == "hello cron"
+        assert recorded["pconfig"] is pconfig
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
+        """thread_id, media_files, and force_document all reach the hook."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, *, thread_id=None,
+                            media_files=None, force_document=False):
+            recorded["thread_id"] = thread_id
+            recorded["media_files"] = media_files
+            recorded["force_document"] = force_document
+            return {"success": True, "message_id": "x"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+                thread_id="thread-7",
+                media_files=["/tmp/a.png"],
+                force_document=True,
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert recorded["thread_id"] == "thread-7"
+        assert recorded["media_files"] == ["/tmp/a.png"]
+        assert recorded["force_document"] is True
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):
+        """Registry entry has no hook: the fall-through error explains both
+        options (gateway-running and standalone hook)."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.register(self._make_entry(None))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert "error" in result
+        assert "fakeplatform" in result["error"]
+        assert "standalone_sender_fn" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
+        """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def boom(pconfig, chat_id, message, **kwargs):
+            raise ValueError("boom!")
+
+        platform_registry.register(self._make_entry(boom))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"error": "Plugin standalone send failed: boom!"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_return_shape_passed_through(self, monkeypatch):
+        """Hook returns success dict: passed through unchanged."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            return {"success": True, "message_id": "abc-123", "extra_field": "preserved"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result["success"] is True
+        assert result["message_id"] == "abc-123"
+        assert result["extra_field"] == "preserved"
+
+
+# ---------------------------------------------------------------------------
+# _check_send_message — availability gating
+# ---------------------------------------------------------------------------
+
+class TestCheckSendMessage:
+    """The tool's check_fn governs whether the model sees ``send_message`` as
+    callable for a given session. The four passing conditions are:
+
+    1. ``HERMES_KANBAN_TASK`` is set (worker spawned by the kanban dispatcher
+       — parent gateway is by definition running, but the worker's
+       ``HERMES_HOME`` may be a profile dir without a ``gateway.pid``).
+    2. ``HERMES_SESSION_PLATFORM`` resolves to a non-empty, non-``local`` value
+       (the session is wired to a messaging platform like Telegram).
+    3. ``is_gateway_running()`` returns True (CLI / orchestrator profile with
+       a live gateway colocated under the same ``HERMES_HOME``).
+    4. None of the above → False, tool is hidden.
+    """
+
+    def test_kanban_task_env_grants_access(self, monkeypatch):
+        """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
+        allowed regardless of session_platform / gateway-pid state."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is True
+
+    def test_kanban_task_env_short_circuits_before_gateway_check(self, monkeypatch):
+        """Honoring HERMES_KANBAN_TASK must not depend on importing or calling
+        gateway.status — the worker may run with a HERMES_HOME that has no
+        gateway.pid, and we don't want that import path to be load-bearing."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
+
+        with patch("gateway.session_context.get_session_env",
+                   side_effect=AssertionError("session_context not consulted "
+                                              "when HERMES_KANBAN_TASK is set")), \
+             patch("gateway.status.is_gateway_running",
+                   side_effect=AssertionError("gateway.status not consulted "
+                                              "when HERMES_KANBAN_TASK is set")):
+            assert _check_send_message() is True
+
+    def test_messaging_platform_session_grants_access(self, monkeypatch):
+        """Telegram/Discord/etc. sessions pass via the platform branch even
+        without HERMES_KANBAN_TASK."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value="telegram"), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is True
+
+    def test_local_platform_falls_through_to_gateway_check(self, monkeypatch):
+        """``HERMES_SESSION_PLATFORM=local`` means CLI-style — must defer to
+        is_gateway_running() rather than auto-grant."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value="local"), \
+             patch("gateway.status.is_gateway_running", return_value=True) as gw_mock:
+            assert _check_send_message() is True
+            gw_mock.assert_called_once()
+
+    def test_running_gateway_grants_access(self, monkeypatch):
+        """Plain CLI session (no kanban task, empty platform) with a live
+        gateway: tool is callable."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=True):
+            assert _check_send_message() is True
+
+    def test_no_signals_means_unavailable(self, monkeypatch):
+        """No kanban task, no platform, no gateway: tool is hidden."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running", return_value=False):
+            assert _check_send_message() is False
+
+    def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
+        """If gateway.status can't be imported (unusual deployment / partial
+        install), the check returns False rather than raising."""
+        from tools.send_message_tool import _check_send_message
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        with patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.status.is_gateway_running",
+                   side_effect=ImportError("simulated")):
+            assert _check_send_message() is False

@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -42,7 +41,6 @@ from agent import google_oauth
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
-    FREE_TIER_ID,
     CodeAssistError,
     ProjectContext,
     resolve_project_context,
@@ -79,7 +77,7 @@ def _coerce_content_to_text(content: Any) -> str:
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
                 # Multimodal (image_url, etc.) — stub for now; log and skip
-                elif p.get("type") in ("image_url", "input_audio"):
+                elif p.get("type") in {"image_url", "input_audio"}:
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
     return str(content)

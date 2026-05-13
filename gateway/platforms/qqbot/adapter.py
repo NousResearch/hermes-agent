@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -118,6 +118,22 @@ from gateway.platforms.qqbot.constants import (
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
+)
+from gateway.platforms.qqbot.chunked_upload import (
+    ChunkedUploader,
+    UploadDailyLimitExceededError,
+    UploadFileTooLargeError,
+)
+from gateway.platforms.qqbot.keyboards import (
+    ApprovalRequest,
+    ApprovalSender,
+    InlineKeyboard,
+    InteractionEvent,
+    build_approval_keyboard,
+    build_update_prompt_keyboard,
+    parse_approval_button_data,
+    parse_interaction_event,
+    parse_update_prompt_button_data,
 )
 
 
@@ -208,6 +224,22 @@ class QQAdapter(BasePlatformAdapter):
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Inline-keyboard interaction routing. The callback (if set) is invoked
+        # for every INTERACTION_CREATE event after the adapter has already
+        # ACKed it. Callers (gateway wiring for approvals / update prompts)
+        # register via set_interaction_callback().
+        self._interaction_callback: Optional[
+            Callable[[InteractionEvent], Awaitable[None]]
+        ] = None
+
+        # Default interaction dispatcher: routes approval-button clicks to
+        # tools.approval.resolve_gateway_approval() and update-prompt clicks
+        # to ~/.hermes/.update_response. Set here so the cross-adapter gateway
+        # contract (send_exec_approval / send_update_prompt) works out of the
+        # box; callers can override with set_interaction_callback(None) or
+        # register a custom handler.
+        self._interaction_callback = self._default_interaction_dispatch
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -243,10 +275,14 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
+            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
+            # faster behind proxies like Cloudflare Warp (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             )
 
             # 1. Get access token
@@ -393,13 +429,24 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        self._session = aiohttp.ClientSession()
+        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
+        # local patch, so QQ can regress to direct-connect timeouts after update.
+        self._session = aiohttp.ClientSession(trust_env=True)
+        ws_proxy = (
+            os.getenv("WSS_PROXY")
+            or os.getenv("wss_proxy")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("ALL_PROXY")
+            or os.getenv("all_proxy")
+        )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={
                 "User-Agent": build_user_agent(),
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
+            proxy=ws_proxy,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
@@ -466,7 +513,7 @@ class QQAdapter(BasePlatformAdapter):
                 self._fail_pending("Connection closed")
 
                 # Stop reconnecting for fatal codes
-                if code in (4914, 4915):
+                if code in {4914, 4915}:
                     desc = "offline/sandbox-only" if code == 4914 else "banned"
                     logger.error(
                         "[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc
@@ -503,7 +550,7 @@ class QQAdapter(BasePlatformAdapter):
                     self._token_expires_at = 0.0
 
                 # Session invalid → clear session, will re-identify on next Hello
-                if code in (
+                if code in {
                         4006,
                         4007,
                         4009,
@@ -521,7 +568,7 @@ class QQAdapter(BasePlatformAdapter):
                         4911,
                         4912,
                         4913,
-                ):
+                }:
                     logger.info(
                         "[%s] Session error (%d), clearing session for re-identify",
                         self._log_tag,
@@ -590,12 +637,12 @@ class QQAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.PING,):
+            elif msg.type in {aiohttp.WSMsgType.PING,}:
                 # aiohttp auto-replies with PONG
                 pass
             elif msg.type == aiohttp.WSMsgType.CLOSE:
                 raise QQCloseError(msg.data, msg.extra)
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -736,14 +783,16 @@ class QQAdapter(BasePlatformAdapter):
                 self._handle_ready(d)
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
-            elif t in (
+            elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
-            ):
+            }:
                 asyncio.create_task(self._on_message(t, d))
+            elif t == "INTERACTION_CREATE":
+                self._create_task(self._on_interaction(d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return
@@ -810,12 +859,212 @@ class QQAdapter(BasePlatformAdapter):
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in ("GROUP_AT_MESSAGE_CREATE",):
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
             await self._handle_group_message(d, msg_id, content, author, timestamp)
-        elif event_type in ("GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"):
+        elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
             await self._handle_dm_message(d, msg_id, content, author, timestamp)
+
+    # ------------------------------------------------------------------
+    # Inline-keyboard interactions (INTERACTION_CREATE)
+    # ------------------------------------------------------------------
+
+    def set_interaction_callback(
+        self,
+        callback: Optional[Callable[[InteractionEvent], Awaitable[None]]],
+    ) -> None:
+        """Register (or clear) the interaction callback.
+
+        Invoked once per ``INTERACTION_CREATE`` event *after* the adapter has
+        ACKed the interaction. The callback is responsible for routing the
+        button click to the right subsystem (approval resolver, update-prompt
+        resolver, etc.) based on the ``button_data`` payload.
+        """
+        self._interaction_callback = callback
+
+    async def _on_interaction(self, d: Any) -> None:
+        """Handle an ``INTERACTION_CREATE`` event.
+
+        Responsibilities:
+
+        1. Parse the raw payload into an :class:`InteractionEvent`.
+        2. ACK the interaction (``PUT /interactions/{id}``) so the client
+           stops showing a loading indicator on the button.
+        3. Dispatch to the registered interaction callback, if any.
+        """
+        if not isinstance(d, dict):
+            return
+        try:
+            event = parse_interaction_event(d)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to parse INTERACTION_CREATE: %s", self._log_tag, exc
+            )
+            return
+
+        if not event.id:
+            logger.warning(
+                "[%s] INTERACTION_CREATE missing id, skipping ACK", self._log_tag
+            )
+            return
+
+        # ACK the interaction promptly — per the QQ docs the client will show
+        # an error icon on the button if we don't respond quickly.
+        try:
+            await self._acknowledge_interaction(event.id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to ACK interaction %s: %s",
+                self._log_tag, event.id, exc,
+            )
+
+        logger.info(
+            "[%s] Interaction: scene=%s button_data=%r operator=%s",
+            self._log_tag, event.scene, event.button_data, event.operator_openid,
+        )
+
+        callback = self._interaction_callback
+        if callback is None:
+            logger.debug(
+                "[%s] No interaction callback registered; dropping button "
+                "click %r",
+                self._log_tag, event.button_data,
+            )
+            return
+        try:
+            await callback(event)
+        except Exception as exc:
+            logger.error(
+                "[%s] Interaction callback raised: %s",
+                self._log_tag, exc, exc_info=True,
+            )
+
+    async def _acknowledge_interaction(
+            self,
+            interaction_id: str,
+            code: int = 0,
+    ) -> None:
+        """ACK a button interaction via ``PUT /interactions/{id}``.
+
+        :param interaction_id: The ``id`` field from the
+            ``INTERACTION_CREATE`` event.
+        :param code: Response code (``0`` = success).
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — not connected?")
+        token = await self._ensure_token()
+        headers = {
+            "Authorization": f"QQBot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": build_user_agent(),
+        }
+        resp = await self._http_client.put(
+            f"{API_BASE}/interactions/{interaction_id}",
+            headers=headers,
+            json={"code": code},
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Interaction ACK failed [{resp.status_code}]: "
+                f"{resp.text[:200]}"
+            )
+
+    # Mapping from QQ keyboard button decisions → the ``choice`` vocabulary
+    # accepted by ``tools.approval.resolve_gateway_approval``. QQ's 3-button
+    # layout (mobile-space constraint) collapses "session" and "always" into
+    # a single "always" button; users wanting session-only approval can fall
+    # back to the ``/approve session`` text command.
+    _APPROVAL_BUTTON_TO_CHOICE = {
+        "allow-once": "once",
+        "allow-always": "always",
+        "deny": "deny",
+    }
+
+    async def _default_interaction_dispatch(
+            self,
+            event: InteractionEvent,
+    ) -> None:
+        """Route ``INTERACTION_CREATE`` button clicks to the right subsystem.
+
+        - ``approve:<session_key>:<decision>`` →
+          :func:`tools.approval.resolve_gateway_approval`
+          (unblocks the agent thread waiting on a dangerous-command approval).
+        - ``update_prompt:<answer>`` →
+          writes the answer to ``~/.hermes/.update_response`` for the
+          detached ``hermes update --gateway`` process to consume.
+        - Anything else is logged at DEBUG and ignored.
+
+        Installed as the adapter's default interaction callback in
+        ``__init__``. Callers can replace via
+        :meth:`set_interaction_callback` to route clicks elsewhere (or pass
+        ``None`` to drop them entirely).
+        """
+        button_data = event.button_data
+        if not button_data:
+            return
+
+        approval = parse_approval_button_data(button_data)
+        if approval is not None:
+            session_key, decision = approval
+            choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
+            if choice is None:
+                logger.warning(
+                    "[%s] Unknown approval decision %r (session=%s)",
+                    self._log_tag, decision, session_key,
+                )
+                return
+            try:
+                # Import lazily to keep the adapter importable in tests that
+                # don't exercise the approval subsystem.
+                from tools.approval import resolve_gateway_approval
+                count = resolve_gateway_approval(session_key, choice)
+                logger.info(
+                    "[%s] Button resolved %d approval(s) for session %s "
+                    "(choice=%s, operator=%s)",
+                    self._log_tag, count, session_key, choice,
+                    event.operator_openid,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] resolve_gateway_approval failed for session %s: %s",
+                    self._log_tag, session_key, exc,
+                )
+            return
+
+        update_answer = parse_update_prompt_button_data(button_data)
+        if update_answer is not None:
+            self._write_update_response(update_answer, event.operator_openid)
+            return
+
+        logger.debug(
+            "[%s] Unrecognised button_data %r from interaction %s",
+            self._log_tag, button_data, event.id,
+        )
+
+    @staticmethod
+    def _write_update_response(answer: str, operator: str = "") -> None:
+        """Atomically write the update-prompt answer to ``.update_response``.
+
+        Mirrors the Discord / Telegram / Feishu adapters: the detached
+        ``hermes update --gateway`` watcher polls this file for a ``y``/``n``
+        response to its interactive prompts (stash-restore, config migration).
+        Writes via ``tmp + rename`` so a partial write can't fool the reader.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            response_path = home / ".update_response"
+            tmp = response_path.with_suffix(".tmp")
+            tmp.write_text(answer)
+            tmp.replace(response_path)
+            logger.info(
+                "QQ update prompt answered %r by %s",
+                answer, operator or "(unknown)",
+            )
+        except Exception as exc:
+            logger.error("Failed to write update response: %s", exc)
 
     async def _handle_c2c_message(
             self,
@@ -885,6 +1134,13 @@ class QQAdapter(BasePlatformAdapter):
             len(voice_transcripts),
         )
 
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
+
         if not text.strip() and not image_urls:
             return
 
@@ -943,6 +1199,13 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
+
         if not text.strip() and not image_urls:
             return
 
@@ -976,6 +1239,18 @@ class QQAdapter(BasePlatformAdapter):
         if not channel_id:
             return
 
+        # Apply group_policy ACL — guild channels are group-like contexts.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist.
+        guild_id = str(d.get("guild_id", ""))
+        author_id = str(author.get("id", ""))
+        if not self._is_group_allowed(guild_id or channel_id, author_id):
+            logger.debug(
+                "[%s] Guild message blocked by ACL: channel=%s user=%s",
+                self._log_tag, channel_id, author_id,
+            )
+            return
+
         member = d.get("member") if isinstance(d.get("member"), dict) else {}
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
 
@@ -997,6 +1272,13 @@ class QQAdapter(BasePlatformAdapter):
                 if text.strip()
                 else attachment_info
             )
+
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
 
         if not text.strip() and not image_urls:
             return
@@ -1032,6 +1314,17 @@ class QQAdapter(BasePlatformAdapter):
         if not guild_id:
             return
 
+        # Apply dm_policy ACL — guild DMs were previously unauthenticated.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist via direct messages.
+        author_id = str(author.get("id", ""))
+        if not self._is_dm_allowed(author_id):
+            logger.debug(
+                "[%s] Guild DM blocked by ACL: guild=%s user=%s",
+                self._log_tag, guild_id, author_id,
+            )
+            return
+
         text = content
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
@@ -1050,6 +1343,13 @@ class QQAdapter(BasePlatformAdapter):
                 if text.strip()
                 else attachment_info
             )
+
+        # Merge any quoted-message context (message_type=103 → msg_elements[0]).
+        quoted = await self._process_quoted_context(d)
+        text = self._merge_quote_into(text, quoted["quote_block"])
+        if quoted["image_urls"]:
+            image_urls = image_urls + quoted["image_urls"]
+            image_media_types = image_media_types + quoted["image_media_types"]
 
         if not text.strip() and not image_urls:
             return
@@ -1070,6 +1370,113 @@ class QQAdapter(BasePlatformAdapter):
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Quoted-message handling
+    # ------------------------------------------------------------------
+
+    async def _process_quoted_context(
+            self,
+            d: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Process the quoted message a user is replying to.
+
+        When a user replies while quoting another message, the platform sets
+        ``message_type = 103`` and pushes the referenced message's content and
+        attachments inside ``msg_elements[0]``. The old adapter ignored
+        ``msg_elements`` entirely, so:
+
+        - Quoted text was surfaced only when the user typed something of
+          their own — bare quote-replies showed nothing.
+        - Quoted attachments (images, voice, files) were never downloaded
+          or described.
+        - Quoted voice messages specifically produced no transcript, so the
+          LLM had no way to see what the user was referring to.
+
+        This method parses ``msg_elements`` and runs the quoted attachments
+        through the same :meth:`_process_attachments` pipeline as the main
+        message body, so quoted voice messages get STT transcripts and
+        quoted images are cached identically.
+
+        :param d: Raw inbound message dict (from the WS dispatch payload).
+        :returns: Dict with keys:
+
+            - ``quote_block``: string to prepend to the user's text body
+              (empty when there's nothing quoted).
+            - ``image_urls``: list of cached quoted-image paths.
+            - ``image_media_types``: parallel list of image MIME types.
+        """
+        empty = {
+            "quote_block": "",
+            "image_urls": [],
+            "image_media_types": [],
+        }
+        # Short-circuit: only message_type 103 indicates a quote.
+        try:
+            if int(d.get("message_type", 0) or 0) != 103:
+                return empty
+        except (TypeError, ValueError):
+            return empty
+
+        elements = d.get("msg_elements")
+        if not isinstance(elements, list) or not elements:
+            return empty
+
+        # msg_elements[0] carries the referenced message. Additional elements
+        # (if any) are very rare in practice; we concatenate their text and
+        # union their attachments for completeness.
+        quoted_text_parts: List[str] = []
+        all_attachments: List[Dict[str, Any]] = []
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            etext = str(elem.get("content", "")).strip()
+            if etext:
+                quoted_text_parts.append(etext)
+            eatts = elem.get("attachments")
+            if isinstance(eatts, list):
+                for a in eatts:
+                    if isinstance(a, dict):
+                        all_attachments.append(a)
+
+        att_result = await self._process_attachments(all_attachments)
+        quoted_voice = att_result.get("voice_transcripts") or []
+        quoted_info = att_result.get("attachment_info") or ""
+        quoted_images = att_result.get("image_urls") or []
+        quoted_image_types = att_result.get("image_media_types") or []
+
+        lines: List[str] = []
+        if quoted_text_parts:
+            lines.append(" ".join(quoted_text_parts))
+        for t in quoted_voice:
+            lines.append(t)
+        if quoted_info:
+            lines.append(quoted_info)
+
+        if not lines and not quoted_images:
+            return empty
+
+        if lines:
+            quote_block = "[Quoted message]:\n" + "\n".join(lines)
+        else:
+            # Images-only quote: give the LLM at least a marker so it knows
+            # context was referenced.
+            quote_block = "[Quoted message]: (image)"
+
+        return {
+            "quote_block": quote_block,
+            "image_urls": quoted_images,
+            "image_media_types": quoted_image_types,
+        }
+
+    @staticmethod
+    def _merge_quote_into(text: str, quote_block: str) -> str:
+        """Prepend ``quote_block`` to *text*, separated by a blank line."""
+        if not quote_block:
+            return text
+        if text.strip():
+            return f"{quote_block}\n\n{text}".strip()
+        return quote_block
 
     # ------------------------------------------------------------------
     # Attachment processing
@@ -1457,7 +1864,7 @@ class QQAdapter(BasePlatformAdapter):
             return ".wav"
         if data[:4] == b"fLaC":
             return ".flac"
-        if data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        if data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
             return ".mp3"
         if data[:4] == b"\x30\x26\xb2\x75" or data[:4] == b"\x4f\x67\x67\x53":
             return ".ogg"
@@ -1626,7 +2033,7 @@ class QQAdapter(BasePlatformAdapter):
                         "base_url": base_url,
                         "api_key": api_key,
                         "model": model
-                                 or ("glm-asr" if provider in ("zai", "glm") else "whisper-1"),
+                                 or ("glm-asr" if provider in {"zai", "glm"} else "whisper-1"),
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
@@ -1708,7 +2115,7 @@ class QQAdapter(BasePlatformAdapter):
             if urlparse(source_url).path
             else ""
         )
-        if not ext or ext not in (
+        if not ext or ext not in {
                 ".silk",
                 ".amr",
                 ".mp3",
@@ -1717,7 +2124,7 @@ class QQAdapter(BasePlatformAdapter):
                 ".m4a",
                 ".aac",
                 ".flac",
-        ):
+        }:
             ext = self._guess_ext_from_data(audio_data)
 
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_src:
@@ -1954,26 +2361,44 @@ class QQAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     async def _send_c2c_text(
-            self, openid: str, content: str, reply_to: Optional[str] = None
+            self,
+            openid: str,
+            content: str,
+            reply_to: Optional[str] = None,
+            keyboard: Optional[InlineKeyboard] = None,
     ) -> SendResult:
-        """Send text to a C2C user via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or openid)
+        """Send text to a C2C user via REST API.
+
+        :param keyboard: Optional inline keyboard attached to the message.
+        """
+        self._next_msg_seq(reply_to or openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
+        if keyboard is not None:
+            body["keyboard"] = keyboard.to_dict()
 
         data = await self._api_request("POST", f"/v2/users/{openid}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     async def _send_group_text(
-            self, group_openid: str, content: str, reply_to: Optional[str] = None
+            self,
+            group_openid: str,
+            content: str,
+            reply_to: Optional[str] = None,
+            keyboard: Optional[InlineKeyboard] = None,
     ) -> SendResult:
-        """Send text to a group via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or group_openid)
+        """Send text to a group via REST API.
+
+        :param keyboard: Optional inline keyboard attached to the message.
+        """
+        self._next_msg_seq(reply_to or group_openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
+        if keyboard is not None:
+            body["keyboard"] = keyboard.to_dict()
 
         data = await self._api_request(
             "POST", f"/v2/groups/{group_openid}/messages", body
@@ -1992,6 +2417,156 @@ class QQAdapter(BasePlatformAdapter):
         data = await self._api_request("POST", f"/channels/{channel_id}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
         return SendResult(success=True, message_id=msg_id, raw_response=data)
+
+    # ------------------------------------------------------------------
+    # Inline-keyboard outbound helpers (approval / update-prompt flows)
+    # ------------------------------------------------------------------
+
+    async def send_with_keyboard(
+            self,
+            chat_id: str,
+            content: str,
+            keyboard: InlineKeyboard,
+            reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a single text message with an inline keyboard attached.
+
+        Unlike :meth:`send`, this does NOT split long content into chunks —
+        a keyboard message has exactly one interactive surface, and splitting
+        would orphan the buttons from the first chunk. Callers should keep
+        approval/update-prompt bodies short.
+
+        Guild (channel) chats don't support inline keyboards; returns a
+        non-retryable failure for those.
+        """
+        if not self.is_connected:
+            if not await self._wait_for_reconnection():
+                return SendResult(
+                    success=False, error="Not connected", retryable=True
+                )
+
+        chat_type = self._guess_chat_type(chat_id)
+        formatted = self.format_message(content)
+        truncated = formatted[: self.MAX_MESSAGE_LENGTH]
+        try:
+            if chat_type == "c2c":
+                return await self._send_c2c_text(
+                    chat_id, truncated, reply_to, keyboard=keyboard,
+                )
+            if chat_type == "group":
+                return await self._send_group_text(
+                    chat_id, truncated, reply_to, keyboard=keyboard,
+                )
+            return SendResult(
+                success=False,
+                error=(
+                    f"Inline keyboards not supported for chat_type "
+                    f"{chat_type!r}"
+                ),
+                retryable=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "[%s] send_with_keyboard failed: %s", self._log_tag, exc
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def send_approval_request(
+            self,
+            chat_id: str,
+            req: ApprovalRequest,
+            reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a 3-button approval request (``allow-once / allow-always / deny``).
+
+        The rendered text comes from :func:`build_approval_text`; callers can
+        override by passing a custom :class:`ApprovalRequest`.
+
+        Users click the button → ``INTERACTION_CREATE`` fires → the adapter's
+        registered :meth:`set_interaction_callback` handler decodes
+        ``button_data`` via :func:`parse_approval_button_data`.
+        """
+        from gateway.platforms.qqbot.keyboards import build_approval_text
+        return await self.send_with_keyboard(
+            chat_id,
+            build_approval_text(req),
+            build_approval_keyboard(req.session_key),
+            reply_to=reply_to,
+        )
+
+    # ------------------------------------------------------------------
+    # Cross-adapter gateway contract — send_exec_approval + send_update_prompt
+    # ------------------------------------------------------------------
+    #
+    # These mirror the signatures that gateway/run.py detects on the adapter
+    # class (e.g. type(adapter).send_exec_approval, type(adapter).send_update_prompt)
+    # for button-based approval / update-confirm UX. Discord, Telegram, Slack,
+    # Matrix, and Feishu already implement the same contract.
+
+    async def send_exec_approval(
+            self,
+            chat_id: str,
+            command: str,
+            session_key: str,
+            description: str = "dangerous command",
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a button-based exec-approval prompt for a dangerous command.
+
+        Called by ``gateway/run.py``'s ``_approval_notify_sync`` when the
+        agent is blocked waiting for approval. Button clicks resolve via
+        :func:`tools.approval.resolve_gateway_approval` — dispatched by the
+        adapter's interaction callback (:meth:`_default_interaction_dispatch`).
+        """
+        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+
+        # Use the reply-to message for passive-message context when we have one.
+        # QQ requires a msg_id on outbound messages to a user we've never
+        # seen; the last inbound msg_id is the natural choice.
+        msg_id = self._last_msg_id.get(chat_id)
+
+        req = ApprovalRequest(
+            session_key=session_key,
+            title=f"Execute this command?",
+            description=description,
+            command_preview=command,
+            timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+        )
+        return await self.send_approval_request(
+            chat_id, req, reply_to=msg_id,
+        )
+
+    _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
+
+    async def send_update_prompt(
+            self,
+            chat_id: str,
+            prompt: str,
+            default: str = "",
+            session_key: str = "",
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Yes/No update-confirmation prompt with inline buttons.
+
+        Matches the cross-adapter contract used by
+        ``gateway/run.py``'s ``hermes update --gateway`` watcher. Button
+        clicks surface as ``INTERACTION_CREATE`` with
+        ``button_data = 'update_prompt:y'`` or ``'update_prompt:n'``;
+        the adapter's interaction callback writes the answer to
+        ``~/.hermes/.update_response`` so the detached update process
+        can read it.
+        """
+        del session_key, metadata  # present for contract parity only.
+
+        default_hint = f" (default: {default})" if default else ""
+        content = f"⚕ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        msg_id = self._last_msg_id.get(chat_id)
+        return await self.send_with_keyboard(
+            chat_id,
+            content,
+            build_update_prompt_keyboard(),
+            reply_to=msg_id,
+        )
 
     def _build_text_body(
             self, content: str, reply_to: Optional[str] = None
@@ -2122,47 +2697,62 @@ class QQAdapter(BasePlatformAdapter):
             reply_to: Optional[str] = None,
             file_name: Optional[str] = None,
     ) -> SendResult:
-        """Upload media and send as a native message."""
+        """Upload media and send as a native message.
+
+        Upload strategy:
+
+        - **HTTP(S) URLs** → single ``POST /v2/{users|groups}/{id}/files``
+          with ``url=...``. The QQ platform fetches the URL directly; fastest
+          path when the source is already hosted.
+        - **Local files** → three-step chunked upload (prepare / PUT parts /
+          complete). Handles files up to the platform's ~100 MB per-file
+          limit without the ~10 MB inline-base64 cap of the old adapter.
+        """
         if not self.is_connected:
             if not await self._wait_for_reconnection():
                 return SendResult(success=False, error="Not connected", retryable=True)
 
+        chat_type = self._guess_chat_type(chat_id)
+        if chat_type == "guild":
+            # Guild channels don't support native media upload in the same way.
+            return SendResult(
+                success=False,
+                error="Guild media send not supported via this path",
+            )
+
         try:
-            # Resolve media source
-            data, content_type, resolved_name = await self._load_media(
-                media_source, file_name
-            )
-
-            # Route
-            chat_type = self._guess_chat_type(chat_id)
-            target_path = (
-                f"/v2/users/{chat_id}/files"
-                if chat_type == "c2c"
-                else f"/v2/groups/{chat_id}/files"
-            )
-
-            if chat_type == "guild":
-                # Guild channels don't support native media upload in the same way
-                # Send as URL fallback
-                return SendResult(
-                    success=False, error="Guild media send not supported via this path"
+            if self._is_url(media_source):
+                # URL upload — let the platform fetch it directly.
+                resolved_name = (
+                    file_name
+                    or Path(urlparse(media_source).path).name
+                    or "media"
+                )
+                upload = await self._upload_media(
+                    chat_type,
+                    chat_id,
+                    file_type,
+                    url=media_source,
+                    srv_send_msg=False,
+                    file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None,
+                )
+            else:
+                # Local file — chunked upload (prepare / PUT parts / complete).
+                resolved_name, upload = await self._upload_local_file(
+                    chat_type,
+                    chat_id,
+                    media_source,
+                    file_type,
+                    file_name,
                 )
 
-            # Upload
-            upload = await self._upload_media(
-                chat_type,
-                chat_id,
-                file_type,
-                file_data=data if not self._is_url(media_source) else None,
-                url=media_source if self._is_url(media_source) else None,
-                srv_send_msg=False,
-                file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None,
-            )
-
-            file_info = upload.get("file_info")
+            file_info = upload.get("file_info") or (
+                upload.get("data", {}) or {}
+            ).get("file_info")
             if not file_info:
                 return SendResult(
-                    success=False, error=f"Upload returned no file_info: {upload}"
+                    success=False,
+                    error=f"Upload returned no file_info: {upload}",
                 )
 
             # Send media message
@@ -2191,9 +2781,85 @@ class QQAdapter(BasePlatformAdapter):
                 message_id=str(send_data.get("id", uuid.uuid4().hex[:12])),
                 raw_response=send_data,
             )
+        except UploadDailyLimitExceededError as exc:
+            # Non-retryable: daily quota hit. Give the caller actionable text
+            # so the model can compose a helpful reply.
+            logger.warning(
+                "[%s] Daily upload limit exceeded for %s (%s)",
+                self._log_tag, exc.file_name, exc.file_size_human,
+            )
+            return SendResult(
+                success=False,
+                error=(
+                    f"QQ daily upload limit exceeded for {exc.file_name!r} "
+                    f"({exc.file_size_human}). Retry tomorrow."
+                ),
+                retryable=False,
+            )
+        except UploadFileTooLargeError as exc:
+            logger.warning(
+                "[%s] File too large: %s (%s, platform limit %s)",
+                self._log_tag, exc.file_name, exc.file_size_human, exc.limit_human,
+            )
+            return SendResult(
+                success=False,
+                error=(
+                    f"{exc.file_name!r} ({exc.file_size_human}) exceeds the "
+                    f"QQ per-file upload limit ({exc.limit_human})."
+                ),
+                retryable=False,
+            )
         except Exception as exc:
             logger.error("[%s] Media send failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _upload_local_file(
+            self,
+            chat_type: str,
+            chat_id: str,
+            media_source: str,
+            file_type: int,
+            file_name: Optional[str],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Chunked-upload a local file and return ``(resolved_name, complete_response)``.
+
+        The returned ``complete_response`` contains the ``file_info`` token
+        that goes into the subsequent RichMedia message body.
+
+        :raises UploadDailyLimitExceededError: On biz_code 40093002.
+        :raises UploadFileTooLargeError: When the file exceeds the platform limit.
+        :raises FileNotFoundError: If the path does not exist.
+        :raises ValueError: If the path looks like a placeholder (``<path>``).
+        :raises RuntimeError: If the HTTP client is not initialized.
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — not connected?")
+
+        local_path = Path(media_source).expanduser()
+        if not local_path.is_absolute():
+            local_path = (Path.cwd() / local_path).resolve()
+
+        if not local_path.exists() or not local_path.is_file():
+            if media_source.startswith("<") or len(media_source) < 3:
+                raise ValueError(
+                    f"Invalid media source (looks like a placeholder): {media_source!r}"
+                )
+            raise FileNotFoundError(f"Media file not found: {local_path}")
+
+        resolved_name = file_name or local_path.name
+        uploader = ChunkedUploader(
+            api_request=self._api_request,
+            http_put=self._http_client.put,
+            log_tag=self._log_tag,
+        )
+        complete = await uploader.upload(
+            chat_type=chat_type,
+            target_id=chat_id,
+            file_path=str(local_path),
+            file_type=file_type,
+            file_name=resolved_name,
+        )
+        return resolved_name, complete
 
     async def _load_media(
             self, source: str, file_name: Optional[str] = None
@@ -2204,7 +2870,7 @@ class QQAdapter(BasePlatformAdapter):
             raise ValueError("Media source is required")
 
         parsed = urlparse(source)
-        if parsed.scheme in ("http", "https"):
+        if parsed.scheme in {"http", "https"}:
             # For URLs, pass through directly to the upload API
             content_type = mimetypes.guess_type(source)[0] or "application/octet-stream"
             resolved_name = file_name or Path(parsed.path).name or "media"
@@ -2300,7 +2966,7 @@ class QQAdapter(BasePlatformAdapter):
         chat_type = self._guess_chat_type(chat_id)
         return {
             "name": chat_id,
-            "type": "group" if chat_type in ("group", "guild") else "dm",
+            "type": "group" if chat_type in {"group", "guild"} else "dm",
         }
 
     # ------------------------------------------------------------------
@@ -2309,7 +2975,7 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_url(source: str) -> bool:
-        return urlparse(str(source)).scheme in ("http", "https")
+        return urlparse(str(source)).scheme in {"http", "https"}
 
     def _guess_chat_type(self, chat_id: str) -> str:
         """Determine chat type from stored inbound metadata, fallback to 'c2c'."""

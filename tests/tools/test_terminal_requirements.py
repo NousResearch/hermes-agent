@@ -1,6 +1,8 @@
 import importlib
 import logging
 
+import pytest
+
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 
@@ -8,11 +10,24 @@ def _clear_terminal_env(monkeypatch):
     """Remove terminal env vars that could affect requirements checks."""
     keys = [
         "TERMINAL_ENV",
+        "TERMINAL_CONTAINER_CPU",
+        "TERMINAL_CONTAINER_DISK",
+        "TERMINAL_CONTAINER_MEMORY",
+        "TERMINAL_DOCKER_FORWARD_ENV",
+        "TERMINAL_DOCKER_VOLUMES",
+        "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
         "TERMINAL_SSH_HOST",
+        "TERMINAL_SSH_PORT",
         "TERMINAL_SSH_USER",
+        "TERMINAL_TIMEOUT",
+        "TERMINAL_VERCEL_RUNTIME",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
         "HOME",
         "USERPROFILE",
     ]
@@ -174,5 +189,128 @@ def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkey
     assert ok is False
     assert any(
         "paid Nous subscription is required" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_vercel_backend_without_sdk_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: None)
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "vercel is required for the Vercel Sandbox terminal backend" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_vercel_backend_without_auth_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "no supported auth configuration was found" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_vercel_backend_accepts_oidc_auth(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_vercel_backend_accepts_token_tuple_auth(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("VERCEL_TOKEN", "token")
+    monkeypatch.setenv("VERCEL_PROJECT_ID", "project")
+    monkeypatch.setenv("VERCEL_TEAM_ID", "team")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+@pytest.mark.parametrize("runtime", ["node24", "node22", "python3.13"])
+def test_vercel_backend_accepts_supported_runtimes(monkeypatch, runtime):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", runtime)
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_vercel_backend_accepts_blank_runtime(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "   ")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_vercel_backend_rejects_unsupported_runtime(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "node20")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "Vercel Sandbox runtime 'node20' is not supported" in record.getMessage()
+        and "node24, node22, python3.13" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_vercel_backend_rejects_nondefault_disk(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "8192")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "does not support custom TERMINAL_CONTAINER_DISK=8192" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_vercel_backend_rejects_malformed_disk_without_raising(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "large")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "Invalid value for TERMINAL_CONTAINER_DISK" in record.getMessage()
         for record in caplog.records
     )

@@ -13,7 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nous-research/ui": "^0.4.0",
+    "@nous-research/ui": "^0.10.0",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
@@ -31,7 +31,8 @@
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.14.1",
     "tailwind-merge": "^3.5.0",
-    "tailwindcss": "^4.2.1"
+    "tailwindcss": "^4.2.1",
+    "unicode-animations": "^1.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

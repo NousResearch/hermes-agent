@@ -56,8 +56,15 @@ _SENSITIVE_BODY_KEYS = frozenset({
 })
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() not in ("0", "false", "no", "off")
+# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction
+# mid-session.  ON by default — secure default per issue #17691. Users who
+# need raw credential values in tool output (e.g. working on the redactor
+# itself) can opt out via `security.redact_secrets: false` in config.yaml
+# (bridged to this env var in hermes_cli/main.py, gateway/run.py, and
+# cli.py) or `HERMES_REDACT_SECRETS=false` in ~/.hermes/.env. An opt-out
+# warning is logged at gateway and CLI startup so operators see the
+# downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
+_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -180,11 +187,59 @@ _PREFIX_RE = re.compile(
 )
 
 
+def mask_secret(
+    value: str,
+    *,
+    head: int = 4,
+    tail: int = 4,
+    floor: int = 12,
+    placeholder: str = "***",
+    empty: str = "",
+) -> str:
+    """Mask a secret for display, preserving ``head`` and ``tail`` characters.
+
+    Canonical helper for display-time redaction across Hermes — used by
+    ``hermes config``, ``hermes status``, ``hermes dump``, and anywhere
+    a secret needs to be shown truncated for debuggability while still
+    keeping the bulk hidden.
+
+    Args:
+        value:       The secret to mask. ``None``/empty returns ``empty``.
+        head:        Leading characters to preserve. Default 4.
+        tail:        Trailing characters to preserve. Default 4.
+        floor:       Values shorter than ``head + tail + floor_margin`` are
+                     fully masked (returns ``placeholder``). Default 12 —
+                     matches the existing config/status/dump convention.
+        placeholder: Value returned for too-short inputs. Default ``"***"``.
+        empty:       Value returned when ``value`` is falsy (None, ""). The
+                     caller can override this to e.g. ``color("(not set)",
+                     Colors.DIM)`` for user-facing display.
+
+    Examples:
+        >>> mask_secret("sk-proj-abcdef1234567890")
+        'sk-p...7890'
+        >>> mask_secret("short")                         # fully masked
+        '***'
+        >>> mask_secret("")                              # empty default
+        ''
+        >>> mask_secret("", empty="(not set)")           # empty override
+        '(not set)'
+        >>> mask_secret("long-token", head=6, tail=4, floor=18)
+        '***'
+    """
+    if not value:
+        return empty
+    if len(value) < floor:
+        return placeholder
+    return f"{value[:head]}...{value[-tail:]}"
+
+
 def _mask_token(token: str) -> str:
-    """Mask a token, preserving prefix for long tokens."""
-    if len(token) < 18:
+    """Mask a log token — conservative 18-char floor, preserves 6 prefix / 4 suffix."""
+    # Empty input: historically this returned "***" rather than "". Preserve.
+    if not token:
         return "***"
-    return f"{token[:6]}...{token[-4:]}"
+    return mask_secret(token, head=6, tail=4, floor=18)
 
 
 def _redact_query_string(query: str) -> str:
@@ -253,11 +308,18 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str) -> str:
+def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled when security.redact_secrets is false in config.yaml.
+    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+    Set force=True for safety boundaries that must never return raw secrets
+    regardless of the user's global logging redaction preference.
+
+    Set code_file=True to skip the ENV-assignment and JSON-field regex
+    patterns when the text is known to be source code (e.g. MAX_TOKENS=***
+    constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
+    private keys, DB connstrings, JWTs, and URL secrets are still redacted.
     """
     if text is None:
         return None
@@ -265,23 +327,24 @@ def redact_sensitive_text(text: str) -> str:
         text = str(text)
     if not text:
         return text
-    if not _REDACT_ENABLED:
+    if not (force or _REDACT_ENABLED):
         return text
 
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
-    # ENV assignments: OPENAI_API_KEY=sk-abc...
-    def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
-        return f"{name}={quote}{_mask_token(value)}{quote}"
-    text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+    # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
+    if not code_file:
+        def _redact_env(m):
+            name, quote, value = m.group(1), m.group(2), m.group(3)
+            return f"{name}={quote}{_mask_token(value)}{quote}"
+        text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
-    # JSON fields: "apiKey": "value"
-    def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
-    text = _JSON_FIELD_RE.sub(_redact_json, text)
+        # JSON fields: "apiKey": "***"  (skip for code files — false positives)
+        def _redact_json(m):
+            key, value = m.group(1), m.group(2)
+            return f'{key}: "{_mask_token(value)}"'
+        text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(

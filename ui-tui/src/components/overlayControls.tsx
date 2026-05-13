@@ -20,7 +20,7 @@ export function useOverlayKeys({ disabled = false, onBack, onClose }: OverlayKey
 
 export function OverlayHint({ children, t }: OverlayHintProps) {
   return (
-    <Text color={t.color.dim} wrap="truncate-end">
+    <Text color={t.color.muted} wrap="truncate-end">
       {children}
     </Text>
   )

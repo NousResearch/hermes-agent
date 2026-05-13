@@ -906,3 +906,199 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestFailClosedUnderPromptToolkit:
+    """Regression guard for #15216.
+
+    When prompt_toolkit owns the terminal and no approval callback is
+    registered on the calling thread, prompt_dangerous_approval() must
+    deny fast instead of falling through to the input() fallback -- which
+    deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
+    stdin capture, not to input().
+    """
+
+    def test_denies_when_prompt_toolkit_active_and_no_callback(self):
+        import threading
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()  # pretend a pt app is running
+        result = []
+        try:
+            def run():
+                result.append(
+                    prompt_dangerous_approval(
+                        "rm -rf /",
+                        "test danger",
+                        timeout_seconds=30,
+                        approval_callback=None,
+                    )
+                )
+
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), (
+                "prompt_dangerous_approval deadlocked under prompt_toolkit "
+                "with no callback -- fail-closed guard is broken"
+            )
+            assert result == ["deny"]
+        finally:
+            ptc.get_app_or_none = orig
+
+    def test_callback_path_still_wins_over_guard(self):
+        """Guard must not short-circuit a valid callback."""
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()
+        try:
+            def cb(command, description, **kwargs):
+                return "once"
+
+            result = prompt_dangerous_approval(
+                "rm -rf /",
+                "test danger",
+                approval_callback=cb,
+            )
+            assert result == "once"
+        finally:
+            ptc.get_app_or_none = orig
+
+
+class TestDetectSudoStdin:
+    """Sudo with stdin / askpass / shell / list-privileges flags (#17873 cat 4).
+
+    An LLM-driven agent has no TTY, so the sudo invocations that succeed
+    without human interaction are those reading the password from stdin
+    (-S / --stdin) or via an askpass helper (-A / --askpass). The
+    shell-launch (-s) and list-privileges (-a) flags are also gated since
+    they are privilege-relevant invocations the agent can chain after
+    acquiring the password.
+
+    `_normalize_command_for_detection` lowercases input before pattern
+    matching, so -S/-s and -A/-a are indistinguishable at the regex
+    layer; both letter-pairs are gated.
+    """
+
+    # Positive cases (must match)
+
+    def test_canonical_pipe_to_sudo_S_detected(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "echo pwd | sudo -S whoami"
+        )
+        assert is_dangerous is True
+        assert "sudo" in desc.lower()
+
+    def test_long_flag_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --stdin id")
+        assert is_dangerous is True
+
+    def test_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -n -S id")
+        assert is_dangerous is True
+
+    def test_user_then_stdin_detected(self):
+        # Codex audit caught that the original "leading flags only" regex
+        # missed this form because `-u root` has a flag-argument (`root`)
+        # that broke the (?:\s+-[^\s]+)* loop. The lazy [^;|&\n]*? class
+        # consumes flag-args without spanning command separators.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -u root -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --non-interactive -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_user_equals_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --user=root -S id"
+        )
+        assert is_dangerous is True
+
+    def test_herestring_input_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -S id <<< 'mypwd'"
+        )
+        assert is_dangerous is True
+
+    def test_combined_short_flags_nS_detected(self):
+        # `-nS` packs `-n` and `-S` into one arg; second pattern catches.
+        is_dangerous, _, _ = detect_dangerous_command("sudo -nS id")
+        assert is_dangerous is True
+
+    def test_printf_form_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            'printf "%s\\n" "$PW" | sudo -S id'
+        )
+        assert is_dangerous is True
+
+    def test_askpass_short_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -A id")
+        assert is_dangerous is True
+
+    def test_askpass_long_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --askpass id")
+        assert is_dangerous is True
+
+    def test_two_sudo_invocations_second_caught(self):
+        # The first sudo here is benign (no -S); the second has -S.
+        # Lazy [^;|&\n]*? does NOT span past `;`, so re.search anchors
+        # on the second sudo invocation independently.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo whoami; sudo -S id"
+        )
+        assert is_dangerous is True
+
+    # Negative cases (must NOT match)
+
+    def test_plain_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo whoami")
+        assert is_dangerous is False
+
+    def test_sudo_interactive_shell_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -i")
+        assert is_dangerous is False
+
+    def test_sudo_with_user_no_stdin_flag_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -u root -i")
+        assert is_dangerous is False
+
+    def test_man_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("man sudo")
+        assert is_dangerous is False
+
+    def test_which_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("which sudo")
+        assert is_dangerous is False
+
+    def test_sudo_user_env_reference_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "echo SUDO_USER=$SUDO_USER"
+        )
+        assert is_dangerous is False
+
+    def test_apt_install_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("apt install sudo")
+        assert is_dangerous is False
+
+    def test_ls_etc_sudoers_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("ls /etc/sudoers")
+        assert is_dangerous is False
+
+    def test_pseudosudo_safe_word_boundary(self):
+        # `\bsudo\b` requires a word boundary; `pseudosudo` has none
+        # before `sudo`, so should not trigger.
+        is_dangerous, _, _ = detect_dangerous_command("pseudosudo -S id")
+        assert is_dangerous is False
+
+    def test_unrelated_redirection_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "make 2>&1 | tee build.log"
+        )
+        assert is_dangerous is False

@@ -410,10 +410,29 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
+
+            # Multimodal tool result: convert OpenAI-style content list into
+            # Responses ``function_call_output.output`` array. The Responses
+            # API accepts ``output`` as either a string or an array of
+            # ``input_text``/``input_image`` items. See
+            # https://developers.openai.com/api/reference/python/resources/responses/.
+            tool_content = msg.get("content")
+            output_value: Any
+            if isinstance(tool_content, list):
+                converted = _chat_content_to_responses_parts(
+                    tool_content, role="user",
+                )
+                if converted:
+                    output_value = converted
+                else:
+                    output_value = ""
+            else:
+                output_value = str(tool_content or "")
+
             items.append({
                 "type": "function_call_output",
                 "call_id": call_id,
-                "output": str(msg.get("content", "") or ""),
+                "output": output_value,
             })
 
     return items
@@ -466,6 +485,38 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             output = item.get("output", "")
             if output is None:
                 output = ""
+            # Output may be a string OR an array of structured content
+            # items (input_text / input_image) for multimodal tool results.
+            # Both shapes are accepted by the Responses API. We preserve
+            # the array form when present.
+            if isinstance(output, list):
+                # Validate each item is a recognised content shape; drop
+                # anything else to avoid 4xx from the API.
+                cleaned: List[Dict[str, Any]] = []
+                for part in output:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype == "input_text":
+                        text = part.get("text")
+                        if isinstance(text, str) and text:
+                            cleaned.append({"type": "input_text", "text": text})
+                    elif ptype == "input_image":
+                        url = part.get("image_url")
+                        if isinstance(url, str) and url:
+                            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            detail = part.get("detail")
+                            if isinstance(detail, str) and detail.strip():
+                                entry["detail"] = detail.strip()
+                            cleaned.append(entry)
+                normalized.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id.strip(),
+                        "output": cleaned if cleaned else "",
+                    }
+                )
+                continue
             if not isinstance(output, str):
                 output = str(output)
 

@@ -67,6 +67,37 @@ export function resetScrollHint(): void {
   absoluteRectsCur = []
 }
 
+// Fast-path diagnostics. Bumped from the ScrollBox fast-path branch
+// whenever a scroll hint was captured. Reveals why a fast path was
+// declined (heightDelta mismatch, no prevScreen, etc.) so we can chase
+// the last mile of PageUp/wheel latency. Zero cost when no reader —
+// it's all integer bumps. Exposed as a counter object so external
+// probes can snapshot + diff.
+export type ScrollFastPathStats = {
+  captured: number
+  taken: number
+  declined: {
+    noPrevScreen: number
+    heightDeltaMismatch: number
+    other: number
+  }
+  lastDeclineReason?: string
+  lastHeightDelta?: number
+  lastHintDelta?: number
+  lastScrollHeight?: number
+  lastPrevHeight?: number
+}
+
+export const scrollFastPathStats: ScrollFastPathStats = {
+  captured: 0,
+  taken: 0,
+  declined: {
+    noPrevScreen: 0,
+    heightDeltaMismatch: 0,
+    other: 0
+  }
+}
+
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
 }
@@ -229,23 +260,6 @@ function applyStylesToWrappedText(
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx]!
 
-    // In trim mode, skip leading whitespace that was trimmed from this line.
-    // Only skip if the original has whitespace but the output line doesn't start
-    // with whitespace (meaning it was trimmed). If both have whitespace, the
-    // whitespace was preserved and we shouldn't skip.
-    if (trimEnabled && line.length > 0) {
-      const lineStartsWithWhitespace = /\s/.test(line[0]!)
-
-      const originalHasWhitespace = charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)
-
-      // Only skip if original has whitespace but line doesn't
-      if (originalHasWhitespace && !lineStartsWithWhitespace) {
-        while (charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)) {
-          charIndex++
-        }
-      }
-    }
-
     let styledLine = ''
     let runStart = 0
     let runSegmentIndex = charToSegment[charIndex] ?? 0
@@ -302,26 +316,10 @@ function applyStylesToWrappedText(
     // split lines.
     if (charIndex < originalPlain.length && originalPlain[charIndex] === '\n') {
       charIndex++
-    }
-
-    // In trim mode, skip whitespace that was replaced by newline when wrapping.
-    // We skip whitespace in the original until we reach a character that matches
-    // the first character of the next line. This handles cases like:
-    // - "AB   \tD" wrapped to "AB\n\tD" - skip spaces until we hit the tab
-    // In non-trim mode, whitespace is preserved so no skipping is needed.
-    if (trimEnabled && lineIdx < lines.length - 1) {
-      const nextLine = lines[lineIdx + 1]!
-      const nextLineFirstChar = nextLine.length > 0 ? nextLine[0] : null
-
-      // Skip whitespace until we hit a char that matches the next line's first char
-      while (charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)) {
-        // Stop if we found the character that starts the next line
-        if (nextLineFirstChar !== null && originalPlain[charIndex] === nextLineFirstChar) {
-          break
-        }
-
-        charIndex++
-      }
+    } else if (trimEnabled && lineIdx < lines.length - 1 && /\s/.test(originalPlain[charIndex] ?? '')) {
+      // wrap-trim removes exactly one whitespace character at each soft-wrap boundary.
+      // Keep the style map aligned without eating preserved indentation/spaces.
+      charIndex++
     }
   }
 
@@ -926,6 +924,27 @@ function renderNodeToOutput(
           const heightDelta = scrollHeight - prevHeight
 
           const safeForFastPath = !hint || heightDelta === 0 || (hint.delta > 0 && heightDelta === hint.delta)
+
+          // Diagnostics (opt-in via scrollFastPathStats reader).  Only
+          // counts when a hint was captured — cases where nothing scrolled
+          // (hint === null) are not declines, just idle frames.
+          if (hint) {
+            scrollFastPathStats.captured++
+            scrollFastPathStats.lastHintDelta = hint.delta
+            scrollFastPathStats.lastScrollHeight = scrollHeight
+            scrollFastPathStats.lastPrevHeight = prevHeight
+            scrollFastPathStats.lastHeightDelta = heightDelta
+
+            if (!safeForFastPath) {
+              scrollFastPathStats.declined.heightDeltaMismatch++
+              scrollFastPathStats.lastDeclineReason = `heightDelta=${heightDelta} hintDelta=${hint.delta}`
+            } else if (!prevScreen) {
+              scrollFastPathStats.declined.noPrevScreen++
+              scrollFastPathStats.lastDeclineReason = 'noPrevScreen'
+            } else {
+              scrollFastPathStats.taken++
+            }
+          }
 
           // scrollHint is set above when hint is captured. If safeForFastPath
           // is false the full path renders a next.screen that doesn't match

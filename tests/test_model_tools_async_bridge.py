@@ -199,20 +199,22 @@ class TestRunAsyncWithRunningLoop:
 
     @pytest.mark.asyncio
     async def test_timeout_uses_nonblocking_executor_shutdown(self, monkeypatch):
-        """A timeout in the running-loop branch must not wait for the worker.
+        """A timeout in the running-loop branch must not block the caller.
 
-        ThreadPoolExecutor's context manager performs shutdown(wait=True).
-        If _run_async relies on that path after future.result(timeout=...)
-        times out, the timeout does not bound wall-clock time because the
-        caller still waits for the stuck coroutine's thread to finish.
+        If shutdown ever waits for a stuck worker, a tool coroutine that
+        ignores (or can't observe) cancellation would hang the whole agent.
+        Guard: the caller must raise TimeoutError and pool.shutdown must be
+        called with wait=False. The worker's own event loop handles cleanup
+        (cancellation is scheduled via call_soon_threadsafe before the
+        caller returns).
         """
         import concurrent.futures
         from model_tools import _run_async
 
         events = {
-            "cancelled": False,
             "result_timeout": None,
             "shutdown_calls": [],
+            "submitted_fn": None,
         }
 
         class TimeoutFuture:
@@ -221,7 +223,6 @@ class TestRunAsyncWithRunningLoop:
                 raise concurrent.futures.TimeoutError()
 
             def cancel(self):
-                events["cancelled"] = True
                 return True
 
         class FakeExecutor:
@@ -236,8 +237,10 @@ class TestRunAsyncWithRunningLoop:
                 return False
 
             def submit(self, fn, *args, **kwargs):
-                if args and hasattr(args[0], "close"):
-                    args[0].close()
+                # Record which function got submitted -- should be the
+                # in-function worker wrapper, not bare asyncio.run, so we
+                # know _run_async is using a loop it owns and can cancel.
+                events["submitted_fn"] = getattr(fn, "__name__", repr(fn))
                 return TimeoutFuture()
 
             def shutdown(self, wait=True, cancel_futures=False):
@@ -256,8 +259,82 @@ class TestRunAsyncWithRunningLoop:
             _run_async(_never_finishes())
 
         assert events["result_timeout"] == 300
-        assert events["cancelled"] is True
-        assert events["shutdown_calls"] == [(False, True)]
+        # The worker wrapper creates its own event loop so _run_async can
+        # cancel the task on timeout — this must NOT be bare asyncio.run.
+        assert events["submitted_fn"] != "run", (
+            "_run_async submitted asyncio.run directly — it must submit a "
+            "worker wrapper that owns the event loop so timeouts can cancel "
+            "the task"
+        )
+        # Critical: shutdown must NOT wait. If wait=True, a stuck coroutine
+        # would freeze the caller (converts a thread leak into a hang).
+        assert events["shutdown_calls"], "shutdown was never called"
+        for wait, _cancel in events["shutdown_calls"]:
+            assert wait is False, (
+                f"shutdown called with wait={wait} — a stuck tool coroutine "
+                f"would hang the caller indefinitely"
+            )
+
+    @pytest.mark.asyncio
+    async def test_timeout_cancels_coroutine_in_worker_loop(self, monkeypatch):
+        """On timeout, the worker's event loop must receive a cancel request
+        so the coroutine stops and the thread exits — not leaked.
+
+        Before the fix, future.cancel() on a running ThreadPoolExecutor
+        future is a no-op, so the worker thread kept running the coroutine
+        to completion (leaking one thread per tool-timeout).
+        """
+        from model_tools import _run_async
+
+        # Shrink the 300s internal timeout by patching future.result.
+        # We do this surgically: let everything else run for real so the
+        # worker loop actually exists and can observe cancellation.
+        import concurrent.futures as _cf
+
+        real_pool_cls = _cf.ThreadPoolExecutor
+
+        class FastTimeoutPool(real_pool_cls):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+
+        # Patch future.result to time out after 1s instead of 300s.
+        real_result = _cf.Future.result
+
+        def fast_result(self, timeout=None):
+            return real_result(self, timeout=1.0 if timeout == 300 else timeout)
+
+        monkeypatch.setattr(_cf.Future, "result", fast_result)
+
+        cancel_observed = threading.Event()
+
+        async def _slow_cancellable():
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancel_observed.set()
+                raise
+
+        import time as _time
+        t0 = _time.time()
+        with pytest.raises(_cf.TimeoutError):
+            _run_async(_slow_cancellable())
+        elapsed = _time.time() - t0
+
+        # Caller must return fast (no hang waiting for the coro).
+        assert elapsed < 3.0, (
+            f"_run_async blocked caller for {elapsed:.1f}s — should return "
+            f"on timeout regardless of whether the coroutine has finished"
+        )
+
+        # Worker thread must cancel the task (not leak).
+        deadline = _time.time() + 5
+        while not cancel_observed.is_set() and _time.time() < deadline:
+            _time.sleep(0.05)
+        assert cancel_observed.is_set(), (
+            "Coroutine never received CancelledError — worker thread leaked "
+            "(ThreadPoolExecutor.cancel() is a no-op on a running future; "
+            "_run_async must cancel the task inside its worker loop)"
+        )
 
 
 # ---------------------------------------------------------------------------

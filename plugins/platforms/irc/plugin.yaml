@@ -1,0 +1,54 @@
+name: irc-platform
+label: IRC
+kind: platform
+version: 1.0.0
+description: >
+  IRC gateway adapter for Hermes Agent.
+  Connects to an IRC server and relays messages between an IRC channel
+  (or DMs) and the Hermes agent.  No external dependencies — uses
+  Python's stdlib asyncio for the IRC protocol.
+author: Nous Research
+# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: IRC_SERVER
+    description: "IRC server hostname (e.g. irc.libera.chat)"
+    prompt: "IRC server"
+    password: false
+  - name: IRC_CHANNEL
+    description: "Channel to join (e.g. #hermes — comma-separate for multiple)"
+    prompt: "IRC channel"
+    password: false
+  - name: IRC_NICKNAME
+    description: "Bot nickname on IRC (default: hermes-bot)"
+    prompt: "Bot nickname"
+    password: false
+optional_env:
+  - name: IRC_PORT
+    description: "IRC server port (default: 6697 with TLS, 6667 without)"
+    prompt: "IRC port"
+    password: false
+  - name: IRC_USE_TLS
+    description: "Use TLS for the IRC connection (1/true/yes to enable, default: true on port 6697)"
+    prompt: "Use TLS? (true/false)"
+    password: false
+  - name: IRC_SERVER_PASSWORD
+    description: "Server password for the IRC PASS command (optional)"
+    prompt: "Server password (optional)"
+    password: true
+  - name: IRC_NICKSERV_PASSWORD
+    description: "NickServ password for automatic IDENTIFY on connect (optional)"
+    prompt: "NickServ password (optional)"
+    password: true
+  - name: IRC_ALLOWED_USERS
+    description: "Comma-separated IRC nicks allowed to talk to the bot"
+    prompt: "Allowed nicks (comma-separated)"
+    password: false
+  - name: IRC_ALLOW_ALL_USERS
+    description: "Allow anyone in the channel to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: IRC_HOME_CHANNEL
+    description: "Channel for cron / notification delivery (defaults to IRC_CHANNEL)"
+    prompt: "Home channel (or empty)"
+    password: false

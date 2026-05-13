@@ -1,14 +1,14 @@
 ---
-title: "Claude Code — Delegate coding tasks to Claude Code (Anthropic's CLI agent)"
+title: "Claude Code — Delegate coding to Claude Code CLI (features, PRs)"
 sidebar_label: "Claude Code"
-description: "Delegate coding tasks to Claude Code (Anthropic's CLI agent)"
+description: "Delegate coding to Claude Code CLI (features, PRs)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Claude Code
 
-Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building features, refactoring, PR reviews, and iterative coding. Requires the claude CLI installed.
+Delegate coding to Claude Code CLI (features, PRs).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building f
 | Version | `2.2.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Claude`, `Anthropic`, `Code-Review`, `Refactoring`, `PTY`, `Automation` |
 | Related skills | [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
 

@@ -21,6 +21,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
+DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 
 
 @pytest.fixture(scope="module")
@@ -28,6 +29,32 @@ def dockerfile_text() -> str:
     if not DOCKERFILE.exists():
         pytest.skip("Dockerfile not present in this checkout")
     return DOCKERFILE.read_text()
+
+
+def _dockerfile_instructions(dockerfile_text: str) -> list[str]:
+    instructions: list[str] = []
+    current = ""
+
+    for raw_line in dockerfile_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        continued = line.removesuffix("\\").strip()
+        current = f"{current} {continued}".strip()
+        if not line.endswith("\\"):
+            instructions.append(current)
+            current = ""
+
+    return instructions
+
+
+def _run_steps(dockerfile_text: str) -> list[str]:
+    return [
+        instruction
+        for instruction in _dockerfile_instructions(dockerfile_text)
+        if instruction.startswith("RUN ")
+    ]
 
 
 def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
@@ -76,3 +103,51 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
         "If tini is only installed but not wired into ENTRYPOINT, hermes "
         "still runs as PID 1 and zombies will accumulate (#15012)."
     )
+
+
+def test_dockerfile_installs_tui_dependencies(dockerfile_text):
+    # The TUI workspace manifests must be present so ``npm install`` can
+    # resolve dependencies. The bundled ``hermes-ink`` workspace package is
+    # now COPIED into the image as a whole tree (not just its lockfile)
+    # because it's referenced as a ``file:`` workspace dependency from
+    # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
+    # bare ``package.json`` shell.
+    assert "ui-tui/package.json" in dockerfile_text
+    assert "ui-tui/package-lock.json" in dockerfile_text
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text
+    assert any(
+        "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
+        for step in _run_steps(dockerfile_text)
+    )
+
+
+def test_dockerfile_builds_tui_assets(dockerfile_text):
+    assert any(
+        "ui-tui" in step and "npm" in step and "run build" in step
+        for step in _run_steps(dockerfile_text)
+    )
+
+
+def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
+    # ``hermes-ink`` is a bundled workspace package referenced from
+    # ``ui-tui/package.json`` via ``file:`` — not pulled from the npm
+    # registry. The contract this test pins is just that the image
+    # actually carries the package source so ``await import('@hermes/ink')``
+    # can resolve at runtime; the previous, much pickier assertion (manual
+    # ``rm -rf`` + ``npm install --omit=dev --prefix node_modules/@hermes/ink``)
+    # baked in implementation details of an older materialisation flow that
+    # was simplified once npm workspaces handled the resolution natively.
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text, (
+        "Dockerfile must COPY the bundled hermes-ink workspace package "
+        "so ``await import('@hermes/ink')`` resolves at runtime."
+    )
+
+
+def test_dockerignore_excludes_nested_dependency_dirs():
+    if not DOCKERIGNORE.exists():
+        pytest.skip(".dockerignore not present in this checkout")
+
+    text = DOCKERIGNORE.read_text()
+
+    assert "**/node_modules" in text
+    assert "**/.venv" in text

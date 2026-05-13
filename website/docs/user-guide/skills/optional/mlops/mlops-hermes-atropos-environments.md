@@ -19,8 +19,9 @@ Build, test, and debug Hermes Agent RL environments for Atropos training. Covers
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `atropos`, `rl`, `environments`, `training`, `reinforcement-learning`, `reward-functions` |
-| Related skills | [`axolotl`](/docs/user-guide/skills/bundled/mlops/mlops-training-axolotl), [`fine-tuning-with-trl`](/docs/user-guide/skills/bundled/mlops/mlops-training-trl-fine-tuning), `lm-evaluation-harness` |
+| Related skills | [`axolotl`](/docs/user-guide/skills/optional/mlops/mlops-training-axolotl), [`fine-tuning-with-trl`](/docs/user-guide/skills/optional/mlops/mlops-training-trl-fine-tuning), `lm-evaluation-harness` |
 
 ## Reference: full SKILL.md
 
@@ -34,6 +35,7 @@ Guide for building RL environments in the hermes-agent repo that integrate with 
 
 ## Architecture Overview
 
+<!-- ascii-guard-ignore -->
 ```
 Atropos BaseEnv (atroposlib/envs/base.py)
     └── HermesAgentBaseEnv (environments/hermes_base_env.py)
@@ -44,6 +46,7 @@ Atropos BaseEnv (atroposlib/envs/base.py)
                     Only implements: setup, get_next_item, format_prompt,
                                     compute_reward, evaluate, wandb_log
 ```
+<!-- ascii-guard-ignore-end -->
 
 Hermes environments are special because they run a **multi-turn agent loop with tool calling** — not just single-turn completions. The base env handles the loop; you implement the task and scoring.
 

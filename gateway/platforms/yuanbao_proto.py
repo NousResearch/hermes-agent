@@ -19,9 +19,8 @@ yuanbao_proto.py - Yuanbao WebSocket 协议编解码（纯 Python 实现）
 from __future__ import annotations
 
 import logging
-import struct
 import threading
-from typing import Optional, Union
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -703,7 +702,7 @@ def decode_inbound_push(data: bytes) -> Optional[dict]:
             "trace_id": trace_id,
         }
         # 过滤空值（保持 API 整洁）
-        return {k: v for k, v in result.items() if v or k in ("msg_body", "msg_seq")}
+        return {k: v for k, v in result.items() if v or k in {"msg_body", "msg_seq"}}
     except Exception as e:
         if DEBUG_MODE:
             logger.debug("[yuanbao_proto] decode_inbound_push failed: %s", e)

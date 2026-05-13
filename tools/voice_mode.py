@@ -110,7 +110,7 @@ def detect_audio_environment() -> dict:
     # WSL detection — PulseAudio bridge makes audio work in WSL.
     # Only block if PULSE_SERVER is not configured.
     try:
-        with open('/proc/version', 'r') as f:
+        with open('/proc/version', 'r', encoding="utf-8") as f:
             if 'microsoft' in f.read().lower():
                 if os.environ.get('PULSE_SERVER'):
                     notices.append("Running in WSL with PulseAudio bridge")
@@ -456,8 +456,7 @@ class AudioRecorder:
             # Compute RMS for level display and silence detection
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
-            if rms > self._peak_rms:
-                self._peak_rms = rms
+            self._peak_rms = max(self._peak_rms, rms)
 
             # Silence detection
             if self._on_silence_stop is not None:

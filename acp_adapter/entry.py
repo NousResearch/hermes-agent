@@ -13,6 +13,17 @@ Usage::
     hermes-acp
 """
 
+# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+try:
+    import hermes_bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    # Graceful fallback when hermes_bootstrap isn't registered in the venv
+    # yet — happens during partial ``hermes update`` where git-reset landed
+    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
+    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    pass
+
 import asyncio
 import logging
 import sys
@@ -111,6 +122,17 @@ def main() -> None:
 
     import acp
     from .server import HermesACPAgent
+
+    # MCP tool discovery from config.yaml — run before asyncio.run() so
+    # it's safe to use blocking waits.  (ACP also registers per-session
+    # MCP servers dynamically via asyncio.to_thread inside the event
+    # loop; that path is unaffected.)  Moved from model_tools.py module
+    # scope to avoid freezing the gateway's loop on lazy import (#16856).
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools()
+    except Exception:
+        logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
     agent = HermesACPAgent()
     try:

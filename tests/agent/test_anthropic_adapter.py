@@ -14,6 +14,7 @@ from agent.anthropic_adapter import (
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
+    build_anthropic_bedrock_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
@@ -66,7 +67,27 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # Native Anthropic does not get context-1m by default; accounts
+            # without that beta reject even short auxiliary requests.
+            assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
+
+    def test_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m-2025-08-07 while
+        preserving every other OAuth-relevant beta."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-oat01-" + "x" * 60,
+                drop_context_1m_beta=True,
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # Everything else must still be there.
+            assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -77,6 +98,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
+            assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -88,6 +110,24 @@ class TestBuildAnthropicClient:
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
+
+    def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-key",
+                base_url="https://example.services.ai.azure.com/models/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
+    def test_bedrock_client_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -517,6 +557,36 @@ class TestConvertTools:
         assert convert_tools_to_anthropic([]) == []
         assert convert_tools_to_anthropic(None) == []
 
+    def test_strips_nullable_union_from_input_schema(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Run command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout": {
+                                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                                "default": None,
+                            },
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        assert result[0]["input_schema"]["properties"]["timeout"] == {
+            "type": "integer",
+            "default": None,
+        }
+        assert result[0]["input_schema"]["required"] == ["command"]
+
 
 # ---------------------------------------------------------------------------
 # Message conversion
@@ -933,6 +1003,42 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
+    def test_fast_mode_oauth_default_omits_context_1m_beta(self):
+        """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "context-1m-2025-08-07" not in betas
+
+    def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m from fast-mode
+        extra_headers while preserving every other OAuth + fast-mode beta."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+            drop_context_1m_beta=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "context-1m-2025-08-07" not in betas
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
+
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
@@ -1023,6 +1129,45 @@ class TestBuildAnthropicKwargs:
         assert _forbids_sampling_params("claude-opus-4-7") is True
         assert _forbids_sampling_params("claude-opus-4-6") is False
         assert _forbids_sampling_params("claude-sonnet-4-5") is False
+
+    def test_supports_fast_mode_predicate(self):
+        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded."""
+        from agent.anthropic_adapter import _supports_fast_mode
+        assert _supports_fast_mode("claude-opus-4-6") is True
+        assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
+        assert _supports_fast_mode("claude-opus-4-7") is False
+        assert _supports_fast_mode("claude-sonnet-4-6") is False
+        assert _supports_fast_mode("claude-haiku-4-5") is False
+        assert _supports_fast_mode("") is False
+
+    def test_fast_mode_omitted_for_unsupported_model(self):
+        """fast_mode=True on Opus 4.7 must NOT inject speed=fast (API 400s)."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        # extra_body either absent or doesn't carry "speed"
+        assert "speed" not in kwargs.get("extra_body", {})
+        # No fast-mode beta header should be added either
+        beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
+        assert "fast-mode-2026-02-01" not in beta_header
+
+    def test_fast_mode_still_applied_on_opus_46(self):
+        """Regression guard — fast mode must still work on Opus 4.6."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert "fast-mode-2026-02-01" in kwargs["extra_headers"]["anthropic-beta"]
 
     def test_reasoning_disabled(self):
         kwargs = build_anthropic_kwargs(
@@ -1747,3 +1892,55 @@ class TestResolveMessagesMaxTokens:
         result = _resolve_anthropic_messages_max_tokens(0.5, "claude-opus-4-6")
         assert result > 0
         assert result != 0
+
+
+# ---------------------------------------------------------------------------
+# convert_tools_to_anthropic — tool dedup at API boundary
+# ---------------------------------------------------------------------------
+
+class TestConvertToolsToAnthropicDedup:
+    """convert_tools_to_anthropic must deduplicate tool names.
+
+    Anthropic rejects requests with duplicate tool names.  This guard converts
+    a hard failure into a warning log.  See:
+    https://github.com/NousResearch/hermes-agent/issues/18478
+    """
+
+    def _make_openai_tool(self, name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Tool {name}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def test_unique_tools_pass_through(self):
+        tools = [self._make_openai_tool("alpha"), self._make_openai_tool("beta")]
+        result = convert_tools_to_anthropic(tools)
+        assert len(result) == 2
+        names = [t["name"] for t in result]
+        assert names == ["alpha", "beta"]
+
+    def test_duplicate_tool_names_are_deduplicated(self):
+        """RED test — must fail until dedup guard is added."""
+        tools = [
+            self._make_openai_tool("lcm_grep"),
+            self._make_openai_tool("lcm_describe"),
+            self._make_openai_tool("lcm_grep"),  # duplicate
+            self._make_openai_tool("lcm_expand"),
+            self._make_openai_tool("lcm_describe"),  # duplicate
+        ]
+        result = convert_tools_to_anthropic(tools)
+        names = [t["name"] for t in result]
+        assert len(names) == len(set(names)), (
+            f"Duplicate tool names found: {names}"
+        )
+        assert len(result) == 3  # lcm_grep, lcm_describe, lcm_expand
+
+    def test_empty_tools_returns_empty(self):
+        assert convert_tools_to_anthropic([]) == []
+
+    def test_none_tools_returns_empty(self):
+        assert convert_tools_to_anthropic(None) == []

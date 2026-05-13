@@ -1445,6 +1445,13 @@ def cmd_chat(args):
         sys.exit(1)
 
 
+def cmd_code(args):
+    """Run coding-focused chat session with hermes-coding toolset."""
+    if not getattr(args, "toolsets", None):
+        args.toolsets = "hermes-coding"
+    cmd_chat(args)
+
+
 def cmd_gateway(args):
     """Gateway management commands."""
     from hermes_cli.gateway import gateway_command
@@ -8429,6 +8436,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     """
     _SUBCOMMANDS = {
         "chat",
+        "code",
         "model",
         "gateway",
         "setup",
@@ -9191,7 +9199,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
         "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
-        "webhook", "whatsapp", "chat",
+        "webhook", "whatsapp", "chat", "code",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -9301,7 +9309,9 @@ def main():
     from hermes_cli._parser import build_top_level_parser
 
     parser, subparsers, chat_parser = build_top_level_parser()
+    code_parser = subparsers.choices["code"]
     chat_parser.set_defaults(func=cmd_chat)
+    code_parser.set_defaults(func=cmd_code)
 
     # =========================================================================
     # model command
@@ -11794,7 +11804,7 @@ Examples:
     # trigger consent prompts for hooks the user is still inspecting.
     # Groups with mixed admin/CRUD vs. agent-running entries narrow via
     # the nested subcommand (dest varies by parser).
-    _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+    _AGENT_COMMANDS = {None, "chat", "code", "acp", "rl"}
     _AGENT_SUBCOMMANDS = {
         "cron": ("cron_command", {"run", "tick"}),
         "gateway": ("gateway_command", {"run"}),

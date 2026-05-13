@@ -192,17 +192,19 @@ def _get_command_timeout() -> int:
     if _command_timeout_resolved:
         return _cached_command_timeout  # type: ignore[return-value]
 
-    _command_timeout_resolved = True
-    result = DEFAULT_COMMAND_TIMEOUT
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        val = cfg_get(cfg, "browser", "command_timeout")
-        if val is not None:
-            result = max(int(val), 5)  # Floor at 5s to avoid instant kills
-    except Exception as e:
-        logger.debug("Could not read command_timeout from config: %s", e)
-    _cached_command_timeout = result
+        result = DEFAULT_COMMAND_TIMEOUT
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "browser", "command_timeout")
+            if val is not None:
+                result = max(int(val), 5)  # Floor at 5s to avoid instant kills
+        except Exception as e:
+            logger.debug("Could not read command_timeout from config: %s", e)
+        _cached_command_timeout = result
+    finally:
+        _command_timeout_resolved = True
     return result
 
 

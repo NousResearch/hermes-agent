@@ -92,7 +92,6 @@ def _load_google_modules() -> bool:
     global AuthorizedHttp, build_service, HttpError, MediaFileUpload
     if _google_modules_loaded:
         return GOOGLE_CHAT_AVAILABLE
-    _google_modules_loaded = True
     try:
         import httplib2 as _httplib2
         from google.cloud import pubsub_v1 as _pubsub_v1
@@ -102,19 +101,20 @@ def _load_google_modules() -> bool:
         from googleapiclient.discovery import build as _build_service
         from googleapiclient.errors import HttpError as _HttpError
         from googleapiclient.http import MediaFileUpload as _MediaFileUpload
+        httplib2 = _httplib2
+        pubsub_v1 = _pubsub_v1
+        gax_exceptions = _gax_exceptions
+        service_account = _service_account
+        AuthorizedHttp = _AuthorizedHttp
+        build_service = _build_service
+        HttpError = _HttpError
+        MediaFileUpload = _MediaFileUpload
+        GOOGLE_CHAT_AVAILABLE = True
     except ImportError:
         GOOGLE_CHAT_AVAILABLE = False
-        return False
-    httplib2 = _httplib2
-    pubsub_v1 = _pubsub_v1
-    gax_exceptions = _gax_exceptions
-    service_account = _service_account
-    AuthorizedHttp = _AuthorizedHttp
-    build_service = _build_service
-    HttpError = _HttpError
-    MediaFileUpload = _MediaFileUpload
-    GOOGLE_CHAT_AVAILABLE = True
-    return True
+    finally:
+        _google_modules_loaded = True
+    return GOOGLE_CHAT_AVAILABLE
 
 from gateway.config import Platform, PlatformConfig
 

@@ -151,8 +151,6 @@ def _discover_providers() -> None:
     global _discovered
     if _discovered:
         return
-    _discovered = True
-
     # 1. Bundled plugins — shipped with hermes-agent.
     if _BUNDLED_PLUGINS_DIR.is_dir():
         for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
@@ -189,3 +187,5 @@ def _discover_providers() -> None:
                 )
     except Exception:
         pass
+    finally:
+        _discovered = True

@@ -49,7 +49,8 @@ def get_transport(api_mode: str):
 def _discover_transports() -> None:
     """Import all transport modules to trigger auto-registration."""
     global _discovered
-    _discovered = True
+    if _discovered:
+        return
     try:
         import agent.transports.anthropic  # noqa: F401
     except ImportError:
@@ -66,3 +67,5 @@ def _discover_transports() -> None:
         import agent.transports.bedrock  # noqa: F401
     except ImportError:
         pass
+    finally:
+        _discovered = True

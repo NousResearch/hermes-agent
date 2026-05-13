@@ -125,6 +125,32 @@ Continuation modes:
 | `require` | Fail closed unless a stored external CLI session exists. |
 
 External CLI session ids are stored under `$HERMES_HOME/agent-runner-sessions.json`. Project-local agents may request a runner by name, but they cannot define commands, args, env vars, or executable paths.
+
+### Inspecting runtime routing
+
+Hermes writes a small, best-effort runtime trace when `assign_agent` resolves and runs a named agent. This lets you verify which agent file won discovery, which runner mode was used, and whether CLI session continuity resumed.
+
+The trace is stored as JSONL:
+
+```text
+$HERMES_HOME/logs/runtime-trace.jsonl
+```
+
+Use the read-only `runtime_inspect` tool from the `debugging` toolset:
+
+```python
+runtime_inspect(session_id="20260513_...")
+runtime_inspect(session_id="20260513_...", agent_name="code-architect", limit=20)
+```
+
+Typical events include:
+
+- `assign_agent.requested` — the parent session requested a named agent.
+- `assign_agent.resolved` — registry lookup chose a global or project-local agent and resolved runner/model/provider metadata.
+- `assign_agent.dispatched` — Hermes selected `delegate_task` or `cli_runner` execution.
+- `assign_agent.completed` — execution finished, including success, duration, runner name, resume status, return code, and external CLI session id when available.
+
+Runtime trace payloads redact secret-looking fields and intentionally omit full prompts and configured CLI command argv.
  
 ### Delegation Toolset
 

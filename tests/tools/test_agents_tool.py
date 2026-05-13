@@ -960,6 +960,117 @@ Project agent prompt.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# assign_agent — runtime trace
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAssignAgentRuntimeTrace:
+    """Tests for runtime observability events emitted by assign_agent()."""
+
+    def test_cli_runner_emits_runtime_trace_without_command_argv(self, global_agents_dir, monkeypatch):
+        (global_agents_dir / "trace-cli.md").write_text("""---
+schema_version: 1
+name: trace-cli
+description: Traceable CLI agent
+runner:
+  mode: cli
+  name: trace-runner
+  continue: off
+---
+
+You are a traceable CLI agent.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "trace-parent-session"
+
+        class Completed:
+            returncode = 0
+            stdout = '{"session_id":"external-trace-123","result":"ok"}\n'
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Completed())
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "agent_runners": {
+                "trace-runner": {
+                    "type": "cli",
+                    "command": "trace-secret-command",
+                    "args": ["--api-key", "should-not-appear"],
+                    "allowed_from_project_agents": True,
+                }
+            }
+        })
+
+        result = assign_agent(
+            agent_name="trace-cli",
+            task="Trace this",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+
+        from agent.runtime_trace import read_runtime_events
+        events = read_runtime_events(session_id="trace-parent-session")
+        event_names = [event["event"] for event in events]
+        assert "assign_agent.requested" in event_names
+        assert "assign_agent.resolved" in event_names
+        assert "assign_agent.dispatched" in event_names
+        assert "assign_agent.completed" in event_names
+
+        resolved = next(event for event in events if event["event"] == "assign_agent.resolved")
+        assert resolved["data"]["agent"]["name"] == "trace-cli"
+        assert resolved["data"]["routing"]["runner_mode"] == "cli"
+        assert resolved["data"]["routing"]["runner_name"] == "trace-runner"
+
+        completed = next(event for event in events if event["event"] == "assign_agent.completed")
+        assert completed["data"]["success"] is True
+        assert completed["data"]["runner"]["name"] == "trace-runner"
+        assert completed["data"]["external_session_id"] == "external-trace-123"
+
+        trace_text = (global_agents_dir.parent / "logs" / "runtime-trace.jsonl").read_text(encoding="utf-8")
+        assert "trace-secret-command" not in trace_text
+        assert "should-not-appear" not in trace_text
+
+    def test_delegate_agent_emits_runtime_trace_with_effective_toolsets(self, global_agents_dir, monkeypatch):
+        (global_agents_dir / "trace-delegate.md").write_text("""---
+schema_version: 1
+name: trace-delegate
+description: Traceable delegate agent
+tools:
+  mode: restrict
+  allow_toolsets: [file]
+---
+
+You are a traceable delegate agent.
+""")
+        mock_parent = MagicMock()
+        mock_parent.session_id = "delegate-parent-session"
+
+        monkeypatch.setattr(
+            "tools.delegate_tool.delegate_task",
+            lambda **kwargs: json.dumps({"success": True, "results": [{"summary": "ok"}]}),
+        )
+
+        result = assign_agent(
+            agent_name="trace-delegate",
+            task="Trace delegate",
+            parent_agent=mock_parent,
+            workdir=str(global_agents_dir),
+        )
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+
+        from agent.runtime_trace import read_runtime_events
+        events = read_runtime_events(session_id="delegate-parent-session", agent_name="trace-delegate")
+        resolved = next(event for event in events if event["event"] == "assign_agent.resolved")
+        assert resolved["data"]["routing"]["runner_mode"] == "delegate_task"
+        assert resolved["data"]["toolsets_effective"] == ["file"]
+
+        completed = next(event for event in events if event["event"] == "assign_agent.completed")
+        assert completed["data"]["dispatch"] == "delegate_task"
+        assert completed["data"]["success"] is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # assign_agent — workdir resolution
 # ─────────────────────────────────────────────────────────────────────────────
 

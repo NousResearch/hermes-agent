@@ -309,7 +309,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process", "runtime_inspect"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     

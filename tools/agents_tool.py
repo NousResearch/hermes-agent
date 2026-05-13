@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
@@ -151,7 +153,6 @@ def _resolve_workdir(workdir: str | None, parent_agent: Any | None) -> str | Non
         return workdir
 
     # Check TERMINAL_CWD env var
-    import os
     env_cwd = os.environ.get("TERMINAL_CWD")
     if env_cwd:
         return env_cwd
@@ -174,6 +175,34 @@ def _resolve_workdir(workdir: str | None, parent_agent: Any | None) -> str | Non
             return wd
 
     return None
+
+
+def _parent_session_id(parent_agent: Any | None) -> str:
+    """Best-effort stable session id for runtime trace correlation."""
+    if parent_agent is not None:
+        for attr in ("session_id", "task_id"):
+            value = getattr(parent_agent, attr, None)
+            if isinstance(value, str) and value:
+                return value
+    return os.environ.get("HERMES_SESSION_ID") or "default"
+
+
+def _emit_runtime_trace(event: str, *, parent_session_id: str, task_id: str = "", **data: Any) -> None:
+    try:
+        from agent.runtime_trace import emit_runtime_event
+
+        emit_runtime_event(event, session_id=parent_session_id, task_id=task_id, **data)
+    except Exception:
+        pass
+
+
+def _agent_trace_payload(agent: Any) -> dict[str, Any]:
+    return {
+        "name": agent.name,
+        "source": agent.source,
+        "path": str(agent.path),
+        "enabled": agent.enabled,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,8 +255,19 @@ def assign_agent(
             ensure_ascii=False,
         )
 
+    started_at = time.monotonic()
+    parent_session_id = _parent_session_id(parent_agent)
+
     # ── Resolve effective workdir ──────────────────────────────────────────
     effective_workdir = _resolve_workdir(workdir, parent_agent)
+    _emit_runtime_trace(
+        "assign_agent.requested",
+        parent_session_id=parent_session_id,
+        agent_name=agent_name,
+        task_preview=(task or "")[:120],
+        workdir_requested=workdir,
+        workdir_effective=effective_workdir,
+    )
 
     # ── Resolve the agent ─────────────────────────────────────────────────
     try:
@@ -292,23 +332,52 @@ def assign_agent(
             ensure_ascii=False,
         )
 
+    # ── Compute effective toolsets ─────────────────────────────────────────
+    # Runtime toolsets override agent defaults; otherwise derive from
+    # agent.tools.allow_toolsets when mode == "restrict".
+    if toolsets is not None:
+        effective_toolsets: Optional[List[str]] = list(toolsets)
+    elif agent.tools.mode == "restrict" and agent.tools.allow_toolsets:
+        effective_toolsets = list(agent.tools.allow_toolsets)
+    else:
+        effective_toolsets = None
+
+    # ── Compute effective role ─────────────────────────────────────────────
+    # Runtime role overrides agent delegation_role.
+    effective_role: str = role if role else (agent.delegation_role or "leaf")
+
     # ── Handle runner execution modes ─────────────────────────────────────
     # delegate_task remains the default in-process runner.  CLI-backed agents
     # are executed via trusted agent_runners config; agent files only name the
     # runner and continuity preference.
     runner_mode = agent.routing.runner_mode or "delegate_task"
+    _emit_runtime_trace(
+        "assign_agent.resolved",
+        parent_session_id=parent_session_id,
+        agent=_agent_trace_payload(agent),
+        routing={
+            "mode": agent.routing.mode,
+            "provider": agent.routing.provider,
+            "model": agent.routing.model,
+            "runner_mode": runner_mode,
+            "runner_name": agent.routing.runner_name,
+            "runner_continue": agent.routing.runner_continue,
+        },
+        toolsets_effective=effective_toolsets,
+        role_effective=effective_role,
+        workdir_effective=effective_workdir,
+    )
     if runner_mode == "cli":
         try:
             from agent.agent_runner import run_cli_agent
 
-            parent_session_id = (
-                str(getattr(parent_agent, "session_id", "") or "")
-                or str(getattr(parent_agent, "task_id", "") or "")
+            _emit_runtime_trace(
+                "assign_agent.dispatched",
+                parent_session_id=parent_session_id,
+                agent=_agent_trace_payload(agent),
+                dispatch="cli_runner",
+                routing={"runner_mode": runner_mode, "runner_name": agent.routing.runner_name},
             )
-            if not parent_session_id:
-                import os
-
-                parent_session_id = os.environ.get("HERMES_SESSION_ID") or "default"
             cli_result = run_cli_agent(
                 agent=agent,
                 task=task,
@@ -318,9 +387,35 @@ def assign_agent(
             )
             payload = cli_result.to_dict()
             payload["agent"] = agent.list_summary()
+            _emit_runtime_trace(
+                "assign_agent.completed",
+                parent_session_id=parent_session_id,
+                agent=_agent_trace_payload(agent),
+                dispatch="cli_runner",
+                success=cli_result.success,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                runner={
+                    "mode": "cli",
+                    "name": cli_result.runner_name,
+                    "resumed": cli_result.resumed,
+                },
+                external_session_id=cli_result.external_session_id,
+                returncode=cli_result.returncode,
+                error=cli_result.error,
+                warning=cli_result.warning,
+            )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as exc:
             logger.warning("assign_agent cli runner failed: %s", exc)
+            _emit_runtime_trace(
+                "assign_agent.completed",
+                parent_session_id=parent_session_id,
+                agent=_agent_trace_payload(agent),
+                dispatch="cli_runner",
+                success=False,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                error=str(exc),
+            )
             return json.dumps(
                 {
                     "success": False,
@@ -341,20 +436,6 @@ def assign_agent(
             },
             ensure_ascii=False,
         )
-
-    # ── Compute effective toolsets ─────────────────────────────────────────
-    # Runtime toolsets override agent defaults; otherwise derive from
-    # agent.tools.allow_toolsets when mode == "restrict".
-    if toolsets is not None:
-        effective_toolsets: Optional[List[str]] = list(toolsets)
-    elif agent.tools.mode == "restrict" and agent.tools.allow_toolsets:
-        effective_toolsets = list(agent.tools.allow_toolsets)
-    else:
-        effective_toolsets = None
-
-    # ── Compute effective role ─────────────────────────────────────────────
-    # Runtime role overrides agent delegation_role.
-    effective_role: str = role if role else (agent.delegation_role or "leaf")
 
     # ── Compile context block ──────────────────────────────────────────────
     # Build a structured context string from the agent definition:
@@ -380,6 +461,15 @@ def assign_agent(
     try:
         from tools.delegate_tool import delegate_task
 
+        _emit_runtime_trace(
+            "assign_agent.dispatched",
+            parent_session_id=parent_session_id,
+            agent=_agent_trace_payload(agent),
+            dispatch="delegate_task",
+            routing={"runner_mode": runner_mode},
+            toolsets_effective=effective_toolsets,
+            role_effective=effective_role,
+        )
         raw_result = delegate_task(
             goal=task,
             context=compiled_context,
@@ -389,6 +479,15 @@ def assign_agent(
         )
     except Exception as exc:
         logger.warning("assign_agent delegate_task failed: %s", exc)
+        _emit_runtime_trace(
+            "assign_agent.completed",
+            parent_session_id=parent_session_id,
+            agent=_agent_trace_payload(agent),
+            dispatch="delegate_task",
+            success=False,
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+            error=str(exc),
+        )
         return json.dumps(
             {
                 "success": False,
@@ -401,15 +500,32 @@ def assign_agent(
     # ── Parse and wrap the result ─────────────────────────────────────────
     try:
         parsed_result = json.loads(raw_result)
+        success = parsed_result.get("success", True)
+        _emit_runtime_trace(
+            "assign_agent.completed",
+            parent_session_id=parent_session_id,
+            agent=_agent_trace_payload(agent),
+            dispatch="delegate_task",
+            success=success,
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+        )
         return json.dumps(
             {
-                "success": parsed_result.get("success", True),
+                "success": success,
                 "agent": agent.list_summary(),
                 "result": parsed_result,
             },
             ensure_ascii=False,
         )
     except (json.JSONDecodeError, TypeError):
+        _emit_runtime_trace(
+            "assign_agent.completed",
+            parent_session_id=parent_session_id,
+            agent=_agent_trace_payload(agent),
+            dispatch="delegate_task",
+            success=True,
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+        )
         return json.dumps(
             {
                 "success": True,

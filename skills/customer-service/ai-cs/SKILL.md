@@ -2,15 +2,15 @@
 name: ai-cs
 slug: ai-cs
 title: AI Customer Service
-description: "Use when building or running a WeChat/WeCom online customer service agent for OpenClaw or Hermes that answers company product and service questions from a local llm-wiki knowledge base, politely redirects unrelated questions, and routes risky or unsupported cases to human support."
-version: 1.0.0
+description: "Use when building or running a WeChat/WeCom online customer service agent for OpenClaw or Hermes that answers company product and service questions from a local llm-wiki knowledge base, politely redirects unrelated questions, and routes risky or unsupported cases to human support. 中文触发来自真实客户问题：多少钱、怎么用、能不能、支不支持、怎么安装、出错了、打不开、怎么退款、多久发货、有没有优惠、订单在哪、发票、售后、人工。"
+version: 1.0.1
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: customer-service
-    tags: [customer-service, support, wechat, wecom, llm-wiki, knowledge-base, safety, handoff]
+    tags: [customer-service, support, wechat, wecom, llm-wiki, knowledge-base, safety, handoff, 多少钱, 怎么用, 能不能, 支不支持, 怎么安装, 出错了, 打不开, 退款, 发货, 优惠, 订单, 发票, 售后, 人工]
     related_skills: [llm-wiki]
   clawdbot:
     emoji: "💬"
@@ -37,6 +37,32 @@ Use this skill when:
 - A WeChat, WeCom, web chat, Feishu, DingTalk, Slack, or API channel wants a company support answer grounded in a local wiki.
 - The user asks to design customer support behavior for OpenClaw or Hermes.
 - The agent needs to decide whether to answer, ask a follow-up question, politely redirect, or hand off to a human.
+- 用户消息像真实客服咨询，而不是明确说“启动某个 skill”。
+
+Chinese customer-trigger patterns:
+
+| Customer says | Trigger keywords | Intent |
+| --- | --- | --- |
+| “这个多少钱？” “价格怎么算？” “套餐怎么收费？” | 多少钱, 价格, 收费, 套餐, 费用 | pricing |
+| “能不能接企业微信？” “支持 iPhone 吗？” “可以和我们系统打通吗？” | 能不能, 支不支持, 可以吗, 兼容, 接入, 打通 | capability |
+| “这个怎么用？” “怎么开通？” “怎么安装？” “有没有教程？” | 怎么用, 怎么开通, 怎么安装, 教程, 步骤 | usage/onboarding |
+| “打不开了。” “一直报错。” “登录不了。” “收不到验证码。” | 打不开, 报错, 登录不了, 验证码, 失败, 卡住 | troubleshooting |
+| “什么时候发货？” “订单在哪看？” “物流到哪了？” | 发货, 订单, 物流, 到哪了, 查不到 | order/delivery |
+| “能开发票吗？” “发票怎么开？” “合同怎么签？” | 发票, 合同, 抬头, 税号, 签约 | billing/contract |
+| “不想要了能退吗？” “怎么退款？” “能赔偿吗？” | 退款, 退货, 赔偿, 取消, 不想要 | refund/handoff |
+| “有没有优惠？” “能便宜点吗？” “老客户有折扣吗？” | 优惠, 便宜, 折扣, 活动, 老客户 | sales/handoff |
+| “我要找人工。” “转人工。” “没人处理吗？” | 人工, 客服, 投诉, 处理, 催一下 | human handoff |
+| “这个和你们产品有关系吗？” “这个问题你能回答吗？” | 有关系吗, 能回答吗, 范围, 是不是你们的 | scope check |
+
+Natural user prompts that should trigger this skill:
+
+- “客户问‘这个多少钱’，帮我回复。”
+- “微信里有人问‘怎么退款’，这个怎么处理？”
+- “用户说登录不了，帮我按知识库给客服回复。”
+- “客户问能不能接企业微信，帮我查知识库回答。”
+- “有人问有没有优惠，是否需要转人工？”
+- “客户发来‘收不到验证码’，帮我判断下一步。”
+- “这个问题不像商品问题，帮我委婉引导回业务范围。”
 
 Do not use this skill for:
 

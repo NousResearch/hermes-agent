@@ -423,6 +423,53 @@ class TestNoSkillsOptOut:
 
 
 # ===================================================================
+# TestToolsetsFlag
+# ===================================================================
+
+class TestToolsetsFlag:
+    """Tests for `hermes profile create --toolsets`."""
+
+    def test_toolsets_written_to_config(self, profile_env):
+        """--toolsets creates config.yaml with those toolsets."""
+        import yaml
+
+        profile_dir = create_profile(
+            "kanban-worker",
+            no_alias=True,
+            toolsets=["hermes-cli", "web", "browser", "terminal", "file"],
+        )
+        config_path = profile_dir / "config.yaml"
+        assert config_path.exists(), "config.yaml must be written when --toolsets is given"
+        cfg = yaml.safe_load(config_path.read_text())
+        assert cfg["toolsets"] == ["hermes-cli", "web", "browser", "terminal", "file"]
+
+    def test_no_config_written_without_toolsets(self, profile_env):
+        """Without --toolsets, no config.yaml is written (DEFAULT_CONFIG used on first load)."""
+        profile_dir = create_profile("bare-worker", no_alias=True)
+        assert not (profile_dir / "config.yaml").exists()
+
+    def test_toolsets_ignored_when_clone(self, profile_env):
+        """--toolsets must not overwrite the config.yaml copied by --clone."""
+        import yaml
+
+        from hermes_constants import get_hermes_home
+        source_cfg = get_hermes_home() / "config.yaml"
+        source_cfg.write_text(yaml.safe_dump({"toolsets": ["hermes-cli"]}))
+
+        profile_dir = create_profile(
+            "cloned",
+            no_alias=True,
+            clone_config=True,
+            toolsets=["hermes-cli", "web", "terminal"],
+        )
+
+        config_path = profile_dir / "config.yaml"
+        if config_path.exists():
+            cfg = yaml.safe_load(config_path.read_text())
+            assert cfg.get("toolsets") == ["hermes-cli"]
+
+
+# ===================================================================
 # TestDeleteProfile
 # ===================================================================
 

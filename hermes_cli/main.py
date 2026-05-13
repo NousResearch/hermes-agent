@@ -8594,6 +8594,7 @@ def cmd_profile(args):
         try:
             clone_from = getattr(args, "clone_from", None)
 
+            toolsets = getattr(args, "toolsets", None)
             profile_dir = create_profile(
                 name=name,
                 clone_from=clone_from,
@@ -8601,6 +8602,7 @@ def cmd_profile(args):
                 clone_config=clone,
                 no_alias=no_alias,
                 no_skills=no_skills,
+                toolsets=toolsets,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -11476,6 +11478,16 @@ Examples:
         "--no-skills",
         action="store_true",
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
+    )
+    profile_create.add_argument(
+        "--toolsets",
+        metavar="TOOLSET",
+        nargs="+",
+        help=(
+            "Toolsets to enable in the new profile's config.yaml "
+            "(e.g. --toolsets hermes-cli web browser terminal file). "
+            "Ignored when --clone / --clone-all is used."
+        ),
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")

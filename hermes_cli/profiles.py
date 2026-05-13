@@ -544,6 +544,7 @@ def create_profile(
     clone_config: bool = False,
     no_alias: bool = False,
     no_skills: bool = False,
+    toolsets: Optional[List[str]] = None,
 ) -> Path:
     """Create a new profile directory.
 
@@ -566,6 +567,10 @@ def create_profile(
         a marker file so ``hermes update`` skips re-seeding this profile's
         skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
         explicitly copy skills from the source).
+    toolsets:
+        Optional list of toolset names to enable in the new profile's
+        config.yaml. Ignored when ``--clone`` / ``--clone-all`` is used
+        (the source config is copied verbatim in that case).
 
     Returns
     -------
@@ -653,6 +658,17 @@ def create_profile(
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
             pass  # best-effort — don't fail profile creation over this
+
+    # Write a minimal config.yaml with explicit toolsets when requested and
+    # we're not cloning (clone already carries the source config verbatim).
+    if toolsets and not (clone_config or clone_all):
+        config_path = profile_dir / "config.yaml"
+        if not config_path.exists():
+            import yaml
+            config_path.write_text(
+                yaml.safe_dump({"toolsets": list(toolsets)}, default_flow_style=False),
+                encoding="utf-8",
+            )
 
     # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.

@@ -37,8 +37,10 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 # Module-level client caches mirroring the legacy `tools.web_tools._parallel_client`
-# / `_async_parallel_client` pattern. Per-process singletons so we don't
-# pay SDK construction cost per call.
+# / `_async_parallel_client` pattern. For tests, the canonical cache lives on
+# tools.web_tools so existing setup_method() handlers that reset
+# ``tools.web_tools._parallel_client = None`` keep working — we read/write
+# the cache via that module rather than these module-level globals.
 _parallel_client: Any = None
 _async_parallel_client: Any = None
 
@@ -62,41 +64,56 @@ def _ensure_parallel_sdk_installed() -> None:
 
 
 def _get_sync_client() -> Any:
-    """Lazy-load + cache the sync Parallel client."""
-    global _parallel_client
-    if _parallel_client is not None:
-        return _parallel_client
+    """Lazy-load + cache the sync Parallel client.
+
+    Cache lives on :mod:`tools.web_tools` (as ``_parallel_client``) so unit
+    tests that reset that name between cases keep working.
+    """
+    import tools.web_tools as _wt
+
+    cached = getattr(_wt, "_parallel_client", None)
+    if cached is not None:
+        return cached
+
+    api_key = os.getenv("PARALLEL_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "PARALLEL_API_KEY environment variable not set. "
+            "Get your API key at https://parallel.ai"
+        )
 
     _ensure_parallel_sdk_installed()
     from parallel import Parallel  # noqa: WPS433 — deliberately lazy
 
+    client = Parallel(api_key=api_key)
+    _wt._parallel_client = client
+    return client
+
+
+def _get_async_client() -> Any:
+    """Lazy-load + cache the async Parallel client.
+
+    Cache lives on :mod:`tools.web_tools` (as ``_async_parallel_client``).
+    """
+    import tools.web_tools as _wt
+
+    cached = getattr(_wt, "_async_parallel_client", None)
+    if cached is not None:
+        return cached
+
     api_key = os.getenv("PARALLEL_API_KEY")
     if not api_key:
         raise ValueError(
             "PARALLEL_API_KEY environment variable not set. "
             "Get your API key at https://parallel.ai"
         )
-    _parallel_client = Parallel(api_key=api_key)
-    return _parallel_client
-
-
-def _get_async_client() -> Any:
-    """Lazy-load + cache the async Parallel client."""
-    global _async_parallel_client
-    if _async_parallel_client is not None:
-        return _async_parallel_client
 
     _ensure_parallel_sdk_installed()
     from parallel import AsyncParallel  # noqa: WPS433 — deliberately lazy
 
-    api_key = os.getenv("PARALLEL_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "PARALLEL_API_KEY environment variable not set. "
-            "Get your API key at https://parallel.ai"
-        )
-    _async_parallel_client = AsyncParallel(api_key=api_key)
-    return _async_parallel_client
+    client = AsyncParallel(api_key=api_key)
+    _wt._async_parallel_client = client
+    return client
 
 
 def _reset_clients_for_tests() -> None:
@@ -104,6 +121,12 @@ def _reset_clients_for_tests() -> None:
     global _parallel_client, _async_parallel_client
     _parallel_client = None
     _async_parallel_client = None
+
+
+# Backward-compatible aliases for the names that lived in tools.web_tools
+# before the migration (matches existing tests + external callers).
+_get_parallel_client = _get_sync_client
+_get_async_parallel_client = _get_async_client
 
 
 def _resolve_search_mode() -> str:

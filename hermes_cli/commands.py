@@ -123,8 +123,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model for this session", "Configuration",
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
-               "Configuration", aliases=("codex_runtime",),
-               args_hint="[auto|codex_app_server]"),
+               "Configuration", args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -170,6 +169,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
+    CommandDef("loop", "Set a standing loop prompt Hermes repeats across turns",
+               "Session",
+               args_hint="[text | pause | resume | clear | status]"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
@@ -204,8 +206,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
-    CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
-               gateway_only=True, args_hint="<pause|resume|list> [name]"),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
@@ -216,8 +216,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
-               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
+    CommandDef("quit", "Exit the CLI", "Exit",
+               cli_only=True, aliases=("exit",)),
 ]
 
 

@@ -5839,7 +5839,7 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-        agent.status_callback = ctx._status_callback_sync
+        agent.status_callback = ctx._status_callback_sync if ctx._diagnostic_status_enabled else None
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
         # standalone push: render to a single plaintext line and deliver via
@@ -28305,6 +28305,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
+        _diagnostic_status_enabled = (
+            resolve_display_setting(user_config, platform_key, "diagnostic_status") != "off"
+        )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
         # getattr, not attribute access — same duck-typed-adapter guard as the
         # edit_message check in send_progress_messages below: a fake/minimal
@@ -28341,6 +28344,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             long_tool_hint_fired=long_tool_hint_fired,
             _LONG_TOOL_THRESHOLD_S=_LONG_TOOL_THRESHOLD_S,
             _cleanup_progress=_cleanup_progress,
+            _diagnostic_status_enabled=_diagnostic_status_enabled,
             _cleanup_msg_ids=_cleanup_msg_ids,
             message=message,
             AIAgent=AIAgent,
@@ -28648,8 +28652,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # run_sync extracted to TurnRunner.run_sync (bound method; the
         # executor call below is unchanged).  Its closed-over locals travel
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
-        run_sync = turn_runner.run_sync
-        
+        run_sync = turn_runner.run_sync        
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the
         # sender drains BOTH tool-progress lines and _thinking scratch bubbles.

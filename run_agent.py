@@ -1386,6 +1386,7 @@ class AIAgent:
         self._executing_tools = False
         self._tool_guardrails = ToolCallGuardrailController()
         self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+        self._blocked_terminal_halt_decision: ToolGuardrailDecision | None = None
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
@@ -10426,6 +10427,21 @@ class AIAgent:
             "to change strategy instead of repeating the same call."
         )
 
+    def _agent_halt_on_blocked_terminal(self) -> None:
+        """Record a blocked-terminal halt so run_conversation exits early.
+
+        Mirrors _set_tool_guardrail_halt() so that run_conversation's existing
+        guardrail-halt check (lines ~14780) can handle both decision types
+        uniformly without adding a second exit path.
+        """
+        if self._blocked_terminal_halt_decision is None:
+            self._blocked_terminal_halt_decision = ToolGuardrailDecision(
+                action="halt",
+                tool_name="terminal",
+                code="terminal_denied",
+                message="Terminal command denied by user approval.",
+            )
+
     def _append_guardrail_observation(
         self,
         tool_name: str,
@@ -11446,6 +11462,20 @@ class AIAgent:
                     messages.append(skip_msg)
                 break
 
+            # Early exit when a terminal command was denied by the user.
+            # Identical to how _tool_guardrail_halt_decision works — the agent
+            # should finalize and return immediately rather than continuing to
+            # process remaining tool calls.  Prevents the gateway drain timeout
+            # (60s) from being triggered while the agent is still running.
+            if (
+                function_name == "terminal"
+                and isinstance(function_result, str)
+                and '"status": "blocked"' in function_result
+            ):
+                self._vprint(f"{self.log_prefix}🔒 Terminal command denied — exiting agent loop", force=True)
+                self._agent_halt_on_blocked_terminal()
+                break
+
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
 
@@ -11779,6 +11809,7 @@ class AIAgent:
         self._unicode_sanitization_passes = 0
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
+        self._blocked_terminal_halt_decision = None
         # True until the server rejects an image_url content part with an error
         # like "Only 'text' content type is supported."  Set to False on first
         # rejection and kept False for the rest of the session so we never re-send
@@ -14784,6 +14815,14 @@ class AIAgent:
                         self._emit_status(
                             f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                         )
+                        messages.append({"role": "assistant", "content": final_response})
+                        break
+
+                    if self._blocked_terminal_halt_decision is not None:
+                        decision = self._blocked_terminal_halt_decision
+                        _turn_exit_reason = "terminal_denied"
+                        final_response = self._toolguard_controlled_halt_response(decision)
+                        self._emit_status("🔒 Terminal command denied by user — exiting")
                         messages.append({"role": "assistant", "content": final_response})
                         break
 

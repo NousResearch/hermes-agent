@@ -732,3 +732,38 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+
+class TestLSPOptInDefaults:
+    """Defaults for the LSP subsystem must be opt-in (#25015).
+
+    A fresh install must not silently spawn pyright/gopls/etc. or
+    auto-install language servers via npm/go/pip on the first file
+    edit. Users opt in via ``lsp.enabled: true`` (and, separately,
+    ``lsp.install_strategy: auto``) in their config.yaml.
+    """
+
+    def test_default_lsp_enabled_is_false(self):
+        assert DEFAULT_CONFIG["lsp"]["enabled"] is False
+
+    def test_default_lsp_install_strategy_is_manual(self):
+        assert DEFAULT_CONFIG["lsp"]["install_strategy"] == "manual"
+
+    def test_manager_fallbacks_match_config_defaults(self):
+        # ``LSPService.create_from_config`` falls back to its own
+        # defaults when ``config.yaml`` predates the lsp section.
+        # The fallbacks MUST match the canonical defaults in
+        # ``DEFAULT_CONFIG["lsp"]`` so users on an older config get
+        # the same opt-in behaviour as fresh installs.
+        from agent.lsp import manager as lsp_manager
+        import inspect
+
+        src = inspect.getsource(lsp_manager.LSPService.create_from_config)
+        assert 'lsp_cfg.get("enabled", False)' in src, (
+            "agent/lsp/manager.py:create_from_config must default "
+            "`enabled` to False to match DEFAULT_CONFIG['lsp']"
+        )
+        assert 'lsp_cfg.get("install_strategy", "manual")' in src, (
+            "agent/lsp/manager.py:create_from_config must default "
+            "`install_strategy` to 'manual' to match DEFAULT_CONFIG['lsp']"
+        )

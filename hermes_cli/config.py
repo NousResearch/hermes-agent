@@ -1510,10 +1510,14 @@ DEFAULT_CONFIG = {
     # tier — handy for Telegram/Discord chats where the cwd is the
     # user's home directory.
     "lsp": {
-        # Master toggle.  Setting this to false disables the entire
-        # subsystem — no servers spawn, no background event loop, no
-        # cost.
-        "enabled": True,
+        # Master toggle.  Opt-in: set this to true to enable the
+        # subsystem.  When false, no servers spawn, no background
+        # event loop, no cost.  Defaults off because spawning
+        # language servers (pyright ~200 MB, gopls ~80 MB,
+        # tsserver ~150 MB) on the first file edit is a surprise
+        # for users in audited environments where any background
+        # process or package install needs explicit consent.
+        "enabled": False,
 
         # Diagnostic-wait mode for the post-write check.
         # ``"document"`` waits up to ``wait_timeout`` seconds for the
@@ -1525,9 +1529,15 @@ DEFAULT_CONFIG = {
         # How to handle missing server binaries.
         # ``"auto"`` — try to install via npm/go/pip into
         #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
+        # ``"manual"`` — only use binaries already on PATH; no
+        #               background installs.  Default, so a user
+        #               who flips ``enabled`` on without also
+        #               opting in to auto-install still gets
+        #               diagnostics from any server already on
+        #               PATH (pyright, gopls, etc.) and a clear
+        #               error otherwise.
         # ``"off"`` — alias for ``manual``.
-        "install_strategy": "auto",
+        "install_strategy": "manual",
 
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,

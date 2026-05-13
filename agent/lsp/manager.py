@@ -201,10 +201,14 @@ class LSPService:
         if not isinstance(lsp_cfg, dict):
             lsp_cfg = {}
 
-        enabled = bool(lsp_cfg.get("enabled", True))
+        # Match ``hermes_cli/config.py`` DEFAULT_CONFIG["lsp"] for users
+        # whose config.yaml predates the section (else they'd get the
+        # pre-opt-in defaults at runtime while ``hermes init`` writes
+        # opt-in defaults — divergent and surprising).
+        enabled = bool(lsp_cfg.get("enabled", False))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
-        install_strategy = lsp_cfg.get("install_strategy", "auto")
+        install_strategy = lsp_cfg.get("install_strategy", "manual")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
         binary_overrides: Dict[str, List[str]] = {}

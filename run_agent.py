@@ -358,7 +358,13 @@ _MAX_TOOL_WORKERS = 8
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
 # exhaust the system thread limit (RuntimeError: can't start new thread).
-_openrouter_prewarm_done = threading.Event()
+#
+# Implemented as a Lock used as a one-shot gate (acquire(blocking=False)):
+# the winner holds the lock permanently so subsequent callers cannot acquire
+# it.  This is atomic — unlike the former Event.is_set()+Event.set() pair
+# which had a TOCTOU window where two concurrent AIAgent.__init__ calls could
+# both see is_set()==False and each spawn a prewarm thread (issue #24651).
+_openrouter_prewarm_lock = threading.Lock()
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -1359,8 +1365,7 @@ class AIAgent:
         # each message leaks one OS thread and the process eventually exhausts
         # the system thread limit (RuntimeError: can't start new thread).
         if (self.provider == "openrouter" or self._is_openrouter_url()) and \
-                not _openrouter_prewarm_done.is_set():
-            _openrouter_prewarm_done.set()
+                _openrouter_prewarm_lock.acquire(blocking=False):
             threading.Thread(
                 target=fetch_model_metadata,
                 daemon=True,

@@ -1962,9 +1962,18 @@ def _setup_inkbox():
     # ── Final summary ──
     _inkbox_print_agent_summary(identity)
 
-    # ── Webhook signing key (also the natural pause before gateway_setup()
-    # returns to its curses picker and fullscreen-clears the summary block).
+    # ── Webhook signing key ──
     _inkbox_setup_signing_key(api_key, base_url)
+
+    # Hold for the user — gateway_setup() returns to its curses platform
+    # picker right after this and fullscreen-clears everything we just
+    # printed (summary + signing-key outcome).
+    if is_interactive_stdin():
+        print()
+        try:
+            input(color("  Press Enter to continue...", Colors.DIM))
+        except (KeyboardInterrupt, EOFError):
+            print()
 
 
 def _inkbox_setup_signing_key(api_key: str, base_url: str) -> None:

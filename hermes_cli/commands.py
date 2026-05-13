@@ -468,20 +468,23 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command. Commands that require arguments are skipped because
-    selecting a Telegram BotCommand sends only ``/command`` and would execute
-    an incomplete command.
+    canonical command.
 
-    Plugin-registered slash commands are included so plugins get native
-    autocomplete in Telegram without touching core code.
+    Built-in commands that require arguments (e.g. /queue, /steer, /background)
+    are **included** because their handlers return usage text when selected
+    without a payload, making them discoverable via autocomplete.
+
+    Plugin-registered slash commands that require arguments are **excluded**
+    because plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if _requires_argument(cmd.args_hint):
-            continue
+        # Built-in arg-taking commands are included — their handlers show
+        # usage text when invoked without arguments, and hiding them from
+        # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
@@ -1359,9 +1362,9 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd,
+                    cwd=cwd, encoding="utf-8", errors="replace",
                 )
-                if proc.returncode == 0 and proc.stdout.strip():
+                if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:

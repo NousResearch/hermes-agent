@@ -429,7 +429,9 @@ def _tavily_request(endpoint: str, payload: dict) -> dict:
     payload["api_key"] = api_key
     url = f"{_TAVILY_BASE_URL}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
-    response = httpx.post(url, json=payload, timeout=60)
+    # Tavily /crawl requires Bearer auth in header (body-only auth returns 401)
+    headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
+    response = httpx.post(url, json=payload, headers=headers, timeout=60)
     response.raise_for_status()
     return response.json()
 
@@ -591,7 +593,8 @@ def _resolve_web_extract_auxiliary(model: Optional[str] = None) -> tuple[Optiona
     extra_body: Dict[str, Any] = {}
     if client is not None and _is_nous_auxiliary_client(client):
         from agent.auxiliary_client import get_auxiliary_extra_body
-        extra_body = get_auxiliary_extra_body() or {"tags": ["product=hermes-agent"]}
+        from agent.portal_tags import nous_portal_tags
+        extra_body = get_auxiliary_extra_body() or {"tags": nous_portal_tags()}
 
     return client, effective_model, extra_body
 

@@ -12564,11 +12564,13 @@ class AIAgent:
                     ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
-                        # No display/TTS consumer. Still prefer streaming for
-                        # health checking, but skip for Mock clients in tests
-                        # (mocks return SimpleNamespace, not stream iterators).
+                        # No display/TTS consumer — skip streaming so upstream
+                        # returns usage data in the response body (many Chinese
+                        # providers like Volcengine/Tencent don't include usage
+                        # in SSE chunks).  Still allow streaming in tests with
+                        # Mock clients that return SimpleNamespace.
                         from unittest.mock import Mock
-                        if isinstance(getattr(self, "client", None), Mock):
+                        if not isinstance(getattr(self, "client", None), Mock):
                             _use_streaming = False
 
                     if _use_streaming:

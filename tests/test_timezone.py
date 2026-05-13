@@ -12,6 +12,8 @@ Covers:
 import os
 import logging
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
@@ -383,3 +385,55 @@ class TestCronTimezone:
 
         next_run = datetime.fromisoformat(job["next_run_at"])
         assert next_run.tzinfo is not None
+
+
+class TestGetTimezoneToctouRace:
+    """Regression tests for the TOCTOU race in get_timezone() (issue #24650).
+
+    Before the fix, _cache_resolved was set AFTER _cached_tz was written, so
+    a concurrent thread could see _cache_resolved=True while _cached_tz was
+    still the stale None default.
+    """
+
+    def setup_method(self):
+        _reset_hermes_time_cache()
+
+    def teardown_method(self):
+        _reset_hermes_time_cache()
+
+    def test_concurrent_readers_all_see_configured_timezone(self, monkeypatch):
+        """50 threads racing through cold-start must all return the configured TZ."""
+        monkeypatch.setenv("HERMES_TIMEZONE", "America/New_York")
+        expected = ZoneInfo("America/New_York")
+
+        barrier = threading.Barrier(50)
+
+        def read_tz():
+            barrier.wait()  # all threads start simultaneously
+            return hermes_time.get_timezone()
+
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            futures = [pool.submit(read_tz) for _ in range(50)]
+            results = [f.result() for f in futures]
+
+        assert all(r == expected for r in results), (
+            f"Some threads got wrong timezone: {set(str(r) for r in results)}"
+        )
+
+    def test_concurrent_readers_all_see_none_when_unconfigured(self, monkeypatch):
+        """50 threads must all return None when no timezone is configured."""
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+        with patch("hermes_time._resolve_timezone_name", return_value=""):
+            barrier = threading.Barrier(50)
+
+            def read_tz():
+                barrier.wait()
+                return hermes_time.get_timezone()
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(read_tz) for _ in range(50)]
+                results = [f.result() for f in futures]
+
+        assert all(r is None for r in results), (
+            f"Some threads got non-None: {[r for r in results if r is not None]}"
+        )

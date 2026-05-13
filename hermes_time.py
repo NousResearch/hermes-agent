@@ -15,6 +15,7 @@ crashes due to a bad timezone string.
 
 import logging
 import os
+import threading
 from datetime import datetime
 from hermes_constants import get_config_path
 from typing import Optional
@@ -32,6 +33,7 @@ except ImportError:
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
+_tz_lock = threading.Lock()
 
 
 def _resolve_timezone_name() -> str:
@@ -79,9 +81,19 @@ def get_timezone() -> Optional[ZoneInfo]:
     """Return the user's configured ZoneInfo, or None (meaning server-local).
 
     Resolved once and cached. Call ``reset_cache()`` after config changes.
+    Thread-safe via double-checked locking: value is written before the
+    resolved flag is set so concurrent readers never observe a stale None
+    (issue #24650).
     """
     global _cached_tz, _cached_tz_name, _cache_resolved
-    if not _cache_resolved:
+    # Fast path: lock-free after first initialisation
+    if _cache_resolved:
+        return _cached_tz
+
+    with _tz_lock:
+        # Re-check: another thread may have completed init while we waited
+        if _cache_resolved:
+            return _cached_tz
         _cached_tz_name = _resolve_timezone_name()
         _cached_tz = _get_zoneinfo(_cached_tz_name)
         _cache_resolved = True

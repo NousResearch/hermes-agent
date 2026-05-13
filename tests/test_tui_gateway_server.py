@@ -4649,3 +4649,81 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+# ─── TOCTOU Race Regression Tests (Issue #24744) ─────────────────────────────
+
+from concurrent.futures import ThreadPoolExecutor
+
+
+class TestGetDbToctouRace:
+    """50-thread barrier tests for _get_db() double-checked locking."""
+
+    def setup_method(self):
+        server._db = None
+        server._db_error = None
+
+    def teardown_method(self):
+        server._db = None
+        server._db_error = None
+
+    def test_concurrent_calls_return_same_instance(self):
+        """All 50 concurrent callers must receive the exact same SessionDB object."""
+        call_count = 0
+        call_lock = threading.Lock()
+
+        class _SpySessionDB:
+            def __init__(self):
+                nonlocal call_count
+                with call_lock:
+                    call_count += 1
+
+        fake_mod = types.ModuleType("hermes_state")
+        fake_mod.SessionDB = _SpySessionDB
+
+        with patch.dict(sys.modules, {"hermes_state": fake_mod}):
+            barrier = threading.Barrier(50)
+            results: list = []
+            results_lock = threading.Lock()
+
+            def call():
+                barrier.wait()
+                db = server._get_db()
+                with results_lock:
+                    results.append(id(db))
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert call_count == 1, f"SessionDB() called {call_count} times (expected 1)"
+        assert len(set(results)) == 1, f"Expected 1 unique db id, got {len(set(results))}"
+
+    def test_only_one_sessiondb_created(self):
+        """SessionDB constructor must be called exactly once regardless of concurrency."""
+        call_count = 0
+        call_lock = threading.Lock()
+
+        class _SpySessionDB:
+            def __init__(self):
+                nonlocal call_count
+                with call_lock:
+                    call_count += 1
+
+        fake_mod = types.ModuleType("hermes_state")
+        fake_mod.SessionDB = _SpySessionDB
+
+        with patch.dict(sys.modules, {"hermes_state": fake_mod}):
+            barrier = threading.Barrier(50)
+
+            def call():
+                barrier.wait()
+                server._get_db()
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                futures = [pool.submit(call) for _ in range(50)]
+                for f in futures:
+                    f.result()
+
+        assert call_count == 1, f"SessionDB() called {call_count} times (expected 1)"

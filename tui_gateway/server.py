@@ -121,6 +121,7 @@ _pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
+_db_lock = threading.Lock()
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
@@ -338,18 +339,20 @@ atexit.register(_shutdown_sessions)
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state import SessionDB
+        with _db_lock:
+            if _db is None:
+                from hermes_state import SessionDB
 
-        try:
-            _db = SessionDB()
-            _db_error = None
-        except Exception as exc:
-            _db_error = str(exc)
-            logger.warning(
-                "TUI session store unavailable — continuing without state.db features: %s",
-                exc,
-            )
-            return None
+                try:
+                    _db = SessionDB()
+                    _db_error = None
+                except Exception as exc:
+                    _db_error = str(exc)
+                    logger.warning(
+                        "TUI session store unavailable — continuing without state.db features: %s",
+                        exc,
+                    )
+                    return None
     return _db
 
 

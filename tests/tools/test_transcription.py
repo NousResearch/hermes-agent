@@ -137,8 +137,10 @@ class TestTranscribeLocal:
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
+        whisper_module = MagicMock()
+        whisper_module.WhisperModel = MagicMock(return_value=mock_model)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch.dict("sys.modules", {"faster_whisper": whisper_module}), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
@@ -292,6 +294,8 @@ class TestNormalizeLocalModel:
         try:
             mock_model = MagicMock()
             mock_model.transcribe.return_value = (iter([]), MagicMock(language="en", duration=1.0))
+            whisper_module = MagicMock()
+            whisper_module.WhisperModel = MagicMock(return_value=mock_model)
             with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
                  patch("tools.transcription_tools._load_stt_config", return_value={
                      "enabled": True,
@@ -300,11 +304,11 @@ class TestNormalizeLocalModel:
                  }), \
                  patch("tools.transcription_tools._local_model", None), \
                  patch("tools.transcription_tools._local_model_name", None), \
-                 patch("faster_whisper.WhisperModel", return_value=mock_model) as mock_cls:
+                 patch.dict("sys.modules", {"faster_whisper": whisper_module}):
                 from tools.transcription_tools import transcribe_audio
                 transcribe_audio(audio_file)
                 # WhisperModel must NOT have been called with "whisper-1"
-                call_args = mock_cls.call_args
+                call_args = whisper_module.WhisperModel.call_args
                 assert call_args is not None
                 assert call_args[0][0] != "whisper-1", (
                     "WhisperModel was called with the cloud-only name 'whisper-1'"

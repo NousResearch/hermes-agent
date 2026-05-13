@@ -114,7 +114,31 @@ _LEGACY_PREFERENCE = ("brave-free", "firecrawl", "searxng", "ddgs")
 
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
-    """Resolve the active provider for a capability ("search" | "extract")."""
+    """Resolve the active provider for a capability ("search" | "extract").
+
+    Resolution rules (in order):
+
+    1. **Explicit config wins, ignoring availability.** If
+       ``web.{capability}_backend`` or ``web.backend`` names a registered
+       provider that supports *capability*, return it even if its
+       :meth:`is_available` returns False — the dispatcher will surface a
+       precise "X_API_KEY is not set" error to the user instead of silently
+       routing somewhere else. Matches legacy
+       :func:`tools.web_tools._get_backend` behavior for configured names.
+
+    2. **Single-provider shortcut.** When only one registered provider
+       supports *capability* AND ``is_available()`` reports True, return it.
+
+    3. **Legacy preference walk, filtered by availability.** Walk the
+       :data:`_LEGACY_PREFERENCE` order looking for a provider whose
+       ``supports_<capability>()`` is True AND whose ``is_available()`` is
+       True. This is the path that fires when no config key is set — pick
+       the highest-priority backend the user actually has credentials for.
+
+    Returns None when no provider is configured AND no available provider
+    matches the legacy preference; the dispatcher then returns a "set up a
+    provider" error to the user.
+    """
     with _lock:
         snapshot = dict(_providers)
 
@@ -125,6 +149,17 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             return bool(p.supports_extract())
         return False
 
+    def _is_available_safe(p: WebSearchProvider) -> bool:
+        """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("provider %s.is_available() raised %s", p.name, exc)
+            return False
+
+    # 1. Explicit config wins — return regardless of is_available() so the
+    #    user gets a precise downstream error message rather than a silent
+    #    backend switch. Matches _get_backend() in web_tools.py.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None and _capable(provider):
@@ -140,13 +175,24 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
                 configured, capability,
             )
 
-    eligible = [p for p in snapshot.values() if _capable(p)]
+    # 2. + 3. Fallback path — filter by availability so we don't surface
+    #    a provider the user has no credentials for. Without this filter,
+    #    brave-free's slot in the legacy preference order would make it
+    #    the "active" provider on a fresh install with no API keys at all.
+    eligible = [
+        p for p in snapshot.values()
+        if _capable(p) and _is_available_safe(p)
+    ]
     if len(eligible) == 1:
         return eligible[0]
 
     for legacy in _LEGACY_PREFERENCE:
         provider = snapshot.get(legacy)
-        if provider is not None and _capable(provider):
+        if (
+            provider is not None
+            and _capable(provider)
+            and _is_available_safe(provider)
+        ):
             return provider
 
     return None

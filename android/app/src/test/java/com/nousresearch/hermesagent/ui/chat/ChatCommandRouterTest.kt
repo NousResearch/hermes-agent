@@ -38,6 +38,21 @@ class ChatCommandRouterTest {
     }
 
     @Test
+    fun signinQwenCodingPlanAliasesPrepareApiKeySetupInSettings() {
+        val host = RecordingCommandHost()
+
+        val result = ChatCommandRouter.execute("/signin bailian", host.asHost())
+
+        assertTrue(result.handled)
+        assertEquals("qwen-coding-plan", host.startedAuthMethods.single())
+        assertEquals(AppSection.Settings, host.sections.single())
+        assertEquals(
+            "Prepared qwen-coding-plan API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
+            result.feedback,
+        )
+    }
+
+    @Test
     fun signinOpenAiPreparesOpenAiApiKeySetupInSettings() {
         val host = RecordingCommandHost()
 

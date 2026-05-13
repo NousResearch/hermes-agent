@@ -8,8 +8,14 @@ import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.ProviderPresets
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 object AuthRuntimeApplier {
+    private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun apply(context: Context, session: AuthSession) {
         if (!session.signedIn || session.scope != AuthScope.RuntimeProvider || session.runtimeProvider.isBlank()) {
             return
@@ -52,7 +58,14 @@ object AuthRuntimeApplier {
                 languageTag = existingSettings.languageTag,
             )
         )
-        HermesRuntimeManager.stop()
-        HermesRuntimeManager.ensureStarted(appContext)
+        restartRuntimeAsync(appContext)
+    }
+
+    private fun restartRuntimeAsync(context: Context) {
+        val appContext = context.applicationContext
+        restartScope.launch {
+            HermesRuntimeManager.stop()
+            HermesRuntimeManager.ensureStarted(appContext)
+        }
     }
 }

@@ -822,6 +822,14 @@ data class HermesStrings(
                 AppLanguage.FRENCH -> "Utilisez une clé API Qwen Cloud / DashScope pour les appels de modèle distants Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
+            "qwen-coding-plan" -> when (language) {
+                AppLanguage.CHINESE -> "使用 Qwen Coding Plan API 密钥和专用 DashScope 编程端点。"
+                AppLanguage.SPANISH -> "Usa una clave API de Qwen Coding Plan con el endpoint dedicado de DashScope para código."
+                AppLanguage.GERMAN -> "Nutze einen Qwen-Coding-Plan-API-Schlüssel mit dem dedizierten DashScope-Coding-Endpunkt."
+                AppLanguage.PORTUGUESE -> "Use uma chave API do Qwen Coding Plan com o endpoint dedicado de programação do DashScope."
+                AppLanguage.FRENCH -> "Utilisez une clé API Qwen Coding Plan avec le point de terminaison DashScope dédié au code."
+                AppLanguage.ENGLISH -> fallback
+            }
             "qwen-oauth" -> when (language) {
                 AppLanguage.CHINESE -> "复用已有的 Qwen OAuth / Qwen Chat 令牌；新的 Qwen OAuth 登录已于 2026-04-15 停用，新设置请使用 Qwen Cloud。"
                 AppLanguage.SPANISH -> "Reutiliza un token existente de Qwen OAuth / Qwen Chat; los inicios de sesión nuevos con Qwen OAuth se discontinuaron el 2026-04-15, así que usa Qwen Cloud para una configuración nueva."

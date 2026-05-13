@@ -21,7 +21,7 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
 
-    for label in ["Email", "Google", "Phone", "OpenAI", "ChatGPT", "Claude", "Gemini", "Qwen Cloud", "Qwen OAuth", "Z.AI"]:
+    for label in ["Email", "Google", "Phone", "OpenAI", "ChatGPT", "Claude", "Gemini", "Qwen Cloud", "Qwen Coding Plan", "Qwen OAuth", "Z.AI"]:
         assert label in auth_models
     assert 'Corr3xt auth base URL' in auth_screen
     assert 'Pending Corr3xt sign-in' in auth_screen
@@ -80,12 +80,14 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'id = "anthropic"' in presets
     assert 'id = "gemini"' in presets
     assert 'id = "alibaba"' in presets
+    assert 'id = "alibaba-coding-plan"' in presets
     assert 'id = "qwen-oauth"' in presets
     assert 'id = "zai"' in presets
     assert 'apiKeyUrl = "https://openrouter.ai/settings/keys"' in presets
     assert 'https://openrouter.ai/keys' in presets
     assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
     assert 'apiKeyUrl = "https://home.qwencloud.com/api-keys"' in presets
+    assert 'apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline"' in presets
     assert 'apiKeyUrl = "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"' in presets
     assert 'apiKeyUrl = "https://z.ai/manage-apikey/apikey-list"' in presets
     assert 'fallbackSetupUrls = listOf(' in presets
@@ -101,6 +103,8 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'fun apiKeyEnvVars(providerId: String): List<String>' in presets
     assert 'fun parseCredentialInput(providerId: String, input: String): ParsedProviderCredential' in presets
     assert 'DASHSCOPE_API_KEY' in presets
+    assert 'BAILIAN_CODING_PLAN_API_KEY' in presets
+    assert 'ALIBABA_CODING_PLAN_API_KEY' in presets
     assert 'ZAI_API_KEY' in presets
     assert 'providerId == "zai" && normalized == presetDefault -> ""' in presets
 
@@ -187,7 +191,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 
     openrouter_block = auth_models.split('id = "openrouter"', 1)[1].split("AuthOption(", 1)[0]
     assert "browserSignInSupported = true" in openrouter_block
-    for provider in ["openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai"]:
+    for provider in ["openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai"]:
         block = auth_models.split(f'id = "{provider}"', 1)[1].split("AuthOption(", 1)[0]
         assert "browserSignInSupported = false" in block
 
@@ -197,6 +201,9 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     qwen_block = auth_models.split('id = "qwen"', 1)[1].split("AuthOption(", 1)[0]
     assert 'runtimeProvider = "alibaba"' in qwen_block
     assert 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' in qwen_block
+    qwen_coding_block = auth_models.split('id = "qwen-coding-plan"', 1)[1].split("AuthOption(", 1)[0]
+    assert 'runtimeProvider = "alibaba-coding-plan"' in qwen_coding_block
+    assert 'https://coding-intl.dashscope.aliyuncs.com/v1' in qwen_coding_block
     qwen_oauth_block = auth_models.split('id = "qwen-oauth"', 1)[1].split("AuthOption(", 1)[0]
     assert 'runtimeProvider = "qwen-oauth"' in qwen_oauth_block
     assert 'https://portal.qwen.ai/v1' in qwen_oauth_block
@@ -215,7 +222,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "AuthRuntimeApplier.apply(getApplication(), session)" in auth_view_model
     assert "authSessionStore.saveSession(session)" in auth_view_model
     assert "ProviderPresets.credentialInputHelp(option.runtimeProvider)" in auth_view_model
-    assert "Saved ${option.label} credential$sourceSuffix and restarted Hermes." in auth_view_model
+    assert "Saved ${option.label} credential$sourceSuffix and queued Hermes runtime restart." in auth_view_model
     assert "Tap Open again for the next fallback" in auth_view_model
     assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
@@ -320,6 +327,8 @@ def test_settings_can_import_saved_python_provider_credentials_without_blank_ove
     assert "def read_provider_auth_bundle_json(provider: str) -> str:" in auth_bridge
     assert '"reason": "blank_api_key_preserved"' in auth_bridge
     assert '"zai": {' in auth_bridge
+    assert '"alibaba-coding-plan": {' in auth_bridge
+    assert "BAILIAN_CODING_PLAN_API_KEY" in auth_bridge
     assert 'if normalized == "qwen-oauth":' in auth_bridge
 
 
@@ -334,6 +343,9 @@ def test_settings_provider_switch_applies_selected_provider_defaults():
     assert 'ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, snapshot.baseUrl)' in settings_view_model
     assert 'val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(session.runtimeProvider, resolvedBaseUrl)' in auth_runtime_applier
     assert 'runtimeConfigBaseUrl,' in auth_runtime_applier
+    assert "private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)" in auth_runtime_applier
+    assert "restartRuntimeAsync(appContext)" in auth_runtime_applier
+    assert "restartScope.launch {" in auth_runtime_applier
     assert 'import com.nousresearch.hermesagent.data.ProviderPresets' in runtime_manager
     assert 'ProviderPresets.runtimeConfigBaseUrl(settings.provider, settings.baseUrl)' in runtime_manager
 

@@ -19,7 +19,7 @@ data class ChatCommandHost(
 )
 
 object ChatCommandRouter {
-    private val runtimeProviderAuthMethods = setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai")
+    private val runtimeProviderAuthMethods = setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai")
 
     fun execute(rawInput: String, host: ChatCommandHost): ChatCommandResult {
         val input = rawInput.trim()
@@ -34,7 +34,7 @@ object ChatCommandRouter {
         return when (command) {
             "/help" -> ChatCommandResult(
                 handled = true,
-                feedback = "Available app commands: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last.",
+                feedback = "Available app commands: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last.",
             )
 
             "/new" -> {
@@ -95,7 +95,7 @@ object ChatCommandRouter {
             "/signin" -> {
                 val method = normalizeAuthMethod(remainder)
                 if (method == null) {
-                    ChatCommandResult(handled = true, feedback = "Usage: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-oauth|zai|google|email|phone>")
+                    ChatCommandResult(handled = true, feedback = "Usage: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>")
                 } else if (host.startAuthMethod(method)) {
                     if (method in runtimeProviderAuthMethods) {
                         val feedback = when (method) {
@@ -147,6 +147,8 @@ object ChatCommandRouter {
             "claude", "anthropic" -> "claude"
             "gemini", "google-ai", "googleai" -> "gemini"
             "qwen", "dashscope", "alibaba" -> "qwen"
+            "qwen-coding-plan", "qwen-coding", "coding-plan", "alibaba-coding", "alibaba-coding-plan",
+            "bailian", "bailian-coding-plan" -> "qwen-coding-plan"
             "qwen-oauth", "qwen-portal", "qwen-cli", "qwen-chat" -> "qwen-oauth"
             "zai", "z.ai", "glm" -> "zai"
             "google" -> "google"

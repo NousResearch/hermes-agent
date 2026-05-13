@@ -126,6 +126,16 @@ object AuthCatalog {
             browserSignInSupported = false,
         ),
         AuthOption(
+            id = "qwen-coding-plan",
+            label = "Qwen Coding Plan",
+            description = "Use a Qwen Coding Plan API key with the dedicated DashScope coding endpoint.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "alibaba-coding-plan",
+            defaultBaseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
+            defaultModel = "qwen3-coder-plus",
+            browserSignInSupported = false,
+        ),
+        AuthOption(
             id = "qwen-oauth",
             label = "Qwen OAuth (legacy)",
             description = "Reuse an existing Qwen OAuth / Qwen Chat token in Hermes Android; new Qwen OAuth sign-ins were discontinued on 2026-04-15, so use Qwen Cloud for new setup.",

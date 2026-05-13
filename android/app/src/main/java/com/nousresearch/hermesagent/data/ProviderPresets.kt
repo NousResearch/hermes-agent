@@ -127,6 +127,18 @@ object ProviderPresets {
             ),
         ),
         ProviderPreset(
+            id = "alibaba-coding-plan",
+            label = "Qwen Coding Plan",
+            baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
+            modelHint = "qwen3-coder-plus",
+            apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline",
+            fallbackSetupUrls = listOf(
+                "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
+                "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/",
+                "https://home.qwencloud.com/api-keys",
+            ),
+        ),
+        ProviderPreset(
             id = "qwen-oauth",
             label = "Qwen OAuth / Qwen Chat token (legacy)",
             baseUrl = "https://portal.qwen.ai/v1",
@@ -216,6 +228,11 @@ object ProviderPresets {
             "gemini" -> listOf("GOOGLE_API_KEY", "GEMINI_API_KEY")
             "chatgpt-web" -> listOf("CHATGPT_WEB_ACCESS_TOKEN")
             "alibaba", "dashscope" -> listOf("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+            "alibaba-coding-plan" -> listOf(
+                "BAILIAN_CODING_PLAN_API_KEY",
+                "ALIBABA_CODING_PLAN_API_KEY",
+                "DASHSCOPE_API_KEY",
+            )
             "qwen-oauth" -> listOf("QWEN_ACCESS_TOKEN", "QWEN_API_KEY", "DASHSCOPE_API_KEY")
             "zai" -> listOf("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
             "nous" -> listOf("NOUS_API_KEY")

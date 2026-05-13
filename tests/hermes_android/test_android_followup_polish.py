@@ -308,7 +308,7 @@ def test_provider_setup_webview_errors_show_browser_copy_fallback():
     assert "Setup page failed to load; URL copied." in activity
     assert 'toolbarButton("Open in browser")' in activity
     assert 'toolbarButton("Copy URL")' in activity
-    assert 'listOf("openrouter", "alibaba", "qwen-oauth", "zai")' in activity_test
+    assert 'listOf("openrouter", "alibaba", "alibaba-coding-plan", "qwen-oauth", "zai")' in activity_test
     assert 'providerSetupOpenUsesExternalBrowserForQwenCloudWhenAvailable' in activity_test
     assert 'HermesExternalBrowserLauncher.createBrowserIntent' in activity_test
     assert 'dumpsys activity activities' in activity_test

@@ -112,6 +112,32 @@ def test_auth_bridge_supports_anthropic_gemini_and_zai_bundles(tmp_path, monkeyp
     assert provider_env_key("alibaba") == "DASHSCOPE_API_KEY"
 
 
+def test_auth_bridge_recognizes_qwen_coding_plan_env_aliases(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert provider_env_key("alibaba-coding-plan") == "BAILIAN_CODING_PLAN_API_KEY"
+    assert provider_env_keys("alibaba-coding-plan") == (
+        "BAILIAN_CODING_PLAN_API_KEY",
+        "ALIBABA_CODING_PLAN_API_KEY",
+        "DASHSCOPE_API_KEY",
+    )
+
+    (hermes_home / ".env").write_text("ALIBABA_CODING_PLAN_API_KEY=qwen-plan-fallback\n", encoding="utf-8")
+    assert read_provider_api_key("alibaba-coding-plan") == "qwen-plan-fallback"
+    assert read_provider_auth_bundle("alibaba-coding-plan")["api_key"] == "qwen-plan-fallback"
+
+    write_provider_api_key("alibaba-coding-plan", "qwen-plan-primary")
+    assert read_provider_api_key("alibaba-coding-plan") == "qwen-plan-primary"
+
+    clear_provider_auth_bundle("alibaba-coding-plan")
+    cleared = (hermes_home / ".env").read_text(encoding="utf-8")
+    assert "BAILIAN_CODING_PLAN_API_KEY=" in cleared
+    assert "ALIBABA_CODING_PLAN_API_KEY=" in cleared
+    assert "DASHSCOPE_API_KEY=" in cleared
+
+
 def test_auth_bridge_recognizes_zai_cli_env_aliases(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

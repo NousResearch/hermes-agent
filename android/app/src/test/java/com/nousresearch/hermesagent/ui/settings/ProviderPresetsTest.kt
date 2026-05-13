@@ -47,6 +47,36 @@ class ProviderPresetsTest {
     }
 
     @Test
+    fun qwenCodingPlanUsesDedicatedEndpointAndCliEnvAliases() {
+        val preset = requireNotNull(ProviderPresets.find("alibaba-coding-plan"))
+        val target = requireNotNull(ProviderPresets.setupTarget("alibaba-coding-plan", 1))
+        val envHelp = ProviderPresets.credentialInputHelp("alibaba-coding-plan")
+
+        assertEquals("https://coding-intl.dashscope.aliyuncs.com/v1", preset.baseUrl)
+        assertEquals("qwen3-coder-plus", preset.modelHint)
+        assertEquals(
+            "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
+            target.url,
+        )
+        assertEquals(
+            "sk-bailian-test",
+            ProviderPresets.parseCredentialInput(
+                "alibaba-coding-plan",
+                "BAILIAN_CODING_PLAN_API_KEY=sk-bailian-test",
+            ).apiKey,
+        )
+        assertEquals(
+            "sk-alibaba-plan-test",
+            ProviderPresets.parseCredentialInput(
+                "alibaba-coding-plan",
+                "export ALIBABA_CODING_PLAN_API_KEY='sk-alibaba-plan-test'",
+            ).apiKey,
+        )
+        assertEquals(true, envHelp.contains("BAILIAN_CODING_PLAN_API_KEY"))
+        assertEquals(true, envHelp.contains("ALIBABA_CODING_PLAN_API_KEY"))
+    }
+
+    @Test
     fun parsesProviderEnvStyleCredentialInput() {
         assertEquals(
             "sk-or-v1-test",

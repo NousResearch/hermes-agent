@@ -391,7 +391,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             scope = option.scope,
             runtimeProvider = option.runtimeProvider,
             signedIn = true,
-            status = "Saved ${option.label} credential$sourceSuffix and restarted Hermes.",
+            status = "Saved ${option.label} credential$sourceSuffix and queued Hermes runtime restart.",
             apiKey = parsedCredential.apiKey,
             baseUrl = resolvedBaseUrl,
             model = resolvedModel,

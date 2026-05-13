@@ -38,6 +38,7 @@ PROVIDER_ENV_KEYS = {
     "chatgpt-web": "CHATGPT_WEB_ACCESS_TOKEN",
     "alibaba": "DASHSCOPE_API_KEY",
     "dashscope": "DASHSCOPE_API_KEY",
+    "alibaba-coding-plan": "BAILIAN_CODING_PLAN_API_KEY",
     "zai": "GLM_API_KEY",
 }
 
@@ -62,6 +63,9 @@ PROVIDER_AUTH_BUNDLE_KEYS = {
     },
     "dashscope": {
         "api_key": "DASHSCOPE_API_KEY",
+    },
+    "alibaba-coding-plan": {
+        "api_key": ("BAILIAN_CODING_PLAN_API_KEY", "ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
     },
 }
 

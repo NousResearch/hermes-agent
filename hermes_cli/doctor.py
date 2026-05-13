@@ -287,7 +287,8 @@ def _build_apikey_providers_list() -> list:
                 (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
                 if _pp.base_url else None
             )
-            _static.append((_label, _key_vars, _models_url, _base_var, True))
+            _hc = getattr(_pp, "supports_health_check", True)
+            _static.append((_label, _key_vars, _models_url, _base_var, _hc))
     except Exception:
         pass
     return _static

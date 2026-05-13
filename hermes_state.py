@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -238,7 +238,15 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    -- v13: gateway outbound-message tracking for /rewind v2 (best-effort
+    -- message deletion).  Stamped on assistant rows after the platform
+    -- adapter confirms a successful send.  All three are nullable so
+    -- non-gateway sessions (CLI/TUI) and pre-v13 rows leave them empty.
+    outbound_platform TEXT,
+    outbound_chat_id TEXT,
+    outbound_thread_id TEXT,
+    outbound_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -679,6 +687,23 @@ class SessionDB:
                 try:
                     cursor.execute(
                         "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 13:
+                # v13: gateway outbound-message tracking for /rewind v2.
+                # New columns (outbound_platform, outbound_chat_id,
+                # outbound_thread_id, outbound_message_id) are added by
+                # _reconcile_columns() above.  Pre-v13 rows have NULL
+                # values which is the correct "no outbound recorded"
+                # signal — no backfill needed.  We add a partial index
+                # here (deferred until after reconcile so the column
+                # exists) to keep the rewind-delete lookup cheap.
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_messages_outbound "
+                        "ON messages(session_id, outbound_chat_id) "
+                        "WHERE outbound_message_id IS NOT NULL"
                     )
                 except sqlite3.OperationalError:
                     pass
@@ -1847,7 +1872,11 @@ class SessionDB:
     # =========================================================================
 
     def rewind_to_message(
-        self, session_id: str, target_message_id: int
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        require_thread_scope: Optional[tuple] = None,
     ) -> Dict[str, Any]:
         """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
 
@@ -1856,6 +1885,17 @@ class SessionDB:
         twice in the replayed transcript.  Rewound rows are kept on
         disk with ``active=0`` for audit / forensic inspection — use
         :meth:`get_messages` with ``include_inactive=True`` to see them.
+
+        ``require_thread_scope`` (v13, /rewind v2) — when set to a
+        ``(chat_id, thread_id)`` tuple, the call refuses with
+        ``ValueError`` if any of the messages that would be soft-deleted
+        carry a different outbound ``(chat_id, thread_id)``.  Used by
+        the gateway to enforce thread-scoped rewinds so a user in one
+        Discord thread can't rewind messages that were posted into a
+        sibling thread.  Pass ``None`` (the default) to skip the check —
+        appropriate for CLI/TUI sessions which have no thread concept.
+        Either element of the tuple may be ``None`` to match rows
+        recorded without that field; the comparison is exact-string.
 
         Returns a dict::
 
@@ -1866,7 +1906,9 @@ class SessionDB:
             }
 
         Raises ``ValueError`` if the target message does not exist in
-        *session_id* or if its role is not ``"user"``.
+        *session_id*, if its role is not ``"user"``, or if
+        ``require_thread_scope`` is set and any in-scope row's outbound
+        ``(chat_id, thread_id)`` disagrees with it.
 
         Always increments ``sessions.rewind_count`` — even when the
         target is already inactive — so the counter accurately reflects
@@ -1894,6 +1936,31 @@ class SessionDB:
 
         # Decode content for callers (prefill the prompt buffer).
         target_row["content"] = self._decode_content(target_row.get("content"))
+
+        # 1b) Thread-scope guard for gateway /rewind v2.
+        # Refuse to truncate rows whose outbound (chat, thread) is
+        # different from the caller's context — keeps the blast radius
+        # of a Discord/Telegram rewind predictable per the v2 spec.
+        if require_thread_scope is not None:
+            req_chat, req_thread = require_thread_scope
+            with self._lock:
+                offenders = self._conn.execute(
+                    "SELECT id, outbound_chat_id, outbound_thread_id "
+                    "FROM messages "
+                    "WHERE session_id = ? AND id >= ? AND active = 1 "
+                    "AND outbound_message_id IS NOT NULL",
+                    (session_id, target_message_id),
+                ).fetchall()
+            for off in offenders:
+                off_chat = off["outbound_chat_id"] if isinstance(off, sqlite3.Row) else off[1]
+                off_thread = off["outbound_thread_id"] if isinstance(off, sqlite3.Row) else off[2]
+                if off_chat != req_chat or off_thread != req_thread:
+                    raise ValueError(
+                        f"rewind would cross thread boundary: row id="
+                        f"{off['id'] if isinstance(off, sqlite3.Row) else off[0]} "
+                        f"is in ({off_chat!r}, {off_thread!r}), caller is "
+                        f"in ({req_chat!r}, {req_thread!r})"
+                    )
 
         rewound: List[int] = []
 
@@ -1956,6 +2023,92 @@ class SessionDB:
             return len(ids)
 
         return self._execute_write(_do)
+
+    # ---- /rewind v2: outbound-message tracking ------------------------------
+
+    def set_outbound_ids(
+        self,
+        message_row_id: int,
+        *,
+        platform: Optional[str],
+        chat_id: Optional[str],
+        thread_id: Optional[str],
+        message_id: Optional[str],
+    ) -> None:
+        """Stamp gateway outbound-message coordinates onto a persisted row.
+
+        Called by the gateway after ``adapter.send`` succeeds, so that a
+        later ``/rewind`` can locate the platform message IDs to attempt
+        to delete.  All four fields are stored verbatim; pass ``None``
+        for any that are unavailable (e.g. ``thread_id`` for non-threaded
+        platforms).  Silent no-op if ``message_id`` is falsy.
+        """
+        if not message_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE messages SET "
+                "outbound_platform = ?, outbound_chat_id = ?, "
+                "outbound_thread_id = ?, outbound_message_id = ? "
+                "WHERE id = ?",
+                (
+                    platform,
+                    chat_id,
+                    thread_id,
+                    str(message_id),
+                    message_row_id,
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def get_inactive_outbound_ids(
+        self,
+        session_id: str,
+        *,
+        since_message_id: Optional[int] = None,
+        chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return outbound coordinates for *inactive* (rewound) rows.
+
+        Filters:
+        - ``since_message_id`` — only rows with ``id >= since_message_id``.
+          Use the ``new_head_id + 1`` returned from ``rewind_to_message``
+          if you only want rows just rewound; omit to scan all inactive
+          rows in the session (idempotent rerun safe).
+        - ``chat_id`` / ``thread_id`` — restrict to a specific gateway
+          delivery scope.  When both are ``None`` (CLI default), every
+          inactive row with a recorded outbound id is returned.
+
+        Each result dict carries ``id``, ``outbound_platform``,
+        ``outbound_chat_id``, ``outbound_thread_id``, and
+        ``outbound_message_id``.  Used by the gateway rewind hook to
+        drive best-effort ``platform.delete_message`` calls.
+        """
+        sql = (
+            "SELECT id, outbound_platform, outbound_chat_id, "
+            "outbound_thread_id, outbound_message_id "
+            "FROM messages "
+            "WHERE session_id = ? AND active = 0 "
+            "AND outbound_message_id IS NOT NULL"
+        )
+        params: List[Any] = [session_id]
+        if since_message_id is not None:
+            sql += " AND id >= ?"
+            params.append(since_message_id)
+        if chat_id is not None:
+            sql += " AND outbound_chat_id = ?"
+            params.append(chat_id)
+        if thread_id is not None:
+            sql += " AND outbound_thread_id = ?"
+            params.append(thread_id)
+        sql += " ORDER BY id ASC"
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     def list_recent_user_messages(
         self,

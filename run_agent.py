@@ -10395,9 +10395,13 @@ class AIAgent:
                     final_response = self._strip_think_blocks(final_response).strip()
 
                     # Post-response hook check: run each hook's check() on
-                    # the final response.  If any hook fails, inject a nudge
-                    # message and re-enter the loop for re-generation.
-                    # max_nudges is configurable per-hook (default 1).
+                    # the final response.  Each hook returns a HookResult with:
+                    #   - "pass":  deliver normally
+                    #   - "nudge": discard and re-generate with hint (respects
+                    #              max_nudges, configurable per-hook)
+                    #   - "block": replace response with data["message"],
+                    #              no re-generation (PII redaction, safety, format)
+                    # Supports legacy bool-returning hooks (False → nudge).
                     if self._post_response_hooks and final_response:
                         from agent.post_response_hooks import run_post_response_checks
                         _hook_context = {
@@ -10405,23 +10409,49 @@ class AIAgent:
                             "messages": messages,
                             "model": self.model,
                         }
-                        _nudge_msg = run_post_response_checks(
+                        _hook_result = run_post_response_checks(
                             self._post_response_hooks, final_response, _hook_context,
                         )
-                        _max = max(h.max_nudges for h in self._post_response_hooks)
-                        if _nudge_msg and self._hook_nudge_retries < _max:
-                            self._hook_nudge_retries += 1
-                            logger.info(
-                                "Post-response hook triggered nudge (%d/%d): %s",
-                                self._hook_nudge_retries, _max, _nudge_msg[:100],
-                            )
-                            self._emit_status(
-                                f"↻ Post-response hook triggered re-generation "
-                                f"({self._hook_nudge_retries}/{_max})"
-                            )
-                            messages.append({"role": "assistant", "content": final_response})
-                            messages.append({"role": "user", "content": f"[System: {_nudge_msg}]"})
-                            continue
+                        if _hook_result is not None:
+                            _action = _hook_result.action
+                            _hook_data = _hook_result.data or {}
+                            _max = max(h.max_nudges for h in self._post_response_hooks)
+
+                            if _action == "block":
+                                # Replace response entirely — no re-generation.
+                                block_message = _hook_data.get("message") or "Response blocked by content filter."
+                                logger.info(
+                                    "Post-response hook '%s' blocked response",
+                                    _hook_data.get("hook_name", "unknown"),
+                                )
+                                self._emit_status("⊘ Response blocked by post-response hook")
+                                self._safe_print(f"⚠  Response was replaced by the '{_hook_data.get('hook_name', 'unknown')}' hook")
+                                final_response = block_message
+
+                            elif _action == "nudge" and self._hook_nudge_retries < _max:
+                                self._hook_nudge_retries += 1
+                                _nudge_msg = _hook_data.get("message") or (
+                                    f"Your response did not pass a quality check. Please revise."
+                                )
+                                logger.info(
+                                    "Post-response hook triggered nudge (%d/%d): %s",
+                                    self._hook_nudge_retries, _max, _nudge_msg[:100],
+                                )
+                                self._emit_status(
+                                    f"↻ Post-response hook triggered re-generation "
+                                    f"({self._hook_nudge_retries}/{_max})"
+                                )
+                                messages.append({"role": "assistant", "content": final_response})
+                                messages.append({"role": "user", "content": f"[System: {_nudge_msg}]"})
+                                continue
+
+                            elif _action == "nudge":
+                                # Nudge limit exhausted — deliver as-is with warning.
+                                logger.warning(
+                                    "Post-response hook nudge limit (%d) exhausted — delivering as-is",
+                                    _max,
+                                )
+                                self._emit_status("⚠ Nudge limit exhausted — delivering as-is")
 
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 

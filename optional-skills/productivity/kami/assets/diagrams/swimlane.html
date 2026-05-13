@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Swimlane (kami palette)
+     Process flow across responsibility lanes. Focal lane in ink-blue;
+     other lanes in warm neutrals. Orthogonal elbow connectors only.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Swimlane · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Swimlane · kami diagram</p>
+    <h1>{{System name}} request flow</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- ── Lane backgrounds ── -->
+      <!-- Lane 1: Client, y=56..176 -->
+      <rect x="64" y="56" width="880" height="120" rx="0" fill="rgba(20,20,19,0.02)"/>
+      <!-- Lane 2: Server, y=176..296 (focal) -->
+      <rect x="64" y="176" width="880" height="120" fill="#EEF2F7" opacity="0.40"/>
+      <!-- Lane 3: Database, y=296..416 -->
+      <rect x="64" y="296" width="880" height="120" rx="0" fill="rgba(20,20,19,0.02)"/>
+
+      <!-- Lane dividers -->
+      <line x1="64" y1="56"  x2="944" y2="56"  stroke="#e8e6dc" stroke-width="1"/>
+      <line x1="64" y1="176" x2="944" y2="176" stroke="#1B365D" stroke-width="0.8" stroke-dasharray="4,3"/>
+      <line x1="64" y1="296" x2="944" y2="296" stroke="#e8e6dc" stroke-width="0.8" stroke-dasharray="4,3"/>
+      <line x1="64" y1="416" x2="944" y2="416" stroke="#e8e6dc" stroke-width="1"/>
+
+      <!-- Lane label column -->
+      <rect x="0" y="56" width="64" height="360" fill="#f5f4ed" stroke="#e8e6dc" stroke-width="0.8"/>
+      <text x="32" y="124" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em"
+            transform="rotate(-90, 32, 116)">CLIENT</text>
+      <text x="32" y="244" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em"
+            transform="rotate(-90, 32, 236)">SERVER</text>
+      <text x="32" y="364" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em"
+            transform="rotate(-90, 32, 356)">DATABASE</text>
+
+      <!-- ── Connectors (drawn behind nodes) ── -->
+
+      <!-- N1 → N2: (152,140) → (152,212) vertical -->
+      <line x1="152" y1="140" x2="152" y2="212" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 147,206 L 152,212 L 157,206"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- N2 → N3: (224,236) → (288,236) horizontal -->
+      <line x1="224" y1="236" x2="288" y2="236" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M 282,231 L 288,236 L 282,241"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- N3 → N4: elbow (360,260) → (360,296) → (568,296) → (568,332) -->
+      <polyline points="360,260 360,296 568,296 568,332"
+                fill="none" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 563,326 L 568,332 L 573,326"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- N4 → N5: (640,356) → (776,356) → (776,140) -->
+      <polyline points="640,356 812,356 812,140"
+                fill="none" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 807,146 L 812,140 L 817,146"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- ── Nodes ── -->
+
+      <!-- N1: Request, Lane 1, x=80 y=92 w=144 h=48 -->
+      <rect x="80" y="92" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="80" y="92" width="144" height="48" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="102" y="108" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">USER</text>
+      <text x="152" y="124" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Request</text>
+
+      <!-- N2: Validate, Lane 2, x=80 y=212 w=144 h=48 FOCAL -->
+      <rect x="80" y="212" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="80" y="212" width="144" height="48" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="102" y="228" fill="#1B365D" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">FOCAL</text>
+      <text x="152" y="244" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Validate</text>
+
+      <!-- N3: Route, Lane 2, x=288 y=212 w=144 h=48 -->
+      <rect x="288" y="212" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="288" y="212" width="144" height="48" rx="6"
+            fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="310" y="228" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">HANDLER</text>
+      <text x="360" y="244" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Route</text>
+
+      <!-- N4: Query, Lane 3, x=496 y=332 w=144 h=48 -->
+      <rect x="496" y="332" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="496" y="332" width="144" height="48" rx="6"
+            fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="518" y="348" fill="#504e49" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">STORE</text>
+      <text x="568" y="364" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Query</text>
+
+      <!-- N5: Respond, Lane 1, x=740 y=92 w=144 h=48 -->
+      <rect x="740" y="92" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="740" y="92" width="144" height="48" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="762" y="108" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">USER</text>
+      <text x="812" y="124" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Respond</text>
+
+      <!-- ── Legend ── -->
+      <rect x="64" y="416" width="880" height="44" fill="#f5f4ed"/>
+      <text x="80" y="434" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.22em">LEGEND</text>
+      <rect x="160" y="426" width="14" height="10" rx="2" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="180" y="434" fill="#504e49" font-size="8.5" font-family="inherit">Focal lane / node</text>
+      <rect x="320" y="426" width="14" height="10" rx="2" fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="340" y="434" fill="#504e49" font-size="8.5" font-family="inherit">Store</text>
+      <rect x="420" y="426" width="14" height="10" rx="2" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="440" y="434" fill="#504e49" font-size="8.5" font-family="inherit">Client / external</text>
+    </svg>
+
+    <p class="caption">Focal rule: the Server lane carries the business logic, so it gets the ink-blue tint. Client and Database lanes stay in warm neutral to keep the eye on what actually decides the outcome.</p>
+  </div>
+</body>
+</html>

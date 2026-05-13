@@ -1,0 +1,165 @@
+{
+  "defaults": {
+    "line_height": {
+      "min": 1.0,
+      "max": 1.55
+    },
+    "body_font_size_pt": {
+      "min": 9.0,
+      "max": 12.0
+    },
+    "body_line_height": {
+      "min": 1.35,
+      "max": 1.55
+    },
+    "section_gap_pt": {
+      "min": 12.0,
+      "max": 30.0
+    },
+    "page_margin_mm": {
+      "min": [8.0, 10.0, 8.0, 10.0]
+    },
+    "overflow_solver": {
+      "enabled": true,
+      "max_iterations": 40,
+      "section_gap_step_pt": 1.0,
+      "body_line_height_step": 0.02,
+      "body_font_step_pt": 0.2,
+      "margin_step_mm": 1.0
+    }
+  },
+  "targets": {
+    "one-pager": {
+      "section_gap_pt": {
+        "min": 12.0,
+        "max": 24.0
+      },
+      "page_margin_mm": {
+        "min": [12.0, 14.0, 12.0, 14.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 30
+      }
+    },
+    "one-pager-en": {
+      "section_gap_pt": {
+        "min": 12.0,
+        "max": 24.0
+      },
+      "page_margin_mm": {
+        "min": [12.0, 14.0, 12.0, 14.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 30
+      }
+    },
+    "letter": {
+      "body_font_size_pt": {
+        "min": 10.5,
+        "max": 12.0
+      },
+      "body_line_height": {
+        "min": 1.45,
+        "max": 1.55
+      },
+      "section_gap_pt": {
+        "min": 18.0,
+        "max": 32.0
+      },
+      "page_margin_mm": {
+        "min": [20.0, 20.0, 20.0, 20.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 20
+      }
+    },
+    "letter-en": {
+      "body_font_size_pt": {
+        "min": 10.5,
+        "max": 12.0
+      },
+      "body_line_height": {
+        "min": 1.45,
+        "max": 1.55
+      },
+      "section_gap_pt": {
+        "min": 18.0,
+        "max": 32.0
+      },
+      "page_margin_mm": {
+        "min": [20.0, 20.0, 20.0, 20.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 20
+      }
+    },
+    "resume": {
+      "body_font_size_pt": {
+        "min": 8.8,
+        "max": 9.8
+      },
+      "body_line_height": {
+        "min": 1.34,
+        "max": 1.45
+      },
+      "section_gap_pt": {
+        "min": 8.0,
+        "max": 22.0
+      },
+      "page_margin_mm": {
+        "min": [7.0, 10.0, 7.0, 10.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 60,
+        "body_font_step_pt": 0.1,
+        "margin_step_mm": 0.5
+      }
+    },
+    "resume-en": {
+      "body_font_size_pt": {
+        "min": 8.8,
+        "max": 10.0
+      },
+      "body_line_height": {
+        "min": 1.35,
+        "max": 1.48
+      },
+      "section_gap_pt": {
+        "min": 8.0,
+        "max": 22.0
+      },
+      "page_margin_mm": {
+        "min": [9.0, 10.0, 9.0, 10.0]
+      },
+      "overflow_solver": {
+        "max_iterations": 60,
+        "body_font_step_pt": 0.1,
+        "margin_step_mm": 0.5
+      }
+    },
+    "long-doc": {
+      "overflow_solver": {
+        "enabled": true,
+        "max_iterations": 50
+      }
+    },
+    "long-doc-en": {
+      "overflow_solver": {
+        "enabled": true,
+        "max_iterations": 50
+      }
+    },
+    "portfolio": {
+      "overflow_solver": {
+        "enabled": true,
+        "max_iterations": 50
+      }
+    },
+    "portfolio-en": {
+      "overflow_solver": {
+        "enabled": true,
+        "max_iterations": 50
+      }
+    }
+  }
+}

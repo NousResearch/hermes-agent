@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Architecture (kami palette)
+     Components + connections in a system. One focal node, everything else
+     in warm neutrals. Drop the <svg> block into a long-doc or portfolio
+     figure element to embed.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · kami diagram</p>
+    <h1>{{System name}} in production</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#504e49"/>
+        </marker>
+        <marker id="arrow-brand" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#1B365D"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- Arrows (behind nodes) -->
+      <line x1="168" y1="240" x2="220" y2="240" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="364" y1="240" x2="416" y2="240" stroke="#1B365D" stroke-width="1.4" marker-end="url(#arrow-brand)"/>
+      <line x1="576" y1="224" x2="628" y2="180" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="576" y1="256" x2="628" y2="300" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- Arrow labels (masked rect prevents line bleed-through) -->
+      <rect x="172" y="220" width="48" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="196" y="230" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.1em">HTTPS</text>
+
+      <rect x="368" y="220" width="48" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="392" y="230" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.1em">SSR</text>
+
+      <rect x="560" y="180" width="56" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="588" y="190" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.1em">READ</text>
+
+      <rect x="560" y="288" width="56" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="588" y="298" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.1em">QUERY</text>
+
+      <!-- Node 1: Reader (external) -->
+      <rect x="40" y="208" width="128" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="40" y="208" width="128" height="64" rx="6" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="62" y="226" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">USER</text>
+      <text x="104" y="246" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">Reader</text>
+      <text x="104" y="262" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">Browser</text>
+
+      <!-- Node 2: Edge / CDN (cloud) -->
+      <rect x="220" y="208" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="220" y="208" width="144" height="64" rx="6" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="242" y="226" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">EDGE</text>
+      <text x="292" y="246" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">CDN</text>
+      <text x="292" y="262" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">cache · SSL</text>
+
+      <!-- Node 3: Origin (FOCAL - brand accent) -->
+      <rect x="416" y="208" width="160" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="416" y="208" width="160" height="64" rx="6" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="438" y="226" fill="#1B365D" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">ORIGIN</text>
+      <text x="496" y="246" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">App Server</text>
+      <text x="496" y="262" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">render · route</text>
+
+      <!-- Node 4: Store (content) -->
+      <rect x="628" y="128" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="628" y="128" width="144" height="64" rx="6" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="650" y="146" fill="#141413" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">BUNDLE</text>
+      <text x="700" y="166" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">Content</text>
+      <text x="700" y="182" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">*.mdx · assets</text>
+
+      <!-- Node 5: Database (store) -->
+      <rect x="628" y="288" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="628" y="288" width="144" height="64" rx="6" fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="650" y="306" fill="#504e49" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">STORE</text>
+      <text x="700" y="326" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">Database</text>
+      <text x="700" y="342" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">postgres · vectors</text>
+
+      <!-- Legend strip -->
+      <line x1="40" y1="390" x2="920" y2="390" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="406" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" letter-spacing="0.22em">LEGEND</text>
+
+      <rect x="40" y="422" width="14" height="10" rx="2" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="60" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Focal · origin</text>
+
+      <rect x="170" y="422" width="14" height="10" rx="2" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="190" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Backend · bundle</text>
+
+      <rect x="320" y="422" width="14" height="10" rx="2" fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="340" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Store</text>
+
+      <rect x="420" y="422" width="14" height="10" rx="2" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="440" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Cloud</text>
+
+      <rect x="510" y="422" width="14" height="10" rx="2" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="530" y="430" fill="#504e49" font-size="8.5" font-family="inherit">External</text>
+
+      <line x1="620" y1="428" x2="650" y2="428" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <text x="658" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Standard flow</text>
+
+      <line x1="780" y1="428" x2="810" y2="428" stroke="#1B365D" stroke-width="1.4" marker-end="url(#arrow-brand)"/>
+      <text x="818" y="430" fill="#504e49" font-size="8.5" font-family="inherit">Primary path</text>
+    </svg>
+
+    <p class="caption">Focal rule: one ink-blue node per diagram, marking the component the reader should look at first. Every other box stays in warm neutrals so the accent actually means something.</p>
+  </div>
+</body>
+</html>

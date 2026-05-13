@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Layer Stack (kami palette)
+     Horizontal bands stacked vertically, showing system layers.
+     One focal layer in ink-blue; request/response flow on the sides.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Layer Stack · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Layer Stack · kami diagram</p>
+    <h1>{{System name}} architecture layers</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- ── Layer bands (x=96 w=724) ── -->
+
+      <!-- L1: Presentation, y=52, h=56 -->
+      <rect x="96" y="52" width="724" height="56" rx="4" fill="#faf9f5" stroke="#141413" stroke-width="1"/>
+      <text x="128" y="74" fill="#141413" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">01</text>
+      <text x="152" y="74" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit">Presentation</text>
+      <text x="152" y="94" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace">
+            UI · views · routing</text>
+
+      <!-- L2: Business Logic, y=116, h=56, FOCAL -->
+      <rect x="96" y="116" width="724" height="56" rx="4" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="128" y="138" fill="#1B365D" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">02 · FOCAL</text>
+      <text x="224" y="138" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit">Business Logic</text>
+      <text x="224" y="158" fill="#1B365D" font-size="9" font-family="'JetBrains Mono', monospace">
+            rules · validation · orchestration</text>
+
+      <!-- L3: Data Access, y=180, h=56 -->
+      <rect x="96" y="180" width="724" height="56" rx="4"
+            fill="#f5f4ed" stroke="#504e49" stroke-width="1"/>
+      <text x="128" y="202" fill="#504e49" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">03</text>
+      <text x="152" y="202" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit">Data Access</text>
+      <text x="152" y="222" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace">
+            repositories · queries · cache</text>
+
+      <!-- L4: Storage, y=244, h=56 -->
+      <rect x="96" y="244" width="724" height="56" rx="4"
+            fill="#f0efe8" stroke="#6b6a64" stroke-width="1"/>
+      <text x="128" y="266" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">04</text>
+      <text x="152" y="266" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit">Storage</text>
+      <text x="152" y="286" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace">
+            database · object store · search index</text>
+
+      <!-- L5: Infrastructure, y=308, h=56 -->
+      <rect x="96" y="308" width="724" height="56" rx="4"
+            fill="#eae9e1" stroke="#b8b7b0" stroke-width="1"/>
+      <text x="128" y="330" fill="#b8b7b0" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">05</text>
+      <text x="152" y="330" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit">Infrastructure</text>
+      <text x="152" y="350" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace">
+            cloud · network · runtime</text>
+
+      <!-- ── Left: REQUEST down-arrow ── -->
+      <line x1="52" y1="64" x2="52" y2="352" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 47,346 L 52,352 L 57,346"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+      <rect x="28" y="192" width="48" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="52" y="202" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">REQUEST</text>
+
+      <!-- ── Right: RESPONSE up-arrow ── -->
+      <line x1="872" y1="352" x2="872" y2="64" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M 867,70 L 872,64 L 877,70"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+      <rect x="848" y="192" width="52" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="872" y="202" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">RESPONSE</text>
+
+      <!-- ── Legend ── -->
+      <line x1="40" y1="388" x2="920" y2="388" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="404" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.22em">LEGEND</text>
+
+      <rect x="40" y="418" width="14" height="10" rx="2" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="60" y="426" fill="#504e49" font-size="8.5" font-family="inherit">Focal layer</text>
+
+      <rect x="170" y="418" width="14" height="10" rx="2" fill="#faf9f5" stroke="#141413" stroke-width="1"/>
+      <text x="190" y="426" fill="#504e49" font-size="8.5" font-family="inherit">Top layer</text>
+
+      <rect x="290" y="418" width="14" height="10" rx="2" fill="#eae9e1" stroke="#b8b7b0" stroke-width="1"/>
+      <text x="310" y="426" fill="#504e49" font-size="8.5" font-family="inherit">Foundation</text>
+
+      <line x1="420" y1="424" x2="452" y2="424" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 446,420 L 452,424 L 446,428"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="460" y="427" fill="#504e49" font-size="8.5" font-family="inherit">Request direction</text>
+
+      <line x1="620" y1="424" x2="652" y2="424" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M 646,420 L 652,424 L 646,428"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="660" y="427" fill="#504e49" font-size="8.5" font-family="inherit">Response direction</text>
+    </svg>
+
+    <p class="caption">Focal rule: one layer in ink-blue marks where the most domain-specific logic lives. Layers above carry user-facing concerns; layers below carry infrastructure. Side arrows orient the reader to flow direction without cluttering the bands.</p>
+  </div>
+</body>
+</html>

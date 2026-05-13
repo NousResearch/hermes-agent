@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Flowchart (kami palette)
+     Decision logic with branches. One focal decision, two to four outcomes.
+     Use when the structure IS the point. If a table communicates the
+     same thing, use a table instead.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flowchart · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 960px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 820px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Flowchart · kami diagram</p>
+    <h1>{{Question the flow answers}}</h1>
+
+    <svg viewBox="0 0 860 520" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#504e49"/>
+        </marker>
+        <marker id="arrow-brand" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#1B365D"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- ========== Flow ========== -->
+      <!-- Start → Check -->
+      <line x1="430" y1="72" x2="430" y2="112" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- Check → Decision (focal) -->
+      <line x1="430" y1="176" x2="430" y2="216" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- Decision → Yes branch (brand) -->
+      <path d="M 360 268 L 200 268 L 200 332" fill="none" stroke="#1B365D" stroke-width="1.4" marker-end="url(#arrow-brand)"/>
+      <rect x="170" y="284" width="34" height="14" rx="2" fill="#f5f4ed"/>
+      <text x="187" y="294" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.12em">YES</text>
+
+      <!-- Decision → No branch -->
+      <path d="M 500 268 L 660 268 L 660 332" fill="none" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="636" y="284" width="30" height="14" rx="2" fill="#f5f4ed"/>
+      <text x="651" y="294" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.12em">NO</text>
+
+      <!-- Yes outcome → End -->
+      <path d="M 200 396 L 200 440 L 396 440" fill="none" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- No outcome → End -->
+      <path d="M 660 396 L 660 440 L 464 440" fill="none" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ========== Nodes ========== -->
+
+      <!-- Start (pill) -->
+      <rect x="360" y="40" width="140" height="32" rx="16" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="430" y="58" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Start</text>
+
+      <!-- Check step -->
+      <rect x="350" y="112" width="160" height="64" rx="6" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="364" y="130" fill="#504e49" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">STEP 01</text>
+      <text x="430" y="150" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">{{Describe input}}</text>
+      <text x="430" y="166" fill="#504e49" font-size="9" font-family="inherit" text-anchor="middle">one short line</text>
+
+      <!-- Decision diamond (FOCAL) -->
+      <polygon points="430,216 500,242 500,268 430,320 360,268 360,242"
+               fill="#EEF2F7" stroke="#1B365D" stroke-width="1.2"/>
+      <text x="430" y="266" fill="#141413" font-size="11" font-weight="600" font-family="inherit" text-anchor="middle">{{Decision}}</text>
+      <text x="430" y="282" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.15em">BRANCH</text>
+
+      <!-- Yes outcome -->
+      <rect x="120" y="332" width="160" height="64" rx="6" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="134" y="350" fill="#504e49" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">OUTCOME A</text>
+      <text x="200" y="370" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">{{Path taken}}</text>
+      <text x="200" y="386" fill="#504e49" font-size="9" font-family="inherit" text-anchor="middle">what happens next</text>
+
+      <!-- No outcome -->
+      <rect x="580" y="332" width="160" height="64" rx="6" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="594" y="350" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">OUTCOME B</text>
+      <text x="660" y="370" fill="#141413" font-size="12" font-weight="600" font-family="inherit" text-anchor="middle">{{Alt path}}</text>
+      <text x="660" y="386" fill="#504e49" font-size="9" font-family="inherit" text-anchor="middle">skipped / deferred</text>
+
+      <!-- End (pill) -->
+      <rect x="396" y="424" width="68" height="32" rx="16" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="430" y="442" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">End</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="484" x2="820" y2="484" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="500" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" letter-spacing="0.22em">LEGEND</text>
+
+      <polygon points="180,492 192,498 180,504 168,498" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="202" y="502" fill="#504e49" font-size="8.5" font-family="inherit">Focal decision</text>
+
+      <rect x="310" y="494" width="14" height="10" rx="2" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="330" y="502" fill="#504e49" font-size="8.5" font-family="inherit">Step · outcome</text>
+
+      <rect x="440" y="494" width="14" height="10" rx="16" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="460" y="502" fill="#504e49" font-size="8.5" font-family="inherit">Start · end</text>
+
+      <rect x="560" y="494" width="14" height="10" rx="2" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="580" y="502" fill="#504e49" font-size="8.5" font-family="inherit">Deferred branch</text>
+    </svg>
+
+    <p class="caption">The decision diamond carries the accent. Its two branches diverge into equal weights so the reader sees the question, not an implied answer.</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     LETTER TEMPLATE · parchment design system
+     A4 正式信件 / 备忘录 / 推荐信 / 辞职信 / 个人声明
+     特点：极简，serif 主导，字号稍大，段距宽松
+     ================================================================== -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{信件主题}}</title>
+<meta name="author" content="{{作者}}">
+<meta name="description" content="{{摘要}}">
+<meta name="keywords" content="{{关键词}}">
+<meta name="generator" content="Kami">
+<style>
+  /* Regular weight */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W04.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* Bold weight - W05 for all bold variants */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W05.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+
+  @page {
+    size: A4;
+    margin: 25mm 25mm 25mm 25mm;
+    background: #f5f4ed;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --ivory:     #faf9f5;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --sans: var(--serif);
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 25mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 11.5pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+  }
+
+  /* ========== LETTERHEAD 信头 ========== */
+  .letterhead {
+    text-align: right;
+    margin-bottom: 30pt;
+    font-size: 10pt;
+    line-height: 1.55;
+    color: var(--olive);
+  }
+  .letterhead .sender-name {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 4pt;
+  }
+  .letterhead a {
+    color: var(--dark-warm);
+    text-decoration: none;
+  }
+
+  /* ========== META ========== */
+  .date {
+    text-align: right;
+    font-size: 10.5pt;
+    color: var(--olive);
+    margin-bottom: 20pt;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .recipient {
+    margin-bottom: 24pt;
+    line-height: 1.5;
+  }
+  .recipient .to {
+    font-size: 10pt;
+    color: var(--stone);
+    letter-spacing: 0.5pt;
+    text-transform: uppercase;
+    margin-bottom: 3pt;
+  }
+  .recipient .name {
+    font-size: 12pt;
+    font-weight: 500;
+    color: var(--near-black);
+  }
+  .recipient .org {
+    font-size: 10.5pt;
+    color: var(--olive);
+  }
+
+  /* ========== SUBJECT ========== */
+  .subject {
+    margin-bottom: 24pt;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+  }
+  .subject .label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 3pt;
+  }
+  .subject .title {
+    font-size: 15pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.3;
+  }
+
+  /* ========== SALUTATION ========== */
+  .salutation {
+    margin-bottom: 18pt;
+    font-size: 12pt;
+    color: var(--near-black);
+  }
+
+  /* ========== BODY ========== */
+  .body-content p {
+    margin-bottom: 14pt;
+    text-align: justify;
+    text-justify: inter-ideograph;
+    line-height: 1.55;
+    text-indent: 2em;    /* 中文段落首行缩进 */
+  }
+  .body-content p:first-child { text-indent: 2em; }
+  .body-content p.no-indent { text-indent: 0; }
+
+  .body-content .hl {
+    color: var(--brand);
+    font-weight: 500;
+  }
+
+  /* ========== CLOSING ========== */
+  .closing {
+    margin-top: 30pt;
+    line-height: 1.55;
+  }
+  .closing .regards {
+    margin-bottom: 30pt;
+    color: var(--near-black);
+  }
+  .closing .signature {
+    font-size: 14pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 3pt;
+  }
+  .closing .signoff-meta {
+    font-size: 10pt;
+    color: var(--olive);
+  }
+
+  /* ========== ATTACHMENT ========== */
+  .attachments {
+    margin-top: 36pt;
+    padding-top: 10pt;
+    border-top: 0.5pt dotted var(--border);
+    font-size: 9.5pt;
+    color: var(--stone);
+    font-family: var(--sans);
+    line-height: 1.55;
+  }
+  .attachments .label {
+    color: var(--brand);
+    margin-right: 6pt;
+    font-weight: 500;
+  }
+
+  /* ========== 一些特殊变体 ========== */
+  /* 如果是 memo（备忘录），用 sans 字体，去掉首行缩进 */
+  body.memo {
+    font-family: var(--sans);
+    line-height: 1.55;
+  }
+  body.memo .body-content p { text-indent: 0; margin-bottom: 10pt; }
+
+  /* ========== TABLE (kami-table) ========== */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    margin: 10pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 5pt 8pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 4pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 3pt 6pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 2pt 6pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== LETTERHEAD（寄件人） ========== -->
+<div class="letterhead">
+  <div class="sender-name">{{寄件人姓名}}</div>
+  <div>{{寄件人地址 / 部门 / 机构}}</div>
+  <div>{{电话}}　·　<a href="mailto:{{EMAIL}}">{{EMAIL}}</a></div>
+</div>
+
+<!-- ========== 日期 ========== -->
+<div class="date">{{日期 如 2026 年 4 月 18 日}}</div>
+
+<!-- ========== 收件人 ========== -->
+<div class="recipient">
+  <div class="to">致</div>
+  <div class="name">{{收件人姓名 / 称谓}}</div>
+  <div class="org">{{收件人机构 / 部门}}</div>
+</div>
+
+<!-- ========== 主题 ========== -->
+<div class="subject">
+  <div class="label">关于</div>
+  <div class="title">{{信件主题，一句话说清}}</div>
+</div>
+
+<!-- ========== 称呼 ========== -->
+<div class="salutation">{{称呼 如 "尊敬的 XX 先生：" / "Dear XX,"}}</div>
+
+<!-- ========== 正文 ========== -->
+<div class="body-content">
+
+<p>
+{{第一段：破题。说明写这封信的缘由和核心意图。
+不要绕弯，1-2 句话让读者知道你要说什么。}}
+</p>
+
+<p>
+{{第二段：展开。给出背景、理由、论据。
+如有 <span class="hl">关键信息</span> 可用高亮突出。}}
+</p>
+
+<p>
+{{第三段：具体。说清楚你希望对方做什么、
+何时做、怎么联系。让行动有明确出口。}}
+</p>
+
+<p>
+{{第四段（可选）：收尾。表达期待、致谢或礼貌性结束语。}}
+</p>
+
+</div>
+
+<!-- ========== 敬语 ========== -->
+<div class="closing">
+  <div class="regards">
+    {{敬语。中文常用 "此致 / 敬礼！"、"顺颂商祺"。英文 "Best regards," / "Sincerely,"}}
+  </div>
+
+  <div class="signature">{{签名 / 亲笔姓名}}</div>
+  <div class="signoff-meta">
+    {{职位 · 部门}}<br>
+    {{日期复写 · 可选}}
+  </div>
+</div>
+
+<!-- ========== 附件（可选） ========== -->
+<div class="attachments">
+  <span class="label">附件</span>
+  {{附件清单：① 附件名 1 · ② 附件名 2}}
+</div>
+
+</body>
+</html>

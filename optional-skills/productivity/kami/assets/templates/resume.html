@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{姓名}} · 简历</title>
+<meta name="author" content="{{姓名}}">
+<meta name="description" content="{{摘要}}">
+<meta name="keywords" content="{{关键词}}">
+<meta name="generator" content="Kami">
+<style>
+  /* Regular weight */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W04.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* Bold weight - W05 for all bold variants */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W05.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+
+@page {
+    size: A4;
+    margin: 9mm 13mm 9mm 13mm;
+    background: #f5f4ed;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --sand:      #e8e6dc;
+    --border:    #e8e6dc;
+    --border-soft: #e5e3d8;
+    --near-black: #141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --brand-tint: #EEF2F7;          /* solid equivalent of rgba(1B365D, 0.08), avoids tag double-rectangle bug */
+    --brand-tint-strong: #E4ECF5;   /* solid equivalent of rgba(1B365D, 0.14) */
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --sans: var(--serif);
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 9mm 13mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 9.2pt;
+    line-height: 1.42;
+    letter-spacing: 0.3pt;
+    widows: 3;
+    orphans: 3;
+  }
+
+  .serif {
+    font-family: var(--serif);
+  }
+
+  a { color: var(--brand); text-decoration: none; }
+
+  /* HEADER */
+  .header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding-bottom: 3mm;
+    margin-bottom: 3mm;
+    border-bottom: 0.5pt solid #e3baa9;
+  }
+  .header > div:first-child { flex-shrink: 0; }
+  .name {
+    font-family: var(--serif);
+    font-size: 26.5pt;
+    font-weight: 500;
+    letter-spacing: 0.5pt;
+    color: var(--near-black);
+    line-height: 1;
+    margin-bottom: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 2.2mm;
+    white-space: nowrap;
+  }
+  .alias {
+    font-size: 12.5pt;
+    font-weight: 400;
+    color: var(--stone);
+    letter-spacing: 0.2pt;
+  }
+  .alias::before {
+    content: "";
+  }
+  .tagline { font-size: 9.5pt; color: var(--olive); line-height: 1.3; }
+  .tagline .accent { color: var(--brand); font-weight: 500; }
+
+  .contact {
+    text-align: right;
+    font-size: 9pt;
+    color: var(--stone);
+    line-height: 1.5;
+    margin-bottom: -0.5mm;
+  }
+  .contact a { color: var(--dark-warm); }
+  .contact .loc { color: var(--olive); font-weight: 500; }
+
+  /* METRICS */
+  .metrics { display: flex; gap: 6mm; margin-bottom: 3mm; margin-left: 0; margin-right: 0; }
+  .metric {
+    flex: 1;
+    background: transparent;
+    padding: 1mm 0;
+    display: flex;
+    align-items: baseline;
+    gap: 1.8mm;
+    break-inside: avoid;
+  }
+  .metric-value {
+    font-family: var(--serif);
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .metric-label { font-size: 9pt; color: var(--olive); line-height: 1.2; }
+
+  .metric-value .unit {
+    font-size: 10.5pt;
+    margin-left: 0.3mm;
+    font-weight: 500;
+    color: var(--brand);
+  }
+
+  .metrics--stack .metric {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5mm;
+    padding-bottom: 2mm;
+    border-bottom: 0.3pt dotted var(--border);
+  }
+
+  /* SECTION */
+  .section-title {
+    font-family: var(--serif);
+    font-size: 12.5pt;
+    font-weight: 500;
+    color: var(--near-black);
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding: 0 0 0 8pt;
+    margin: 5mm 0 1.6mm 0;
+    display: flex;
+    align-items: baseline;
+    gap: 2mm;
+  }
+  .section-title .sub {
+    margin-left: auto;
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 0.3pt;
+  }
+
+  section:first-of-type .section-title { margin-top: 0; }
+  .page-break > .section-title { margin-top: 0; }
+
+  /* Unify gap from section-title bottom border to first content's first line = 3mm
+     (section-title margin-bottom 1.8mm + first-child top spacing 1.2mm) */
+  .section-title + .skill-row { padding-top: 1.2mm; }
+  .section-title + .edu-row { padding-top: 1.2mm; }
+
+  /* SUMMARY */
+  .summary { font-size: 9.2pt; line-height: 1.42; color: var(--near-black); }
+  .summary .em-brand { color: var(--brand); }
+  .summary .hl { color: var(--brand); }
+
+  /* TIMELINE */
+  .timeline { display: flex; gap: 6mm; margin-bottom: 2mm; margin-left: 0; margin-right: 0; }
+  .tl-step {
+    flex: 1; background: transparent;
+    padding: 0.8mm 0;
+    break-inside: avoid;
+  }
+  .tl-top {
+    display: flex; align-items: baseline; gap: 1.5mm;
+    margin-bottom: 0.5mm;
+  }
+  .tl-year {
+    font-family: var(--serif);
+    font-size: 11pt; font-weight: 500;
+    color: var(--brand); line-height: 1;
+  }
+  .tl-head {
+    font-size: 11pt; font-weight: 500;
+    color: var(--near-black);
+  }
+  .tl-body { font-size: 9pt; color: var(--olive); line-height: 1.40; letter-spacing: 0.3pt; }
+
+  /* PROJECTS */
+  .project {
+    padding: 1.2mm 0 1.2mm 0;
+    border-top: 0.4pt solid var(--border-soft);
+    break-inside: avoid;
+  }
+  .project:first-of-type { border-top: 0.4pt solid var(--border); padding-top: 1.2mm; }
+  .proj-head {
+    display: flex; align-items: baseline;
+    gap: 2mm; margin-bottom: 0.75mm;
+  }
+  .proj-name {
+    font-family: var(--serif);
+    font-size: 11pt; font-weight: 500; color: var(--near-black);
+  }
+  .proj-kind { font-size: 11pt; color: var(--olive); }
+  .proj-role {
+    font-size: 9pt; color: var(--brand); font-weight: 500;
+    margin-left: auto; background: #EEF2F7;
+    padding: 0.4mm 1.2mm; border-radius: 2pt; letter-spacing: 0.05pt;
+  }
+  .proj-lines { display: table; width: 100%; }
+  .proj-row { display: table-row; }
+  .proj-label {
+    display: table-cell; width: 11mm;
+    font-size: 9pt; color: var(--brand);
+    font-weight: 500; letter-spacing: 0.2pt;
+    padding: 0.2mm 0 0.4mm 0; vertical-align: top;
+  }
+  .proj-text {
+    display: table-cell; font-size: 9pt;
+    color: var(--near-black); line-height: 1.40; letter-spacing: 0.3pt;
+    padding: 0 0 0.4mm 0.5mm;
+  }
+  .proj-text .hl { color: var(--brand); }
+
+  .team-culture {
+    margin-top: 2mm; padding: 1.5mm 2.5mm;
+    background: transparent;
+    border-left: 1.4pt solid var(--brand);
+    border-radius: 2pt;
+    font-size: 9pt; color: var(--olive); line-height: 1.40;
+    break-inside: avoid;
+  }
+  .team-culture .hl { color: var(--brand); }
+
+  /* PAGE 2 FORCE BREAK */
+  .page-break { break-before: page; }
+
+  /* OPEN SOURCE - NEW ENHANCED LAYOUT */
+  .os-intro {
+    font-size: 9.2pt; line-height: 1.40; letter-spacing: 0.3pt;
+    color: var(--near-black);
+    padding: 0; margin: 1.2mm 0 2mm 0;
+    background: transparent;
+    break-inside: avoid;
+  }
+  .os-intro .hl { color: var(--brand); }
+  .os-intro .strong { color: var(--near-black); }
+
+  .os-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 8mm; row-gap: 1mm;
+  }
+  .os-item {
+    display: flex; align-items: baseline;
+    gap: 2mm; padding: 1mm 0 1mm 0;
+    border-bottom: 0.3pt dotted var(--border);
+    break-inside: avoid;
+  }
+  .os-item:last-child,
+  .os-item:nth-last-child(2):nth-child(odd) { border-bottom: none; }
+  .os-name {
+    font-family: var(--serif);
+    font-size: 10pt; font-weight: 500;
+    flex-shrink: 0; min-width: 14mm;
+  }
+  .os-name a { color: var(--brand); }
+  .os-desc { font-size: 9pt; color: var(--olive); line-height: 1.40; flex: 1; }
+  .os-star {
+    font-size: 9pt; color: var(--dark-warm);
+    font-weight: 500; white-space: nowrap; flex-shrink: 0; min-width: 7.5mm; text-align: right;
+  }
+  .os-star.big { color: var(--brand); font-size: 9.2pt; }
+
+  .os-highlight {
+    margin-top: 2.5mm;
+    padding: 1.8mm 2.8mm;
+    background: var(--brand-tint);
+    border-left: 1.4pt solid var(--brand);
+    font-size: 9pt; line-height: 1.40;
+    color: var(--near-black);
+    letter-spacing: 0.3pt;
+    break-inside: avoid;
+  }
+  .os-highlight .hl { color: var(--brand); }
+  .os-highlight .tag {
+    display: inline-block;
+    background: var(--brand); color: var(--ivory);
+    font-size: 9pt; font-weight: 500;
+    padding: 0.2mm 1.5mm; border-radius: 2pt;
+    margin-right: 1.2mm; letter-spacing: 0.2pt;
+    transform: translateY(-0.2mm);
+  }
+
+  /* AI CONVICTION - NEW SECTION */
+  .convictions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 2.5mm;
+    margin-top: 1.2mm;
+  }
+  .conv-card {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0 2mm 0 0;
+    break-inside: avoid;
+  }
+  .conv-head, .ai-card-head {
+    font-family: var(--serif);
+    font-size: 9.8pt; font-weight: 500;
+    color: var(--near-black); margin-bottom: 0.9mm;
+    display: flex; align-items: baseline; gap: 1.5mm;
+  }
+  .conv-head .year, .ai-card-head .year {
+    color: var(--brand); font-weight: 500;
+    font-size: 9pt;
+  }
+  .conv-body, .ai-card-body {
+    font-size: 9pt; color: var(--olive);
+    line-height: 1.40; letter-spacing: 0.3pt;
+  }
+  .conv-body .hl, .ai-card-body .hl { color: var(--brand); }
+  .conv-body .em-brand, .ai-card-body .em-brand { color: var(--brand); }
+
+  /* INFLUENCE */
+  .handle-strip {
+    background: transparent;
+    padding: 0; margin: 1.2mm 0 2mm 0;
+    display: flex; align-items: baseline; gap: 3mm;
+    break-inside: avoid;
+  }
+  .handle-strip .handle {
+    font-family: var(--serif);
+    font-size: 9.8pt; font-weight: 500; color: var(--brand);
+    flex-shrink: 0;
+  }
+  .handle-strip .follower { font-size: 9pt; color: var(--stone); flex-shrink: 0; }
+  .handle-strip .desc { font-size: 9pt; color: var(--olive); line-height: 1.40; letter-spacing: 0.3pt; flex: 1; }
+
+  .impact-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 5.5mm; }
+  .inf-block-title {
+    margin-top: 2.5mm;
+    font-family: var(--serif);
+    font-size: 9.8pt; font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 1.5mm; padding-bottom: 0.5mm;
+    border-bottom: 0.3pt dotted var(--border);
+    display: flex; align-items: baseline; gap: 2mm;
+  }
+  .inf-block-title .small {
+    font-family: var(--serif);
+    font-size: 9pt; color: var(--stone);
+    font-weight: 400; margin-left: 0; letter-spacing: 0.2pt;
+  }
+  .art-row {
+    padding: 1.6mm 0;
+    border-bottom: 0.3pt dotted var(--border-soft);
+  }
+  .talk-row {
+    display: flex; justify-content: space-between;
+    align-items: flex-start;
+    gap: 2mm; padding: 1.6mm 0;
+    border-bottom: 0.3pt dotted var(--border-soft);
+  }
+  .art-row:last-of-type, .talk-row:last-of-type { border-bottom: none; }
+  .art-header {
+    display: flex; align-items: baseline;
+    justify-content: space-between;
+    gap: 2mm; padding-right: 3mm;
+  }
+  .art-title, .talk-title {
+    font-size: 9pt; color: var(--near-black);
+    font-weight: 500; line-height: 1.40;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .art-stats, .talk-venue {
+    font-size: 9pt; color: var(--stone);
+    line-height: 1.40; margin-top: 0.5mm; padding-left: 0; letter-spacing: 0.3pt;
+    white-space: nowrap;
+  }
+  .art-stats .em-brand {
+    color: var(--brand);
+  }
+  .art-date {
+    font-size: 9pt; color: var(--stone);
+    font-variant-numeric: tabular-nums;
+    font-weight: 400;
+  }
+  .art-stats .lang-cn, .art-stats .lang-en {
+    display: inline-block;
+    font-size: 9pt; font-weight: 500;
+    margin-right: 0.5mm;
+    letter-spacing: 0.2pt;
+    color: var(--stone);
+  }
+  .talk-date {
+    font-size: 9pt; color: var(--stone); font-weight: 500;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+    padding-top: 0.3mm;
+  }
+
+  /* SKILLS */
+  .skill-row {
+    display: flex; gap: 2.5mm; padding: 1.7mm 0;
+    border-bottom: 0.3pt dotted var(--border);
+    align-items: baseline;
+  }
+  .skill-row:last-of-type { border-bottom: none; }
+  .skill-label {
+    font-size: 9pt; font-weight: 500;
+    color: var(--brand); letter-spacing: 0.3pt;
+    width: 22mm; flex-shrink: 0;
+    line-height: 1.36;
+  }
+  .skill-body { font-size: 9pt; color: var(--near-black); line-height: 1.40; letter-spacing: 0.3pt; flex: 1; }
+  .skill-body .em-brand { color: var(--brand); }
+
+  .no-break { break-inside: avoid; }
+
+  /* EDUCATION */
+  .edu-row {
+    display: flex; justify-content: space-between;
+    align-items: baseline; font-size: 9.5pt; padding: 1.7mm 0;
+  }
+  .edu-row .school {
+    font-family: var(--serif);
+    font-weight: 500; font-size: 10.7pt;
+  }
+  .edu-row .major { color: var(--olive); font-size: 9.5pt; }
+  .edu-row .date { color: var(--stone); font-variant-numeric: tabular-nums; font-size: 9pt; }
+
+  /* TABLE (kami-table) */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+    margin: 6pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 3pt 6pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 2pt 6pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 2pt 4pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 1pt 4pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+
+  /* DENSE VARIANT: add class="resume--dense" to <body> when 5+ projects overflow */
+  body.resume--dense { font-size: 9pt; }
+  body.resume--dense .proj-text { line-height: 1.38; }
+  body.resume--dense .tl-body { font-size: 8.5pt; }
+  body.resume--dense .section-title { margin-top: 3.5mm; margin-bottom: 1.2mm; }
+</style>
+</head>
+<body>
+
+<!-- =====================================================================
+     使用说明：
+ - 所有 {{变量}} 替换为实际内容
+ - 删除不适用的 section（如无开源/AI判断/对外影响力）
+ - 项目可加减，每个严格遵守 角色/动作/结果 三段式
+ - 改完验证：必须 2 页
+       python3 -c "from weasyprint import HTML; HTML('resume.html').write_pdf('out.pdf')"
+ - 内容策略详见 references/writing.md
+     ===================================================================== -->
+
+
+<!-- ═══════════ PAGE 1 ═══════════ -->
+
+<div class="header">
+  <div>
+    <div class="name serif">{{姓名}}<span class="alias">{{别名/英文名}}</span></div>
+  </div>
+  <div class="contact">
+    <span style="color: var(--brand); font-size: 10.5pt; font-weight: 500;">{{岗位定位，如"AI / Agent 工程"}}</span>　·　<a href="{{GITHUB_URL}}">GitHub @{{GITHUB_ID}}</a>　·　<a href="{{X_URL}}">X @{{X_ID}}</a>　·　<a href="tel:{{PHONE}}">{{PHONE}}</a>　·　<a href="mailto:{{EMAIL}}">{{EMAIL}}</a>　·　{{年龄}} 岁在{{城市}}
+  </div>
+</div>
+
+<!-- 4 个最强的数字标签 -->
+<div class="metrics">
+  <div class="metric"><span class="metric-value serif">{{数字}}<span class="unit">{{单位}}</span></span><span class="metric-label">{{标签}}</span></div>
+  <div class="metric"><span class="metric-value serif">{{数字}}<span class="unit">{{单位}}</span></span><span class="metric-label">{{标签}}</span></div>
+  <div class="metric"><span class="metric-value serif">{{数字}}<span class="unit">{{单位}}</span></span><span class="metric-label">{{标签}}</span></div>
+  <div class="metric"><span class="metric-value serif">{{数字}}<span class="unit">{{单位}}</span></span><span class="metric-label">{{标签}}</span></div>
+</div>
+
+<section>
+  <div class="section-title">个人简介</div>
+  <div class="summary">
+    {{80 字以内。建议结构：现任职位 + 级别 + 时长。团队构成（人数、梯队、协作方）。长期演进方向。核心沉淀领域（4-6 个方向）。}}
+  </div>
+</section>
+
+<section>
+  <div class="section-title">工作经历<span class="sub">{{起始时间}} - 至今（{{关键里程碑}}）</span></div>
+
+  <!-- Timeline 3 步：长期演进信号 -->
+  <div class="timeline">
+    <div class="tl-step">
+      <div class="tl-top"><div class="tl-year serif">{{年份}}</div><div class="tl-head">{{阶段标题}}</div></div>
+      <div class="tl-body">{{一句解释这一步的意义}}</div>
+    </div>
+    <div class="tl-step">
+      <div class="tl-top"><div class="tl-year serif">{{年份}}</div><div class="tl-head">{{阶段标题}}</div></div>
+      <div class="tl-body">{{一句解释这一步的意义}}</div>
+    </div>
+    <div class="tl-step">
+      <div class="tl-top"><div class="tl-year serif">{{年份}}</div><div class="tl-head">{{阶段标题}}</div></div>
+      <div class="tl-body">{{一句解释这一步的意义}}</div>
+    </div>
+  </div>
+
+  <!-- 项目模板 - 重复此块 3-5 次 -->
+  <div class="project">
+    <div class="proj-head">
+      <span class="proj-name serif">{{项目名}}</span>
+      <span class="proj-kind">· {{项目类型}}</span>
+      <span class="proj-role">{{角色定位，如"方向主导"}}</span>
+    </div>
+    <div class="proj-lines">
+      <div class="proj-row">
+        <div class="proj-label">角色</div>
+        <div class="proj-text">{{~60 字：项目是什么 + 为什么做 + 你的位置}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">动作</div>
+        <div class="proj-text">{{~80 字：技术方案 / 关键决策 / 执行路径}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">结果</div>
+        <div class="proj-text">{{~100 字：数据为王。<span class="hl">关键数字</span> 高亮 1-2 处。}}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="project">
+    <div class="proj-head">
+      <span class="proj-name serif">{{项目名}}</span>
+      <span class="proj-kind">· {{项目类型}}</span>
+      <span class="proj-role">{{角色定位}}</span>
+    </div>
+    <div class="proj-lines">
+      <div class="proj-row">
+        <div class="proj-label">角色</div>
+        <div class="proj-text">{{~60 字}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">动作</div>
+        <div class="proj-text">{{~80 字}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">结果</div>
+        <div class="proj-text">{{~100 字，含 <span class="hl">关键数字</span>}}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="project">
+    <div class="proj-head">
+      <span class="proj-name serif">{{项目名}}</span>
+      <span class="proj-kind">· {{项目类型}}</span>
+      <span class="proj-role">{{角色}}</span>
+    </div>
+    <div class="proj-lines">
+      <div class="proj-row">
+        <div class="proj-label">角色</div>
+        <div class="proj-text">{{项目背景和定位}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">动作</div>
+        <div class="proj-text">{{执行路径}}</div>
+      </div>
+      <div class="proj-row">
+        <div class="proj-label">结果</div>
+        <div class="proj-text">{{可量化结果，含 <span class="hl">关键数字</span>}}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════ PAGE 2 ═══════════ -->
+
+<section class="page-break">
+  <div class="section-title">开源项目 &amp; 独立开发者<span class="sub">{{时间跨度}} · {{一句副标题}}</span></div>
+
+  <div class="os-intro">
+    <span class="hl">{{一句自我定位}}</span>，{{简述开发者身份：设计审美 / 独立完成流程 / 跨语言实战 / 用户反馈}}。GitHub 累计 <span class="strong">{{STARS_TOTAL}} stars · {{FORKS_TOTAL}} forks · {{FOLLOWERS_TOTAL}} followers</span>。
+  </div>
+
+  <div class="os-grid">
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{语言 + 核心定位 + 平台}}</span>
+      <span class="os-star big">★ {{STARS}}</span>
+    </div>
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{描述}}</span>
+      <span class="os-star big">★ {{STARS}}</span>
+    </div>
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{描述}}</span>
+      <span class="os-star">★ {{STARS}}</span>
+    </div>
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{描述}}</span>
+      <span class="os-star">★ {{STARS}}</span>
+    </div>
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{描述}}</span>
+      <span class="os-star">★ {{STARS}}</span>
+    </div>
+    <div class="os-item">
+      <span class="os-name serif"><a href="{{URL}}">{{项目名}}</a></span>
+      <span class="os-desc">{{描述}}</span>
+      <span class="os-star">★ {{STARS}}</span>
+    </div>
+  </div>
+
+  <div class="os-highlight">
+    <span class="tag">{{亮点 TAG}}</span>{{这个项目的独特故事：开源时机 / 传播范围 / 知名人物推荐等}}
+  </div>
+</section>
+
+<section>
+  <div class="section-title">AI 判断与行动</div>
+  <div class="convictions">
+    <div class="conv-card">
+      <div class="conv-head"><span class="year">{{时间}}</span>{{事件标题}}</div>
+      <div class="conv-body">
+        {{具体做了什么判断或行动，为什么证明判断力}}
+      </div>
+    </div>
+    <div class="conv-card">
+      <div class="conv-head"><span class="year">{{时间}}</span>{{事件标题}}</div>
+      <div class="conv-body">
+        {{具体做了什么判断或行动}}
+      </div>
+    </div>
+    <div class="conv-card">
+      <div class="conv-head"><span class="year">{{时间}}</span>{{事件标题}}</div>
+      <div class="conv-body">
+        {{具体做了什么判断或行动}}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="section-title">对外影响力</div>
+
+  <div class="handle-strip">
+    <span class="handle serif">{{平台}} · <a href="{{URL}}">@{{HANDLE}}</a></span>
+    <span class="follower">{{粉丝数}} 粉丝</span>
+    <span class="desc">{{博客 / 周刊 / 其他内容产品简介}}</span>
+  </div>
+
+  <div class="impact-grid">
+    <div>
+      <div class="inf-block-title">代表性技术长文<span class="small">{{副标题}}</span></div>
+      <div class="art-row">
+        <div class="art-header">
+          <a class="art-title" href="{{URL}}">《{{文章标题}}》</a>
+          <span class="art-date">{{日期}}</span>
+        </div>
+        <div class="art-stats">{{浏览量 / 赞数 / 影响力指标}}</div>
+      </div>
+      <div class="art-row">
+        <div class="art-header">
+          <a class="art-title" href="{{URL}}">《{{文章标题}}》</a>
+          <span class="art-date">{{日期}}</span>
+        </div>
+        <div class="art-stats">{{浏览量 / 赞数}}</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="inf-block-title">受邀演讲<span class="small">{{副标题}}</span></div>
+      <div class="talk-row">
+        <div>
+          <div class="talk-title">《{{演讲标题}}》</div>
+          <div class="talk-venue">{{主办方 / 地点}}</div>
+        </div>
+        <div class="talk-date">{{日期}}</div>
+      </div>
+      <div class="talk-row">
+        <div>
+          <div class="talk-title">《{{演讲标题}}》</div>
+          <div class="talk-venue">{{主办方 / 地点}}</div>
+        </div>
+        <div class="talk-date">{{日期}}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="section-title">核心能力</div>
+  <!-- 5 项固定结构，每项至少 1 处橙色高亮 -->
+  <div class="skill-row">
+    <div class="skill-label">{{能力 1<br>标签}}</div>
+    <div class="skill-body">{{描述。至少 <span class="em-brand">1 处强调</span>}}</div>
+  </div>
+  <div class="skill-row">
+    <div class="skill-label">{{能力 2<br>标签}}</div>
+    <div class="skill-body">{{描述。至少 <span class="em-brand">1 处强调</span>}}</div>
+  </div>
+  <div class="skill-row">
+    <div class="skill-label">{{能力 3<br>标签}}</div>
+    <div class="skill-body">{{描述。至少 <span class="em-brand">1 处强调</span>}}</div>
+  </div>
+  <div class="skill-row">
+    <div class="skill-label">{{能力 4<br>标签}}</div>
+    <div class="skill-body">{{描述。至少 <span class="em-brand">1 处强调</span>}}</div>
+  </div>
+  <div class="skill-row">
+    <div class="skill-label">{{能力 5<br>标签}}</div>
+    <div class="skill-body">{{描述。至少 <span class="em-brand">1 处强调</span>}}</div>
+  </div>
+</section>
+
+<section class="no-break">
+  <div class="section-title">教育背景</div>
+  <div class="edu-row">
+    <div>
+      <span class="school serif">{{学校}}</span>
+      <span class="major">　· {{学院}} · {{专业}} · {{一句判断性描述，如"放弃保研直接就业"}}</span>
+    </div>
+    <div class="date">{{起止时间}}</div>
+  </div>
+</section>
+
+</body>
+</html>

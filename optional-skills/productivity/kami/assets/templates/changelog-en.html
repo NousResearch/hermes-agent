@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     CHANGELOG · English · parchment design system
+     1-2 page A4 release notes / version changelog
+     Structure: version header -> Breaking -> Features -> Fixes -> Thanks
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{PROJECT_NAME}} · {{VERSION}} Release Notes</title>
+<meta name="author" content="{{AUTHOR}}">
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="keywords" content="{{KEYWORDS}}">
+<meta name="generator" content="Kami">
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; font-style: normal; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 500; font-style: normal; }
+
+  @page {
+    size: A4;
+    margin: 20mm 22mm 22mm 22mm;
+    background: #f5f4ed;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --tag-bg:    #E4ECF5;
+
+    --serif: Charter, Georgia,
+             Palatino, "Times New Roman", serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", "Fira Code",
+             Consolas, Monaco, monospace;
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 20mm 22mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10.5pt;
+    line-height: 1.55;
+    widows: 3;
+    orphans: 3;
+  }
+
+  strong { font-weight: 500; }
+  .hl { color: var(--brand); font-weight: 500; }
+
+  /* VERSION HEADER */
+  .version-header {
+    text-align: center;
+    margin-bottom: 24pt;
+    padding-bottom: 16pt;
+    border-bottom: 0.5pt solid var(--border);
+  }
+  .version-logo {
+    font-family: var(--sans);
+    font-size: 14pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 2pt;
+    text-transform: uppercase;
+    margin-bottom: 8pt;
+  }
+  .version-title {
+    font-family: var(--serif);
+    font-size: 30pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.15;
+    letter-spacing: -0.5pt;
+    margin-bottom: 6pt;
+  }
+  .version-tagline {
+    font-size: 12pt;
+    color: var(--olive);
+    line-height: 1.5;
+  }
+  .version-date {
+    font-size: 10pt;
+    color: var(--stone);
+    margin-top: 6pt;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* SECTIONS */
+  h2 {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin: 20pt 0 8pt 0;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+    break-after: avoid;
+  }
+
+  h3 {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--dark-warm);
+    margin: 14pt 0 4pt 0;
+    break-after: avoid;
+  }
+
+  p { margin: 0 0 8pt 0; line-height: 1.55; widows: 2; orphans: 2; }
+
+  /* CHANGE LIST */
+  ol.changes {
+    margin: 6pt 0 14pt 0;
+    padding-left: 24pt;
+    line-height: 1.55;
+  }
+  ol.changes li {
+    margin-bottom: 4pt;
+  }
+  ol.changes li::marker {
+    color: var(--brand);
+    font-weight: 500;
+  }
+
+  /* TAG */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--brand);
+    font-family: var(--sans);
+    font-size: 9pt;
+    font-weight: 500;
+    padding: 1pt 6pt;
+    border-radius: 3pt;
+    letter-spacing: 0.4pt;
+    text-transform: uppercase;
+    margin-right: 3pt;
+  }
+  .tag.breaking {
+    background: #f0e0d8;
+    color: #8b4513;
+  }
+
+  /* CALLOUT */
+  .callout {
+    background: var(--ivory);
+    border-left: 2pt solid var(--brand);
+    padding: 8pt 14pt;
+    border-radius: 3pt;
+    margin: 12pt 0;
+    line-height: 1.55;
+    break-inside: avoid;
+  }
+
+  /* THANKS */
+  .thanks {
+    margin-top: 16pt;
+    padding: 10pt 14pt;
+    background: var(--ivory);
+    border-left: 1.4pt solid var(--brand);
+    border-radius: 4pt;
+    font-size: 10pt;
+    line-height: 1.55;
+    break-inside: avoid;
+  }
+  .thanks-label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    font-weight: 500;
+    margin-bottom: 4pt;
+  }
+
+  /* FOOTER */
+  .changelog-footer {
+    margin-top: 20pt;
+    padding-top: 8pt;
+    border-top: 0.3pt dotted var(--border);
+    font-size: 9pt;
+    color: var(--stone);
+    text-align: center;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+
+<!-- VERSION HEADER -->
+<div class="version-header">
+  <div class="version-logo">{{PROJECT_NAME}}</div>
+  <div class="version-title">{{VERSION}} {{RELEASE_NAME}}</div>
+  <div class="version-tagline">{{One-line release highlight.}}</div>
+  <div class="version-date">{{RELEASE_DATE}}</div>
+</div>
+
+<!-- CHANGELOG -->
+<h2>Changelog</h2>
+
+<h3>Breaking Changes</h3>
+<ol class="changes">
+  <li><span class="tag breaking">Breaking</span> {{Breaking change description.}}</li>
+</ol>
+
+<h3>Features</h3>
+<ol class="changes">
+  <li>{{New feature 1: one-line description.}}</li>
+  <li>{{New feature 2: one-line description.}}</li>
+  <li>{{New feature 3: one-line description.}}</li>
+</ol>
+
+<h3>Fixes</h3>
+<ol class="changes">
+  <li>{{Fix 1: one-line description.}}</li>
+  <li>{{Fix 2: one-line description.}}</li>
+  <li>{{Fix 3: one-line description.}}</li>
+</ol>
+
+<!-- THANKS (optional) -->
+<div class="thanks">
+  <div class="thanks-label">Acknowledgements</div>
+  {{Thank contributors, e.g. "Thanks to @user1, @user2 for their contributions."}}
+</div>
+
+<!-- FOOTER -->
+<div class="changelog-footer">
+  {{One-line project description.}}<br>
+  {{PROJECT_URL}}
+</div>
+
+</body>
+</html>

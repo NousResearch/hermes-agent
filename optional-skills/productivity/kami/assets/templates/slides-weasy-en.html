@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{Title}}</title>
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; }
+
+  @page {
+    size: 280mm 158mm;
+    margin: 0;
+    background: #f5f4ed;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --dark-warm:  #3d3d3a;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+    --border-soft:#e5e3d8;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans:  var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 13pt;
+    line-height: 1.55;
+  }
+
+  .slide {
+    width: 280mm;
+    height: 158mm;
+    padding: 16mm 20mm;
+    background: var(--parchment);
+    break-after: page;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .slide:last-child { break-after: auto; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 9.5pt;
+    letter-spacing: 2pt;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 2pt;
+  }
+
+  .page-num {
+    position: absolute;
+    bottom: 10mm;
+    right: 20mm;
+    font-family: var(--mono);
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 0.5pt;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .footer-mark {
+    position: absolute;
+    bottom: 10mm;
+    left: 20mm;
+    font-family: var(--mono);
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 1.5pt;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 24pt;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: -0.3pt;
+    color: var(--near-black);
+    margin-bottom: 14pt;
+  }
+
+  h3 {
+    font-family: var(--serif);
+    font-size: 15pt;
+    font-weight: 500;
+    line-height: 1.3;
+    color: var(--brand);
+    margin-bottom: 8pt;
+  }
+
+  .lead {
+    font-family: var(--serif);
+    font-size: 12pt;
+    font-weight: 400;
+    line-height: 1.5;
+    color: var(--olive);
+    margin-bottom: 8pt;
+  }
+
+  .mt {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    line-height: 1.3;
+    color: var(--near-black);
+    margin-bottom: 8pt;
+  }
+
+  .ml {
+    font-family: var(--serif);
+    font-size: 24pt;
+    font-weight: 500;
+    color: var(--brand);
+    margin-right: 6pt;
+  }
+
+  .ms {
+    font-family: var(--mono);
+    font-size: 7.5pt;
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+    color: var(--stone);
+    border-bottom: 0.3pt solid var(--border);
+    padding-bottom: 4pt;
+    margin-bottom: 14pt;
+  }
+
+  .mb {
+    font-family: var(--serif);
+    font-size: 11pt;
+    line-height: 1.55;
+    color: var(--dark-warm);
+    margin-bottom: 18pt;
+  }
+
+  .mi {
+    font-family: var(--serif);
+    font-size: 11pt;
+    line-height: 1.55;
+    color: var(--dark-warm);
+    padding: 8pt 0;
+  }
+
+  .mc {
+    font-family: var(--serif);
+    font-size: 9.5pt;
+    line-height: 1.5;
+    color: var(--olive);
+    border-top: 0.3pt solid var(--border);
+    padding-top: 8pt;
+    margin-top: 18pt;
+  }
+
+  .co {
+    font-family: var(--serif);
+    font-size: 11pt;
+    font-weight: 500;
+    line-height: 1.55;
+    color: var(--brand);
+    position: absolute;
+    bottom: 12mm;
+    left: 20mm;
+    right: 20mm;
+  }
+
+  .c2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22pt;
+  }
+
+  /* 2×2 aligned layout: use table, not grid */
+  .t2x2 {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 22pt 18pt;
+    margin: -18pt -22pt;
+  }
+  .t2x2 td {
+    vertical-align: top;
+    width: 50%;
+  }
+
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.data td {
+    padding: 8pt;
+    border-bottom: 0.3pt solid var(--border);
+    font-size: 11pt;
+    line-height: 1.55;
+  }
+  table.data td:first-child {
+    font-weight: 500;
+    color: var(--brand);
+  }
+
+  svg {
+    max-height: 105mm;
+    width: auto;
+  }
+
+  .cover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  .cover h1 {
+    font-family: var(--serif);
+    font-size: 38pt;
+    font-weight: 500;
+    line-height: 1.05;
+    letter-spacing: -0.5pt;
+    color: var(--near-black);
+    margin-bottom: 12pt;
+  }
+  .cover .sub {
+    font-family: var(--serif);
+    font-size: 14pt;
+    line-height: 1.45;
+    color: var(--olive);
+    max-width: 50ch;
+    margin-bottom: 32pt;
+  }
+  .cover .meta {
+    font-family: var(--mono);
+    font-size: 9.5pt;
+    color: var(--stone);
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+<!-- Cover -->
+<section class="slide cover">
+  <h1>{{Title}}</h1>
+  <div class="sub">{{Subtitle}}</div>
+  <div class="meta">{{Author}} · {{Date}}</div>
+</section>
+
+<!-- Content slide · two-column -->
+<section class="slide">
+  <span class="eyebrow">01 · {{Section}}</span>
+  <h2>{{Page Title}}</h2>
+  <p class="lead">{{Lead paragraph}}</p>
+
+  <div class="c2">
+    <div>
+      <h3>{{Left heading}}</h3>
+      <p class="mb">{{Left body}}</p>
+    </div>
+    <div>
+      <h3>{{Right heading}}</h3>
+      <p class="mb">{{Right body}}</p>
+    </div>
+  </div>
+
+  <div class="page-num">01</div>
+  <div class="footer-mark">{{Project}}</div>
+</section>
+
+<!-- Content slide · 2×2 modules -->
+<section class="slide">
+  <span class="eyebrow">02 · {{Section}}</span>
+  <h2>{{Page Title}}</h2>
+
+  <table class="t2x2">
+    <tr>
+      <td>
+        <div class="mt"><span class="ml">A</span>{{Module title}}</div>
+        <p class="mb">{{Module body}}</p>
+      </td>
+      <td>
+        <div class="mt"><span class="ml">B</span>{{Module title}}</div>
+        <p class="mb">{{Module body}}</p>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div class="mt"><span class="ml">C</span>{{Module title}}</div>
+        <p class="mb">{{Module body}}</p>
+      </td>
+      <td>
+        <div class="mt"><span class="ml">D</span>{{Module title}}</div>
+        <p class="mb">{{Module body}}</p>
+      </td>
+    </tr>
+  </table>
+
+  <div class="page-num">02</div>
+  <div class="footer-mark">{{Project}}</div>
+</section>
+
+<!-- Content slide · pinned callout -->
+<section class="slide">
+  <span class="eyebrow">03 · {{Section}}</span>
+  <h2>{{Page Title}}</h2>
+
+  <p class="mb">{{Body content}}</p>
+
+  <div class="co">{{Key takeaway or bottom-line conclusion}}</div>
+
+  <div class="page-num">03</div>
+  <div class="footer-mark">{{Project}}</div>
+</section>
+
+<!-- Content slide · data table -->
+<section class="slide">
+  <span class="eyebrow">04 · {{Section}}</span>
+  <h2>{{Page Title}}</h2>
+
+  <table class="data">
+    <tr>
+      <td>{{Dimension}}</td>
+      <td>{{Value}}</td>
+      <td>{{Note}}</td>
+    </tr>
+    <tr>
+      <td>{{Dimension}}</td>
+      <td>{{Value}}</td>
+      <td>{{Note}}</td>
+    </tr>
+  </table>
+
+  <div class="page-num">04</div>
+  <div class="footer-mark">{{Project}}</div>
+</section>
+
+</body>
+</html>

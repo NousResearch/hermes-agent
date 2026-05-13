@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     LETTER · English · parchment design system
+     A4 formal letter / memo / recommendation / resignation / statement
+     Characteristics: minimal, serif-led, slightly larger body type
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{LETTER_SUBJECT}}</title>
+<meta name="author" content="{{AUTHOR}}">
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="keywords" content="{{KEYWORDS}}">
+<meta name="generator" content="Kami">
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; font-style: normal; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 500; font-style: normal; }
+
+  @page {
+    size: A4;
+    margin: 25mm 25mm 25mm 25mm;
+    background: #f5f4ed;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --ivory:     #faf9f5;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+
+    --serif: Charter, Georgia,
+             Palatino, "Times New Roman", serif;
+    --sans: var(--serif);
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 25mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 11.5pt;
+    line-height: 1.55;
+  }
+
+  .letterhead {
+    text-align: right;
+    margin-bottom: 30pt;
+    font-size: 10pt;
+    line-height: 1.55;
+    color: var(--olive);
+  }
+  .letterhead .sender-name {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 4pt;
+  }
+  .letterhead a { color: var(--dark-warm); text-decoration: none; }
+
+  .date {
+    text-align: right;
+    font-size: 10.5pt;
+    color: var(--olive);
+    margin-bottom: 24pt;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .recipient {
+    margin-bottom: 24pt;
+    line-height: 1.5;
+  }
+  .recipient .to {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 0.5pt;
+    text-transform: uppercase;
+    margin-bottom: 3pt;
+    font-weight: 500;
+  }
+  .recipient .name {
+    font-size: 12pt;
+    font-weight: 500;
+    color: var(--near-black);
+  }
+  .recipient .org {
+    font-size: 10.5pt;
+    color: var(--olive);
+  }
+
+  .subject {
+    margin-bottom: 24pt;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+  }
+  .subject .label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 3pt;
+    font-weight: 500;
+  }
+  .subject .title {
+    font-size: 16pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.25;
+    letter-spacing: -0.2pt;
+  }
+
+  .salutation {
+    margin-bottom: 18pt;
+    font-size: 12pt;
+    color: var(--near-black);
+  }
+
+  .body-content p {
+    margin-bottom: 12pt;
+    text-align: left;
+    line-height: 1.55;
+  }
+  .body-content p:first-child { text-indent: 0; }
+  .body-content p.indent { text-indent: 1.5em; }
+
+  .body-content .hl {
+    color: var(--brand);
+    font-weight: 500;
+  }
+
+  .closing {
+    margin-top: 28pt;
+    line-height: 1.55;
+  }
+  .closing .regards {
+    margin-bottom: 30pt;
+    color: var(--near-black);
+  }
+  .closing .signature {
+    font-size: 14pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 3pt;
+  }
+  .closing .signoff-meta {
+    font-family: var(--sans);
+    font-size: 10pt;
+    color: var(--olive);
+    line-height: 1.5;
+  }
+
+  .attachments {
+    margin-top: 36pt;
+    padding-top: 10pt;
+    border-top: 0.5pt dotted var(--border);
+    font-family: var(--sans);
+    font-size: 9.5pt;
+    color: var(--stone);
+    line-height: 1.55;
+  }
+  .attachments .label {
+    color: var(--brand);
+    margin-right: 6pt;
+    font-weight: 500;
+    letter-spacing: 0.5pt;
+    text-transform: uppercase;
+  }
+
+  /* Memo variant: sans-led, no indent */
+  body.memo {
+    font-family: var(--sans);
+    font-size: 10.5pt;
+    line-height: 1.55;
+  }
+  body.memo .body-content p { text-indent: 0; margin-bottom: 10pt; }
+
+  /* TABLE (kami-table) */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    margin: 10pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 5pt 8pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 4pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 3pt 6pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 2pt 6pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+</style>
+</head>
+<body>
+
+<div class="letterhead">
+  <div class="sender-name">{{SENDER_NAME}}</div>
+  <div>{{SENDER_ADDRESS / DEPARTMENT / ORGANIZATION}}</div>
+  <div>{{PHONE}} · <a href="mailto:{{EMAIL}}">{{EMAIL}}</a></div>
+</div>
+
+<div class="date">{{DATE, e.g. April 18, 2026}}</div>
+
+<div class="recipient">
+  <div class="to">To</div>
+  <div class="name">{{RECIPIENT_NAME_OR_TITLE}}</div>
+  <div class="org">{{RECIPIENT_ORG / DEPARTMENT}}</div>
+</div>
+
+<div class="subject">
+  <div class="label">Re</div>
+  <div class="title">{{One-sentence subject line: what this letter is about.}}</div>
+</div>
+
+<div class="salutation">{{Dear {{NAME}},}}</div>
+
+<div class="body-content">
+
+<p>
+{{Paragraph 1: state the purpose. Why you are writing and the core intent.
+No preamble. Two sentences at most so the reader knows what you want from this letter.}}
+</p>
+
+<p>
+{{Paragraph 2: elaborate. Background, reasoning, evidence. Use
+<span class="hl">brand-color emphasis</span> on the single most important point.}}
+</p>
+
+<p>
+{{Paragraph 3: be specific. What you want the reader to do, by when,
+and how to reach you. Give the action a clear exit.}}
+</p>
+
+<p>
+{{Paragraph 4 (optional): close. Express anticipation, gratitude, or a courteous sign-off line.}}
+</p>
+
+</div>
+
+<div class="closing">
+  <div class="regards">
+    {{Closing - "Best regards," / "Sincerely," / "Warm regards,"}}
+  </div>
+
+  <div class="signature">{{HANDWRITTEN_NAME_OR_SIGNATURE}}</div>
+  <div class="signoff-meta">
+    {{TITLE · DEPARTMENT}}<br>
+    {{DATE (optional restatement)}}
+  </div>
+</div>
+
+<div class="attachments">
+  <span class="label">Enclosures</span>
+  {{List - ① Attachment 1 · ② Attachment 2}}
+</div>
+
+</body>
+</html>

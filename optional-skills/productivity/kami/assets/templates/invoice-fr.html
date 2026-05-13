@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     INVOICE · French · Kami parchment design system · Dingbat SAS
+     A4 invoice template — fill {{PLACEHOLDERS}} then build with Kami
+     ================================================================== -->
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>{{FACTURE_NUMERO}}</title>
+<meta name="author" content="Dingbat SAS">
+<meta name="description" content="{{FACTURE_DESCRIPTION}}">
+<meta name="keywords" content="facture, Dingbat, {{CLIENT_NOM}}">
+<meta name="generator" content="Kami">
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; font-style: normal; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 500; font-style: normal; }
+
+  @page {
+    size: A4;
+    margin: 18mm 20mm 18mm 20mm;
+    background: #f5f4ed;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:   #f5f4ed;
+    --near-black:  #141413;
+    --dark-warm:   #3d3d3a;
+    --olive:       #504e49;
+    --stone:       #6b6a64;
+    --brand:       #1B365D;
+    --brand-light: #2D5A8A;
+    --ivory:       #faf9f5;
+    --warm-sand:   #e8e6dc;
+    --border:      #e8e6dc;
+    --border-soft: #e5e3d8;
+
+    --serif: Charter, Georgia, Palatino, "Times New Roman", serif;
+    --sans: var(--serif);
+    --mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 18mm 20mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10pt;
+    line-height: 1.5;
+  }
+
+  strong { font-weight: 500; }
+
+  /* ── HEADER ── */
+  .invoice-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 20pt;
+    padding-bottom: 16pt;
+    border-bottom: 1pt solid var(--brand);
+  }
+
+  .logo-block {
+    display: flex;
+    align-items: center;
+    gap: 12pt;
+  }
+
+  .logo-block img {
+    height: 72pt;
+    width: auto;
+    image-rendering: crisp-edges;
+  }
+
+  .invoice-title-block {
+    text-align: right;
+  }
+
+  .invoice-title {
+    font-size: 28pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1.1;
+    letter-spacing: -0.5pt;
+    margin-bottom: 4pt;
+  }
+
+  .invoice-number {
+    font-family: var(--mono);
+    font-size: 11pt;
+    color: var(--dark-warm);
+    letter-spacing: 0.3pt;
+  }
+
+  .invoice-date {
+    font-size: 10pt;
+    color: var(--olive);
+    margin-top: 2pt;
+  }
+
+  /* ── TWO-COLUMN INFO ── */
+  .info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20pt;
+    margin-bottom: 20pt;
+  }
+
+  .info-block {
+    background: var(--ivory);
+    border: 1pt solid var(--border);
+    border-radius: 6pt;
+    padding: 12pt 14pt;
+  }
+
+  .info-block .label {
+    font-family: var(--mono);
+    font-size: 8.5pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 6pt;
+  }
+
+  .info-block .company-name {
+    font-size: 12pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 2pt;
+  }
+
+  .info-block .contact-name {
+    font-size: 10pt;
+    color: var(--dark-warm);
+    margin-bottom: 4pt;
+  }
+
+  .info-block .detail {
+    font-size: 9.5pt;
+    color: var(--olive);
+    line-height: 1.5;
+  }
+
+  .info-block .detail a {
+    color: var(--brand-light);
+    text-decoration: none;
+  }
+
+  .info-block .tva {
+    font-family: var(--mono);
+    font-size: 8.5pt;
+    color: var(--stone);
+    margin-top: 4pt;
+    letter-spacing: 0.2pt;
+  }
+
+  /* ── MESSAGE ── */
+  .invoice-message {
+    font-size: 10pt;
+    color: var(--olive);
+    line-height: 1.55;
+    margin-bottom: 18pt;
+    font-style: italic;
+  }
+
+  /* ── LINE ITEMS TABLE ── */
+  table.invoice-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    margin: 0 0 12pt 0;
+    break-inside: avoid;
+  }
+
+  table.invoice-table thead th {
+    text-align: left;
+    font-weight: 500;
+    font-size: 8.5pt;
+    color: var(--dark-warm);
+    padding: 6pt 8pt;
+    border-bottom: 1pt solid var(--brand);
+    letter-spacing: 0.3pt;
+    text-transform: uppercase;
+    font-family: var(--mono);
+  }
+
+  table.invoice-table thead th:nth-child(1) { width: 8%; }
+  table.invoice-table thead th:nth-child(2) { width: 40%; }
+  table.invoice-table thead th:nth-child(3) { width: 12%; text-align: right; }
+  table.invoice-table thead th:nth-child(4) { width: 8%; text-align: center; }
+  table.invoice-table thead th:nth-child(5) { width: 8%; text-align: center; }
+  table.invoice-table thead th:nth-child(6) { width: 12%; text-align: right; }
+
+  table.invoice-table tbody td {
+    padding: 8pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+
+  table.invoice-table tbody td:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+  table.invoice-table tbody td:nth-child(4) { text-align: center; }
+  table.invoice-table tbody td:nth-child(5) { text-align: center; }
+  table.invoice-table tbody td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
+
+  table.invoice-table tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+
+  .item-type {
+    font-family: var(--mono);
+    font-size: 8pt;
+    color: var(--brand);
+    letter-spacing: 0.3pt;
+    text-transform: uppercase;
+    background: #EEF2F7;
+    padding: 1pt 5pt;
+    border-radius: 2pt;
+    display: inline-block;
+  }
+
+  .item-desc {
+    font-size: 9.5pt;
+    line-height: 1.45;
+  }
+
+  .item-desc .sub {
+    font-size: 8.5pt;
+    color: var(--olive);
+    display: block;
+    margin-top: 2pt;
+  }
+
+  /* ── TOTALS ── */
+  .totals-block {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 20pt;
+  }
+
+  .totals-table {
+    width: 50%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    break-inside: avoid;
+  }
+
+  .totals-table td {
+    padding: 5pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+  }
+
+  .totals-table td:first-child {
+    color: var(--olive);
+  }
+
+  .totals-table td:last-child {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+
+  .totals-table tr.grand-total td {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--brand);
+    border-top: 1.5pt solid var(--brand);
+    border-bottom: none;
+    padding-top: 8pt;
+  }
+
+  /* ── CONDITIONS ── */
+  .conditions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16pt;
+    margin-bottom: 16pt;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .conditions-block {
+    background: var(--ivory);
+    border: 1pt solid var(--border);
+    border-radius: 6pt;
+    padding: 12pt 14pt;
+  }
+
+  .conditions-block .label {
+    font-family: var(--mono);
+    font-size: 8.5pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 0.8pt;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+
+  .conditions-block .value {
+    font-size: 10pt;
+    color: var(--near-black);
+    line-height: 1.5;
+  }
+
+  .conditions-block .notes {
+    font-size: 9.5pt;
+    color: var(--olive);
+    line-height: 1.5;
+    margin-top: 4pt;
+  }
+
+  /* ── RIB ── */
+  .rib-block {
+    background: var(--ivory);
+    border: 1pt solid var(--border);
+    border-radius: 6pt;
+    padding: 12pt 14pt;
+    margin-bottom: 16pt;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .rib-block .label {
+    font-family: var(--mono);
+    font-size: 8.5pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 0.8pt;
+    text-transform: uppercase;
+    margin-bottom: 6pt;
+  }
+
+  .rib-details {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2pt 12pt;
+    font-size: 9.5pt;
+  }
+
+  .rib-details .rib-label {
+    color: var(--olive);
+  }
+
+  .rib-details .rib-value {
+    font-family: var(--mono);
+    font-size: 9pt;
+    color: var(--near-black);
+    letter-spacing: 0.3pt;
+  }
+
+  /* ── FOOTER ── */
+  .invoice-footer {
+    margin-top: 20pt;
+    padding-top: 10pt;
+    border-top: 0.5pt dotted var(--border);
+    text-align: center;
+    font-size: 8.5pt;
+    color: var(--stone);
+    line-height: 1.5;
+    font-family: var(--mono);
+    letter-spacing: 0.2pt;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .invoice-footer .footer-brand {
+    font-size: 9.5pt;
+    color: var(--dark-warm);
+    font-weight: 500;
+    margin-bottom: 2pt;
+  }
+
+  .page-number {
+    text-align: right;
+    font-size: 8.5pt;
+    color: var(--stone);
+    margin-top: 8pt;
+    font-family: var(--mono);
+  }
+
+  /* ── PROVISOIRE WATERMARK ── */
+  .provisoire-watermark {
+    display: none; /* activated via {{PROVISOIRE_DISPLAY}} */
+    text-align: center;
+    margin: 0 0 16pt 0;
+    font-size: 14pt;
+    font-weight: 500;
+    color: #cc6600;
+    letter-spacing: 6pt;
+    text-transform: uppercase;
+    border: 2pt solid #cc6600;
+    border-radius: 4pt;
+    padding: 6pt 16pt;
+    font-family: var(--mono);
+    background: #fff5e0;
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ PROVISOIRE WATERMARK ═══ -->
+<div class="provisoire-watermark" style="display:{{PROVISOIRE_DISPLAY}};">⚠ PROVISOIRE</div>
+
+<!-- ═══ HEADER ═══ -->
+<div class="invoice-header">
+  <div class="logo-block">
+    <img src="{{LOGO_PATH}}" alt="Dingbat">
+  </div>
+  <div class="invoice-title-block">
+    <div class="invoice-title">Facture</div>
+    <div class="invoice-number">{{FACTURE_NUMERO}}</div>
+    <div class="invoice-date">{{FACTURE_DATE}}</div>
+  </div>
+</div>
+
+<!-- ═══ EMETTEUR / DESTINATAIRE ═══ -->
+<div class="info-grid">
+  <div class="info-block">
+    <div class="label">Émetteur</div>
+    <div class="company-name">Dingbat SAS</div>
+    <div class="contact-name">{{EMETTEUR_CONTACT}}</div>
+    <div class="detail">
+      {{EMETTEUR_ADRESSE}}<br>
+      {{EMETTEUR_VILLE}} {{EMETTEUR_CODE_POSTAL}}<br>
+      {{EMETTEUR_PAYS}}<br>
+      <a href="mailto:{{EMETTEUR_EMAIL}}">{{EMETTEUR_EMAIL}}</a><br>
+      <a href="https://{{EMETTEUR_WEBSITE}}">{{EMETTEUR_WEBSITE}}</a>
+    </div>
+    <div class="tva">SIREN: {{EMETTEUR_SIREN}} · TVA: {{EMETTEUR_TVA}}</div>
+  </div>
+  <div class="info-block">
+    <div class="label">Destinataire</div>
+    <div class="company-name">{{CLIENT_SOCIETE}}</div>
+    <div class="contact-name">{{CLIENT_CONTACT}}</div>
+    <div class="detail">
+      {{CLIENT_ADRESSE}}<br>
+      {{CLIENT_VILLE}} {{CLIENT_CODE_POSTAL}}<br>
+      {{CLIENT_PAYS}}<br>
+      Tél: {{CLIENT_TELEPHONE}}<br>
+      <a href="mailto:{{CLIENT_EMAIL}}">{{CLIENT_EMAIL}}</a><br>
+      <a href="https://{{CLIENT_WEBSITE}}">{{CLIENT_WEBSITE}}</a>
+    </div>
+    <div class="tva">TVA: {{CLIENT_TVA}}</div>
+  </div>
+</div>
+
+<!-- ═══ MESSAGE ═══ -->
+<div class="invoice-message">
+  {{MESSAGE_INTRO — ex: Veuillez trouver les détails de facturation et de paiement ci-dessous. Excellente journée à vous !}}
+</div>
+
+<!-- ═══ LINE ITEMS ═══ -->
+<table class="invoice-table">
+  <thead>
+    <tr>
+      <th>Type</th>
+      <th>Description</th>
+      <th>Prix unit. HT</th>
+      <th>Qté</th>
+      <th>TVA</th>
+      <th>Total HT</th>
+    </tr>
+  </thead>
+  <tbody>
+    <!-- ═══ LINE ITEM 1 ═══ -->
+    <tr>
+      <td><span class="item-type">{{TYPE_1}}</span></td>
+      <td class="item-desc">
+        {{DESCRIPTION_1}}
+        <span class="sub">{{DETAILS_1}}</span>
+      </td>
+      <td>{{PRIX_UNITAIRE_1}} €</td>
+      <td>{{QUANTITE_1}}</td>
+      <td>{{TVA_TAU_1}}%</td>
+      <td>{{TOTAL_HT_1}} €</td>
+    </tr>
+    <!-- ═══ LINE ITEM 2 ═══ -->
+    <tr>
+      <td><span class="item-type">{{TYPE_2}}</span></td>
+      <td class="item-desc">
+        {{DESCRIPTION_2}}
+        <span class="sub">{{DETAILS_2}}</span>
+      </td>
+      <td>{{PRIX_UNITAIRE_2}} €</td>
+      <td>{{QUANTITE_2}}</td>
+      <td>{{TVA_TAU_2}}%</td>
+      <td>{{TOTAL_HT_2}} €</td>
+    </tr>
+    <!-- ═══ LINE ITEM 3 ═══ -->
+    <tr>
+      <td><span class="item-type">{{TYPE_3}}</span></td>
+      <td class="item-desc">
+        {{DESCRIPTION_3}}
+        <span class="sub">{{DETAILS_3}}</span>
+      </td>
+      <td>{{PRIX_UNITAIRE_3}} €</td>
+      <td>{{QUANTITE_3}}</td>
+      <td>{{TVA_TAU_3}}%</td>
+      <td>{{TOTAL_HT_3}} €</td>
+    </tr>
+    <!-- Add more rows as needed -->
+  </tbody>
+</table>
+
+<!-- ═══ TOTALS ═══ -->
+<div class="totals-block">
+  <table class="totals-table">
+    <tr>
+      <td>Total HT</td>
+      <td>{{TOTAL_HT}} €</td>
+    </tr>
+    <tr>
+      <td>TVA ({{TVA_GLOBAL}}%)</td>
+      <td>{{MONTANT_TVA}} €</td>
+    </tr>
+    <tr class="grand-total">
+      <td>Total TTC</td>
+      <td>{{TOTAL_TTC}} €</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ═══ CONDITIONS ═══ -->
+<div class="conditions-grid">
+  <div class="conditions-block">
+    <div class="label">Conditions de règlement</div>
+    <div class="value">{{CONDITION_REGLEMENT}}</div>
+    <div class="label" style="margin-top: 8pt;">Mode de règlement</div>
+    <div class="value">{{MODE_REGLEMENT}}</div>
+  </div>
+  <div class="conditions-block">
+    <div class="label">Notes</div>
+    <div class="notes">{{NOTES_FACTURE}}</div>
+  </div>
+</div>
+
+<!-- ═══ RIB ═══ -->
+<div class="rib-block">
+  <div class="label">Référence bancaire</div>
+  <div class="rib-details">
+    <span class="rib-label">Code banque :</span>
+    <span class="rib-value">{{RIB_CODE_BANQUE}}</span>
+    <span class="rib-label">Code guichet :</span>
+    <span class="rib-value">{{RIB_CODE_GUICHET}}</span>
+    <span class="rib-label">N° compte :</span>
+    <span class="rib-value">{{RIB_NUMERO_COMPTE}}</span>
+    <span class="rib-label">Clé RIB :</span>
+    <span class="rib-value">{{RIB_CLE}}</span>
+    <span class="rib-label">IBAN :</span>
+    <span class="rib-value">{{RIB_IBAN}}</span>
+    <span class="rib-label">BIC/SWIFT :</span>
+    <span class="rib-value">{{RIB_BIC}}</span>
+  </div>
+</div>
+
+<!-- ═══ FOOTER ═══ -->
+<div class="invoice-footer">
+  <div class="footer-brand">SAS Dingbat · Au capital de {{CAPITAL_SOCIAL}}€</div>
+  <div>RCS {{VILLE_RCS}} {{NUMERO_RCS}} · APE {{CODE_APE}}</div>
+  <div>{{ADRESSE_SIEGE}} · <a href="https://www.dingbat.win" style="color:var(--brand-light);text-decoration:none;">www.dingbat.win</a> · <em>Here we go!</em></div>
+  <div class="page-number">Page {{PAGE_NUM}} / {{PAGE_TOTAL}}</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     EQUITY REPORT · English · parchment design system
+     2-3 page A4 equity research / valuation / investment memo
+     Structure: header -> metrics -> charts -> financials -> comps -> risks -> summary
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{COMPANY_NAME}} · Equity Report</title>
+<meta name="author" content="{{AUTHOR}}">
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="keywords" content="{{KEYWORDS}}">
+<meta name="generator" content="Kami">
+<style>
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; font-style: normal; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 500; font-style: normal; }
+
+  @page {
+    size: A4;
+    margin: 16mm 18mm 18mm 18mm;
+    background: #f5f4ed;
+
+    @bottom-center {
+      content: counter(page) "  ·  {{COMPANY_NAME}} Report";
+      font-family: Charter, Georgia, Palatino, serif;
+      font-size: 9pt;
+      color: #6b6a64;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --tag-bg:    #E4ECF5;
+    --positive:  #1B365D;
+    --negative:  #6b6a64;
+
+    --serif: Charter, Georgia,
+             Palatino, "Times New Roman", serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", "Fira Code",
+             Consolas, Monaco, monospace;
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 16mm 18mm 18mm 18mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10pt;
+    line-height: 1.5;
+    widows: 3;
+    orphans: 3;
+  }
+
+  strong { font-weight: 500; }
+  .hl { color: var(--brand); font-weight: 500; }
+
+  /* HEADER */
+  .report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 14pt;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+  }
+  .ticker-block { flex: 1; }
+  .ticker-eyebrow {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+    font-weight: 500;
+    margin-bottom: 4pt;
+  }
+  .ticker-name {
+    font-family: var(--serif);
+    font-size: 26pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.12;
+    letter-spacing: -0.3pt;
+    margin-bottom: 4pt;
+  }
+  .ticker-sub {
+    font-size: 10pt;
+    color: var(--olive);
+    line-height: 1.4;
+  }
+  .price-block {
+    text-align: right;
+    padding-top: 4pt;
+  }
+  .price-current {
+    font-family: var(--serif);
+    font-size: 30pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.5pt;
+  }
+  .price-change {
+    font-size: 10pt;
+    font-weight: 500;
+    margin-top: 2pt;
+    font-variant-numeric: tabular-nums;
+  }
+  .price-change.up { color: var(--positive); }
+  .price-change.down { color: var(--negative); }
+  .price-date {
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 2pt;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* METRICS */
+  .metrics {
+    display: flex;
+    gap: 16pt;
+    margin-bottom: 16pt;
+    padding: 6pt 0;
+    border-top: 0.3pt dotted var(--border);
+    border-bottom: 0.3pt dotted var(--border);
+  }
+  .metric {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 5pt;
+  }
+  .metric-value {
+    font-family: var(--serif);
+    font-size: 18pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    letter-spacing: -0.3pt;
+  }
+  .metric-label {
+    font-size: 9pt;
+    color: var(--olive);
+    line-height: 1.3;
+  }
+
+  /* SECTIONS */
+  h2 {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin: 18pt 0 6pt 0;
+    break-after: avoid;
+  }
+
+  h3 {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--dark-warm);
+    margin: 12pt 0 4pt 0;
+    break-after: avoid;
+  }
+
+  p { margin: 0 0 8pt 0; line-height: 1.5; widows: 2; orphans: 2; }
+
+  ul, ol {
+    margin: 4pt 0 8pt 0;
+    padding-left: 18pt;
+    line-height: 1.5;
+  }
+  ul li::marker { color: var(--brand); }
+  ol li::marker { color: var(--brand); font-weight: 500; }
+
+  /* TAG */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--brand);
+    font-family: var(--sans);
+    font-size: 9pt;
+    font-weight: 500;
+    padding: 1pt 6pt;
+    border-radius: 3pt;
+    letter-spacing: 0.4pt;
+    text-transform: uppercase;
+    margin-right: 3pt;
+  }
+
+  /* TABLE (kami-table) */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    margin: 8pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-family: var(--sans);
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 5pt 8pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 4pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 3pt 6pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 2pt 6pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+
+  /* CALLOUT */
+  .callout {
+    background: var(--ivory);
+    border-left: 2pt solid var(--brand);
+    padding: 8pt 12pt;
+    border-radius: 3pt;
+    margin: 10pt 0;
+    line-height: 1.5;
+    break-inside: avoid;
+  }
+
+  /* FIGURE */
+  figure { margin: 12pt 0; break-inside: avoid; }
+  figcaption {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 4pt;
+    text-align: center;
+  }
+
+  /* RISK MATRIX */
+  .risk-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10pt;
+    margin: 8pt 0;
+  }
+  .risk-item {
+    padding: 6pt 10pt;
+    background: var(--ivory);
+    border-radius: 3pt;
+    break-inside: avoid;
+  }
+  .risk-label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 0.3pt;
+    text-transform: uppercase;
+    margin-bottom: 2pt;
+  }
+  .risk-desc {
+    font-size: 9pt;
+    color: var(--olive);
+    line-height: 1.45;
+  }
+
+  /* TWO-COLUMN */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16pt;
+  }
+
+  /* ANALYST SUMMARY */
+  .analyst-box {
+    background: var(--ivory);
+    border-left: 1.4pt solid var(--brand);
+    border-radius: 4pt;
+    padding: 10pt 14pt;
+    margin: 12pt 0;
+    break-inside: avoid;
+  }
+
+  /* CHART PLACEHOLDER */
+  .chart-placeholder {
+    background: var(--ivory);
+    border-radius: 4pt;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--stone);
+    font-size: 9pt;
+  }
+  .analyst-label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    font-weight: 500;
+    margin-bottom: 4pt;
+  }
+
+  /* FOOTER */
+  .report-footer {
+    margin-top: 16pt;
+    padding-top: 6pt;
+    border-top: 0.3pt dotted var(--border);
+    font-size: 9pt;
+    color: var(--stone);
+    display: flex;
+    justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .page-break { break-before: page; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="report-header">
+  <div class="ticker-block">
+    <div class="ticker-eyebrow">{{EYEBROW - e.g. Equity Research / Valuation / Investment Memo}}</div>
+    <div class="ticker-name">{{COMPANY_NAME}} <span style="font-size: 14pt; color: var(--stone);">{{TICKER}}</span></div>
+    <div class="ticker-sub">{{SECTOR}} · {{EXCHANGE}} · {{One-line thesis.}}</div>
+  </div>
+  <div class="price-block">
+    <div class="price-current">{{CURRENT_PRICE}}</div>
+    <div class="price-change up">{{CHANGE - e.g. "+12.3%"}}</div>
+    <div class="price-date">{{DATE}}</div>
+  </div>
+</div>
+
+<!-- METRICS -->
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-value">{{NUMBER}}</div>
+    <div class="metric-label">Market Cap</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{NUMBER}}</div>
+    <div class="metric-label">P/E Ratio</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{NUMBER}}</div>
+    <div class="metric-label">Revenue</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{NUMBER}}</div>
+    <div class="metric-label">Margin</div>
+  </div>
+</div>
+
+<!-- INVESTMENT THESIS -->
+<h2>Investment Thesis</h2>
+<p>{{Two or three sentences laying out the core thesis. Use <span class="hl">key figures</span> to support the argument. This paragraph is the soul of the report.}}</p>
+
+<div class="callout">
+  {{One-line verdict: buy / hold / watch, and the single strongest reason.}}
+</div>
+
+<!-- CHART -->
+<h2>Price Action</h2>
+<figure>
+  <div class="chart-placeholder" style="height: 60mm;">
+    [Candlestick / price chart placeholder - extract SVG from diagrams/]
+  </div>
+  <figcaption>{{Chart title, e.g. "20-day price action showing accumulation phase."}}</figcaption>
+</figure>
+
+<!-- FINANCIALS -->
+<h2>Financial Overview</h2>
+<table class="financial striped">
+  <thead>
+    <tr>
+      <th>Metric</th>
+      <th>FY2023</th>
+      <th>FY2024</th>
+      <th>FY2025E</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Revenue</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>Net Income</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>EPS</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>Gross Margin</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>ROE</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+  </tbody>
+</table>
+
+<!-- REVENUE BREAKDOWN -->
+<h2>Revenue Breakdown</h2>
+<figure>
+  <div class="chart-placeholder" style="height: 50mm;">
+    [Revenue breakdown chart placeholder - donut or waterfall]
+  </div>
+  <figcaption>{{Chart title.}}</figcaption>
+</figure>
+
+<!-- COMPETITIVE POSITIONING -->
+<div class="page-break"></div>
+<h2>Competitive Landscape</h2>
+<p>{{Industry landscape overview, one or two paragraphs.}}</p>
+
+<table class="financial compact striped">
+  <thead>
+    <tr>
+      <th>Company</th>
+      <th>Mkt Cap</th>
+      <th>P/E</th>
+      <th>Rev Growth</th>
+      <th>Margin</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>{{TARGET}}</strong></td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>{{COMP_A}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>{{COMP_B}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+    <tr><td>{{COMP_C}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td><td>{{VAL}}</td></tr>
+  </tbody>
+</table>
+
+<!-- RISKS -->
+<h2>Risk Factors</h2>
+<div class="risk-grid">
+  <div class="risk-item">
+    <div class="risk-label">{{Risk Type 1}}</div>
+    <div class="risk-desc">{{Risk description.}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{Risk Type 2}}</div>
+    <div class="risk-desc">{{Risk description.}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{Risk Type 3}}</div>
+    <div class="risk-desc">{{Risk description.}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{Risk Type 4}}</div>
+    <div class="risk-desc">{{Risk description.}}</div>
+  </div>
+</div>
+
+<!-- ANALYST SUMMARY -->
+<div class="analyst-box">
+  <div class="analyst-label">Analyst Summary</div>
+  {{Three to five sentences summarizing the position. Include target price (if applicable), rating, key catalysts, and core assumptions.}}
+</div>
+
+<!-- FOOTER -->
+<div class="report-footer">
+  <span>{{FIRM / DISCLAIMER}}</span>
+  <span>{{AUTHOR}} · {{DATE}}</span>
+</div>
+
+</body>
+</html>

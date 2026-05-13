@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Candlestick Chart (kami palette)
+     OHLC price history for equity analysis.
+     Up to 30 data points. Demo: 20 trading days.
+     DATA START / DATA END marks the region Claude replaces when filling.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Candlestick Chart · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:    #f5f4ed;
+    --ivory:        #faf9f5;
+    --near-black:   #141413;
+    --olive:        #504e49;
+    --stone:        #6b6a64;
+    --light-stone:  #b8b7b0;
+    --brand:        #1B365D;
+    --brand-tint:   #EEF2F7;
+    --grid:         #e8e7e1;
+    --border:       #e8e6dc;
+    --up:           #1B365D;
+    --down:         #6b6a64;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 920px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 640px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Candlestick · kami diagram</p>
+    <h1>{{Chart Title}}</h1>
+
+    <!-- ============================================================
+         DATA START
+         Chart area: x=60 y=40 w=640 h=280 · base y=320
+         viewBox: 0 0 760 420
+         Candles: 20 · candle-spacing=32 · body-width=16
+         Price range: 100-160 · scale: 1 unit = 4.67px (280/60)
+         Y-axis: 100 / 110 / 120 / 130 / 140 / 150 / 160
+         Up color: #1B365D (brand) · Down color: #6b6a64 (stone)
+         Wick: 1.2px stroke centered on candle
+         ============================================================ -->
+    <svg viewBox="0 0 760 420" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Canvas -->
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- Horizontal grid lines (y: 320=100, 273=110, 227=120, 180=130, 133=140, 87=150, 40=160) -->
+      <line x1="60" y1="320" x2="700" y2="320" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="273" x2="700" y2="273" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="227" x2="700" y2="227" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="180" x2="700" y2="180" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="133" x2="700" y2="133" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="87"  x2="700" y2="87"  stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="40"  x2="700" y2="40"  stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- Y-axis labels -->
+      <text x="52" y="324" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">100</text>
+      <text x="52" y="277" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">110</text>
+      <text x="52" y="231" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">120</text>
+      <text x="52" y="184" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">130</text>
+      <text x="52" y="137" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">140</text>
+      <text x="52" y="91"  fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">150</text>
+      <text x="52" y="44"  fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">160</text>
+
+      <!-- Candlesticks: 20 days, x starts at 76, spacing=32
+           price_to_y(p) = 320 - (p - 100) * 4.67
+           Up candle: fill=#1B365D (close > open, body from open to close)
+           Down candle: fill=#6b6a64 (close < open, body from close to open) -->
+
+      <!-- Day 1: O=120 H=128 L=116 C=126 (UP) -->
+      <line x1="76" y1="187" x2="76" y2="245" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="68" y="194" width="16" height="28" fill="#1B365D" rx="1"/>
+
+      <!-- Day 2: O=126 H=132 L=122 C=130 (UP) -->
+      <line x1="108" y1="171" x2="108" y2="217" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="100" y="180" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 3: O=130 H=136 L=126 C=124 (DOWN) -->
+      <line x1="140" y1="152" x2="140" y2="208" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="132" y="180" width="16" height="28" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 4: O=124 H=128 L=118 C=122 (DOWN) -->
+      <line x1="172" y1="189" x2="172" y2="236" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="164" y="208" width="16" height="9" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 5: O=122 H=130 L=120 C=128 (UP) -->
+      <line x1="204" y1="180" x2="204" y2="227" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="196" y="189" width="16" height="28" fill="#1B365D" rx="1"/>
+
+      <!-- Day 6: O=128 H=134 L=126 C=132 (UP) -->
+      <line x1="236" y1="161" x2="236" y2="199" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="228" y="171" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 7: O=132 H=138 L=128 C=136 (UP) -->
+      <line x1="268" y1="143" x2="268" y2="189" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="260" y="152" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 8: O=136 H=142 L=132 C=134 (DOWN) -->
+      <line x1="300" y1="124" x2="300" y2="171" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="292" y="143" width="16" height="9" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 9: O=134 H=140 L=130 C=138 (UP) -->
+      <line x1="332" y1="133" x2="332" y2="180" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="324" y="143" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 10: O=138 H=144 L=134 C=136 (DOWN) -->
+      <line x1="364" y1="115" x2="364" y2="161" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="356" y="133" width="16" height="9" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 11: O=136 H=140 L=132 C=140 (UP) -->
+      <line x1="396" y1="133" x2="396" y2="171" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="388" y="133" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 12: O=140 H=146 L=136 C=144 (UP) -->
+      <line x1="428" y1="105" x2="428" y2="152" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="420" y="115" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 13: O=144 H=148 L=140 C=142 (DOWN) -->
+      <line x1="460" y1="96" x2="460" y2="133" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="452" y="115" width="16" height="9" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 14: O=142 H=148 L=138 C=146 (UP) -->
+      <line x1="492" y1="96" x2="492" y2="143" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="484" y="105" width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 15: O=146 H=152 L=142 C=148 (UP) -->
+      <line x1="524" y1="77"  x2="524" y2="124" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="516" y="96"  width="16" height="9" fill="#1B365D" rx="1"/>
+
+      <!-- Day 16: O=148 H=152 L=144 C=146 (DOWN) -->
+      <line x1="556" y1="77"  x2="556" y2="115" stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="548" y="96"  width="16" height="9" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 17: O=146 H=150 L=142 C=150 (UP) -->
+      <line x1="588" y1="87"  x2="588" y2="124" stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="580" y="87"  width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 18: O=150 H=154 L=146 C=148 (DOWN) -->
+      <line x1="620" y1="68"  x2="620" y2="96"  stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="612" y="77"  width="16" height="19" fill="#6b6a64" rx="1"/>
+
+      <!-- Day 19: O=148 H=156 L=146 C=154 (UP) -->
+      <line x1="652" y1="59"  x2="652" y2="96"  stroke="#1B365D" stroke-width="1.2"/>
+      <rect x="644" y="68"  width="16" height="19" fill="#1B365D" rx="1"/>
+
+      <!-- Day 20: O=154 H=158 L=150 C=152 (DOWN) -->
+      <line x1="684" y1="49"  x2="684" y2="87"  stroke="#6b6a64" stroke-width="1.2"/>
+      <rect x="676" y="59"  width="16" height="9" fill="#6b6a64" rx="1"/>
+      <!-- DATA END -->
+
+      <!-- X-axis date labels (every 5th day) -->
+      <text x="76"  y="340" fill="#6b6a64" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{D1}}</text>
+      <text x="236" y="340" fill="#6b6a64" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{D6}}</text>
+      <text x="396" y="340" fill="#6b6a64" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{D11}}</text>
+      <text x="556" y="340" fill="#6b6a64" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{D16}}</text>
+      <text x="684" y="340" fill="#6b6a64" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{D20}}</text>
+
+      <!-- Legend -->
+      <line x1="60" y1="368" x2="700" y2="368" stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <rect x="60" y="380" width="12" height="12" fill="#1B365D" rx="2"/>
+      <text x="78" y="391" fill="#504e49" font-size="10" font-family="Charter, Georgia, serif">Up (close > open)</text>
+
+      <rect x="240" y="380" width="12" height="12" fill="#6b6a64" rx="2"/>
+      <text x="258" y="391" fill="#504e49" font-size="10" font-family="Charter, Georgia, serif">Down (close &lt; open)</text>
+
+    </svg>
+
+    <p class="caption">{{Caption: e.g. "20-day price action showing accumulation phase."}}</p>
+  </div>
+</body>
+</html>

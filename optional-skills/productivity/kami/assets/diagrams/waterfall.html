@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Waterfall Chart (kami palette)
+     Revenue bridge / valuation decomposition / cash flow breakdown.
+     Start value, positive/negative segments, end value.
+     DATA START / DATA END marks the region Claude replaces when filling.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Waterfall Chart · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:    #f5f4ed;
+    --ivory:        #faf9f5;
+    --near-black:   #141413;
+    --olive:        #504e49;
+    --stone:        #6b6a64;
+    --light-stone:  #b8b7b0;
+    --brand:        #1B365D;
+    --brand-tint:   #EEF2F7;
+    --grid:         #e8e7e1;
+    --border:       #e8e6dc;
+    --positive:     #1B365D;
+    --negative:     #6b6a64;
+    --total:        #4d4c48;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 920px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 640px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Waterfall · kami diagram</p>
+    <h1>{{Chart Title}}</h1>
+
+    <!-- ============================================================
+         DATA START
+         Chart area: x=60 y=40 w=600 h=280 · base y=320
+         viewBox: 0 0 720 420
+         Bars: 7 (start + 4 changes + subtotal + end)
+         bar-width=64 · gap=20 · bar-spacing=84
+         Scale: max=200 · 1 unit = 1.4px (280/200)
+         Y-axis: 0 / 40 / 80 / 120 / 160 / 200
+         Positive: #1B365D · Negative: #6b6a64 · Total: #4d4c48
+         Connector lines: dashed 0.8px #b8b7b0
+         ============================================================ -->
+    <svg viewBox="0 0 720 420" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Canvas -->
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- Horizontal grid lines (y: 320=0, 264=40, 208=80, 152=120, 96=160, 40=200) -->
+      <line x1="60" y1="320" x2="660" y2="320" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="264" x2="660" y2="264" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="208" x2="660" y2="208" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="152" x2="660" y2="152" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="96"  x2="660" y2="96"  stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="40"  x2="660" y2="40"  stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- Y-axis labels -->
+      <text x="52" y="324" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">0</text>
+      <text x="52" y="268" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">40</text>
+      <text x="52" y="212" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">80</text>
+      <text x="52" y="156" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">120</text>
+      <text x="52" y="100" fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">160</text>
+      <text x="52" y="44"  fill="#6b6a64" font-size="10" text-anchor="end" font-family="Charter, Georgia, serif">200</text>
+
+      <!-- Bar 1: Start value = 120 (total bar, from baseline to 120) -->
+      <!-- y = 320 - 120*1.4 = 152, h = 168 -->
+      <rect x="68" y="152" width="64" height="168" fill="#4d4c48" rx="2"/>
+      <text x="100" y="144" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">120</text>
+
+      <!-- Connector: bar1 top to bar2 -->
+      <line x1="132" y1="152" x2="152" y2="152" stroke="#b8b7b0" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <!-- Bar 2: +30 (positive, floats from 120 to 150) -->
+      <!-- bottom y = 152, top y = 152 - 30*1.4 = 110, h = 42 -->
+      <rect x="152" y="110" width="64" height="42" fill="#1B365D" rx="2"/>
+      <text x="184" y="102" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">+30</text>
+
+      <!-- Connector: bar2 top to bar3 -->
+      <line x1="216" y1="110" x2="236" y2="110" stroke="#b8b7b0" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <!-- Bar 3: +20 (positive, floats from 150 to 170) -->
+      <!-- bottom y = 110, top y = 110 - 20*1.4 = 82, h = 28 -->
+      <rect x="236" y="82" width="64" height="28" fill="#1B365D" rx="2"/>
+      <text x="268" y="74" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">+20</text>
+
+      <!-- Connector: bar3 top to bar4 -->
+      <line x1="300" y1="82" x2="320" y2="82" stroke="#b8b7b0" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <!-- Bar 4: -40 (negative, floats from 170 down to 130) -->
+      <!-- top y = 82, bottom y = 82 + 40*1.4 = 138, h = 56 -->
+      <rect x="320" y="82" width="64" height="56" fill="#6b6a64" rx="2"/>
+      <text x="352" y="148" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">-40</text>
+
+      <!-- Connector: bar4 bottom to bar5 -->
+      <line x1="384" y1="138" x2="404" y2="138" stroke="#b8b7b0" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <!-- Bar 5: +10 (positive, floats from 130 to 140) -->
+      <!-- bottom y = 138, top y = 138 - 10*1.4 = 124, h = 14 -->
+      <rect x="404" y="124" width="64" height="14" fill="#1B365D" rx="2"/>
+      <text x="436" y="116" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">+10</text>
+
+      <!-- Connector: bar5 top to bar6 -->
+      <line x1="468" y1="124" x2="488" y2="124" stroke="#b8b7b0" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <!-- Bar 6: -20 (negative, floats from 140 down to 120) -->
+      <!-- top y = 124, bottom y = 124 + 20*1.4 = 152, h = 28 -->
+      <rect x="488" y="124" width="64" height="28" fill="#6b6a64" rx="2"/>
+      <text x="520" y="162" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">-20</text>
+
+      <!-- Bar 7: End value = 120 (total bar, from baseline to 120) -->
+      <rect x="588" y="152" width="64" height="168" fill="#4d4c48" rx="2"/>
+      <text x="620" y="144" fill="#141413" font-size="11" font-weight="500" text-anchor="middle" font-family="Charter, Georgia, serif">120</text>
+      <!-- DATA END -->
+
+      <!-- X-axis category labels -->
+      <text x="100" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Start}}</text>
+      <text x="184" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Cat A}}</text>
+      <text x="268" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Cat B}}</text>
+      <text x="352" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Cat C}}</text>
+      <text x="436" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Cat D}}</text>
+      <text x="520" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{Cat E}}</text>
+      <text x="620" y="340" fill="#141413" font-size="10" text-anchor="middle" font-family="Charter, Georgia, serif">{{End}}</text>
+
+      <!-- Legend -->
+      <line x1="60" y1="368" x2="660" y2="368" stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <rect x="60" y="380" width="12" height="12" fill="#1B365D" rx="2"/>
+      <text x="78" y="391" fill="#504e49" font-size="10" font-family="Charter, Georgia, serif">Increase</text>
+
+      <rect x="180" y="380" width="12" height="12" fill="#6b6a64" rx="2"/>
+      <text x="198" y="391" fill="#504e49" font-size="10" font-family="Charter, Georgia, serif">Decrease</text>
+
+      <rect x="300" y="380" width="12" height="12" fill="#4d4c48" rx="2"/>
+      <text x="318" y="391" fill="#504e49" font-size="10" font-family="Charter, Georgia, serif">Total</text>
+
+    </svg>
+
+    <p class="caption">{{Caption: e.g. "Revenue bridge from FY2024 to FY2025, showing growth drivers and headwinds."}}</p>
+  </div>
+</body>
+</html>

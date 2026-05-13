@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Line Chart (kami palette)
+     Trend lines for time-series or ordered data (stock price, growth rate, etc.)
+     Up to 12 points × 3 lines. Demo: 8 months × 2 lines.
+     DATA START / DATA END marks the region Claude replaces when filling.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Line Chart · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:    #f5f4ed;
+    --ivory:        #faf9f5;
+    --near-black:   #141413;
+    --olive:        #504e49;
+    --stone:        #6b6a64;
+    --brand:        #1B365D;
+    --brand-tint:   #EEF2F7;
+    --grid:         #e8e7e1;
+    --border:       #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 920px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 640px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Line Chart · kami diagram</p>
+    <h1>{{Chart Title}}</h1>
+
+    <!-- ============================================================
+         DATA START
+         Chart area: x=60 y=40 w=560 h=280 · base y=320
+         viewBox: 0 0 680 420
+         Points: 8 · x-spacing=80 · x positions: 60,140,220,300,380,460,540,620
+         Scale: max=140 · 1 unit = 2px · y = 320 - value×2
+         Y-axis labels: 0/20/40/60/80/100/120/140
+         Line 1 (brand): stroke=#1B365D  · dot fill=#1B365D
+         Line 2 (olive): stroke=#504e49  · dot fill=white stroke=#504e49
+         ============================================================ -->
+    <svg viewBox="0 0 680 420" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Canvas -->
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- Horizontal grid lines -->
+      <line x1="60" y1="320" x2="620" y2="320" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="280" x2="620" y2="280" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="240" x2="620" y2="240" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="200" x2="620" y2="200" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="160" x2="620" y2="160" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="120" x2="620" y2="120" stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="80"  x2="620" y2="80"  stroke="#e8e7e1" stroke-width="0.8"/>
+      <line x1="60" y1="40"  x2="620" y2="40"  stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- Vertical grid lines (at each data point) -->
+      <line x1="140" y1="40" x2="140" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="220" y1="40" x2="220" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="300" y1="40" x2="300" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="380" y1="40" x2="380" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="460" y1="40" x2="460" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <line x1="540" y1="40" x2="540" y2="320" stroke="#e8e7e1" stroke-width="0.5" stroke-dasharray="3 4"/>
+
+      <!-- Y-axis labels -->
+      <text x="52" y="324" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">0</text>
+      <text x="52" y="284" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">20</text>
+      <text x="52" y="244" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">40</text>
+      <text x="52" y="204" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">60</text>
+      <text x="52" y="164" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">80</text>
+      <text x="52" y="124" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">100</text>
+      <text x="52" y="84"  fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">120</text>
+      <text x="52" y="44"  fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="end">140</text>
+
+      <!-- Y-axis unit label -->
+      <text x="16" y="184" fill="#6b6a64" font-size="9" font-family="'JetBrains Mono', monospace" letter-spacing="0.12em" transform="rotate(-90 16 184)" text-anchor="middle">UNIT</text>
+
+      <!-- X-axis baseline -->
+      <line x1="60" y1="320" x2="620" y2="320" stroke="#141413" stroke-width="0.8"/>
+
+      <!-- ==================================================
+           LINES AND DOTS · replace values between DATA START / DATA END
+           x positions: 60 140 220 300 380 460 540 620
+           y = 320 - value × 2  (max 140 fills chart height 280)
+
+           Demo data:
+           Line 1 (brand): 52, 60, 56, 72, 80, 76, 88, 96
+             y:            216,200,208,176,160,168,144,128
+           Line 2 (olive): 36, 44, 48, 52, 60, 64, 68, 76
+             y:            248,232,224,216,200,192,184,168
+           ================================================== -->
+
+      <!-- Line 1 (brand #1B365D) -->
+      <polyline
+        points="60,216 140,200 220,208 300,176 380,160 460,168 540,144 620,128"
+        fill="none" stroke="#1B365D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+
+      <!-- Line 2 (olive #504e49) -->
+      <polyline
+        points="60,248 140,232 220,224 300,216 380,200 460,192 540,184 620,168"
+        fill="none" stroke="#504e49" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5 3"/>
+
+      <!-- Dots · Line 1 (brand, filled) -->
+      <circle cx="60"  cy="216" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="140" cy="200" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="220" cy="208" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="300" cy="176" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="380" cy="160" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="460" cy="168" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="540" cy="144" r="4" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <!-- Focal dot (last point) slightly larger -->
+      <circle cx="620" cy="128" r="5.5" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+
+      <!-- Dots · Line 2 (olive, open) -->
+      <circle cx="60"  cy="248" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="140" cy="232" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="220" cy="224" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="300" cy="216" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="380" cy="200" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="460" cy="192" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="540" cy="184" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <circle cx="620" cy="168" r="3.5" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+
+      <!-- End-of-line value labels -->
+      <text x="628" y="132" fill="#1B365D" font-size="11" font-family="inherit" font-weight="600">96</text>
+      <text x="628" y="172" fill="#504e49" font-size="10" font-family="inherit">76</text>
+
+      <!-- X-axis labels -->
+      <text x="60"  y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Jan</text>
+      <text x="140" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Feb</text>
+      <text x="220" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Mar</text>
+      <text x="300" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Apr</text>
+      <text x="380" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">May</text>
+      <text x="460" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Jun</text>
+      <text x="540" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Jul</text>
+      <text x="620" y="340" fill="#141413" font-size="11" font-family="inherit" text-anchor="middle">Aug</text>
+
+      <!-- ================================================== DATA END -->
+
+      <!-- Legend -->
+      <line x1="60" y1="368" x2="620" y2="368" stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- Line 1 legend: solid segment + dot -->
+      <line x1="60" y1="386" x2="84" y2="386" stroke="#1B365D" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="72" cy="386" r="3.5" fill="#1B365D"/>
+      <text x="92" y="390" fill="#504e49" font-size="10" font-family="inherit">{{Line 1 label}}</text>
+
+      <!-- Line 2 legend: dashed segment + open dot -->
+      <line x1="220" y1="386" x2="244" y2="386" stroke="#504e49" stroke-width="1.5" stroke-dasharray="5 3" stroke-linecap="round"/>
+      <circle cx="232" cy="386" r="3" fill="#f5f4ed" stroke="#504e49" stroke-width="1.5"/>
+      <text x="252" y="390" fill="#504e49" font-size="10" font-family="inherit">{{Line 2 label}}</text>
+
+    </svg>
+
+    <p class="caption">{{Caption text. The ink-blue line carries the primary trend argument. State what the trend means, not what was plotted.}}</p>
+  </div>
+</body>
+</html>

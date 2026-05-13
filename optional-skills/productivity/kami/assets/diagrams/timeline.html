@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Timeline (kami palette)
+     Horizontal time axis with alternating above/below event labels.
+     One focal milestone in ink-blue; all others in warm neutrals.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Timeline · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Timeline · kami diagram</p>
+    <h1>{{Project name}} milestones</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- ── Horizontal axis ── -->
+      <line x1="60" y1="228" x2="900" y2="228" stroke="#b8b7b0" stroke-width="1.4"/>
+      <!-- Axis end arrow (right) -->
+      <path d="M 894,224 L 900,228 L 894,232"
+            fill="none" stroke="#b8b7b0" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- ================================================================
+           Events: x = 140, 292, 444, 596, 748
+           Alternating: above (0,2,4), below (1,3)
+           Event 2 (x=444) is focal
+           ================================================================ -->
+
+      <!-- Event 0: x=140, ABOVE, "Concept" 2019 -->
+      <line x1="140" y1="220" x2="140" y2="168" stroke="#6b6a64" stroke-width="1" stroke-dasharray="3,3"/>
+      <circle cx="140" cy="228" r="5" fill="#6b6a64" stroke="#f5f4ed" stroke-width="1.5"/>
+      <rect x="88" y="128" width="104" height="40" rx="4"
+            fill="#f5f4ed" stroke="#e8e6dc" stroke-width="0.8"/>
+      <text x="140" y="143" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em">2019</text>
+      <text x="140" y="159" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">Concept</text>
+
+      <!-- Event 1: x=292, BELOW, "Prototype" 2020 -->
+      <line x1="292" y1="236" x2="292" y2="288" stroke="#6b6a64" stroke-width="1" stroke-dasharray="3,3"/>
+      <circle cx="292" cy="228" r="5" fill="#6b6a64" stroke="#f5f4ed" stroke-width="1.5"/>
+      <rect x="236" y="288" width="112" height="40" rx="4"
+            fill="#f5f4ed" stroke="#e8e6dc" stroke-width="0.8"/>
+      <text x="292" y="303" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em">2020</text>
+      <text x="292" y="319" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">Prototype</text>
+
+      <!-- Event 2: x=444, ABOVE, "Launch" 2021 FOCAL -->
+      <line x1="444" y1="220" x2="444" y2="148" stroke="#1B365D" stroke-width="1.2"/>
+      <circle cx="444" cy="228" r="6" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <rect x="380" y="100" width="128" height="48" rx="4"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="444" y="117" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em">2021 · FOCAL</text>
+      <text x="444" y="138" fill="#141413" font-size="13" font-weight="600"
+            font-family="inherit" text-anchor="middle">Launch</text>
+
+      <!-- Event 3: x=596, BELOW, "Growth" 2022 -->
+      <line x1="596" y1="236" x2="596" y2="288" stroke="#6b6a64" stroke-width="1" stroke-dasharray="3,3"/>
+      <circle cx="596" cy="228" r="5" fill="#504e49" stroke="#f5f4ed" stroke-width="1.5"/>
+      <rect x="540" y="288" width="112" height="40" rx="4"
+            fill="#f5f4ed" stroke="#e8e6dc" stroke-width="0.8"/>
+      <text x="596" y="303" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em">2022</text>
+      <text x="596" y="319" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">Growth</text>
+
+      <!-- Event 4: x=748, ABOVE, "Scale" 2023 -->
+      <line x1="748" y1="220" x2="748" y2="168" stroke="#6b6a64" stroke-width="1" stroke-dasharray="3,3"/>
+      <circle cx="748" cy="228" r="5" fill="#504e49" stroke="#f5f4ed" stroke-width="1.5"/>
+      <rect x="692" y="128" width="112" height="40" rx="4"
+            fill="#f5f4ed" stroke="#e8e6dc" stroke-width="0.8"/>
+      <text x="748" y="143" fill="#6b6a64" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.15em">2023</text>
+      <text x="748" y="159" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">Scale</text>
+
+      <!-- ── Legend ── -->
+      <line x1="40" y1="390" x2="920" y2="390" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="406" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.22em">LEGEND</text>
+
+      <circle cx="47" cy="424" r="6" fill="#1B365D" stroke="#f5f4ed" stroke-width="1.5"/>
+      <text x="60" y="428" fill="#504e49" font-size="8.5" font-family="inherit">Focal milestone</text>
+
+      <circle cx="183" cy="424" r="5" fill="#504e49" stroke="#f5f4ed" stroke-width="1.5"/>
+      <text x="196" y="428" fill="#504e49" font-size="8.5" font-family="inherit">Standard milestone</text>
+
+      <line x1="360" y1="424" x2="392" y2="424" stroke="#6b6a64" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x="400" y="428" fill="#504e49" font-size="8.5" font-family="inherit">Connector</text>
+    </svg>
+
+    <p class="caption">Focal rule: ink-blue marks the single most important milestone, the moment the reader should remember. Every other event stays in warm stone so the contrast does the work.</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Quadrant (kami palette)
+     Two-axis positioning. 4 quadrants, 6-10 plotted points, 1-2 focal.
+     Classic use: Impact × Effort, Reach × Confidence, Urgency × Importance.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Quadrant · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 920px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 780px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Quadrant · kami diagram</p>
+    <h1>{{X axis}} × {{Y axis}}</h1>
+
+    <svg viewBox="0 0 820 540" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#504e49"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- Quadrant zones (subtle background tint on the "preferred" quadrant) -->
+      <rect x="80" y="60" width="660" height="380" fill="none" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <rect x="410" y="60" width="330" height="190" fill="rgba(201,100,66,0.04)"/>
+
+      <!-- Cross axes (through midpoint) -->
+      <line x1="80" y1="250" x2="740" y2="250" stroke="rgba(20,20,19,0.18)" stroke-width="0.8"/>
+      <line x1="410" y1="60" x2="410" y2="440" stroke="rgba(20,20,19,0.18)" stroke-width="0.8"/>
+
+      <!-- Axis arrows + labels -->
+      <line x1="80" y1="460" x2="740" y2="460" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="60" y1="440" x2="60" y2="60" stroke="#504e49" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <text x="410" y="480" fill="#141413" font-size="11" font-weight="600" font-family="inherit" text-anchor="middle" letter-spacing="0.08em">{{X axis · low to high}}</text>
+      <text x="30" y="250" fill="#141413" font-size="11" font-weight="600" font-family="inherit" text-anchor="middle" letter-spacing="0.08em" transform="rotate(-90 30 250)">{{Y axis · low to high}}</text>
+
+      <!-- Quadrant labels -->
+      <text x="244" y="88" fill="#6b6a64" font-size="8.5" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.22em">HIGH-Y · LOW-X</text>
+      <text x="244" y="102" fill="#504e49" font-size="10" font-family="inherit" text-anchor="middle" font-style="italic">incubate</text>
+
+      <text x="576" y="88" fill="#1B365D" font-size="8.5" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.22em">HIGH-Y · HIGH-X</text>
+      <text x="576" y="102" fill="#1B365D" font-size="10" font-family="inherit" text-anchor="middle" font-style="italic" font-weight="500">do first</text>
+
+      <text x="244" y="428" fill="#6b6a64" font-size="8.5" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.22em">LOW-Y · LOW-X</text>
+      <text x="244" y="420" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="middle" font-style="italic">drop</text>
+
+      <text x="576" y="428" fill="#6b6a64" font-size="8.5" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.22em">LOW-Y · HIGH-X</text>
+      <text x="576" y="420" fill="#504e49" font-size="10" font-family="inherit" text-anchor="middle" font-style="italic">delegate</text>
+
+      <!-- Plotted points -->
+      <!-- 1: Top-left (incubate) -->
+      <circle cx="190" cy="180" r="5" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="200" y="184" fill="#141413" font-size="10" font-family="inherit" font-weight="500">{{Item A}}</text>
+
+      <!-- 2: Top-right FOCAL (do first) -->
+      <circle cx="550" cy="140" r="6.5" fill="#1B365D" stroke="#1B365D" stroke-width="1"/>
+      <text x="562" y="145" fill="#1B365D" font-size="11" font-family="inherit" font-weight="600">{{Item B · focal}}</text>
+
+      <!-- 3: Top-right secondary -->
+      <circle cx="640" cy="200" r="5" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="650" y="204" fill="#141413" font-size="10" font-family="inherit" font-weight="500">{{Item C}}</text>
+
+      <!-- 4: Top-right -->
+      <circle cx="490" cy="210" r="5" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="500" y="214" fill="#141413" font-size="10" font-family="inherit">{{Item D}}</text>
+
+      <!-- 5: Bottom-right (delegate) -->
+      <circle cx="580" cy="350" r="4.5" fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="590" y="354" fill="#504e49" font-size="10" font-family="inherit">{{Item E}}</text>
+
+      <!-- 6: Bottom-left (drop) -->
+      <circle cx="180" cy="380" r="4" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="190" y="384" fill="#6b6a64" font-size="10" font-family="inherit">{{Item F}}</text>
+
+      <!-- 7: Bottom-left -->
+      <circle cx="280" cy="340" r="4" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="290" y="344" fill="#6b6a64" font-size="10" font-family="inherit">{{Item G}}</text>
+
+      <!-- 8: Near center -->
+      <circle cx="380" cy="270" r="4" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="390" y="274" fill="#141413" font-size="10" font-family="inherit">{{Item H}}</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="502" x2="780" y2="502" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="518" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace" letter-spacing="0.22em">LEGEND</text>
+
+      <circle cx="180" cy="514" r="5" fill="#1B365D" stroke="#1B365D" stroke-width="1"/>
+      <text x="192" y="518" fill="#504e49" font-size="8.5" font-family="inherit">Focal · do first</text>
+
+      <circle cx="328" cy="514" r="5" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="340" y="518" fill="#504e49" font-size="8.5" font-family="inherit">Near-focal</text>
+
+      <circle cx="450" cy="514" r="5" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="462" y="518" fill="#504e49" font-size="8.5" font-family="inherit">Standard</text>
+
+      <circle cx="555" cy="514" r="5" fill="rgba(20,20,19,0.05)" stroke="#504e49" stroke-width="1"/>
+      <text x="567" y="518" fill="#504e49" font-size="8.5" font-family="inherit">Secondary</text>
+
+      <circle cx="660" cy="514" r="5" fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="672" y="518" fill="#504e49" font-size="8.5" font-family="inherit">Drop</text>
+    </svg>
+
+    <p class="caption">The ink-blue point is where the reader's eye lands. The tinted upper-right quadrant is the preferred region. Everything else recedes so the judgment reads instantly.</p>
+  </div>
+</body>
+</html>

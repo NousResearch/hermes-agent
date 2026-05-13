@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{标题}}</title>
+<style>
+  @font-face { font-family: "TsangerJinKai02"; src: url("../fonts/TsangerJinKai02-W04.ttf"), url("https://cdn.jsdmirror.com/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf"); font-weight: 400; }
+  @font-face { font-family: "TsangerJinKai02"; src: url("../fonts/TsangerJinKai02-W05.ttf"), url("https://cdn.jsdmirror.com/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf"); font-weight: 500; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 400; }
+
+  @page {
+    size: 280mm 158mm;
+    margin: 0;
+    background: #f5f4ed;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --dark-warm:  #3d3d3a;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+    --border-soft:#e5e3d8;
+
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --sans:  "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--sans);
+    font-size: 13pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+  }
+
+  .slide {
+    width: 280mm;
+    height: 158mm;
+    padding: 16mm 20mm;
+    background: var(--parchment);
+    break-after: page;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .slide:last-child { break-after: auto; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 9.5pt;
+    letter-spacing: 2pt;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 2pt;
+  }
+
+  .page-num {
+    position: absolute;
+    bottom: 10mm;
+    right: 20mm;
+    font-family: var(--mono);
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 0.5pt;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .footer-mark {
+    position: absolute;
+    bottom: 10mm;
+    left: 20mm;
+    font-family: var(--mono);
+    font-size: 9pt;
+    color: var(--stone);
+    letter-spacing: 1.5pt;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 24pt;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.3pt;
+    color: var(--near-black);
+    margin-bottom: 14pt;
+  }
+
+  h3 {
+    font-family: var(--serif);
+    font-size: 15pt;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: 0.3pt;
+    color: var(--brand);
+    margin-bottom: 8pt;
+  }
+
+  .lead {
+    font-family: var(--sans);
+    font-size: 12pt;
+    font-weight: 400;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+    color: var(--olive);
+    margin-bottom: 8pt;
+  }
+
+  .mt {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: 0.3pt;
+    color: var(--near-black);
+    margin-bottom: 8pt;
+  }
+
+  .ml {
+    font-family: var(--serif);
+    font-size: 24pt;
+    font-weight: 500;
+    color: var(--brand);
+    margin-right: 6pt;
+  }
+
+  .ms {
+    font-family: var(--mono);
+    font-size: 7.5pt;
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+    color: var(--stone);
+    border-bottom: 0.3pt solid var(--border);
+    padding-bottom: 4pt;
+    margin-bottom: 14pt;
+  }
+
+  .mb {
+    font-family: var(--sans);
+    font-size: 11pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+    color: var(--dark-warm);
+    margin-bottom: 18pt;
+  }
+
+  .mi {
+    font-family: var(--sans);
+    font-size: 11pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+    color: var(--dark-warm);
+    padding: 8pt 0;
+  }
+
+  .mc {
+    font-family: var(--sans);
+    font-size: 9.5pt;
+    line-height: 1.5;
+    letter-spacing: 0.3pt;
+    color: var(--olive);
+    border-top: 0.3pt solid var(--border);
+    padding-top: 8pt;
+    margin-top: 18pt;
+  }
+
+  .co {
+    font-family: var(--sans);
+    font-size: 11pt;
+    font-weight: 500;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+    color: var(--brand);
+    position: absolute;
+    bottom: 12mm;
+    left: 20mm;
+    right: 20mm;
+  }
+
+  .c2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22pt;
+  }
+
+  /* 2×2 对齐布局必须用 table，CSS Grid 会导致行高不对齐 */
+  .t2x2 {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 22pt 18pt;
+    margin: -18pt -22pt;
+  }
+  .t2x2 td {
+    vertical-align: top;
+    width: 50%;
+  }
+
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.data td {
+    padding: 8pt;
+    border-bottom: 0.3pt solid var(--border);
+    font-size: 11pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+  }
+  table.data td:first-child {
+    font-weight: 500;
+    color: var(--brand);
+  }
+
+  svg {
+    max-height: 105mm;
+    width: auto;
+  }
+
+  .cover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  .cover h1 {
+    font-family: var(--serif);
+    font-size: 38pt;
+    font-weight: 500;
+    line-height: 1.1;
+    letter-spacing: 0.3pt;
+    color: var(--near-black);
+    margin-bottom: 12pt;
+  }
+  .cover .sub {
+    font-family: var(--sans);
+    font-size: 14pt;
+    line-height: 1.5;
+    letter-spacing: 0.3pt;
+    color: var(--olive);
+    max-width: 50ch;
+    margin-bottom: 32pt;
+  }
+  .cover .meta {
+    font-family: var(--sans);
+    font-size: 10pt;
+    color: var(--stone);
+    letter-spacing: 0.3pt;
+  }
+</style>
+</head>
+<body>
+
+<!-- 封面 -->
+<section class="slide cover">
+  <h1>{{标题}}</h1>
+  <div class="sub">{{副标题}}</div>
+  <div class="meta">{{作者}} · {{日期}}</div>
+</section>
+
+<!-- 正文页 · 两栏布局 -->
+<section class="slide">
+  <span class="eyebrow">01 · {{章节}}</span>
+  <h2>{{页面标题}}</h2>
+  <p class="lead">{{引导语}}</p>
+
+  <div class="c2">
+    <div>
+      <h3>{{左栏标题}}</h3>
+      <p class="mb">{{左栏内容}}</p>
+    </div>
+    <div>
+      <h3>{{右栏标题}}</h3>
+      <p class="mb">{{右栏内容}}</p>
+    </div>
+  </div>
+
+  <div class="page-num">01</div>
+  <div class="footer-mark">{{项目名称}}</div>
+</section>
+
+<!-- 正文页 · 2×2 模块 -->
+<section class="slide">
+  <span class="eyebrow">02 · {{章节}}</span>
+  <h2>{{页面标题}}</h2>
+
+  <table class="t2x2">
+    <tr>
+      <td>
+        <div class="mt"><span class="ml">A</span>{{模块标题}}</div>
+        <p class="mb">{{模块描述}}</p>
+      </td>
+      <td>
+        <div class="mt"><span class="ml">B</span>{{模块标题}}</div>
+        <p class="mb">{{模块描述}}</p>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div class="mt"><span class="ml">C</span>{{模块标题}}</div>
+        <p class="mb">{{模块描述}}</p>
+      </td>
+      <td>
+        <div class="mt"><span class="ml">D</span>{{模块标题}}</div>
+        <p class="mb">{{模块描述}}</p>
+      </td>
+    </tr>
+  </table>
+
+  <div class="page-num">02</div>
+  <div class="footer-mark">{{项目名称}}</div>
+</section>
+
+<!-- 正文页 · 底部 callout -->
+<section class="slide">
+  <span class="eyebrow">03 · {{章节}}</span>
+  <h2>{{页面标题}}</h2>
+
+  <p class="mb">{{正文内容}}</p>
+
+  <div class="co">{{底部结论或关键判断}}</div>
+
+  <div class="page-num">03</div>
+  <div class="footer-mark">{{项目名称}}</div>
+</section>
+
+<!-- 正文页 · 表格 -->
+<section class="slide">
+  <span class="eyebrow">04 · {{章节}}</span>
+  <h2>{{页面标题}}</h2>
+
+  <table class="data">
+    <tr>
+      <td>{{维度}}</td>
+      <td>{{内容}}</td>
+      <td>{{备注}}</td>
+    </tr>
+    <tr>
+      <td>{{维度}}</td>
+      <td>{{内容}}</td>
+      <td>{{备注}}</td>
+    </tr>
+  </table>
+
+  <div class="page-num">04</div>
+  <div class="footer-mark">{{项目名称}}</div>
+</section>
+
+</body>
+</html>

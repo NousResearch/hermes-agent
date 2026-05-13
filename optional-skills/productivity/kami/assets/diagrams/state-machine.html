@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · State Machine (kami palette)
+     Finite states + directed transitions. One focal state, everything
+     else in warm neutrals. Drop the <svg> block into a long-doc figure.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>State Machine · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">State Machine · kami diagram</p>
+    <h1>{{Component name}} lifecycle</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- ── Back arc: Processing → Idle (reset / timeout) ── -->
+      <path d="M 560,196 Q 356,120 152,196"
+            fill="none" stroke="#504e49" stroke-width="1.2" stroke-dasharray="4,3"/>
+      <rect x="328" y="120" width="56" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="356" y="130" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">RESET</text>
+      <!-- Left-pointing chevron at Idle top -->
+      <path d="M 158,191 L 152,196 L 158,201"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- ── Forward arrows (behind nodes) ── -->
+      <!-- Start dot → Idle -->
+      <line x1="46" y1="228" x2="80" y2="228" stroke="#6b6a64" stroke-width="1.2"/>
+      <path d="M 74,224 L 80,228 L 74,232"
+            fill="none" stroke="#6b6a64" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- Idle → Active -->
+      <line x1="224" y1="228" x2="284" y2="228" stroke="#1B365D" stroke-width="1.4"/>
+      <rect x="226" y="218" width="56" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="254" y="228" fill="#1B365D" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">TRIGGER</text>
+      <path d="M 278,224 L 284,228 L 278,232"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- Active → Processing -->
+      <line x1="428" y1="228" x2="488" y2="228" stroke="#504e49" stroke-width="1.2"/>
+      <rect x="430" y="218" width="56" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="458" y="228" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">SUBMIT</text>
+      <path d="M 482,224 L 488,228 L 482,232"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- Processing → Done -->
+      <line x1="632" y1="228" x2="720" y2="228" stroke="#504e49" stroke-width="1.2"/>
+      <rect x="634" y="218" width="84" height="12" rx="2" fill="#f5f4ed"/>
+      <text x="676" y="228" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle" letter-spacing="0.1em">COMPLETE</text>
+      <path d="M 714,224 L 720,228 L 714,232"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- Done → End marker -->
+      <line x1="848" y1="228" x2="896" y2="228" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M 890,224 L 896,228 L 890,232"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- ── Start marker (solid circle) ── -->
+      <circle cx="40" cy="228" r="6" fill="#141413"/>
+
+      <!-- ── State nodes ── -->
+
+      <!-- S1: Idle -->
+      <rect x="80" y="196" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="80" y="196" width="144" height="64" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="102" y="214" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">STATE</text>
+      <text x="152" y="234" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Idle</text>
+      <text x="152" y="250" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">waiting</text>
+
+      <!-- S2: Active (FOCAL) -->
+      <rect x="284" y="196" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="284" y="196" width="144" height="64" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="306" y="214" fill="#1B365D" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">FOCAL</text>
+      <text x="356" y="234" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Active</text>
+      <text x="356" y="250" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">editing</text>
+
+      <!-- S3: Processing -->
+      <rect x="488" y="196" width="144" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="488" y="196" width="144" height="64" rx="6"
+            fill="rgba(20,20,19,0.03)" stroke="rgba(20,20,19,0.30)" stroke-width="1"/>
+      <text x="510" y="214" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">STATE</text>
+      <text x="560" y="234" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Processing</text>
+      <text x="560" y="250" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">running</text>
+
+      <!-- S4: Done -->
+      <rect x="720" y="196" width="128" height="64" rx="6" fill="#f5f4ed"/>
+      <rect x="720" y="196" width="128" height="64" rx="6"
+            fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="742" y="214" fill="#141413" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">TERMINAL</text>
+      <text x="784" y="234" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">Done</text>
+      <text x="784" y="250" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">resolved</text>
+
+      <!-- ── End marker (double circle) ── -->
+      <circle cx="916" cy="228" r="8" fill="none" stroke="#141413" stroke-width="1.4"/>
+      <circle cx="916" cy="228" r="4" fill="#141413"/>
+
+      <!-- ── Legend ── -->
+      <line x1="40" y1="386" x2="920" y2="386" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="402" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.22em">LEGEND</text>
+
+      <circle cx="47" cy="420" r="6" fill="#141413"/>
+      <text x="60" y="424" fill="#504e49" font-size="8.5" font-family="inherit">Start</text>
+
+      <rect x="100" y="413" width="14" height="10" rx="2" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="120" y="421" fill="#504e49" font-size="8.5" font-family="inherit">Focal state</text>
+
+      <rect x="230" y="413" width="14" height="10" rx="2" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="250" y="421" fill="#504e49" font-size="8.5" font-family="inherit">Terminal</text>
+
+      <line x1="360" y1="418" x2="392" y2="418" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M 386,414 L 392,418 L 386,422"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="400" y="421" fill="#504e49" font-size="8.5" font-family="inherit">Forward transition</text>
+
+      <line x1="560" y1="418" x2="592" y2="418" stroke="#504e49" stroke-width="1.2"
+            stroke-dasharray="4,3"/>
+      <path d="M 586,414 L 592,418 L 586,422"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="600" y="421" fill="#504e49" font-size="8.5" font-family="inherit">Reset / timeout</text>
+    </svg>
+
+    <p class="caption">Focal rule: one ink-blue state per diagram, marking where the user spends most time. Start and terminal markers follow UML convention; the dashed arc shows the exceptional path.</p>
+  </div>
+</body>
+</html>

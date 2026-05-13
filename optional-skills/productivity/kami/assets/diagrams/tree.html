@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Tree (kami palette)
+     Hierarchy with orthogonal elbow connectors. One focal sub-tree
+     in ink-blue; root and other branches in warm neutrals.
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tree · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:  #f5f4ed;
+    --ivory:      #faf9f5;
+    --near-black: #141413;
+    --olive:      #504e49;
+    --stone:      #6b6a64;
+    --brand:      #1B365D;
+    --brand-tint: #EEF2F7;
+    --border:     #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 1000px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 860px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Tree · kami diagram</p>
+    <h1>{{System name}} hierarchy</h1>
+
+    <svg viewBox="0 0 960 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(20,20,19,0.08)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+      <!-- ── Connector lines (drawn behind nodes) ── -->
+
+      <!-- Root → junction at y=116, then branch to C1(x=248) and C2(x=712) -->
+      <line x1="480" y1="88" x2="480" y2="116" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="248" y1="116" x2="712" y2="116" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="248" y1="116" x2="248" y2="152" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="712" y1="116" x2="712" y2="152" stroke="#1B365D" stroke-width="1.4"/>
+
+      <!-- Chevrons at C1 and C2 tops -->
+      <path d="M 243,148 L 248,152 L 253,148"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 707,148 L 712,152 L 717,148"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- C1 branch → junction at y=244, then to L1(x=112) and L2(x=268) -->
+      <line x1="248" y1="200" x2="248" y2="244" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="112" y1="244" x2="268" y2="244" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="112" y1="244" x2="112" y2="280" stroke="#504e49" stroke-width="1.2"/>
+      <line x1="268" y1="244" x2="268" y2="280" stroke="#504e49" stroke-width="1.2"/>
+
+      <!-- Chevrons at L1 and L2 tops -->
+      <path d="M 107,276 L 112,280 L 117,276"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 263,276 L 268,280 L 273,276"
+            fill="none" stroke="#504e49" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- C2 branch → junction at y=244, then to L3(x=552), L4(x=712), L5(x=872) -->
+      <line x1="712" y1="200" x2="712" y2="244" stroke="#1B365D" stroke-width="1.4"/>
+      <line x1="552" y1="244" x2="872" y2="244" stroke="#1B365D" stroke-width="1.4"/>
+      <line x1="552" y1="244" x2="552" y2="280" stroke="#1B365D" stroke-width="1.4"/>
+      <line x1="712" y1="244" x2="712" y2="280" stroke="#1B365D" stroke-width="1.4"/>
+      <line x1="872" y1="244" x2="872" y2="280" stroke="#1B365D" stroke-width="1.4"/>
+
+      <!-- Chevrons at L3, L4, L5 tops -->
+      <path d="M 547,276 L 552,280 L 557,276"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 707,276 L 712,280 L 717,276"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 867,276 L 872,280 L 877,276"
+            fill="none" stroke="#1B365D" stroke-width="1.5" stroke-linecap="round"/>
+
+      <!-- ── Root node ── -->
+      <rect x="408" y="40" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="408" y="40" width="144" height="48" rx="6"
+            fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="430" y="56" fill="#141413" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">ROOT</text>
+      <text x="480" y="72" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{System}}</text>
+
+      <!-- ── Child nodes ── -->
+
+      <!-- C1: left branch -->
+      <rect x="176" y="152" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="176" y="152" width="144" height="48" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="198" y="168" fill="#6b6a64" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">MODULE</text>
+      <text x="248" y="184" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Module A}}</text>
+
+      <!-- C2: right branch (FOCAL) -->
+      <rect x="640" y="152" width="144" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="640" y="152" width="144" height="48" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="662" y="168" fill="#1B365D" font-size="7" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.15em">FOCAL</text>
+      <text x="712" y="184" fill="#141413" font-size="12" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Module B}}</text>
+
+      <!-- ── Leaf nodes (C1 branch) ── -->
+
+      <!-- L1 -->
+      <rect x="48" y="280" width="128" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="48" y="280" width="128" height="48" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="112" y="300" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Leaf 1}}</text>
+      <text x="112" y="316" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">service</text>
+
+      <!-- L2 -->
+      <rect x="204" y="280" width="128" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="204" y="280" width="128" height="48" rx="6"
+            fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="268" y="300" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Leaf 2}}</text>
+      <text x="268" y="316" fill="#504e49" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">service</text>
+
+      <!-- ── Leaf nodes (C2 branch, focal) ── -->
+
+      <!-- L3 -->
+      <rect x="488" y="280" width="128" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="488" y="280" width="128" height="48" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="0.8"/>
+      <text x="552" y="300" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Leaf 3}}</text>
+      <text x="552" y="316" fill="#1B365D" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">component</text>
+
+      <!-- L4 -->
+      <rect x="648" y="280" width="128" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="648" y="280" width="128" height="48" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="0.8"/>
+      <text x="712" y="300" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Leaf 4}}</text>
+      <text x="712" y="316" fill="#1B365D" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">component</text>
+
+      <!-- L5 -->
+      <rect x="808" y="280" width="128" height="48" rx="6" fill="#f5f4ed"/>
+      <rect x="808" y="280" width="128" height="48" rx="6"
+            fill="#EEF2F7" stroke="#1B365D" stroke-width="0.8"/>
+      <text x="872" y="300" fill="#141413" font-size="11" font-weight="600"
+            font-family="inherit" text-anchor="middle">{{Leaf 5}}</text>
+      <text x="872" y="316" fill="#1B365D" font-size="9" font-family="'JetBrains Mono', monospace"
+            text-anchor="middle">component</text>
+
+      <!-- ── Legend ── -->
+      <line x1="40" y1="376" x2="920" y2="376" stroke="rgba(20,20,19,0.10)" stroke-width="0.8"/>
+      <text x="40" y="392" fill="#504e49" font-size="8" font-family="'JetBrains Mono', monospace"
+            letter-spacing="0.22em">LEGEND</text>
+
+      <rect x="40" y="406" width="14" height="10" rx="2" fill="#EEF2F7" stroke="#1B365D" stroke-width="1"/>
+      <text x="60" y="414" fill="#504e49" font-size="8.5" font-family="inherit">Focal sub-tree</text>
+
+      <rect x="190" y="406" width="14" height="10" rx="2" fill="#ffffff" stroke="#141413" stroke-width="1"/>
+      <text x="210" y="414" fill="#504e49" font-size="8.5" font-family="inherit">Root</text>
+
+      <rect x="280" y="406" width="14" height="10" rx="2" fill="rgba(94,93,89,0.08)" stroke="#6b6a64" stroke-width="1"/>
+      <text x="300" y="414" fill="#504e49" font-size="8.5" font-family="inherit">Secondary branch</text>
+    </svg>
+
+    <p class="caption">Focal rule: one sub-tree in ink-blue marks the branch where complexity lives, or the path the reader needs to understand first. Orthogonal elbows make parent-child relationships unambiguous.</p>
+  </div>
+</body>
+</html>

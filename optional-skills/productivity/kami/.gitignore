@@ -1,0 +1,26 @@
+# Kami skill — Hermes Agent optional-skill
+# Commercial fonts — fetched via ensure-fonts.sh at runtime
+assets/fonts/TsangerJinKai02-W04.ttf
+assets/fonts/TsangerJinKai02-W05.ttf
+
+# Generated artifacts — not tracked in repo
+assets/examples/*.pdf
+assets/examples/*.pptx
+assets/illustrations/
+dist/
+
+# Build / runtime
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node (if any)
+node_modules/

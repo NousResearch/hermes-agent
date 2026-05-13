@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     EQUITY REPORT TEMPLATE · parchment design system
+     2-3 页 A4 个股研报 / 估值分析 / 投资备忘
+     结构：标题区 -> 核心指标 -> 图表分析 -> 竞争格局 -> 风险 -> 总结
+     ================================================================== -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{股票名称}} · 个股研报</title>
+<meta name="author" content="{{作者}}">
+<meta name="description" content="{{摘要}}">
+<meta name="keywords" content="{{关键词}}">
+<meta name="generator" content="Kami">
+<style>
+  /* Regular weight */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W04.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* Bold weight - W05 for all bold variants */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("../fonts/TsangerJinKai02-W05.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+
+  @page {
+    size: A4;
+    margin: 16mm 18mm 18mm 18mm;
+    background: #f5f4ed;
+
+    @bottom-center {
+      content: counter(page) "  ·  {{股票名称}} 研报";
+      font-family: "TsangerJinKai02", "Source Han Serif SC",
+                   "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+      font-size: 9pt;
+      color: #6b6a64;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --tag-bg:    #E4ECF5;
+    --positive:  #1B365D;
+    --negative:  #6b6a64;
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --sans: var(--serif);
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 16mm 18mm 18mm 18mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10pt;
+    line-height: 1.5;
+    letter-spacing: 0.3pt;
+    widows: 3;
+    orphans: 3;
+  }
+
+  strong { font-weight: 500; }
+  .hl { color: var(--brand); font-weight: 500; }
+
+  /* ========== HEADER ========== */
+  .report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 14pt;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+  }
+  .ticker-block { flex: 1; }
+  .ticker-eyebrow {
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+  .ticker-name {
+    font-family: var(--serif);
+    font-size: 24pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.15;
+    margin-bottom: 4pt;
+  }
+  .ticker-sub {
+    font-size: 10pt;
+    color: var(--olive);
+    line-height: 1.4;
+  }
+  .price-block {
+    text-align: right;
+    padding-top: 4pt;
+  }
+  .price-current {
+    font-family: var(--serif);
+    font-size: 28pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .price-change {
+    font-size: 10pt;
+    font-weight: 500;
+    margin-top: 2pt;
+    font-variant-numeric: tabular-nums;
+  }
+  .price-change.up { color: var(--positive); }
+  .price-change.down { color: var(--negative); }
+  .price-date {
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 2pt;
+  }
+
+  /* ========== METRICS ========== */
+  .metrics {
+    display: flex;
+    gap: 14pt;
+    margin-bottom: 16pt;
+    padding: 6pt 0;
+    border-top: 0.3pt dotted var(--border);
+    border-bottom: 0.3pt dotted var(--border);
+  }
+  .metric {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 4pt;
+  }
+  .metric-value {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .metric-label {
+    font-size: 9pt;
+    color: var(--olive);
+    line-height: 1.3;
+  }
+
+  /* ========== SECTIONS ========== */
+  h2 {
+    font-family: var(--serif);
+    font-size: 16pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin: 18pt 0 6pt 0;
+    break-after: avoid;
+  }
+
+  h3 {
+    font-size: 13pt;
+    font-weight: 500;
+    color: var(--dark-warm);
+    margin: 12pt 0 4pt 0;
+    break-after: avoid;
+  }
+
+  p { margin: 0 0 8pt 0; line-height: 1.5; widows: 2; orphans: 2; }
+
+  ul, ol {
+    margin: 4pt 0 8pt 0;
+    padding-left: 18pt;
+    line-height: 1.5;
+  }
+  ul li::marker { color: var(--brand); }
+  ol li::marker { color: var(--brand); font-weight: 500; }
+
+  /* ========== TAG ========== */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--brand);
+    font-size: 9pt;
+    font-weight: 500;
+    padding: 1pt 6pt;
+    border-radius: 3pt;
+    margin-right: 3pt;
+  }
+
+  /* ========== TABLE (kami-table) ========== */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    margin: 8pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 5pt 8pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 4pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 3pt 6pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 2pt 6pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+
+  /* ========== CALLOUT ========== */
+  .callout {
+    background: var(--ivory);
+    border-left: 2pt solid var(--brand);
+    padding: 8pt 12pt;
+    border-radius: 3pt;
+    margin: 10pt 0;
+    line-height: 1.5;
+    break-inside: avoid;
+  }
+  .callout blockquote,
+  .callout .quote {
+    border-left: none;
+    padding-left: 0;
+    margin: 6pt 0;
+    color: var(--olive);
+  }
+  .callout blockquote:first-child,
+  .callout .quote:first-child { margin-top: 0; }
+  .callout blockquote:last-child,
+  .callout .quote:last-child  { margin-bottom: 0; }
+
+  /* ========== FIGURE ========== */
+  figure {
+    margin: 12pt 0;
+    break-inside: avoid;
+  }
+  figcaption {
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 4pt;
+    text-align: center;
+  }
+
+  /* ========== RISK MATRIX ========== */
+  .risk-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10pt;
+    margin: 8pt 0;
+  }
+  .risk-item {
+    padding: 6pt 10pt;
+    background: var(--ivory);
+    border-radius: 3pt;
+    break-inside: avoid;
+  }
+  .risk-label {
+    font-size: 9pt;
+    font-weight: 500;
+    color: var(--brand);
+    margin-bottom: 2pt;
+  }
+  .risk-desc {
+    font-size: 9pt;
+    color: var(--olive);
+    line-height: 1.4;
+  }
+
+  /* ========== TWO-COLUMN ========== */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16pt;
+  }
+
+  /* ========== ANALYST SUMMARY ========== */
+  .analyst-box {
+    background: var(--ivory);
+    border-left: 1.4pt solid var(--brand);
+    border-radius: 4pt;
+    padding: 10pt 14pt;
+    margin: 12pt 0;
+    break-inside: avoid;
+  }
+
+  /* ========== CHART PLACEHOLDER ========== */
+  .chart-placeholder {
+    background: var(--ivory);
+    border-radius: 4pt;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--stone);
+    font-size: 9pt;
+  }
+  .analyst-label {
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 0.5pt;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+
+  /* ========== FOOTER ========== */
+  .report-footer {
+    margin-top: 16pt;
+    padding-top: 6pt;
+    border-top: 0.3pt dotted var(--border);
+    font-size: 9pt;
+    color: var(--stone);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .page-break { break-before: page; }
+</style>
+</head>
+<body>
+
+<!-- ========== HEADER ========== -->
+<div class="report-header">
+  <div class="ticker-block">
+    <div class="ticker-eyebrow">{{EYEBROW · 如 "个股研报" / "估值分析" / "投资备忘"}}</div>
+    <div class="ticker-name">{{公司名称}} <span style="font-size: 14pt; color: var(--stone);">{{股票代码}}</span></div>
+    <div class="ticker-sub">{{行业}} · {{交易所}} · {{一句核心判断}}</div>
+  </div>
+  <div class="price-block">
+    <div class="price-current">{{当前价格}}</div>
+    <div class="price-change up">{{涨跌幅 如 "+12.3%"}}</div>
+    <div class="price-date">{{日期}}</div>
+  </div>
+</div>
+
+<!-- ========== METRICS ========== -->
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-value">{{数字}}</div>
+    <div class="metric-label">市值</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{数字}}</div>
+    <div class="metric-label">P/E</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{数字}}</div>
+    <div class="metric-label">营收</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{数字}}</div>
+    <div class="metric-label">利润率</div>
+  </div>
+</div>
+
+<!-- ========== INVESTMENT THESIS ========== -->
+<h2>投资逻辑</h2>
+<p>{{2-3 句核心投资论点。用 <span class="hl">关键数据</span> 支撑判断。这段是整份研报的灵魂。}}</p>
+
+<div class="callout">
+  {{一句话总结：买入/持有/观望的核心理由。}}
+</div>
+
+<!-- ========== CHART (嵌入 SVG 图表) ========== -->
+<h2>价格走势</h2>
+<figure>
+  <!-- 从 candlestick.html 或 line-chart.html 提取 <svg> 嵌入此处 -->
+  <div class="chart-placeholder" style="height: 60mm;">
+    [K 线图 / 价格走势图占位 · 从 diagrams/ 提取 SVG 嵌入]
+  </div>
+  <figcaption>{{图表标题，如 "近 20 个交易日价格走势"}}</figcaption>
+</figure>
+
+<!-- ========== FINANCIALS ========== -->
+<h2>财务概览</h2>
+<table class="financial striped">
+  <thead>
+    <tr>
+      <th>指标</th>
+      <th>FY2023</th>
+      <th>FY2024</th>
+      <th>FY2025E</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>营收</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>净利润</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>EPS</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>毛利率</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>ROE</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========== REVENUE BREAKDOWN (可选图表) ========== -->
+<h2>收入结构</h2>
+<figure>
+  <div class="chart-placeholder" style="height: 50mm;">
+    [营收分解图占位 · 环形图或瀑布图]
+  </div>
+  <figcaption>{{图表标题}}</figcaption>
+</figure>
+
+<!-- ========== COMPETITIVE POSITIONING ========== -->
+<div class="page-break"></div>
+<h2>竞争格局</h2>
+<p>{{行业格局概述，1-2 段。}}</p>
+
+<table class="financial compact striped">
+  <thead>
+    <tr>
+      <th>公司</th>
+      <th>市值</th>
+      <th>P/E</th>
+      <th>营收增速</th>
+      <th>利润率</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>{{目标公司}}</strong></td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>{{竞品 A}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>{{竞品 B}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+    <tr>
+      <td>{{竞品 C}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+      <td>{{数据}}</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========== RISKS ========== -->
+<h2>风险提示</h2>
+<div class="risk-grid">
+  <div class="risk-item">
+    <div class="risk-label">{{风险类型 1}}</div>
+    <div class="risk-desc">{{风险描述}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{风险类型 2}}</div>
+    <div class="risk-desc">{{风险描述}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{风险类型 3}}</div>
+    <div class="risk-desc">{{风险描述}}</div>
+  </div>
+  <div class="risk-item">
+    <div class="risk-label">{{风险类型 4}}</div>
+    <div class="risk-desc">{{风险描述}}</div>
+  </div>
+</div>
+
+<!-- ========== ANALYST SUMMARY ========== -->
+<div class="analyst-box">
+  <div class="analyst-label">分析师总结</div>
+  {{3-5 句总结。包含目标价（如有）、评级建议、核心催化剂、关键假设。}}
+</div>
+
+<!-- ========== FOOTER ========== -->
+<div class="report-footer">
+  <span>{{机构名 / 免责声明}}</span>
+  <span>{{作者}} · {{日期}}</span>
+</div>
+
+</body>
+</html>

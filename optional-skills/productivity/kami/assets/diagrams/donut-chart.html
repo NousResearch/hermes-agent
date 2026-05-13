@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     DIAGRAM · Donut Chart (kami palette)
+     Proportional distribution (spend breakdown, user segments, etc.)
+     Up to 6 segments. Demo: 6-segment revenue mix.
+     DATA START / DATA END marks the region Claude replaces when filling.
+
+     Arc path formula (clockwise, starting from top -90°):
+       M outer_start_x outer_start_y
+       A R R 0 large-arc 1 outer_end_x outer_end_y
+       L inner_end_x inner_end_y
+       A r r 0 large-arc 0 inner_start_x inner_start_y
+       Z
+     cx=300 cy=200  R=136 (outer)  r=76 (inner)
+     large-arc flag = 1 if segment > 180°, else 0
+     ================================================================== -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Donut Chart · kami diagram</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment:    #f5f4ed;
+    --ivory:        #faf9f5;
+    --near-black:   #141413;
+    --olive:        #504e49;
+    --stone:        #6b6a64;
+    --light-stone:  #b8b7b0;
+    --mist:         #d4d3cd;
+    --brand:        #1B365D;
+    --brand-tint:   #EEF2F7;
+    --grid:         #e8e7e1;
+    --border:       #e8e6dc;
+
+    --serif: Charter, Georgia, Palatino, serif;
+    --sans: var(--serif);
+    --mono:  "JetBrains Mono", "SF Mono", Consolas, "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", monospace;
+  }
+
+  body {
+    font-family: var(--sans);
+    background: var(--parchment);
+    color: var(--near-black);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+
+  .frame { max-width: 920px; width: 100%; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.3pt;
+    line-height: 1.15;
+    margin-bottom: 1.6rem;
+  }
+
+  svg { width: 100%; min-width: 640px; display: block; }
+
+  .caption {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 0.95rem;
+    color: var(--olive);
+    margin-top: 1rem;
+    max-width: 52ch;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Donut Chart · kami diagram</p>
+    <h1>{{Chart Title}}</h1>
+
+    <!-- ============================================================
+         DATA START
+         viewBox: 0 0 680 420
+         Donut center: cx=300 cy=200  R=136 (outer)  r=76 (inner)
+         6 segments, clockwise from top (-90°):
+           S1: 32%  -90° to  25.2°  fill=#1B365D  (focal/largest)
+           S2: 24%  25.2° to 111.6° fill=#504e49
+           S3: 18% 111.6° to 176.4° fill=#6b6a64
+           S4: 12% 176.4° to 219.6° fill=#b8b7b0
+           S5:  8% 219.6° to 248.4° fill=#d4d3cd
+           S6:  6% 248.4° to 270°   fill=#EEF2F7 stroke=#e8e7e1
+         Center text: primary label + secondary label at (300,200)
+         Legend: x=476 from y=144 to y=296 step=24
+         ============================================================ -->
+    <svg viewBox="0 0 680 420" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Canvas -->
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+
+      <!-- ==================================================
+           DONUT SEGMENTS · replace between DATA START / DATA END
+           Arc coordinates pre-computed for cx=300 cy=200 R=136 r=76
+           ================================================== -->
+
+      <!-- S1: 32% · -90° to 25.2° · span 115.2° · large-arc=0 -->
+      <path d="M 300 64 A 136 136 0 0 1 423.1 257.9 L 368.8 232.4 A 76 76 0 0 0 300 124 Z"
+            fill="#1B365D"/>
+
+      <!-- S2: 24% · 25.2° to 111.6° · span 86.4° · large-arc=0 -->
+      <path d="M 423.1 257.9 A 136 136 0 0 1 249.1 326.1 L 271.5 270.5 A 76 76 0 0 0 368.8 232.4 Z"
+            fill="#504e49"/>
+
+      <!-- S3: 18% · 111.6° to 176.4° · span 64.8° · large-arc=0 -->
+      <path d="M 249.1 326.1 A 136 136 0 0 1 164.3 208.6 L 224.2 204.8 A 76 76 0 0 0 271.5 270.5 Z"
+            fill="#6b6a64"/>
+
+      <!-- S4: 12% · 176.4° to 219.6° · span 43.2° · large-arc=0 -->
+      <path d="M 164.3 208.6 A 136 136 0 0 1 195.2 113.3 L 241.4 151.6 A 76 76 0 0 0 224.2 204.8 Z"
+            fill="#b8b7b0"/>
+
+      <!-- S5: 8% · 219.6° to 248.4° · span 28.8° · large-arc=0 -->
+      <path d="M 195.2 113.3 A 136 136 0 0 1 249.8 73.6 L 271.9 129.4 A 76 76 0 0 0 241.4 151.6 Z"
+            fill="#d4d3cd"/>
+
+      <!-- S6: 6% · 248.4° to 270° · span 21.6° · large-arc=0 -->
+      <path d="M 249.8 73.6 A 136 136 0 0 1 300 64 L 300 124 A 76 76 0 0 0 271.9 129.4 Z"
+            fill="#EEF2F7" stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- Thin separator ring over segment joins (visual polish) -->
+      <circle cx="300" cy="200" r="136" fill="none" stroke="#f5f4ed" stroke-width="1.5"/>
+      <circle cx="300" cy="200" r="76"  fill="none" stroke="#f5f4ed" stroke-width="1.5"/>
+
+      <!-- Donut hole background -->
+      <circle cx="300" cy="200" r="75" fill="#f5f4ed"/>
+
+      <!-- Center label (primary value + secondary text) -->
+      <text x="300" y="193" fill="#1B365D" font-size="26" font-family="inherit" font-weight="500" text-anchor="middle">32%</text>
+      <text x="300" y="214" fill="#6b6a64" font-size="10" font-family="inherit" text-anchor="middle" letter-spacing="0.1em">{{CENTER LABEL}}</text>
+
+      <!-- ================================================== DATA END -->
+
+      <!-- Legend (right of donut) -->
+      <line x1="460" y1="120" x2="460" y2="300" stroke="#e8e7e1" stroke-width="0.8"/>
+
+      <!-- S1 -->
+      <rect x="472" y="136" width="12" height="12" fill="#1B365D" rx="2"/>
+      <text x="492" y="147" fill="#141413" font-size="9.5" font-family="inherit" font-weight="500">32%</text>
+      <text x="532" y="147" fill="#504e49" font-size="9" font-family="inherit">{{Category A}}</text>
+
+      <!-- S2 -->
+      <rect x="472" y="160" width="12" height="12" fill="#504e49" rx="2"/>
+      <text x="492" y="171" fill="#141413" font-size="9.5" font-family="inherit">24%</text>
+      <text x="532" y="171" fill="#504e49" font-size="9" font-family="inherit">{{Category B}}</text>
+
+      <!-- S3 -->
+      <rect x="472" y="184" width="12" height="12" fill="#6b6a64" rx="2"/>
+      <text x="492" y="195" fill="#141413" font-size="9.5" font-family="inherit">18%</text>
+      <text x="532" y="195" fill="#504e49" font-size="9" font-family="inherit">{{Category C}}</text>
+
+      <!-- S4 -->
+      <rect x="472" y="208" width="12" height="12" fill="#b8b7b0" rx="2"/>
+      <text x="492" y="219" fill="#141413" font-size="9.5" font-family="inherit">12%</text>
+      <text x="532" y="219" fill="#504e49" font-size="9" font-family="inherit">{{Category D}}</text>
+
+      <!-- S5 -->
+      <rect x="472" y="232" width="12" height="12" fill="#d4d3cd" rx="2"/>
+      <text x="492" y="243" fill="#141413" font-size="9.5" font-family="inherit">8%</text>
+      <text x="532" y="243" fill="#504e49" font-size="9" font-family="inherit">{{Category E}}</text>
+
+      <!-- S6 -->
+      <rect x="472" y="256" width="12" height="12" fill="#EEF2F7" stroke="#e8e7e1" stroke-width="0.8" rx="2"/>
+      <text x="492" y="267" fill="#141413" font-size="9.5" font-family="inherit">6%</text>
+      <text x="532" y="267" fill="#504e49" font-size="9" font-family="inherit">{{Category F}}</text>
+
+      <!-- Bottom rule -->
+      <line x1="60" y1="380" x2="620" y2="380" stroke="#e8e7e1" stroke-width="0.8"/>
+      <text x="60" y="397" fill="#6b6a64" font-size="9" font-family="'JetBrains Mono', monospace" letter-spacing="0.15em">TOTAL · 100%</text>
+      <text x="460" y="397" fill="#6b6a64" font-size="9" font-family="inherit">{{Source / period}}</text>
+
+    </svg>
+
+    <p class="caption">{{Caption text. The ink-blue segment is the focal category. Lead with the insight, not the breakdown.}}</p>
+  </div>
+</body>
+</html>

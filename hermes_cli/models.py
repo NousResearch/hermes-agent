@@ -3320,7 +3320,7 @@ def validate_requested_model(
                 }
 
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.98)
             if auto:
                 return {
                     "accepted": True,
@@ -3387,7 +3387,7 @@ def validate_requested_model(
                     "message": None,
                 }
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.98)
             if auto:
                 return {
                     "accepted": True,
@@ -3430,7 +3430,7 @@ def validate_requested_model(
                 }
             # Auto-correct close matches (case-insensitive)
             catalog_lower_list = list(catalog_lower.keys())
-            auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.98)
             if auto:
                 corrected = catalog_lower[auto[0]]
                 return {
@@ -3565,7 +3565,7 @@ def validate_requested_model(
             # endpoints even though it's not in /models).  Warn but allow.
 
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.98)
             if auto:
                 return {
                     "accepted": True,

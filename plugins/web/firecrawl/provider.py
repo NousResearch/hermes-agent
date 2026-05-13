@@ -51,6 +51,7 @@ import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
+from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -417,9 +418,9 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         else:
             formats = ["markdown", "html"]
 
-        # check_website_access is the legacy policy gate; import inside
-        # the function so the plugin doesn't pay the cost when never used.
-        from tools.website_policy import check_website_access
+        # check_website_access is the legacy policy gate; imported at
+        # module level (lazy-friendly because the website_policy import is
+        # cheap) so monkeypatching it in tests works as expected.
 
         results: List[Dict[str, Any]] = []
 

@@ -4,6 +4,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.InterruptedIOException
 
 class NativeToolCallingChatClientTest {
     @Test
@@ -24,5 +25,28 @@ class NativeToolCallingChatClientTest {
             .put("path", "hermes-output.txt")
 
         assertFalse(NativeToolCallingChatClient.shouldSkipNativeFollowUpAfterToolResult(result.toString()))
+    }
+
+    @Test
+    fun recoversHtmlGenerationTimeoutsWithFallbackDocument() {
+        assertTrue(
+            NativeToolCallingChatClient.isRecoverableHtmlGenerationFailure(
+                IllegalStateException("LiteRT-LM generation timed out after 45 seconds before producing a response"),
+            )
+        )
+        assertTrue(
+            NativeToolCallingChatClient.isRecoverableHtmlGenerationFailure(
+                InterruptedIOException("timeout"),
+            )
+        )
+    }
+
+    @Test
+    fun doesNotHideNonTimeoutHtmlGenerationErrors() {
+        assertFalse(
+            NativeToolCallingChatClient.isRecoverableHtmlGenerationFailure(
+                IllegalStateException("image input is unavailable"),
+            )
+        )
     }
 }

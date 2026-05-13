@@ -19,6 +19,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InterruptedIOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -138,6 +139,36 @@ class NativeToolCallingChatClient(
     }
 
     private fun executeExplicitDirectToolRequest(userText: String): Result? {
+        extractExplicitFileWriteRequest(userText)?.let { request ->
+            val toolResult = executeFileWriteTool(
+                ToolCall(
+                    id = "direct_${UUID.randomUUID()}",
+                    name = "file_write_tool",
+                    arguments = JSONObject()
+                        .put("path", request.path)
+                        .put("content", request.content),
+                )
+            )
+            return Result(
+                content = toolCompletionReply(toolResult),
+                executedToolCalls = 1,
+            )
+        }
+
+        if (isExplicitAndroidSystemStatusRequest(userText)) {
+            val toolResult = executeAndroidSystemTool(
+                ToolCall(
+                    id = "direct_${UUID.randomUUID()}",
+                    name = "android_system_tool",
+                    arguments = JSONObject().put("action", "status"),
+                )
+            )
+            return Result(
+                content = toolCompletionReply(toolResult),
+                executedToolCalls = 1,
+            )
+        }
+
         val command = extractExactTerminalCommand(userText) ?: return null
         val toolResult = executeTerminalTool(
             ToolCall(
@@ -152,6 +183,34 @@ class NativeToolCallingChatClient(
             content = toolCompletionReply(toolResult),
             executedToolCalls = 1,
         )
+    }
+
+    private fun extractExplicitFileWriteRequest(userText: String): ExplicitFileWriteRequest? {
+        val lower = userText.lowercase()
+        if ("file_write_tool" !in lower && "write_file" !in lower) {
+            return null
+        }
+        val match = FILE_WRITE_WITH_CONTENT_REGEX.find(userText) ?: return null
+        val path = listOfNotNull(match.groups["double"]?.value, match.groups["single"]?.value, match.groups["bare"]?.value)
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+        val content = match.groups["content"]?.value
+            ?.trim()
+            ?.trim('"', '\'')
+            .orEmpty()
+        if (path.isBlank() || content.isBlank()) {
+            return null
+        }
+        return ExplicitFileWriteRequest(path = path, content = content)
+    }
+
+    private fun isExplicitAndroidSystemStatusRequest(userText: String): Boolean {
+        val lower = userText.lowercase()
+        return "android_system_tool" in lower &&
+            "status" in lower &&
+            "run_privileged_shell" !in lower &&
+            "privileged_shell" !in lower
     }
 
     private fun executeExplicitHtmlBrowserToolRequest(
@@ -221,16 +280,25 @@ class NativeToolCallingChatClient(
                             "Use <canvas id=\"game\"> and inline JavaScript. $markerInstruction",
                     )
             )
-        val assistant = postChatCompletion(
-            normalizedBaseUrl = normalizedBaseUrl,
-            modelName = modelName,
-            sessionId = "${sessionId}_html",
-            messages = messages,
-            toolSpecs = null,
-            maxTokens = HTML_GENERATION_MAX_TOKENS,
-        )
+        val rawHtml = runCatching {
+            postChatCompletion(
+                normalizedBaseUrl = normalizedBaseUrl,
+                modelName = modelName,
+                sessionId = "${sessionId}_html",
+                messages = messages,
+                toolSpecs = null,
+                maxTokens = HTML_GENERATION_MAX_TOKENS,
+                timeoutMs = HTML_GENERATION_TIMEOUT_MS,
+            ).content
+        }.getOrElse { error ->
+            if (isRecoverableHtmlGenerationFailure(error)) {
+                ""
+            } else {
+                throw error
+            }
+        }
         return ensureHtmlRequirements(
-            rawHtml = stripMarkdownCodeFence(assistant.content),
+            rawHtml = stripMarkdownCodeFence(rawHtml),
             title = "Hermes Gemma Flappy",
             marker = request.marker,
         )
@@ -359,13 +427,14 @@ class NativeToolCallingChatClient(
         messages: JSONArray,
         toolSpecs: JSONArray?,
         maxTokens: Int,
+        timeoutMs: Long = NATIVE_TOOL_GENERATION_TIMEOUT_MS,
     ): AssistantMessage {
         val payload = JSONObject()
             .put("model", modelName)
             .put("stream", false)
             .put("temperature", 0.0)
             .put("max_tokens", maxTokens)
-            .put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)
+            .put("timeout_ms", timeoutMs)
             .put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
             .put("messages", messages)
         if (toolSpecs != null && toolSpecs.length() > 0) {
@@ -2626,9 +2695,20 @@ class NativeToolCallingChatClient(
             return parsed.optBoolean("external_activity_handoff", false)
         }
 
+        fun isRecoverableHtmlGenerationFailure(error: Throwable): Boolean {
+            if (error is InterruptedIOException) {
+                return true
+            }
+            val message = error.message.orEmpty().lowercase()
+            return "timed out" in message ||
+                "timeout" in message ||
+                "before producing a response" in message
+        }
+
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
+        private const val HTML_GENERATION_TIMEOUT_MS = 45_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 1024
         private const val HTML_GENERATION_MAX_TOKENS = 768
         private const val MAX_NATIVE_TOOL_ROUNDS = 3
@@ -2719,7 +2799,15 @@ class NativeToolCallingChatClient(
         )
         private val HTML_PATH_REGEX = Regex("""[A-Za-z0-9._/-]+\.html?""", RegexOption.IGNORE_CASE)
         private val MARKER_REGEX = Regex("""\b[A-Z][A-Z0-9_]{5,}\b""")
+        private val FILE_WRITE_WITH_CONTENT_REGEX = Regex(
+            pattern = """(?is)\b(?:write|create|save)\s+(?:"(?<double>[^"]+)"|'(?<single>[^']+)'|(?<bare>[A-Za-z0-9._/-]+))\s+with\s+content\s+(?<content>.+?)(?:\.\s+(?:after|then)\b|$)""",
+        )
     }
+
+    private data class ExplicitFileWriteRequest(
+        val path: String,
+        val content: String,
+    )
 
     private data class ExplicitHtmlBrowserRequest(
         val path: String,

@@ -63,6 +63,11 @@ object LiteRtLmOpenAiProxy {
         val policy: String,
     )
 
+    internal data class EngineTokenBudget(
+        val value: Int?,
+        val policy: String,
+    )
+
     private const val DEFAULT_GENERATION_TIMEOUT_MS = 120_000L
     private const val MIN_GENERATION_TIMEOUT_MS = 5_000L
     private const val MAX_GENERATION_TIMEOUT_MS = 300_000L
@@ -436,11 +441,6 @@ object LiteRtLmOpenAiProxy {
                 ?: "unknown error"
         }
 
-        private data class EngineTokenBudget(
-            val value: Int?,
-            val policy: String,
-        )
-
         private data class GpuBackendPolicy(
             val enabled: Boolean,
             val description: String,
@@ -452,42 +452,13 @@ object LiteRtLmOpenAiProxy {
             requestedMaxTokens: Int,
             requestedMaxContextLength: Int,
         ): EngineTokenBudget {
-            val requested = when {
-                requestedMaxContextLength > 0 -> requestedMaxContextLength
-                requestedMaxTokens > 0 -> requestedMaxTokens
-                else -> return EngineTokenBudget(null, "backend default")
-            }
-            if (requestedMaxContextLength <= 0) {
-                return EngineTokenBudget(requested, "using requested max token budget")
-            }
-
-            val safeLimit = memorySafeContextWindowLimit(context, modelPath)
-            val selected = requested.coerceAtMost(safeLimit)
-            val totalRamGb = totalDeviceRamBytes(context).let { if (it > 0L) "%.1f".format(Locale.US, it / 1_000_000_000.0) else "unknown" }
-            return EngineTokenBudget(
-                value = selected,
-                policy = if (selected == requested) {
-                    "using requested context window $requested tokens on ${totalRamGb}GB RAM device"
-                } else {
-                    "clamped requested context window $requested to $selected tokens on ${totalRamGb}GB RAM device"
-                },
+            return decideEngineTokenBudget(
+                requestedMaxTokens = requestedMaxTokens,
+                requestedMaxContextLength = requestedMaxContextLength,
+                totalRamBytes = totalDeviceRamBytes(context),
+                modelBytes = runCatching { File(modelPath).length() }.getOrDefault(0L),
+                isX86Device = Build.SUPPORTED_ABIS.any { it.startsWith("x86") },
             )
-        }
-
-        private fun memorySafeContextWindowLimit(context: Context, modelPath: String): Int {
-            val totalRamBytes = totalDeviceRamBytes(context)
-            val modelBytes = runCatching { File(modelPath).length() }.getOrDefault(0L)
-            if (totalRamBytes <= 0L) {
-                return if (modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES) 8_192 else 16_384
-            }
-            return when {
-                modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 12_000_000_000L -> 4_096
-                modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 16_000_000_000L -> 8_192
-                totalRamBytes < 6_000_000_000L -> 4_096
-                totalRamBytes < 10_000_000_000L -> 8_192
-                totalRamBytes < 14_000_000_000L -> 16_384
-                else -> 32_000
-            }
         }
 
         private fun totalDeviceRamBytes(context: Context): Long {
@@ -1176,6 +1147,66 @@ object LiteRtLmOpenAiProxy {
         )
     }
 
+    internal fun decideEngineTokenBudget(
+        requestedMaxTokens: Int,
+        requestedMaxContextLength: Int,
+        totalRamBytes: Long,
+        modelBytes: Long,
+        isX86Device: Boolean,
+    ): EngineTokenBudget {
+        val x86Limit = if (isX86Device) X86_LITERT_LM_TOKEN_BUDGET else Int.MAX_VALUE
+        val requested = when {
+            requestedMaxContextLength > 0 -> requestedMaxContextLength
+            requestedMaxTokens > 0 -> requestedMaxTokens
+            isX86Device -> return EngineTokenBudget(
+                value = X86_LITERT_LM_TOKEN_BUDGET,
+                policy = "using x86 emulator/device LiteRT-LM token budget $X86_LITERT_LM_TOKEN_BUDGET",
+            )
+            else -> return EngineTokenBudget(null, "backend default")
+        }
+
+        if (requestedMaxContextLength <= 0) {
+            val selected = requested.coerceAtMost(x86Limit)
+            return EngineTokenBudget(
+                value = selected,
+                policy = if (selected == requested) {
+                    "using requested max token budget"
+                } else {
+                    "clamped requested max token budget $requested to $selected on x86 emulator/device"
+                },
+            )
+        }
+
+        val safeLimit = memorySafeContextWindowLimit(totalRamBytes, modelBytes).coerceAtMost(x86Limit)
+        val selected = requested.coerceAtMost(safeLimit)
+        val totalRamGb = if (totalRamBytes > 0L) "${formatRamGb(totalRamBytes)}GB RAM" else "unknown RAM"
+        return EngineTokenBudget(
+            value = selected,
+            policy = when {
+                selected == requested ->
+                    "using requested context window $requested tokens on $totalRamGb device"
+                isX86Device ->
+                    "clamped requested context window $requested to $selected on x86 emulator/device"
+                else ->
+                    "clamped requested context window $requested to $selected on $totalRamGb device"
+            },
+        )
+    }
+
+    private fun memorySafeContextWindowLimit(totalRamBytes: Long, modelBytes: Long): Int {
+        if (totalRamBytes <= 0L) {
+            return if (modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES) 8_192 else 16_384
+        }
+        return when {
+            modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 12_000_000_000L -> 4_096
+            modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 16_000_000_000L -> 8_192
+            totalRamBytes < 6_000_000_000L -> 4_096
+            totalRamBytes < 10_000_000_000L -> 8_192
+            totalRamBytes < 14_000_000_000L -> 16_384
+            else -> 32_000
+        }
+    }
+
     private fun minimumRamForLargeModelExtras(modelBytes: Long): Long {
         return when {
             modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES -> 12_000_000_000L
@@ -1192,4 +1223,5 @@ object LiteRtLmOpenAiProxy {
     private const val GEMMA4_E4B_SIZE_FLOOR_BYTES = 3_000_000_000L
     private const val LARGE_MULTIMODAL_MODEL_SIZE_FLOOR_BYTES = 2_000_000_000L
     private const val MEDIUM_MULTIMODAL_MODEL_SIZE_FLOOR_BYTES = 1_500_000_000L
+    private const val X86_LITERT_LM_TOKEN_BUDGET = 1_024
 }

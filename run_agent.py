@@ -8900,6 +8900,66 @@ class AIAgent:
                 provider=rt["compressor_provider"],
             )
 
+            # ── Re-select from credential pool if available ──
+            # The snapshot was taken at construction time with whatever
+            # credential pool.select() returned then.  Across turns the
+            # pool may have rotated (exhaustion, revocation, rate-limit
+            # cooldown) so the snapshot's api_key can be stale.  Re-select
+            # to pick up the current best entry.
+            from agent.anthropic_adapter import _is_oauth_token
+            pool = self._credential_pool
+            if pool is not None and pool.has_available():
+                entry = pool.select()
+                if entry is not None:
+                    pool_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
+                    )
+                    if pool_key:
+                        self.api_key = pool_key
+                        self._client_kwargs["api_key"] = self.api_key
+                        pool_base = (
+                            getattr(entry, "runtime_base_url", None)
+                            or getattr(entry, "base_url", None)
+                        )
+                        if pool_base:
+                            self.base_url = pool_base.rstrip("/")
+                            self._client_kwargs["base_url"] = self.base_url
+                        # Rebuild the OpenAI client with the fresh credential
+                        # (Anthropic was already handled above; refresh it too).
+                        if self.api_mode == "anthropic_messages":
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            self._anthropic_api_key = pool_key
+                            self._anthropic_base_url = (
+                                pool_base or self._anthropic_base_url
+                            )
+                            self._anthropic_client = build_anthropic_client(
+                                self._anthropic_api_key,
+                                self._anthropic_base_url,
+                                timeout=get_provider_request_timeout(
+                                    self.provider, self.model,
+                                ),
+                            )
+                            self._is_anthropic_oauth = (
+                                _is_oauth_token(pool_key)
+                                if self.provider == "anthropic"
+                                else False
+                            )
+                            self.client = None
+                        else:
+                            self._apply_client_headers_for_base_url(self.base_url)
+                            self._replace_primary_openai_client(
+                                reason="restore_primary_pool_reselect",
+                            )
+                        logger.info(
+                            "Restore re-selected pool entry %s (%s)",
+                            getattr(entry, "id", "?"),
+                            getattr(entry, "label", "?"),
+                        )
+
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0

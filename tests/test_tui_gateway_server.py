@@ -1684,6 +1684,69 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
     assert saved["model"]["provider"] == "anthropic"
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
+    assert saved["model"]["api_mode"] == "anthropic_messages"
+
+
+def test_config_set_model_global_clears_stale_api_mode(monkeypatch):
+    """Regression: switching away from a provider with api_mode must remove
+    the stale value rather than leaving it in config.yaml."""
+
+    class _Agent:
+        provider = "opencode"
+        model = "old/model"
+        base_url = "https://opencode.example/v1"
+        api_key = "sk-old"
+
+        def switch_model(self, **kwargs):
+            return None
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="gpt-5.4",
+        target_provider="openai",
+        api_key="sk-new",
+        base_url="",
+        api_mode="",
+        warning_message="",
+    )
+    saved = {}
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {
+                "default": "old/model",
+                "provider": "opencode",
+                "base_url": "https://opencode.example/v1",
+                "api_mode": "codex_responses",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "gpt-5.4 --global",
+            },
+        }
+    )
+
+    assert saved["model"]["default"] == "gpt-5.4"
+    assert saved["model"]["provider"] == "openai"
+    assert "api_mode" not in saved["model"]
+    assert "base_url" not in saved["model"]
 
 
 def test_config_set_model_syncs_inference_provider_env(monkeypatch):

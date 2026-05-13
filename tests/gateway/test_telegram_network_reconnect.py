@@ -288,6 +288,48 @@ async def test_conflict_retry_also_drains_polling_connections():
 
 
 @pytest.mark.asyncio
+async def test_conflict_retry_routes_to_reconnect_on_start_polling_failure():
+    """
+    When start_polling() raises during a conflict retry, the adapter must
+    schedule a _handle_polling_network_error task so that the reconnect
+    ladder can recover.  Otherwise polling stays dead with no further
+    error callbacks.
+
+    Regression test for #25221: gateway alive but deaf after conflict retry
+    start_polling failure.
+    """
+    adapter = _make_adapter()
+    adapter._polling_conflict_count = 0
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock(side_effect=Exception("Timed out"))
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_conflict(Exception("Conflict: terminated by other getUpdates"))
+
+    # A reconnect task must have been added to _background_tasks
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert len(pending) >= 1, (
+        "Expected at least one reconnect task in _background_tasks "
+        f"after conflict-retry start_polling failure, got {len(pending)}"
+    )
+
+    # Clean up
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_drain_helper_noop_without_app():
     """_drain_polling_connections must be a no-op when _app is None."""
     adapter = _make_adapter()

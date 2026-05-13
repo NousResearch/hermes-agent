@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
  */
 const CARD_STYLE: React.CSSProperties = {
   clipPath: "var(--component-card-clip-path)",
+  border: "var(--component-card-border)",
   borderImage: "var(--component-card-border-image)",
   background: "var(--component-card-background)",
   boxShadow: "var(--component-card-box-shadow)",

@@ -204,9 +204,317 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+export const haoyuanlinTheme: DashboardTheme = {
+  name: "haoyuanlin",
+  label: "Haoyuan Brutalist",
+  description: "Memphis x Brutalist cream canvas, hard ink borders, and punchy accents",
+  palette: {
+    background: { hex: "#FAF8F5", alpha: 1 },
+    midground: { hex: "#1A1A1A", alpha: 1 },
+    foreground: { hex: "#FFD600", alpha: 1 },
+    warmGlow: "rgba(255, 214, 0, 0.10)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Space Grotesk", "Inter", ${SYSTEM_SANS}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "15px",
+    lineHeight: "1.65",
+    letterSpacing: "0",
+  },
+  layout: {
+    radius: "0",
+    density: "comfortable",
+  },
+  layoutVariant: "tiled",
+  colorOverrides: {
+    card: "#F5F0E8",
+    cardForeground: "#1A1A1A",
+    popover: "#FAF8F5",
+    popoverForeground: "#1A1A1A",
+    primary: "#FFD600",
+    primaryForeground: "#1A1A1A",
+    secondary: "#FFFFFF",
+    secondaryForeground: "#1A1A1A",
+    muted: "#F0EDE8",
+    mutedForeground: "#3A3A3A",
+    accent: "#FFD600",
+    accentForeground: "#1A1A1A",
+    destructive: "#FF6B6B",
+    destructiveForeground: "#1A1A1A",
+    success: "#00A070",
+    warning: "#B45309",
+    border: "#1A1A1A",
+    input: "#1A1A1A",
+    ring: "#2979FF",
+  },
+  componentStyles: {
+    card: {
+      border: "3px solid #1A1A1A",
+      background: "#F5F0E8",
+      boxShadow: "5px 5px 0 0 #1A1A1A",
+    },
+    header: {
+      background: "#FAF8F5",
+    },
+    sidebar: {
+      background: "#FAF8F5",
+    },
+    backdrop: {
+      // Memphis canvas is light: kill all the dark-theme blend modes that
+      // muddy a cream background. Difference + color-dodge + lighten only
+      // make sense over a deep teal/black canvas.
+      canvasBlendMode: "normal",
+      glowBlendMode: "normal",
+      glowOpacity: "0",
+      noiseBlendMode: "multiply",
+      noiseOpacity: "0.04",
+      fillerOpacity: "0",
+      fillerBlendMode: "normal",
+      backgroundSize: "40px 40px",
+      backgroundPosition: "0 0",
+    },
+  },
+  assets: {
+    bg: "linear-gradient(rgba(26,26,26,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(26,26,26,0.06) 1px, transparent 1px)",
+  },
+  customCSS: `
+:root {
+  color-scheme: light;
+  --hy-ink: #1A1A1A;
+  --hy-paper: #FAF8F5;
+  --hy-panel: #F5F0E8;
+  --hy-panel-hi: #FFFFFF;
+  --hy-yellow: #FFD600;
+  --hy-blue: #2979FF;
+  --hy-coral: #FF6B6B;
+  --hy-mint: #00E5A0;
+  --hy-purple: #7C4DFF;
+}
+
+body {
+  background: var(--hy-paper);
+  color: var(--hy-ink);
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Root layout overrides — App.tsx hardcodes
+     bg-black uppercase text-midground font-mondwest
+   on the root div. For the Memphis×Brutalist lens we flip the
+   canvas to cream, drop the uppercase mask, and swap the display
+   font back to Space Grotesk so headings and body text stay
+   legible. Scoped to [data-layout-variant="tiled"] so other
+   themes keep their look.
+   ────────────────────────────────────────────────────────────── */
+#root [data-layout-variant="tiled"] {
+  background: var(--hy-paper) !important;
+  color: var(--hy-ink) !important;
+  text-transform: none !important;
+  font-family: "Inter", system-ui, sans-serif !important;
+}
+
+/* Body text and generic text nodes inside the tiled shell keep
+   their natural case — no global uppercase. */
+#root [data-layout-variant="tiled"] *:not(.font-mono):not(code):not(pre) {
+  text-transform: none;
+}
+
+/* Subtle Memphis grid backdrop on the main canvas. */
+#root [data-layout-variant="tiled"] main {
+  background-image:
+    linear-gradient(rgba(26,26,26,0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26,26,26,0.055) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+#root [data-layout-variant="tiled"] header,
+#root [data-layout-variant="tiled"] aside {
+  background: var(--hy-paper) !important;
+  color: var(--hy-ink) !important;
+  border-color: var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] aside {
+  border-right: 3px solid var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] header {
+  border-bottom: 3px solid var(--hy-ink) !important;
+}
+
+/* Cards/panels: cream panel with hard ink border and offset shadow. */
+#root [data-layout-variant="tiled"] [class*="bg-card"],
+#root [data-layout-variant="tiled"] [class*="bg-popover"] {
+  background: var(--hy-panel) !important;
+  color: var(--hy-ink) !important;
+  border: 3px solid var(--hy-ink) !important;
+  box-shadow: 5px 5px 0 0 var(--hy-ink);
+}
+
+#root [data-layout-variant="tiled"] [class*="bg-muted"],
+#root [data-layout-variant="tiled"] [class*="bg-secondary"] {
+  background: var(--hy-panel) !important;
+  color: var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] main,
+#root [data-layout-variant="tiled"] [class*="bg-card"],
+#root [data-layout-variant="tiled"] [class*="bg-muted"],
+#root [data-layout-variant="tiled"] [class*="bg-secondary"],
+#root [data-layout-variant="tiled"] [class*="bg-popover"] {
+  border-radius: 0 !important;
+}
+
+#root [data-layout-variant="tiled"] button,
+#root [data-layout-variant="tiled"] [role="button"],
+#root [data-layout-variant="tiled"] a,
+#root [data-layout-variant="tiled"] input,
+#root [data-layout-variant="tiled"] textarea,
+#root [data-layout-variant="tiled"] select {
+  border-radius: 0 !important;
+}
+
+/* Primary buttons: ink text on yellow with the hard-shadow signature. */
+#root [data-layout-variant="tiled"] button:not([aria-label]):not(:disabled),
+#root [data-layout-variant="tiled"] [role="button"]:not(:disabled) {
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 2px solid var(--hy-ink);
+  background: var(--hy-panel-hi);
+  color: var(--hy-ink);
+  box-shadow: 3px 3px 0 0 var(--hy-ink);
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+
+#root [data-layout-variant="tiled"] button[class*="bg-primary"]:not(:disabled),
+#root [data-layout-variant="tiled"] [role="button"][class*="bg-primary"]:not(:disabled) {
+  background: var(--hy-yellow) !important;
+  color: var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] button:not(:disabled):hover,
+#root [data-layout-variant="tiled"] [role="button"]:not(:disabled):hover {
+  box-shadow: 5px 5px 0 0 var(--hy-ink);
+  transform: translate(-1px, -1px);
+}
+
+#root [data-layout-variant="tiled"] button:not(:disabled):active,
+#root [data-layout-variant="tiled"] [role="button"]:not(:disabled):active {
+  box-shadow: 1px 1px 0 0 var(--hy-ink);
+  transform: translate(2px, 2px);
+}
+
+/* Inputs: cream field with ink border. */
+#root [data-layout-variant="tiled"] input,
+#root [data-layout-variant="tiled"] textarea,
+#root [data-layout-variant="tiled"] select {
+  background: var(--hy-panel-hi) !important;
+  color: var(--hy-ink) !important;
+  border: 2px solid var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] input:focus-visible,
+#root [data-layout-variant="tiled"] textarea:focus-visible,
+#root [data-layout-variant="tiled"] select:focus-visible {
+  outline: 3px solid var(--hy-blue);
+  outline-offset: 2px;
+  box-shadow: 3px 3px 0 0 var(--hy-ink);
+}
+
+#root [data-layout-variant="tiled"] .border,
+#root [data-layout-variant="tiled"] [class*="border-border"],
+#root [data-layout-variant="tiled"] [class*="border-current"] {
+  border-color: var(--hy-ink) !important;
+}
+
+/* Headings use Space Grotesk Display for Memphis punch, with
+   extra weight so they read against the grid background. */
+#root [data-layout-variant="tiled"] h1,
+#root [data-layout-variant="tiled"] h2,
+#root [data-layout-variant="tiled"] h3,
+#root [data-layout-variant="tiled"] h4 {
+  font-family: "Space Grotesk", Inter, sans-serif !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.015em !important;
+  color: var(--hy-ink) !important;
+  text-transform: none !important;
+}
+
+#root [data-layout-variant="tiled"] h1 { font-weight: 800 !important; }
+
+/* Muted text: keep ink but at 60% — readable on cream while
+   preserving hierarchy. */
+#root [data-layout-variant="tiled"] [class*="text-muted-foreground"] {
+  color: color-mix(in srgb, var(--hy-ink) 60%, transparent) !important;
+}
+
+/* Active nav pill: ink fill with cream text — Memphis pill style. */
+#root [data-layout-variant="tiled"] a[aria-current="page"],
+#root [data-layout-variant="tiled"] a.active {
+  background: var(--hy-ink) !important;
+  color: var(--hy-paper) !important;
+  border: 2px solid var(--hy-ink) !important;
+}
+
+#root [data-layout-variant="tiled"] code,
+#root [data-layout-variant="tiled"] pre,
+#root [data-layout-variant="tiled"] .font-mono,
+#root [data-layout-variant="tiled"] .font-mono-ui {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--hy-ink);
+}
+
+#root [data-layout-variant="tiled"] pre {
+  background: var(--hy-panel-hi) !important;
+  border: 2px solid var(--hy-ink) !important;
+  box-shadow: 3px 3px 0 0 var(--hy-ink);
+  padding: 0.75rem 1rem;
+}
+
+/* Kill the default dark-theme backdrop warm-glow layer so the
+   cream canvas stays clean. The Backdrop <div> renders radial
+   gradients that overlay the page even when the theme's glow
+   colour is translucent. */
+#root [data-layout-variant="tiled"] .theme-default-filler,
+#root [data-layout-variant="tiled"] [class*="backdrop"] > img {
+  display: none !important;
+}
+
+/* Tame badge grain overlay — currentColor over cream produces
+   a smudgy haze.  Memphis badges should be hard-edged.        */
+#root [data-layout-variant="tiled"] .grain::after {
+  display: none;
+}
+
+#root [data-layout-variant="tiled"] ::selection {
+  background: var(--hy-yellow);
+  color: var(--hy-ink);
+}
+
+#root [data-layout-variant="tiled"] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+#root [data-layout-variant="tiled"] ::-webkit-scrollbar-track {
+  background: var(--hy-paper);
+}
+
+#root [data-layout-variant="tiled"] ::-webkit-scrollbar-thumb {
+  background: var(--hy-ink);
+  border-radius: 0;
+}
+`,
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  haoyuanlin: haoyuanlinTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

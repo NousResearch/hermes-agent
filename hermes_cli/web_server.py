@@ -292,12 +292,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.skin": {
         "type": "select",
         "description": "CLI visual theme",
-        "options": ["default", "ares", "mono", "slate"],
+        "options": ["default", "ares", "mono", "slate", "daylight", "warm-lightmode", "haoyuanlin"],
     },
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": ["default", "default-large", "haoyuanlin", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
     "display.resume_display": {
         "type": "select",
@@ -3641,6 +3641,7 @@ def mount_spa(application: FastAPI):
 _BUILTIN_DASHBOARD_THEMES = [
     {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
     {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "haoyuanlin",    "label": "Haoyuan Brutalist",   "description": "Memphis x Brutalist cream canvas, hard ink borders, and punchy accents"},
     {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},

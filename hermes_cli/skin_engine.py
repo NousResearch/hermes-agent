@@ -104,6 +104,7 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``haoyuanlin`` — Memphis x Brutalist, inspired by haoyuanlin.uk
 
 USER SKINS
 ==========
@@ -419,6 +420,73 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "\u250a",
+    },
+    "haoyuanlin": {
+        "name": "haoyuanlin",
+        "description": "Memphis x Brutalist — ink text, yellow borders, Memphis accents",
+        # Palette notes:
+        #   TUI cells inherit the user's terminal background. We target the
+        #   common case — a light/cream terminal (the haoyuanlin.uk palette
+        #   is cream #FAF8F5) — so body text uses ink #1A1A1A for maximum
+        #   contrast. Yellow #FFD600 is used for borders and accents (where
+        #   it reads OK against both light and dark backgrounds). The ANSI
+        #   light-terminal normalizer in ui-tui/src/theme.ts only runs on
+        #   Apple Terminal in non-truecolor mode, so we can't rely on it;
+        #   use hex values that stand up on their own.
+        "colors": {
+            "banner_border": "#FF6B6B",
+            "banner_title": "#1A1A1A",
+            "banner_accent": "#2979FF",
+            "banner_dim": "#5A5A5A",
+            "banner_text": "#1A1A1A",
+            "ui_accent": "#2979FF",
+            "ui_label": "#2979FF",
+            "ui_ok": "#00A070",
+            "ui_error": "#B91C1C",
+            "ui_warn": "#B45309",
+            "prompt": "#1A1A1A",
+            "input_rule": "#FF6B6B",
+            "response_border": "#FF6B6B",
+            "status_bar_bg": "#1A1A1A",
+            "status_bar_text": "#FAF8F5",
+            "status_bar_strong": "#FFD600",
+            "status_bar_dim": "#B8B0A4",
+            "status_bar_good": "#5FE3A1",
+            "status_bar_warn": "#FFD600",
+            "status_bar_bad": "#FF6B6B",
+            "status_bar_critical": "#FF4081",
+            "session_label": "#2979FF",
+            "session_border": "#FF6B6B",
+            "voice_status_bg": "#1A1A1A",
+            "selection_bg": "#FFD600",
+            "completion_menu_bg": "#F5F0E8",
+            "completion_menu_current_bg": "#FFD600",
+            "completion_menu_meta_bg": "#FAF8F5",
+            "completion_menu_meta_current_bg": "#FF6B6B",
+        },
+        "spinner": {
+            "waiting_faces": ["[■]", "[◆]", "[▣]", "[▲]", "[●]"],
+            "thinking_faces": ["[◆]", "[▣]", "[▲]", "[■]", "[◇]"],
+            "thinking_verbs": [
+                "blocking layout", "inking borders", "snapping panels", "pushing pixels",
+                "sorting cards", "drawing brackets", "checking contrast", "moving blocks",
+            ],
+            "wings": [
+                ["▐", "▌"],
+                ["◢", "◣"],
+                ["■", "■"],
+                ["◆", "◆"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ■ Hermes ",
+            "prompt_symbol": "■",
+            "help_header": "[■] Available Commands",
+        },
+        "tool_prefix": "│",
     },
     "poseidon": {
         "name": "poseidon",

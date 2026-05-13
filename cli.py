@@ -63,6 +63,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.input.defaults import create_input as _pt_create_input
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -2543,6 +2544,7 @@ class HermesCLI:
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
+        self._prompt_input_tty = None  # owned /dev/tty handle when fd 0 is not selector-safe
         
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
@@ -12838,6 +12840,24 @@ class HermesCLI:
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
+
+        pt_input = _pt_create_input()
+        if sys.platform != "win32":
+            try:
+                import selectors as _selectors
+                with _selectors.DefaultSelector() as _selector:
+                    _selector.register(pt_input.fileno(), _selectors.EVENT_READ)
+            except Exception:
+                try:
+                    self._prompt_input_tty = open("/dev/tty", "r", buffering=1)
+                    pt_input = _pt_create_input(stdin=self._prompt_input_tty)
+                except Exception:
+                    if self._prompt_input_tty:
+                        try:
+                            self._prompt_input_tty.close()
+                        except Exception:
+                            pass
+                        self._prompt_input_tty = None
         
         # Create the application
         app = Application(
@@ -12846,6 +12866,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            input=pt_input,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)
@@ -13213,6 +13234,12 @@ class HermesCLI:
                 cleanup_temp_recordings()
             except Exception:
                 pass
+            if self._prompt_input_tty:
+                try:
+                    self._prompt_input_tty.close()
+                except Exception:
+                    pass
+                self._prompt_input_tty = None
             # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)

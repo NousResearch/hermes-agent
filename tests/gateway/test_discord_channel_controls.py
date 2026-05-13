@@ -71,6 +71,7 @@ class FakeThread:
         self.parent_id = getattr(parent, "id", None)
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
         self.topic = None
+        self.edit = AsyncMock()
 
 
 @pytest.fixture
@@ -342,3 +343,52 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     import os
     # Env var should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+
+
+def test_config_bridges_auto_retitle_threads(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.auto_retitle_threads to env var."""
+    import os
+    import yaml
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "auto_retitle_threads": False,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_AUTO_RETITLE_THREADS", raising=False)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    assert os.getenv("DISCORD_AUTO_RETITLE_THREADS") == "false"
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_edits_discord_thread(adapter):
+    """DiscordAdapter.rename_thread resolves and edits a thread channel."""
+    thread = FakeThread(channel_id=123, name="old-name")
+    thread.edit = AsyncMock()
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=thread),
+        fetch_channel=AsyncMock(),
+    )
+
+    assert await adapter.rename_thread("123", "New title") is True
+
+    adapter._client.get_channel.assert_called_once_with(123)
+    adapter._client.fetch_channel.assert_not_awaited()
+    thread.edit.assert_awaited_once_with(name="New title", reason="Hermes auto-generated session title")
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_ignores_non_thread(adapter):
+    """DiscordAdapter.rename_thread is a no-op for non-thread channels."""
+    channel = FakeTextChannel(channel_id=123, name="general")
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    assert await adapter.rename_thread("123", "New title") is False

@@ -3715,6 +3715,32 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return None
 
+    async def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Best-effort rename of a Discord thread.
+
+        The gateway calls this after Hermes auto-generates a session title, so
+        auto-created Discord threads can move from the initial message preview
+        to the richer session title.  Only a thread ID is accepted here; the
+        gateway decides when retitling is appropriate.
+        """
+        if not self._client or not thread_id or not name:
+            return False
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(thread_id))
+            if channel is None or not isinstance(channel, discord.Thread):
+                return False
+            current_name = str(getattr(channel, "name", "") or "")
+            if current_name == name:
+                return True
+            await channel.edit(name=name, reason="Hermes auto-generated session title")
+            logger.info("[%s] Renamed Discord thread %s to %r", self.name, thread_id, name)
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
+            return False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

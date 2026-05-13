@@ -249,6 +249,32 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg.get("reasoning_content") == " "
 
+    def test_xiaomi_tool_call_poisoned_history_gets_space_placeholder(self) -> None:
+        agent = _make_agent(provider="xiaomi", model="mimo-v2.5-pro")
+        source = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg.get("reasoning_content") == " "
+
+    def test_xiaomi_token_plan_base_url_gets_space_placeholder(self) -> None:
+        agent = _make_agent(
+            provider="custom",
+            model="mimo-v2.5-pro",
+            base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg.get("reasoning_content") == " "
+
     def test_non_thinking_provider_not_padded(self) -> None:
         """Providers that don't require the echo are untouched."""
         agent = _make_agent(
@@ -406,6 +432,16 @@ class TestBuildAssistantMessagePadsStrictProviders:
                 id="moonshot-base-url",
             ),
             pytest.param(
+                "xiaomi", "mimo-v2.5-pro", "",
+                None, " ",
+                id="xiaomi-provider",
+            ),
+            pytest.param(
+                "custom", "mimo-v2.5-pro", "https://token-plan-cn.xiaomimimo.com/v1",
+                _ATTR_ABSENT, " ",
+                id="xiaomi-token-plan-base-url",
+            ),
+            pytest.param(
                 "openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1",
                 _ATTR_ABSENT, _EXPECT_NOT_PRESENT,
                 id="openrouter-no-pad",
@@ -481,3 +517,30 @@ class TestNeedsKimiToolReasoning:
         )
         # model name contains 'moonshot' but host is openrouter — should be False
         assert agent._needs_kimi_tool_reasoning() is False
+
+
+class TestNeedsXiaomiToolReasoning:
+    """Xiaomi MiMo thinking mode enforces the same reasoning_content echo-back."""
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("xiaomi", "mimo-v2.5-pro", ""),
+            ("mimo", "mimo-v2.5-pro", ""),
+            ("custom", "xiaomi/mimo-v2.5-pro", ""),
+            ("custom", "mimo-v2.5-pro", "https://api.xiaomimimo.com/v1"),
+            ("custom", "mimo-v2.5-pro", "https://token-plan-cn.xiaomimimo.com/v1"),
+            ("custom", "mimo-v2.5-pro", "https://token-plan-cn.xiaomimimo.com/anthropic"),
+        ],
+    )
+    def test_xiaomi_signals(self, provider: str, model: str, base_url: str) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        assert agent._needs_xiaomi_tool_reasoning() is True
+
+    def test_non_xiaomi_provider(self) -> None:
+        agent = _make_agent(
+            provider="openrouter",
+            model="mimo-v2.5-pro",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert agent._needs_xiaomi_tool_reasoning() is False

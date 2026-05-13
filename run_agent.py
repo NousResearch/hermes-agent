@@ -9990,16 +9990,16 @@ class AIAgent:
         if raw_reasoning_content is not None:
             msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
         elif assistant_tool_calls and self._needs_thinking_reasoning_pad():
-            # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
-            # both require reasoning_content on every assistant tool-call
-            # message. Without it, replaying the persisted message causes
-            # HTTP 400 ("The reasoning_content in the thinking mode must
-            # be passed back to the API"). Include streamed reasoning
-            # text when captured; otherwise pad with a single space —
-            # DeepSeek V4 Pro tightened validation and rejects empty
-            # string ("The reasoning content in the thinking mode must
-            # be passed back to the API"). A space satisfies non-empty
-            # checks everywhere without leaking fabricated reasoning.
+            # DeepSeek v4, Kimi / Moonshot, and Xiaomi MiMo thinking modes
+            # require reasoning_content on every assistant tool-call message.
+            # Without it, replaying the persisted message causes HTTP 400
+            # ("The reasoning_content in the thinking mode must be passed back
+            # to the API"). Include streamed reasoning text when captured;
+            # otherwise pad with a single space — DeepSeek V4 Pro tightened
+            # validation and rejects empty string ("The reasoning content in
+            # the thinking mode must be passed back to the API"). A space
+            # satisfies non-empty checks everywhere without leaking fabricated
+            # reasoning.
             # Refs #15250, #17400, #17341.
             msg["reasoning_content"] = reasoning_text or " "
 
@@ -10112,13 +10112,24 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        DeepSeek v4, Kimi / Moonshot, and Xiaomi MiMo thinking modes reject
+        replays of assistant tool-call messages that omit
+        ``reasoning_content`` (refs #15250, #17400).
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_xiaomi_tool_reasoning()
+        )
+
+    def _needs_xiaomi_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode."""
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider in {"xiaomi", "mimo", "xiaomi-mimo"}
+            or model.startswith("xiaomi/")
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -10156,8 +10167,9 @@ class AIAgent:
             return
 
         # 1. Explicit reasoning_content already set — preserve it verbatim
-        # (includes DeepSeek/Kimi's own space-placeholder written at creation
-        # time, and any valid reasoning content from the same provider).
+        # (includes strict providers' own space-placeholder written at
+        # creation time, and any valid reasoning content from the same
+        # provider).
         #
         # Exception: sessions persisted BEFORE #17341 have empty-string
         # placeholders pinned at creation time. DeepSeek V4 Pro rejects
@@ -10174,7 +10186,7 @@ class AIAgent:
 
         needs_thinking_pad = self._needs_thinking_reasoning_pad()
 
-        # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
+        # 2. Cross-provider poisoned history (#15748): on strict providers,
         # if the source turn has tool_calls AND a 'reasoning' field but no
         # 'reasoning_content' key, the 'reasoning' text was written by a
         # prior provider (e.g. MiniMax) — DeepSeek's own _build_assistant_message
@@ -10182,7 +10194,7 @@ class AIAgent:
         # shape (reasoning set, reasoning_content absent, tool_calls present)
         # is unreachable from same-provider DeepSeek history after this fix.
         # Inject a single space to satisfy the API without leaking another
-        # provider's chain of thought to DeepSeek/Kimi. Space (not "")
+        # provider's chain of thought to the current provider. Space (not "")
         # because DeepSeek V4 Pro rejects empty-string reasoning_content
         # in thinking mode (refs #17341).
         normalized_reasoning = source_msg.get("reasoning")
@@ -10204,7 +10216,7 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # 4. DeepSeek / Kimi thinking mode: all assistant messages need
+        # 4. Strict thinking modes: all assistant messages need
         # reasoning_content. Inject a single space to satisfy the provider's
         # requirement when no explicit reasoning content is present. Covers
         # both tool-call turns (already-poisoned history with no reasoning

@@ -336,6 +336,9 @@ def _spawn_clangd(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
+_BASH_SHELLCHECK_WARNED = False
+
+
 def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "bash-language-server") or _which("bash-language-server")
     if bin_path is None:
@@ -343,6 +346,18 @@ def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         bin_path = try_install("bash-language-server", ctx.install_strategy)
         if bin_path is None:
             return None
+    # bash-language-server delegates diagnostics to ``shellcheck``.  Without
+    # it on PATH the server starts and accepts requests but never reports
+    # any problems — to the user it looks like a working integration that
+    # never finds bugs.  Warn once so the gap is visible.
+    global _BASH_SHELLCHECK_WARNED
+    if not _BASH_SHELLCHECK_WARNED and _which("shellcheck") is None:
+        _BASH_SHELLCHECK_WARNED = True
+        logger.warning(
+            "bash-language-server: shellcheck not found on PATH — "
+            "diagnostics will be empty until shellcheck is installed "
+            "(apt: shellcheck, brew: shellcheck, scoop: shellcheck)."
+        )
     return SpawnSpec(
         command=[bin_path, "start"],
         workspace_root=root,

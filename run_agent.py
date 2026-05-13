@@ -8696,7 +8696,27 @@ class AIAgent:
 
             # Determine api_mode from provider / base URL / model
             fb_api_mode = "chat_completions"
-            fb_base_url = str(fb_client.base_url)
+            # Prefer the fallback entry's explicit base_url over what the
+            # resolved client reports.  resolve_provider_client() should
+            # honour explicit_base_url, but custom provider routing can
+            # sometimes surface the agent's base_url instead (#24782).
+            # When the entry explicitly specifies a URL, it is authoritative.
+            fb_base_url = (fb_base_url_hint
+                           if fb_base_url_hint
+                           else str(fb_client.base_url))
+            # Guard against URL normalisation drift: when the entry declares a
+            # base_url but the resolved client points elsewhere, the agent's
+            # self.base_url and self.client.base_url will diverge on the next
+            # API call, silently routing fallback traffic to the wrong endpoint.
+            if fb_base_url_hint:
+                _client_url = str(fb_client.base_url).rstrip("/")
+                _hint_url = fb_base_url_hint.rstrip("/")
+                if _client_url != _hint_url:
+                    logging.warning(
+                        "Fallback URL divergence: entry base_url=%r but "
+                        "resolved client base_url=%r — using entry's URL",
+                        _hint_url, _client_url,
+                    )
             _fb_is_azure = self._is_azure_openai_url(fb_base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"

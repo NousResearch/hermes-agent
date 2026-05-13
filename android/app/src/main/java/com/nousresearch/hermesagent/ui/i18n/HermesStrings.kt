@@ -1079,6 +1079,51 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Remote only"
     }
 
+    fun gemma4MtpTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "Gemma 4 MTP"
+        AppLanguage.SPANISH -> "Gemma 4 MTP"
+        AppLanguage.GERMAN -> "Gemma 4 MTP"
+        AppLanguage.PORTUGUESE -> "Gemma 4 MTP"
+        AppLanguage.FRENCH -> "Gemma 4 MTP"
+        AppLanguage.ENGLISH -> "Gemma 4 MTP"
+    }
+
+    fun gemma4MtpDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "控制 LiteRT-LM 的 Gemma 4 多 token 预测。自动会在支持的 ARM64 设备上启用，并在失败时回退。"
+        AppLanguage.SPANISH -> "Controla la predicción multitoken Gemma 4 de LiteRT-LM. Auto la activa en dispositivos ARM64 compatibles y vuelve atrás si falla."
+        AppLanguage.GERMAN -> "Steuert LiteRT-LM Gemma 4 Multi-Token Prediction. Auto aktiviert sie auf unterstützten ARM64-Geräten und fällt bei Fehlern zurück."
+        AppLanguage.PORTUGUESE -> "Controla a previsão multitoken Gemma 4 do LiteRT-LM. Auto ativa em dispositivos ARM64 compatíveis e recua se falhar."
+        AppLanguage.FRENCH -> "Contrôle la prédiction multi-jetons Gemma 4 de LiteRT-LM. Auto l’active sur les appareils ARM64 compatibles et revient en arrière en cas d’échec."
+        AppLanguage.ENGLISH -> "Controls LiteRT-LM Gemma 4 multi-token prediction. Auto enables it on supported ARM64 devices and falls back if initialization fails."
+    }
+
+    fun gemma4MtpAutoLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "自动"
+        AppLanguage.SPANISH -> "Auto"
+        AppLanguage.GERMAN -> "Auto"
+        AppLanguage.PORTUGUESE -> "Auto"
+        AppLanguage.FRENCH -> "Auto"
+        AppLanguage.ENGLISH -> "Auto"
+    }
+
+    fun gemma4MtpEnabledLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "开启"
+        AppLanguage.SPANISH -> "Activado"
+        AppLanguage.GERMAN -> "Ein"
+        AppLanguage.PORTUGUESE -> "Ativado"
+        AppLanguage.FRENCH -> "Activé"
+        AppLanguage.ENGLISH -> "On"
+    }
+
+    fun gemma4MtpDisabledLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "关闭"
+        AppLanguage.SPANISH -> "Desactivado"
+        AppLanguage.GERMAN -> "Aus"
+        AppLanguage.PORTUGUESE -> "Desativado"
+        AppLanguage.FRENCH -> "Désactivé"
+        AppLanguage.ENGLISH -> "Off"
+    }
+
     fun authBaseUrlMustBeValid(): String = when (language) {
         AppLanguage.CHINESE -> "Corr3xt 基础 URL 必须是有效的 http(s) 地址"
         AppLanguage.SPANISH -> "La URL base de Corr3xt debe ser una URL http(s) válida"

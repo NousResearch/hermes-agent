@@ -35,6 +35,7 @@ data class SettingsUiState(
     val apiKey: String = "",
     val dataSaverMode: Boolean = false,
     val onDeviceBackend: String = BackendKind.NONE.persistedValue,
+    val liteRtLmSpeculativeDecodingMode: String = "auto",
     val languageTag: String = AppLanguage.ENGLISH.tag,
     val onDeviceSummary: String = "Remote provider mode",
     val status: String = "",
@@ -70,6 +71,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             apiKey = "",
             dataSaverMode = stored.dataSaverMode,
             onDeviceBackend = stored.onDeviceBackend,
+            liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(
+                stored.liteRtLmSpeculativeDecodingMode,
+            ),
             languageTag = AppLanguage.fromTag(stored.languageTag).tag,
             onDeviceSummary = defaultOnDeviceSummary(stored.onDeviceBackend),
         )
@@ -104,6 +108,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateModel(value: String) = _uiState.update { it.copy(model = value) }
     fun updateApiKey(value: String) = _uiState.update { it.copy(apiKey = value) }
     fun updateDataSaverMode(enabled: Boolean) = _uiState.update { it.copy(dataSaverMode = enabled) }
+    fun updateLiteRtLmSpeculativeDecodingMode(value: String) = _uiState.update {
+        it.copy(liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(value))
+    }
 
     private fun loadApiKeyForProvider(provider: String) {
         if (provider.isBlank() || provider == "custom") {
@@ -294,6 +301,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                 dataSaverMode = existingSettings.dataSaverMode,
                 onDeviceBackend = existingSettings.onDeviceBackend,
+                liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
                 languageTag = existingSettings.languageTag,
             )
             runCatching {
@@ -402,6 +410,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                         dataSaverMode = snapshot.dataSaverMode,
                         onDeviceBackend = snapshot.onDeviceBackend,
+                        liteRtLmSpeculativeDecodingMode = snapshot.liteRtLmSpeculativeDecodingMode,
                         languageTag = snapshot.languageTag,
                     )
                     settingsStore.save(updatedSettings)
@@ -470,6 +479,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     it.copy(status = "Settings save failed (${error::class.java.simpleName}).")
                 }
             }
+        }
+    }
+
+    private fun normalizeSpeculativeDecodingMode(value: String): String {
+        return when (value.trim().lowercase()) {
+            "enabled", "on", "force" -> "enabled"
+            "disabled", "off" -> "disabled"
+            else -> "auto"
         }
     }
 }

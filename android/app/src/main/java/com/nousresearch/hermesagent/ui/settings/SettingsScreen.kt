@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
@@ -76,7 +77,9 @@ fun SettingsScreen(
                     )
                     OnDeviceInferenceCard(
                         onDeviceBackend = uiState.onDeviceBackend,
+                        speculativeDecodingMode = uiState.liteRtLmSpeculativeDecodingMode,
                         onSelectBackend = viewModel::updateOnDeviceBackend,
+                        onSelectSpeculativeDecodingMode = viewModel::updateLiteRtLmSpeculativeDecodingMode,
                         onStartRuntime = viewModel::startLocalRuntimeForFlavor,
                         summary = uiState.onDeviceSummary,
                         strings = strings,
@@ -253,7 +256,9 @@ private fun RemoteFallbackCard(
 @Composable
 private fun OnDeviceInferenceCard(
     onDeviceBackend: String,
+    speculativeDecodingMode: String,
     onSelectBackend: (String) -> Unit,
+    onSelectSpeculativeDecodingMode: (String) -> Unit,
     onStartRuntime: (String) -> Unit,
     summary: String,
     strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
@@ -304,10 +309,38 @@ private fun OnDeviceInferenceCard(
             }
             Text(strings.llamaCppDescription, style = MaterialTheme.typography.bodySmall)
             Text(strings.liteRtLmDescription, style = MaterialTheme.typography.bodySmall)
+            Text(strings.gemma4MtpTitle(), style = MaterialTheme.typography.titleSmall)
+            Text(strings.gemma4MtpDescription(), style = MaterialTheme.typography.bodySmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                speculativeDecodingChoices().forEach { choice ->
+                    Button(
+                        modifier = Modifier.testTag("LiteRtLmMtpMode-${choice.value}"),
+                        onClick = { onSelectSpeculativeDecodingMode(choice.value) },
+                        enabled = speculativeDecodingMode != choice.value,
+                    ) {
+                        Text(choice.label(strings))
+                    }
+                }
+            }
             Text(localizedOnDeviceSummary(summary, strings), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
+
+private data class SpeculativeDecodingChoice(
+    val value: String,
+    val label: (com.nousresearch.hermesagent.ui.i18n.HermesStrings) -> String,
+)
+
+private fun speculativeDecodingChoices(): List<SpeculativeDecodingChoice> = listOf(
+    SpeculativeDecodingChoice("auto") { it.gemma4MtpAutoLabel() },
+    SpeculativeDecodingChoice("enabled") { it.gemma4MtpEnabledLabel() },
+    SpeculativeDecodingChoice("disabled") { it.gemma4MtpDisabledLabel() },
+)
 
 private fun localizedOnDeviceSummary(
     summary: String,

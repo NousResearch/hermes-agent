@@ -106,6 +106,10 @@ def test_settings_secret_store_initialization_stays_off_startup_main_thread():
 def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
     downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    app_settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AppSettingsStore.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
     litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
@@ -148,6 +152,13 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'com.google.ai.edge.litertlm:litertlm-android:0.11.0' in gradle
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
     assert 'SpeculativeDecodingMode' in litert_proxy
+    assert 'liteRtLmSpeculativeDecodingMode' in app_settings
+    assert 'KEY_LITERT_LM_SPECULATIVE_DECODING_MODE' in app_settings
+    assert 'updateLiteRtLmSpeculativeDecodingMode' in settings_view_model
+    assert 'LiteRtLmMtpMode-${choice.value}' in settings
+    assert 'gemma4MtpDescription()' in settings
+    assert 'speculativeDecodingModeFor(context)' in backend_manager
+    assert 'inferenceConfigFor(preferred, speculativeDecodingModeFor(context))' in backend_manager
     assert 'speculativeDecodingDecision(context, modelPath, speculativeDecodingMode)' in litert_proxy
     assert 'decideSpeculativeDecoding(' in litert_proxy
     assert 'runtime setting disabled Gemma 4 MTP' in litert_proxy

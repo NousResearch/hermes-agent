@@ -14132,10 +14132,6 @@ class AIAgent:
                             not classified.retryable
                             and not classified.should_compress
                             and classified.reason not in {
-                                FailoverReason.rate_limit,
-                                FailoverReason.billing,
-                                FailoverReason.overloaded,
-                                FailoverReason.context_overflow,
                                 FailoverReason.payload_too_large,
                                 FailoverReason.long_context_tier,
                                 FailoverReason.thinking_signature,

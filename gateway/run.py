@@ -15285,6 +15285,37 @@ class GatewayRunner:
                 and agent_history[-1].get("role") == "tool"
                 and _interruption_is_fresh
             )
+            # GH-25242: Compute a signature for the trailing tool batch so
+            # we can acknowledge it after delivering the recovery note once.
+            # Without this, the same stale tool tail keeps triggering the
+            # auto-continue note on every subsequent user message.
+            _tool_tail_key = None
+            if _has_fresh_tool_tail and agent_history:
+                _tail = agent_history[-1]
+                _tc_ids = []
+                if isinstance(_tail.get("content"), list):
+                    _tc_ids = [
+                        c.get("tool_use_id", "")
+                        for c in _tail["content"]
+                        if isinstance(c, dict) and c.get("tool_use_id")
+                    ]
+                elif _tail.get("tool_call_id"):
+                    _tc_ids = [_tail["tool_call_id"]]
+                _tool_tail_key = "|".join(sorted(_tc_ids)) if _tc_ids else None
+
+            # Check if this exact tool tail was already served a recovery
+            # note in a previous turn.  If so, skip to avoid durable
+            # context poisoning (GH-25242).
+            _consumed = getattr(self, "_consumed_auto_continue_tails", None)
+            if _consumed is None:
+                _consumed = {}
+                self._consumed_auto_continue_tails = _consumed
+            if _tool_tail_key and _tool_tail_key in _consumed:
+                _has_fresh_tool_tail = False
+
+            # Save original message before any synthetic prefixes so
+            # we can persist it cleanly (not the API-only note).
+            _original_user_message = message
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
@@ -15312,6 +15343,10 @@ class GatewayRunner:
                     "user's new message below.]\n\n"
                     + message
                 )
+                # GH-25242: Mark this tool tail as consumed so subsequent
+                # user messages don't re-trigger the same recovery note.
+                if _tool_tail_key:
+                    _consumed[_tool_tail_key] = True
 
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same
@@ -15359,7 +15394,21 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                # GH-25242: Pass the original user message (without synthetic
+                # prefixes) so only the clean message is persisted to the
+                # transcript.  The API-only auto-continue note is sent to the
+                # model but never stored, preventing durable context poisoning.
+                _persist_msg = (
+                    _original_user_message
+                    if _original_user_message != _run_message
+                    else None
+                )
+                result = agent.run_conversation(
+                    _run_message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    persist_user_message=_persist_msg,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

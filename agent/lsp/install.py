@@ -33,7 +33,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("agent.lsp.install")
 
@@ -41,7 +41,13 @@ logger = logging.getLogger("agent.lsp.install")
 # tuple of strategy name + package name + executable name.  When the
 # install completes, we look for the executable in
 # ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.
-INSTALL_RECIPES: Dict[str, Dict[str, str]] = {
+#
+# Optional fields:
+#   - ``extra_pkgs``: list of sibling packages to install alongside
+#     ``pkg`` in the same node_modules tree.  Used when an LSP server
+#     has a runtime peer dependency that npm doesn't auto-pull (e.g.
+#     typescript-language-server needs ``typescript``).
+INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Python
     "pyright": {"strategy": "npm", "pkg": "pyright", "bin": "pyright-langserver"},
     # JS/TS family
@@ -49,6 +55,11 @@ INSTALL_RECIPES: Dict[str, Dict[str, str]] = {
         "strategy": "npm",
         "pkg": "typescript-language-server",
         "bin": "typescript-language-server",
+        # typescript-language-server requires the `typescript` SDK
+        # (tsserver) to be importable from the same node_modules tree;
+        # otherwise initialize() fails with "Could not find a valid
+        # TypeScript installation".  Install them together.
+        "extra_pkgs": ["typescript"],
     },
     "@vue/language-server": {
         "strategy": "npm",
@@ -179,7 +190,11 @@ def _do_install(pkg: str) -> Optional[str]:
         return None
 
     if strategy == "npm":
-        return _install_npm(recipe.get("pkg", pkg), bin_name)
+        return _install_npm(
+            recipe.get("pkg", pkg),
+            bin_name,
+            extra_pkgs=recipe.get("extra_pkgs") or [],
+        )
     if strategy == "go":
         return _install_go(recipe.get("pkg", pkg), bin_name)
     if strategy == "pip":
@@ -189,22 +204,36 @@ def _do_install(pkg: str) -> Optional[str]:
     return None
 
 
-def _install_npm(pkg: str, bin_name: str) -> Optional[str]:
+def _install_npm(
+    pkg: str,
+    bin_name: str,
+    extra_pkgs: Optional[list] = None,
+) -> Optional[str]:
     """Install an npm package into our staging dir.
 
     Uses ``npm install --prefix`` so the binaries land in
     ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
     one level for direct PATH-style access.
+
+    ``extra_pkgs`` is a list of sibling packages to install in the
+    same ``node_modules`` tree.  Used for LSP servers with runtime
+    peer deps that npm doesn't auto-pull (typescript-language-server
+    needs ``typescript`` next to it; intelephense ships standalone).
     """
     npm = shutil.which("npm")
     if npm is None:
         logger.info("[install] cannot install %s: npm not on PATH", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
+    install_targets = [pkg] + list(extra_pkgs or [])
     try:
-        logger.info("[install] npm install --prefix %s %s", staging, pkg)
+        logger.info(
+            "[install] npm install --prefix %s %s",
+            staging,
+            " ".join(install_targets),
+        )
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", pkg],
+            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
             check=False,
             capture_output=True,
             text=True,

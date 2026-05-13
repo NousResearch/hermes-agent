@@ -327,6 +327,55 @@ LINTERS = {
 }
 
 
+# Patterns that indicate the linter base command exists on PATH but
+# couldn't actually run — e.g. ``npx tsc`` when tsc isn't installed in
+# node_modules, or rustfmt complaining there's no Cargo project.  When
+# any of these substrings appears in the linter output, ``_check_lint``
+# returns ``skipped`` instead of ``error`` so:
+#
+# 1. The write isn't flagged for a tooling problem the agent can't fix.
+# 2. The LSP semantic tier still runs (it gates on success/skipped).
+#
+# Patterns are matched case-insensitively against linter stdout.
+_LINTER_UNUSABLE_PATTERNS = {
+    'npx': (
+        # npx prints this banner when the package isn't installed locally
+        # AND it can't auto-install (no internet, registry off, etc.) or
+        # when the binary it tried to run is the wrong one.
+        'this is not the tsc command you are looking for',
+        # npx with --no-install resolution failures
+        'could not determine executable to run',
+        'not found in npm registry',
+    ),
+    'rustfmt': (
+        # rustfmt outside a Cargo project
+        'no input filename given',
+        'error: not a workspace',
+    ),
+    'go': (
+        # ``go vet`` on a file outside a module / GOPATH
+        'cannot find package',
+        'go: cannot find main module',
+    ),
+}
+
+
+def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
+    """Return True iff ``output`` from ``base_cmd`` indicates the linter
+    itself couldn't run (a tooling gap), as opposed to a real lint error
+    in the file being checked.
+
+    ``base_cmd`` is the first word of the linter command line (``npx``,
+    ``rustfmt``, ``go``, ...).  ``output`` is the stdout/stderr captured
+    from running it.
+    """
+    patterns = _LINTER_UNUSABLE_PATTERNS.get(base_cmd)
+    if not patterns:
+        return False
+    lower = output.lower()
+    return any(p in lower for p in patterns)
+
+
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
     """In-process JSON syntax check.  Returns (ok, error_message)."""
     import json as _json
@@ -1116,6 +1165,24 @@ class ShellFileOperations(FileOperations):
         # Run linter
         cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
+
+        if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
+            # The linter command exists on PATH but couldn't actually run
+            # (e.g. ``npx tsc`` when tsc isn't in node_modules; ``rustfmt
+            # --check`` without a Cargo project).  This is a tooling gap,
+            # not a real lint failure — surface it as ``skipped`` so the
+            # write doesn't get flagged AND so the LSP tier still runs.
+            from tools.ansi_strip import strip_ansi
+            cleaned = strip_ansi(result.stdout).strip()
+            # Collapse to a single line — the npx banner is multi-line ASCII.
+            first_line = next(
+                (ln.strip() for ln in cleaned.splitlines() if ln.strip()),
+                cleaned[:120],
+            )
+            return LintResult(
+                skipped=True,
+                message=f"{base_cmd} not usable: {first_line[:200]}",
+            )
 
         return LintResult(
             success=result.exit_code == 0,

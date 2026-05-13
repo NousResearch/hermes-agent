@@ -137,9 +137,21 @@ KNOWN_TOKENS: Dict[str, Dict[str, str]] = {
         "DOGE":  "0xbA2aE424d960c26247Dd6c32edC70B295c744C43",
     },
     "base": {
-        "USDC":  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "DAI":   "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
-        "WETH":  "0x4200000000000000000000000000000000000006",
+        # Stables + wrapped
+        "USDC":   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "DAI":    "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+        "WETH":   "0x4200000000000000000000000000000000000006",
+        # Liquid-staked ETH variants
+        "cbETH":  "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cF0DEc22",
+        "wstETH": "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452",
+        "rETH":   "0xB6fe221Fe9EeF5aBa221c348bA20A1Bf5e73624c",
+        "cbBTC":  "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+        # Base-native DeFi + meme tokens (carried over from the standalone base/ skill)
+        "AERO":   "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+        "DEGEN":  "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+        "TOSHI":  "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4",
+        "BRETT":  "0x532f27101965dd16442E59d40670FaF5eBB142E4",
+        "WELL":   "0xA88594D404727625A9437C3f886C7643872296AE",
     },
     "arbitrum": {
         "USDC":  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
@@ -226,8 +238,72 @@ def hex_to_int(h: str) -> int:
         return 0
     return int(h, 16)
 
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def is_valid_address(s: str) -> bool:
+    """Return True if `s` looks like a 20-byte hex Ethereum address.
+
+    Does NOT validate EIP-55 checksum — RPC endpoints accept any-case hex.
+    Just guards against typos / wrong-length input before we burn an RPC call.
+    """
+    if not isinstance(s, str):
+        return False
+    if not s.startswith("0x") and not s.startswith("0X"):
+        return False
+    if len(s) != 42:
+        return False
+    try:
+        int(s, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def is_valid_txhash(s: str) -> bool:
+    """Return True if `s` looks like a 32-byte hex transaction hash."""
+    if not isinstance(s, str):
+        return False
+    if not s.startswith("0x") and not s.startswith("0X"):
+        return False
+    if len(s) != 66:
+        return False
+    try:
+        int(s, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def require_address(s: str, *, field: str = "address") -> str:
+    """Return `s` lowercased if valid, else exit with an error message.
+
+    Centralizing validation here means every subcommand fails fast on bad input
+    instead of bubbling up an opaque RPC error 30 seconds later.
+    """
+    if not is_valid_address(s):
+        sys.stderr.write(
+            f"error: invalid {field} {s!r}: expected 0x-prefixed 40-hex-char address\n"
+        )
+        sys.exit(2)
+    return s.lower()
+
+
+def require_txhash(s: str, *, field: str = "tx hash") -> str:
+    """Return `s` lowercased if valid, else exit with an error message."""
+    if not is_valid_txhash(s):
+        sys.stderr.write(
+            f"error: invalid {field} {s!r}: expected 0x-prefixed 64-hex-char tx hash\n"
+        )
+        sys.exit(2)
+    return s.lower()
+
+
 def wei_to_native(wei: int, decimals: int = 18) -> float:
     return wei / (10 ** decimals)
+
 
 def gwei_from_wei(wei: int) -> float:
     return wei / 1e9
@@ -326,25 +402,36 @@ def rpc_call(chain: str, method: str, params: List[Any], req_id: int = 1) -> Any
         raise RuntimeError(f"RPC error: {resp['error']}")
     return resp.get("result")
 
-def rpc_batch(chain: str, calls: List[Tuple[str, List[Any]]]) -> List[Any]:
-    """Send a batch of JSON-RPC calls; returns list of results in same order."""
+def rpc_batch(chain: str, calls: List[Tuple[str, List[Any]]], batch_limit: int = 10) -> List[Any]:
+    """Send a batch of JSON-RPC calls; returns list of results in same order.
+
+    Auto-chunks at `batch_limit` (default 10) so we stay under per-RPC limits.
+    Base's public RPC caps batches at 10 — exceeding that returns a single error
+    dict instead of a results list, which would mask all our calls.
+    """
     url = get_rpc_url(chain)
-    payload = [
+
+    # Build the full payload, preserving order via JSON-RPC `id`
+    items = [
         {"jsonrpc": "2.0", "id": i, "method": m, "params": p}
         for i, (m, p) in enumerate(calls)
     ]
-    resp = _http_post(url, payload)
-    if isinstance(resp, list):
-        # Sort by id to preserve order
-        resp_sorted = sorted(resp, key=lambda x: x.get("id", 0))
-        results = []
-        for r in resp_sorted:
-            if "error" in r:
-                results.append(None)
-            else:
-                results.append(r.get("result"))
-        return results
-    return [resp.get("result")]
+
+    out: List[Any] = [None] * len(items)
+    for start in range(0, len(items), batch_limit):
+        chunk = items[start:start + batch_limit]
+        resp = _http_post(url, chunk)
+        if not isinstance(resp, list):
+            # Single error response (e.g. batch-too-large) — leave this chunk as None
+            continue
+        for r in resp:
+            rid = r.get("id")
+            if isinstance(rid, int) and 0 <= rid < len(out):
+                if "error" in r:
+                    out[rid] = None
+                else:
+                    out[rid] = r.get("result")
+    return out
 
 # ---------------------------------------------------------------------------
 # ABI encoding helpers (minimal, for ERC-20 calls)
@@ -556,7 +643,7 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_wallet(args: argparse.Namespace) -> None:
-    address = args.address
+    address = require_address(args.address)
     chain   = args.chain
     limit   = args.limit
     no_prices = args.no_prices
@@ -633,7 +720,7 @@ def cmd_wallet(args: argparse.Namespace) -> None:
 
 
 def cmd_tx(args: argparse.Namespace) -> None:
-    tx_hash = args.hash
+    tx_hash = require_txhash(args.hash)
     chain   = args.chain
     cfg     = CHAINS[chain]
 
@@ -702,7 +789,7 @@ def cmd_tx(args: argparse.Namespace) -> None:
 
 
 def cmd_token(args: argparse.Namespace) -> None:
-    contract = args.contract
+    contract = require_address(args.contract, field="contract address")
     chain    = args.chain
 
     # Batch all ERC-20 metadata calls
@@ -744,7 +831,7 @@ def cmd_token(args: argparse.Namespace) -> None:
 
 
 def cmd_activity(args: argparse.Namespace) -> None:
-    address = args.address
+    address = require_address(args.address)
     chain   = args.chain
     limit   = args.limit
     cfg     = CHAINS[chain]
@@ -1000,7 +1087,7 @@ def cmd_multichain(args: argparse.Namespace) -> None:
     """Scan same wallet across all 8 chains simultaneously."""
     import threading
 
-    address = args.address
+    address = require_address(args.address)
     results: Dict[str, Any] = {}
     lock = threading.Lock()
 
@@ -1019,9 +1106,10 @@ def cmd_multichain(args: argparse.Namespace) -> None:
                 "tokens": [],
                 "total_usd": native_usd or 0.0,
             }
-            # Check known tokens for this chain
+            # Check known tokens for this chain.
+            # KNOWN_TOKENS[chain] maps {symbol: contract_address}, not {addr: (sym, name)}.
             known = KNOWN_TOKENS.get(chain, {})
-            for contract, (symbol, _name) in known.items():
+            for symbol, contract in known.items():
                 raw = eth_call_erc20(chain, contract, "balanceOf(address)", address)
                 if not raw or raw == "0x":
                     continue
@@ -1067,7 +1155,7 @@ def cmd_multichain(args: argparse.Namespace) -> None:
 
 def cmd_allowance(args: argparse.Namespace) -> None:
     """Check dangerous ERC-20 approvals for a wallet (known spenders)."""
-    address = args.address
+    address = require_address(args.address)
     chain = args.chain
 
     # Well-known spender contracts (DEXes, bridges, etc.)
@@ -1085,7 +1173,8 @@ def cmd_allowance(args: argparse.Namespace) -> None:
     known = KNOWN_TOKENS.get(chain, {})
     approvals = []
 
-    for contract, (symbol, _name) in known.items():
+    # KNOWN_TOKENS[chain] is {symbol: contract_address}, not {addr: (sym, name)}.
+    for symbol, contract in known.items():
         for spender_addr, spender_name in KNOWN_SPENDERS.items():
             # allowance(owner, spender) = 0xdd62ed3e
             owner_pad  = address.lower().replace("0x", "").zfill(64)
@@ -1127,7 +1216,7 @@ def cmd_allowance(args: argparse.Namespace) -> None:
 def cmd_decode(args: argparse.Namespace) -> None:
     """Decode transaction input data using 4byte.directory."""
     chain = args.chain
-    tx_hash = args.hash
+    tx_hash = require_txhash(args.hash)
 
     tx = rpc_call(chain, "eth_getTransactionByHash", [tx_hash])
     if not tx:
@@ -1212,7 +1301,7 @@ def cmd_ens(args: argparse.Namespace) -> None:
 def cmd_contract(args: argparse.Namespace) -> None:
     """Inspect a smart contract: bytecode size, proxy detection, creation info."""
     chain = args.chain
-    address = args.address
+    address = require_address(args.address)
 
     # Get bytecode
     code_hex = rpc_call(chain, "eth_getCode", [address, "latest"])

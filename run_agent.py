@@ -10112,13 +10112,16 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        DeepSeek v4 thinking, Kimi / Moonshot thinking, and Xiaomi MiMo
+        thinking all reject replays of assistant tool-call messages that
+        omit ``reasoning_content`` (refs #15250, #17400; Xiaomi reports
+        ``The reasoning_content in the thinking mode must be passed back
+        to the API.``).
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_xiaomi_tool_reasoning()
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -10148,6 +10151,27 @@ class AIAgent:
             provider == "deepseek"
             or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+    def _needs_xiaomi_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode.
+
+        Xiaomi MiMo (mimo-v2.5-pro, mimo-v2.5, …) is a DeepSeek-derived
+        thinking-capable model family.  Both its OpenAI-compatible
+        ``api.xiaomimimo.com/v1`` endpoint and its Anthropic-compatible
+        ``token-plan-*.xiaomimimo.com/anthropic`` endpoints enforce the
+        same reasoning_content echo-back contract as DeepSeek; omitting
+        it causes HTTP 400 on replay::
+
+            The reasoning_content in the thinking mode must be passed
+            back to the API.
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "xiaomi"
+            or model.startswith("mimo-")
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:

@@ -322,7 +322,7 @@ def build_top_level_parser():
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        help="Maximum tool-calling iterations per conversation turn (default: 100, or agent.max_turns in config)",
     )
     _inherited_flag(
         chat_parser,

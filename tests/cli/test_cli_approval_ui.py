@@ -46,7 +46,7 @@ def _make_background_cli_stub():
         },
         "request_overrides": None,
     })
-    cli.max_turns = 90
+    cli.max_turns = 100
     cli.enabled_toolsets = []
     cli._session_db = None
     cli.reasoning_config = {}

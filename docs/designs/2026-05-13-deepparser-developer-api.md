@@ -407,16 +407,68 @@ DX IMPLEMENTATION CHECKLIST
 | 5. Debug | Parse fails → error message | Only code, no cause | FIXED: message+detail+doc_url |
 | 6. Upgrade | v1.0 → v1.1 | Silent breaking change | FIXED: CHANGELOG + DeprecationWarning |
 
+## Engineering Review Decisions (plan-eng-review)
+
+| # | Decision | Chosen |
+|---|---|---|
+| E1 | Scope / delivery pace | P0 dp_cli audit first; decide full-12-day vs. staged after audit results |
+| E2 | 24h job cleanup mechanism | asyncio.sleep(3600) loop in lifespan (no APScheduler; deferred per TODOS.md) |
+| E3 | parse task exception handling | try/except Exception → PARSE_FAILED; finally deletes uploaded file; PARSING added to 24h cleanup targets |
+| E4 | aiosqlite connection pattern | Per-request: `async with aiosqlite.connect(DB_PATH)` in each handler |
+| E5 | sync mode wait mechanism | asyncio.wait_for(asyncio.shield(task), timeout=10.0) — shield prevents task cancellation on timeout |
+| E6 | FastAPI startup | lifespan context manager: PRAGMA journal_mode=WAL + PRAGMA foreign_keys=ON + CREATE TABLE IF NOT EXISTS + cleanup task start |
+| E7 | Auth failure rate limiting | In-memory dict with 60s sliding window, 10 failures/IP/min → 429. No Redis. |
+| E8 | Test coverage | Full (90%+): 31 code paths. Test plan artifact: `sean-claude-quirky-ramanujan-907688-eng-review-test-plan-20260513-152459.md` |
+| E9 | Semaphore acquisition timeout | asyncio.wait_for(semaphore.acquire(), timeout=30.0) → 503 SERVICE_UNAVAILABLE + Retry-After: 30 |
+| E10 | Fly.io persistence safety | fly.toml: max_machines_running=1. Daily SQLite backup via scheduled machine (sqlite3 .dump → /data/backup/, retain 7 days) |
+| E11 | POST /keys rate limiting | 5 keys/IP/hour via existing in-memory limiter (3 lines) → 429 if exceeded |
+
+### Engineering Implementation Notes (required, no decision needed)
+
+- **asyncio.shield is mandatory** for sync mode: `asyncio.wait_for(asyncio.shield(task), 10.0)` prevents cancellation of the running parse task on handler timeout
+- **API key comparison**: `hmac.compare_digest(provided_key, stored_key)` — prevents timing attacks. Never use `==`
+- **Global exception handler**: `@app.exception_handler(Exception)` returns JSON 500, not HTML
+- **File extension validation**: validate extension server-side BEFORE calling dp_cli; return UNSUPPORTED_FORMAT early
+- **dp_cli returncode**: explicitly check `process.returncode != 0` → PARSE_FAILED (not only exception handling)
+- **Cleanup task crash recovery**: wrap cleanup loop body in `try/except Exception: logger.exception(...)` — task must survive DB errors
+- **client.demo() URL versioning**: SDK constant (not hardcoded string) pinned to SDK version; if demo endpoint changes, bump SDK minor version
+- **POST /ask semaphore**: P0 dp_cli audit to confirm if `/ask` also spawns dp_cli subprocess — if yes, apply same Semaphore or separate limit
+
+### Engineering Review Coverage Diagram
+
+```
+CODE PATHS                                               STATUS
+POST /parse — auth, UUID, job QUEUED                     ✅ tested (plan)
+POST /parse — FILE_TOO_LARGE, UNSUPPORTED_FORMAT         ⬜ add to test plan
+POST /parse — disk < 100MB → 503                        ⬜ add to test plan
+POST /parse?mode=sync — timeout fallback                ⬜ add to test plan
+run_parse_task — READY, PARSE_FAILED, TIMEOUT           ✅ tested (plan)
+run_parse_task — uncaught exception → PARSE_FAILED      ⬜ add (D3 new)
+run_parse_task — finally: file cleanup                  ⬜ add (D3 new)
+GET /parse/{id} — cross-key → 404                       ⬜ security-critical
+POST /ask — NOT_READY guard                             ✅ tested (plan)
+POST /ask — cross-key → 404                             ⬜ add
+POST /keys — registration, dp_live_ format              ⬜ add
+GET /health                                             ⬜ add
+GET /admin/stats — correct PW, wrong PW, unset PW       ⬜ add (partial in plan)
+cleanup_expired_jobs — all status incl. PARSING > 24h   ⬜ add (D2/D3 new)
+Semaphore — 4 concurrent → 5th waits → timeout → 503   ⬜ add (D9 new)
+POST /keys rate limit — 5/IP/hour → 429                ⬜ add (D11 new)
+SDK: parse_and_ask(), demo(), debug=True, DeprecationWarning ⬜ add
+
+TARGET COVERAGE: 90%+ (31 paths)  |  E2E: 2 integration tests
+```
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | CLEAR | 11 decisions D1-D11, outside voice 3 gaps resolved |
 | Outside Voice | `/codex-plan-review` | Independent 2nd opinion | 1 | issues→resolved | 3 findings: dp_cli spec, semaphore cap, validation gate |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | eng review required |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 11 eng decisions E1-E11, outside voice 7 findings (2 resolved: Fly single-instance, /keys rate limit; 5 impl notes) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | n/a (no UI scope) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 1 | CLEAR | score 2/10→8/10, TTHW 15→3 min, 21 DX decisions |
 
-- **CROSS-MODEL:** CEO review outside voice + DX review outside voice both agreed on: async-only API needs sync escape hatch (resolved), key registration must be instant (resolved)
+- **CROSS-MODEL:** CEO + DX + Eng outside voices agreed: async-only needs sync escape (resolved), instant key delivery (resolved), single Fly instance required (resolved E10)
 - **UNRESOLVED:** 0 open decisions
-- **VERDICT:** CEO + DX CLEARED — eng review required before implementation
+- **VERDICT:** CEO + DX + ENG CLEARED — implementation ready (after P0 dp_cli audit per E1)

@@ -15463,14 +15463,15 @@ class GatewayRunner:
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
                             if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — disable further edits,
-                                # switch to sending new messages only for
-                                # important updates.  Don't block 23s.
+                                # Flood control hit — backoff but keep editing.
+                                # Only disable edits for non-recoverable errors.
                                 logger.info(
-                                    "[%s] Progress edits disabled due to flood control",
+                                    "[%s] Progress edit flood control, backing off",
                                     adapter.name,
                                 )
-                            can_edit = False
+                                _last_edit_ts = time.monotonic()
+                            else:
+                                can_edit = False
                             _flood_result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,

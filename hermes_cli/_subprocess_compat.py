@@ -38,6 +38,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "windows_subprocess_kwargs",
 ]
 
 
@@ -232,3 +233,20 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+def windows_subprocess_kwargs() -> dict:
+    """Return kwargs that force UTF-8 encoding for subprocess text output on Windows.
+
+    On Windows, subprocess.run(..., text=True) uses the system codepage
+    (cp1252) by default, which cannot decode UTF-8 emoji bytes emitted by
+    Hermes CLI output (e.g. ✓, ✗, 🚀). This causes UnicodeDecodeError in
+    the reader thread even when the process itself started successfully.
+
+    Usage:
+        subprocess.run(cmd, capture_output=True, text=True,
+                       **windows_subprocess_kwargs())
+    """
+    if not IS_WINDOWS:
+        return {}
+    return {"encoding": "utf-8", "errors": "replace"}

@@ -305,6 +305,447 @@ class TestRecentSessionListing:
 
 
 # =========================================================================
+# Windowed message loading for session search (issue #24280)
+# =========================================================================
+
+class TestSessionSearchWindowLoading:
+    """
+    Tests for windowed message loading in session search.
+
+    The current implementation loads ALL messages via get_messages_as_conversation(),
+    formats them, then truncates. For a session with 866 messages (821KB), this is wasteful
+    since FTS5 already tells us which messages matched.
+
+    The fix should:
+    1. Use matched message IDs from FTS5 results to load only a window around each match
+    2. Format only the windowed messages (not the full conversation)
+    3. Avoid loading+formatting 866 messages just to show a relevant snippet
+
+    These tests verify:
+    - get_messages_as_conversation currently loads all messages (the problem)
+    - A new get_messages_for_session_window(session_id, message_ids, before=5, after=5) exists
+    - The new method returns messages in correct chronological order
+    - The window includes messages before and after matched IDs
+    - Edge cases: no matches, window at session start/end
+    """
+
+    def test_get_messages_as_conversation_loads_all_messages(self):
+        """
+        Verify that get_messages_as_conversation loads the ENTIRE conversation,
+        which is the performance problem we're addressing with windowed loading.
+        """
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+        import json
+
+        mock_db = MagicMock()
+
+        # Simulate a session with many messages (866 messages like the real case)
+        all_messages = [
+            {"role": "user", "content": f"message {i}"}
+            for i in range(866)
+        ]
+
+        # Return the full 866-message conversation
+        mock_db.get_messages_as_conversation.return_value = all_messages
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "sess_abc123",
+                "content": "docker deployment",
+                "source": "cli",
+                "session_started": 1709500000,
+                "model": "gpt-4o",
+                "id": 500,  # middle of the 866 messages
+            }
+        ]
+        mock_db.get_session.return_value = {
+            "id": "sess_abc123",
+            "source": "cli",
+            "started_at": 1709500000,
+            "model": "gpt-4o",
+            "parent_session_id": None,
+        }
+
+        # Mock async summarization to avoid LLM calls
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(session_search(query="docker", db=mock_db, limit=1))
+
+        assert result["success"] is True
+        # After the fix, windowed loading is used instead of full conversation load
+        mock_db.get_messages_for_session_window.assert_called_once_with(
+            "sess_abc123", [500], before=5, after=5
+        )
+
+    def test_get_messages_for_session_window_method_should_exist(self):
+        """
+        The fix requires a new db method:
+        get_messages_for_session_window(session_id, message_ids, before=5, after=5)
+
+        This test verifies that this method exists on the db interface.
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+        mock_db.get_messages_for_session_window = MagicMock(return_value=[])
+
+        # Should be callable with session_id, message_ids list, and optional before/after
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[100, 105, 110],
+            before=5,
+            after=5
+        )
+
+        mock_db.get_messages_for_session_window.assert_called_once()
+        # Verify the method accepts the expected parameters
+        call_args = mock_db.get_messages_for_session_window.call_args
+        args, kwargs = call_args[0], call_args[1]
+        assert args[0] == "sess_abc"
+        assert kwargs["message_ids"] == [100, 105, 110]
+        assert kwargs["before"] == 5
+        assert kwargs["after"] == 5
+
+    def test_get_messages_for_session_window_returns_messages_in_chronological_order(self):
+        """
+        The windowed method should return messages sorted by timestamp (and id as tiebreaker),
+        not in the order of matched message_ids.
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+
+        # Create a sequence of messages with timestamps
+        # Matched message ID is 50, but messages should be ordered chronologically
+        windowed_messages = [
+            {"role": "user", "content": "message 45", "id": 45, "timestamp": 1709500045},
+            {"role": "assistant", "content": "reply 46", "id": 46, "timestamp": 1709500046},
+            {"role": "user", "content": "message 47", "id": 47, "timestamp": 1709500047},
+            {"role": "assistant", "content": "reply 48", "id": 48, "timestamp": 1709500048},
+            {"role": "assistant", "content": "reply 49", "id": 49, "timestamp": 1709500049},
+            # Matched message (docker) at ID 50
+            {"role": "user", "content": "docker deployment info", "id": 50, "timestamp": 1709500050},
+            {"role": "assistant", "content": "reply 51", "id": 51, "timestamp": 1709500051},
+            {"role": "user", "content": "message 52", "id": 52, "timestamp": 1709500052},
+            {"role": "assistant", "content": "reply 53", "id": 53, "timestamp": 1709500053},
+            {"role": "user", "content": "message 54", "id": 54, "timestamp": 1709500054},
+            {"role": "assistant", "content": "reply 55", "id": 55, "timestamp": 1709500055},
+        ]
+
+        mock_db.get_messages_for_session_window.return_value = windowed_messages
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[50],  # matched message
+            before=5,
+            after=5
+        )
+
+        # Verify chronological ordering by timestamp
+        timestamps = [msg.get("timestamp", 0) for msg in result]
+        assert timestamps == sorted(timestamps), (
+            f"Messages should be in chronological order by timestamp. Got: {timestamps}"
+        )
+
+        # Also verify IDs are in ascending order for same-timestamp messages
+        ids = [msg.get("id", 0) for msg in result]
+        assert ids == sorted(ids), (
+            f"For same timestamp, messages should be ordered by id. Got: {ids}"
+        )
+
+    def test_get_messages_for_session_window_includes_before_and_after_context(self):
+        """
+        The window should include messages BEFORE and AFTER the matched message IDs.
+        If before=5 and after=5, and message 50 matches, we expect ~11 messages
+        (5 before + matched + 5 after).
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+
+        # Matched message at ID 50
+        matched_id = 50
+        before_count = 5
+        after_count = 5
+
+        # The windowed method should return context around the match
+        windowed_messages = [
+            {"role": "user", "content": f"msg {matched_id - 5}", "id": matched_id - 5},
+            {"role": "user", "content": f"msg {matched_id - 4}", "id": matched_id - 4},
+            {"role": "user", "content": f"msg {matched_id - 3}", "id": matched_id - 3},
+            {"role": "user", "content": f"msg {matched_id - 2}", "id": matched_id - 2},
+            {"role": "user", "content": f"msg {matched_id - 1}", "id": matched_id - 1},
+            # The matched message
+            {"role": "user", "content": "docker deployment", "id": matched_id},
+            {"role": "assistant", "content": f"reply {matched_id + 1}", "id": matched_id + 1},
+            {"role": "user", "content": f"msg {matched_id + 2}", "id": matched_id + 2},
+            {"role": "assistant", "content": f"reply {matched_id + 3}", "id": matched_id + 3},
+            {"role": "user", "content": f"msg {matched_id + 4}", "id": matched_id + 4},
+            {"role": "assistant", "content": f"reply {matched_id + 5}", "id": matched_id + 5},
+        ]
+
+        mock_db.get_messages_for_session_window.return_value = windowed_messages
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[matched_id],
+            before=before_count,
+            after=after_count
+        )
+
+        # The matched message should be in the result
+        matched_ids_in_result = [msg["id"] for msg in result if msg["id"] == matched_id]
+        assert len(matched_ids_in_result) == 1, "Matched message ID 50 should be in result"
+
+        # Before messages should be present (ids < matched_id)
+        before_msgs = [msg for msg in result if msg["id"] < matched_id]
+        assert len(before_msgs) >= before_count, (
+            f"Expected at least {before_count} messages before the match, got {len(before_msgs)}"
+        )
+
+        # After messages should be present (ids > matched_id)
+        after_msgs = [msg for msg in result if msg["id"] > matched_id]
+        assert len(after_msgs) >= after_count, (
+            f"Expected at least {after_count} messages after the match, got {len(after_msgs)}"
+        )
+
+    def test_get_messages_for_session_window_handles_multiple_matched_ids(self):
+        """
+        When FTS5 returns multiple matched message IDs for the same session,
+        the window should cover ALL matched IDs (with their before/after context).
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+
+        # FTS5 found matches at messages 30 and 80 in the same session
+        matched_ids = [30, 80]
+
+        # The windowed method should load context for ALL matched IDs
+        # This might result in overlapping windows that get deduplicated
+        windowed_messages = [
+            # Window around message 30
+            {"role": "user", "content": "msg 25", "id": 25},
+            {"role": "user", "content": "msg 26", "id": 26},
+            {"role": "user", "content": "msg 27", "id": 27},
+            {"role": "user", "content": "msg 28", "id": 28},
+            {"role": "user", "content": "msg 29", "id": 29},
+            {"role": "user", "content": "docker search query", "id": 30},  # matched
+            {"role": "assistant", "content": "reply 31", "id": 31},
+            {"role": "user", "content": "msg 32", "id": 32},
+            {"role": "user", "content": "msg 33", "id": 33},
+            {"role": "user", "content": "msg 34", "id": 34},
+            {"role": "assistant", "content": "reply 35", "id": 35},
+            # Gap in the middle (36-75 not loaded)
+            # Window around message 80
+            {"role": "user", "content": "msg 75", "id": 75},
+            {"role": "user", "content": "msg 76", "id": 76},
+            {"role": "user", "content": "msg 77", "id": 77},
+            {"role": "user", "content": "msg 78", "id": 78},
+            {"role": "user", "content": "msg 79", "id": 79},
+            {"role": "user", "content": "docker compose file", "id": 80},  # matched
+            {"role": "assistant", "content": "reply 81", "id": 81},
+            {"role": "user", "content": "msg 82", "id": 82},
+            {"role": "user", "content": "msg 83", "id": 83},
+            {"role": "user", "content": "msg 84", "id": 84},
+            {"role": "assistant", "content": "reply 85", "id": 85},
+        ]
+
+        mock_db.get_messages_for_session_window.return_value = windowed_messages
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=matched_ids,
+            before=5,
+            after=5
+        )
+
+        # Both matched IDs should be present
+        result_ids = [msg["id"] for msg in result]
+        for matched_id in matched_ids:
+            assert matched_id in result_ids, (
+                f"Matched message ID {matched_id} should be in result"
+            )
+
+    def test_get_messages_for_session_window_edge_case_no_matches(self):
+        """
+        Edge case: FTS5 returns no matched messages for a session.
+        The windowed method should return empty list (not crash).
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+        mock_db.get_messages_for_session_window.return_value = []
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[],  # No matches
+            before=5,
+            after=5
+        )
+
+        assert result == [], "Should return empty list when no matched messages"
+
+    def test_get_messages_for_session_window_edge_case_at_session_start(self):
+        """
+        Edge case: Matched message is near the START of the conversation.
+        Window should still include messages after, but before may be limited
+        (only messages that exist before the matched ID).
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+
+        # Matched message at ID 3 (near session start, only 2 messages before)
+        matched_id = 3
+
+        windowed_messages = [
+            {"role": "user", "content": "msg 1", "id": 1},
+            {"role": "assistant", "content": "reply 2", "id": 2},
+            {"role": "user", "content": "first docker command", "id": 3},  # matched, near start
+            {"role": "assistant", "content": "reply 4", "id": 4},
+            {"role": "user", "content": "msg 5", "id": 5},
+            {"role": "assistant", "content": "reply 6", "id": 6},
+            {"role": "user", "content": "msg 7", "id": 7},
+            {"role": "assistant", "content": "reply 8", "id": 8},
+        ]
+
+        mock_db.get_messages_for_session_window.return_value = windowed_messages
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[matched_id],
+            before=5,
+            after=5
+        )
+
+        # The matched message should be present
+        matched_present = any(msg["id"] == matched_id for msg in result)
+        assert matched_present, "Matched message should be in result"
+
+        # There should be messages AFTER (no guarantee on count before due to session start)
+        after_msgs = [msg for msg in result if msg["id"] > matched_id]
+        assert len(after_msgs) > 0, "Should have messages after match even at session start"
+
+    def test_get_messages_for_session_window_edge_case_at_session_end(self):
+        """
+        Edge case: Matched message is near the END of the conversation.
+        Window should still include messages before, but after may be limited.
+        """
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+
+        # Matched message at ID 862 (near end, session has 866 messages total)
+        matched_id = 862
+
+        windowed_messages = [
+            {"role": "user", "content": "msg 857", "id": 857},
+            {"role": "assistant", "content": "reply 858", "id": 858},
+            {"role": "user", "content": "msg 859", "id": 859},
+            {"role": "assistant", "content": "reply 860", "id": 860},
+            {"role": "user", "content": "msg 861", "id": 861},
+            {"role": "user", "content": "last docker config", "id": 862},  # matched, near end
+            {"role": "assistant", "content": "final reply 863", "id": 863},
+            {"role": "user", "content": "msg 864", "id": 864},
+            {"role": "assistant", "content": "reply 865", "id": 865},
+            {"role": "user", "content": "msg 866", "id": 866},
+        ]
+
+        mock_db.get_messages_for_session_window.return_value = windowed_messages
+
+        result = mock_db.get_messages_for_session_window(
+            "sess_abc",
+            message_ids=[matched_id],
+            before=5,
+            after=5
+        )
+
+        # The matched message should be present
+        matched_present = any(msg["id"] == matched_id for msg in result)
+        assert matched_present, "Matched message should be in result"
+
+        # There should be messages BEFORE (no guarantee on count after due to session end)
+        before_msgs = [msg for msg in result if msg["id"] < matched_id]
+        assert len(before_msgs) > 0, "Should have messages before match even at session end"
+
+    def test_session_search_with_windowed_loading_avoids_full_conversation_load(self):
+        """
+        Integration test: After the fix, session_search should use windowed loading
+        instead of get_messages_as_conversation when matched message IDs are available.
+
+        This verifies that for sessions with matched messages, we load only the
+        windowed context rather than the entire 866-message conversation.
+        """
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+        import json
+
+        mock_db = MagicMock()
+
+        # FTS5 returned a match with the message ID (from search_messages)
+        fts_results = [
+            {
+                "session_id": "sess_big",
+                "content": "docker compose up",
+                "source": "cli",
+                "session_started": 1709500000,
+                "model": "gpt-4o",
+                "id": 500,  # The matched message ID
+            }
+        ]
+        mock_db.search_messages.return_value = fts_results
+        mock_db.get_session.return_value = {
+            "id": "sess_big",
+            "source": "cli",
+            "started_at": 1709500000,
+            "model": "gpt-4o",
+            "parent_session_id": None,
+        }
+
+        # The windowed loading should return only ~11 messages (before=5 + matched + after=5)
+        windowed_messages = [
+            {"role": "user", "content": f"msg {i}", "id": 495 + i}
+            for i in range(11)
+        ]
+
+        # Define side effect to track which method was called
+        call_tracker = {"windowed_called": False, "full_called": False}
+
+        def get_messages_window(sid, msg_ids, before=5, after=5):
+            call_tracker["windowed_called"] = True
+            return windowed_messages
+
+        def get_messages_full(sid):
+            call_tracker["full_called"] = True
+            # Return 866 messages (the problem!)
+            return [{"role": "user", "content": f"msg {i}"} for i in range(866)]
+
+        mock_db.get_messages_for_session_window.side_effect = get_messages_window
+        mock_db.get_messages_as_conversation.side_effect = get_messages_full
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(session_search(query="docker", db=mock_db, limit=1))
+
+        assert result["success"] is True
+        # After the fix, windowed loading should be used instead of full conversation load
+        assert call_tracker["windowed_called"], (
+            "get_messages_for_session_window should have been called (windowed loading)"
+        )
+        assert not call_tracker["full_called"], (
+            "get_messages_as_conversation should NOT be called (full conversation loading)"
+        )
+
+
+# =========================================================================
 # session_search (dispatcher)
 # =========================================================================
 

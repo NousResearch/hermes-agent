@@ -438,16 +438,40 @@ def session_search(
             if len(seen_sessions) >= limit:
                 break
 
+        # Collect matched message IDs per session from FTS5 results.
+        # Each result["id"] is the matched message ID from FTS5, used to load
+        # only the surrounding window instead of the full conversation.
+        # Older search implementations may not include "id" — fall back to
+        # full conversation load for those results.
+        session_matched_ids: Dict[str, List[int]] = {}
+        for result in raw_results:
+            sid = result["session_id"]
+            if "id" not in result:
+                # No matched message ID — fall back to full conversation load
+                continue
+            if sid not in session_matched_ids:
+                session_matched_ids[sid] = []
+            session_matched_ids[sid].append(result["id"])
+
         # Prepare all sessions for parallel summarization
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                matched_ids = session_matched_ids.get(session_id, [])
+                if matched_ids:
+                    # Use windowed loading when matched IDs are available — avoids
+                    # loading the full 800+ message conversation for large sessions.
+                    messages = db.get_messages_for_session_window(
+                        session_id, matched_ids, before=5, after=5
+                    )
+                else:
+                    # No matched IDs (e.g. legacy search implementations) — fall back
+                    # to loading the full conversation for this session.
+                    messages = db.get_messages_as_conversation(session_id)
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}
                 conversation_text = _format_conversation(messages)
-                conversation_text = _truncate_around_matches(conversation_text, query)
                 tasks.append((session_id, match_info, conversation_text, session_meta))
             except Exception as e:
                 logging.warning(

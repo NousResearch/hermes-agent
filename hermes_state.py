@@ -1753,6 +1753,114 @@ class SessionDB:
             messages.append(msg)
         return messages
 
+    def get_messages_for_session_window(
+        self,
+        session_id: str,
+        matched_message_ids: List[int],
+        before: int = 5,
+        after: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Load only the messages within a window around each matched FTS5 result.
+
+        Instead of loading the full conversation (potentially 800+ messages),
+        this fetches only the relevant context: ``before`` messages before and
+        ``after`` messages after each matched message ID, then merges overlapping
+        windows and returns them in chronological order.
+
+        This dramatically reduces payload size when session_search surfaces
+        FTS5 matches, since the truncation step becomes unnecessary.
+        """
+        if not matched_message_ids:
+            return []
+
+        matched_set = set(matched_message_ids)
+
+        # Expand each matched ID into its surrounding window
+        window_edges: List[List[int]] = []
+        with self._lock:
+            for mid in matched_message_ids:
+                window_edges.append([mid - before, mid + after])
+
+        # Merge overlapping windows — collect every message ID that falls
+        # inside any window so we fetch it in a single query.
+        merged_ranges: List[List[int]] = []
+        for start, end in sorted(window_edges):
+            if merged_ranges and start <= merged_ranges[-1][1] + 1:
+                merged_ranges[-1][1] = max(merged_ranges[-1][1], end)
+            else:
+                merged_ranges.append([start, end])
+
+        all_ids: List[int] = []
+        for start, end in merged_ranges:
+            rows = self._conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND id >= ? AND id <= ? ORDER BY id",
+                (session_id, start, end),
+            ).fetchall()
+            all_ids.extend(r["id"] for r in rows)
+
+        if not all_ids:
+            return []
+
+        # Deduplicate while preserving insertion order (important for
+        # chronological sorting — sets lose ordering, dict preserves it).
+        seen: Dict[int, None] = {}
+        for mid in all_ids:
+            if mid not in seen:
+                seen[mid] = None
+        unique_ids = list(seen.keys())
+
+        # Fetch full message rows for the deduplicated IDs
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = self._conn.execute(
+            f"SELECT id, role, content, tool_call_id, tool_calls, tool_name, "
+            f"finish_reason, reasoning, reasoning_content, reasoning_details, "
+            f"codex_reasoning_items, codex_message_items, timestamp "
+            f"FROM messages WHERE session_id = ? AND id IN ({placeholders}) ORDER BY timestamp, id",
+            (session_id, *unique_ids),
+        ).fetchall()
+
+        messages: List[Dict[str, Any]] = []
+        for row in rows:
+            content = self._decode_content(row["content"])
+            if row["role"] in {"user", "assistant"} and isinstance(content, str):
+                content = sanitize_context(content).strip()
+            msg: Dict[str, Any] = {"role": row["role"], "content": content}
+            if row["tool_call_id"]:
+                msg["tool_call_id"] = row["tool_call_id"]
+            if row["tool_name"]:
+                msg["tool_name"] = row["tool_name"]
+            if row["tool_calls"]:
+                try:
+                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize tool_calls in windowed fetch, falling back to []")
+                    msg["tool_calls"] = []
+            if row["role"] == "assistant":
+                if row["finish_reason"]:
+                    msg["finish_reason"] = row["finish_reason"]
+                if row["reasoning"]:
+                    msg["reasoning"] = row["reasoning"]
+                if row["reasoning_content"] is not None:
+                    msg["reasoning_content"] = row["reasoning_content"]
+                if row["reasoning_details"]:
+                    try:
+                        msg["reasoning_details"] = json.loads(row["reasoning_details"])
+                    except (json.JSONDecodeError, TypeError):
+                        msg["reasoning_details"] = None
+                if row["codex_reasoning_items"]:
+                    try:
+                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                    except (json.JSONDecodeError, TypeError):
+                        msg["codex_reasoning_items"] = None
+                if row["codex_message_items"]:
+                    try:
+                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
+                    except (json.JSONDecodeError, TypeError):
+                        msg["codex_message_items"] = None
+            messages.append(msg)
+        return messages
+
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
             return [session_id]

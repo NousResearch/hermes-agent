@@ -69,6 +69,29 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         "--node", default=None,
         help="remote node name, or 'auto' to use the sole registered node"
     )
+    # Issue #24826: by default `meet join` now blocks until the bot is
+    # admitted (or denied) and exits nonzero on every non-success path,
+    # so cron / auto-join scripts that trust the exit code can no longer
+    # silently treat a denied admission as success.  Pass --no-wait to
+    # restore the legacy "spawn-and-return" behaviour.
+    wait_grp = join_p.add_mutually_exclusive_group()
+    wait_grp.add_argument(
+        "--wait", dest="wait_seconds", type=float, default=None,
+        metavar="SECONDS",
+        help=(
+            "Block up to SECONDS waiting for admission to be confirmed before "
+            "returning.  Default: 90s.  Exit code is 0 only when admission is "
+            "confirmed; see --help for the full exit-code table."
+        ),
+    )
+    wait_grp.add_argument(
+        "--no-wait", dest="no_wait", action="store_true",
+        help=(
+            "Spawn the bot and return immediately (legacy behaviour).  The "
+            "exit code only reflects whether the subprocess started; "
+            "admission must be verified separately via `hermes meet status`."
+        ),
+    )
 
     subs.add_parser("status", help="Print current Meet bot state")
 
@@ -127,6 +150,8 @@ def meet_command(args: argparse.Namespace) -> int:
             headed=args.headed,
             mode=getattr(args, "mode", "transcribe"),
             node=getattr(args, "node", None),
+            wait_seconds=getattr(args, "wait_seconds", None),
+            no_wait=bool(getattr(args, "no_wait", False)),
         )
     if sub == "status":
         return _cmd_status()
@@ -377,6 +402,8 @@ def _cmd_join(
     headed: bool,
     mode: str = "transcribe",
     node: Optional[str] = None,
+    wait_seconds: Optional[float] = None,
+    no_wait: bool = False,
 ) -> int:
     if not _is_safe_meet_url(url):
         print(f"refusing: not a meet.google.com URL: {url}")
@@ -404,6 +431,10 @@ def _cmd_join(
             print(f"remote start_bot failed: {e}")
             return 1
         print(json.dumps({"node": entry.get("name"), **res}, indent=2))
+        # Remote-node admission verification is handled on the node side
+        # (the node host runs its own `meet join` with the same wait
+        # semantics).  The local CLI only learns whether dispatching the
+        # request worked.
         return 0 if res.get("ok") else 1
 
     auth = _auth_state_path()
@@ -415,8 +446,49 @@ def _cmd_join(
         auth_state=str(auth) if auth.is_file() else None,
         mode=mode,
     )
-    print(json.dumps(res, indent=2))
-    return 0 if res.get("ok") else 1
+    if not res.get("ok"):
+        print(json.dumps(res, indent=2))
+        return 1
+
+    if no_wait:
+        # Legacy behaviour: report the spawn outcome and return.  Auto-join
+        # scripts that take this path MUST poll `hermes meet status` and
+        # branch on `joined` / `admissionState` themselves before recording
+        # an event as joined (issue #24826).
+        print(json.dumps(res, indent=2))
+        return 0
+
+    # New default: block until the bot reports admission, denial, or the
+    # wait budget elapses, and translate the verdict into an actionable
+    # exit code so cron / auto-join scripts that trust the exit code can
+    # no longer silently treat a denied admission as success.
+    timeout = (
+        float(wait_seconds) if wait_seconds is not None
+        else pm.DEFAULT_JOIN_WAIT_S
+    )
+    verdict = pm.wait_for_join(timeout=timeout)
+    print(json.dumps(verdict, indent=2))
+    return _join_exit_code(verdict)
+
+
+# Exit-code table for `hermes meet join` (issue #24826).  Auto-join scripts
+# can branch on these without parsing JSON.  Codes 2 (URL refusal) and 1
+# (subprocess spawn / generic failure) are pre-existing; 3-6 are added by
+# this change so a denied admission is no longer indistinguishable from
+# a clean success on the exit-code side.
+_JOIN_EXIT_CODES = {
+    "joined": 0,
+    "denied": 3,
+    "lobby_timeout": 4,
+    "failed": 5,
+    "timeout": 6,
+    "no_active": 5,  # bot vanished before status was readable — treat as failure
+}
+
+
+def _join_exit_code(verdict: dict) -> int:
+    """Map ``wait_for_join`` outcome strings to CLI exit codes."""
+    return _JOIN_EXIT_CODES.get(str(verdict.get("waitOutcome", "")), 1)
 
 
 def _cmd_say(text: str, node: Optional[str] = None) -> int:

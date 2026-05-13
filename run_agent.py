@@ -3619,12 +3619,19 @@ class AIAgent:
         is_claude = "claude" in model_lower
         is_nous_portal = "nousresearch" in eff_base_url.lower()
 
-        # Nous Portal: Claude AND Qwen both get long-lived caching.
-        # Portal proxies to OpenRouter with identical cache_control
-        # semantics; any model on Portal that accepts envelope-layout
-        # markers via _anthropic_prompt_cache_policy also benefits from
-        # the documented 1h cross-session TTL.
-        if is_nous_portal and (is_claude or "qwen" in model_lower):
+        # Nous Portal Claude rides the 1h prefix_and_2 layout (Portal
+        # proxies to OpenRouter, which honours ttl=1h on Anthropic
+        # routes).  Qwen does NOT — Alibaba DashScope (the upstream for
+        # all Qwen routes, including Portal -> OpenRouter -> Alibaba)
+        # documents a single ``ephemeral`` TTL of 5 minutes; ttl="1h"
+        # on Qwen markers is silently ignored upstream, so the
+        # high-value tools[-1] + system-prefix breakpoints never land
+        # and only the 5m rolling-window markers on the last 2 messages
+        # get cached.  Portal Qwen still gets cache_control via
+        # _anthropic_prompt_cache_policy returning (True, False) — it
+        # just rides the standard system_and_3 5m layout instead of the
+        # mismatched prefix_and_2 1h layout.
+        if is_nous_portal and is_claude:
             return True
 
         if not is_claude:

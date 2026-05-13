@@ -177,6 +177,20 @@ def _git(repo: Path, args: Sequence[str], *, env: Mapping[str, str] | None = Non
     return completed.stdout.strip()
 
 
+def _path_exists_or_is_tracked(repo: Path, path: str) -> bool:
+    if (repo / path).exists():
+        return True
+    completed = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", path],
+        cwd=str(repo),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return completed.returncode == 0
+
+
 def _normalize_scoped_paths(paths: Iterable[str]) -> list[str]:
     scoped: list[str] = []
     for raw in paths:
@@ -226,6 +240,15 @@ def create_scoped_local_commit(
     root = _git(repo, ["rev-parse", "--show-toplevel"])
     if Path(root).resolve() != repo:
         repo = Path(root).resolve()
+
+    unknown_scoped_paths = [
+        path for path in scoped if not _path_exists_or_is_tracked(repo, path)
+    ]
+    if unknown_scoped_paths:
+        raise ValueError(
+            "scoped path does not exist or is not tracked: "
+            + ", ".join(unknown_scoped_paths)
+        )
 
     staged_before = set(_git_lines(repo, ["diff", "--name-only", "--cached"]))
     staged_outside_scope = sorted(staged_before - scoped_set)

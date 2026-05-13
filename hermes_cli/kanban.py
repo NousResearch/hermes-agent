@@ -18,12 +18,14 @@ import argparse
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.scoped_auto_commit import create_scoped_local_commit
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +406,29 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_review_commit = sub.add_parser(
+        "review-commit",
+        help="Opt-in local scoped Git commit after Coder handoff + Reviewer-B APPROVED",
+    )
+    p_review_commit.add_argument(
+        "coder_task_id",
+        help="Completed Coder task whose latest run metadata contains review_required=true",
+    )
+    p_review_commit.add_argument(
+        "--reviewer-task",
+        required=True,
+        help="Completed Reviewer-B task whose latest run metadata contains verdict=APPROVED",
+    )
+    p_review_commit.add_argument("--repo", required=True, help="Git repo path")
+    p_review_commit.add_argument(
+        "--scoped-path",
+        action="append",
+        required=True,
+        help="Repo-relative approved path to include (repeatable)",
+    )
+    p_review_commit.add_argument("--message", required=True, help="Local commit message")
+    p_review_commit.add_argument("--json", action="store_true")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -722,6 +747,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "claim":    _cmd_claim,
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
+        "review-commit": _cmd_review_commit,
         "edit":     _cmd_edit,
         "block":    _cmd_block,
         "unblock":  _cmd_unblock,
@@ -1530,6 +1556,76 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _latest_completed_metadata(
+    conn,
+    task_id: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"{label} task not found: {task_id}")
+    run = kb.latest_run(conn, task_id)
+    if run is None or run.outcome != "completed":
+        raise ValueError(f"{label} task has no completed run: {task_id}")
+    if not isinstance(run.metadata, dict):
+        raise ValueError(f"{label} metadata object is required: {task_id}")
+    return run.metadata
+
+
+def _cmd_review_commit(args: argparse.Namespace) -> int:
+    """Opt-in local scoped commit after Coder handoff and Reviewer-B verdict."""
+    try:
+        with kb.connect() as conn:
+            coder_metadata = _latest_completed_metadata(
+                conn,
+                args.coder_task_id,
+                label="coder",
+            )
+            reviewer_metadata = _latest_completed_metadata(
+                conn,
+                args.reviewer_task,
+                label="reviewer",
+            )
+
+        acceptance_checks = (
+            coder_metadata.get("acceptance_checks")
+            or reviewer_metadata.get("acceptance_checks")
+        )
+        anti_scope = coder_metadata.get("anti_scope") or reviewer_metadata.get("anti_scope")
+        expected_workflow_id = coder_metadata.get("workflow_id") or reviewer_metadata.get("workflow_id")
+        receipt = create_scoped_local_commit(
+            repo_path=args.repo,
+            scoped_paths=args.scoped_path,
+            message=args.message,
+            coder_metadata=coder_metadata,
+            reviewer_metadata=reviewer_metadata,
+            acceptance_checks=acceptance_checks,
+            anti_scope=anti_scope,
+            expected_workflow_id=str(expected_workflow_id) if expected_workflow_id else None,
+        )
+    except (PermissionError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"review-commit blocked: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "commit_hash": receipt.commit_hash,
+        "committed_paths": receipt.committed_paths,
+        "preexisting_dirty_paths": receipt.preexisting_dirty_paths,
+        "reviewer_verdict": receipt.reviewer_verdict,
+        "pushed": False,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Review commit created {receipt.commit_hash}")
+        print("Committed paths: " + ", ".join(receipt.committed_paths))
+        if receipt.preexisting_dirty_paths:
+            print("Pre-existing dirty left untouched: " + ", ".join(receipt.preexisting_dirty_paths))
+        print("Push: not executed")
+    return 0
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:

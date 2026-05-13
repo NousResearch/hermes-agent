@@ -96,6 +96,19 @@ def test_classify_status_login_required_for_sign_in_page_text():
     assert status["ready"] is False
 
 
+def test_classify_status_login_required_wins_over_generic_pairing_hint():
+    status = google_messages._classify_status(
+        "https://accounts.google.com/signin/v2/identifier",
+        "Choose an account Sign in with your Google Account to use Messages on the web",
+        [],
+    )
+
+    assert status["state"] == "login_required"
+    assert status["login_required"] is True
+    assert status["pairing_required"] is True
+    assert status["ready"] is False
+
+
 def test_classify_status_ready_when_conversation_candidates_parse():
     status = google_messages._classify_status(
         "https://messages.google.com/web/conversations",

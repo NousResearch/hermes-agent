@@ -167,10 +167,10 @@ def _classify_status(url: str, body_text: str, raw_items: Iterable[Dict[str, Any
     login_required = bool(_LOGIN_REQUIRED_RE.search(f"{url_text}\n{body}"))
     conversations = [] if pairing_required or login_required else _parse_conversation_items(raw_list, limit=5)
     logged_in = bool(conversations) or "conversations" in url_text.lower()
-    if pairing_required:
-        state = "pairing_required"
-    elif login_required:
+    if login_required:
         state = "login_required"
+    elif pairing_required:
+        state = "pairing_required"
     elif logged_in:
         state = "ready"
     else:

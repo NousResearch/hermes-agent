@@ -1,8 +1,9 @@
 """DuckDuckGo search — plugin form (via the ``ddgs`` package).
 
 Subclasses the plugin-facing :class:`agent.web_search_provider.WebSearchProvider`.
-Same behavior as the legacy ``tools.web_providers.ddgs`` module — only the
-ABC name and import path change.
+The legacy in-tree module ``tools.web_providers.ddgs`` was removed in the
+same commit that moved this code under ``plugins/``; this file is now the
+canonical implementation.
 
 The ``ddgs`` package is an optional dependency. ``is_available()`` reflects
 whether the package is importable; the plugin still registers either way so

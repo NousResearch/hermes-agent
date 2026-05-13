@@ -740,7 +740,10 @@ class BaseEnvironment(ABC):
             return
 
         cwd_path = output[first + len(marker) : last].strip()
-        if cwd_path:
+        # A malformed wrapper/format string can leak the literal printf placeholder
+        # into stdout (``__HERMES_CWD__%s__HERMES_CWD__``).  Strip the marker,
+        # but never adopt that placeholder as the next working directory.
+        if cwd_path and cwd_path != "%s":
             self.cwd = cwd_path
 
         # Strip the marker line AND the \n we injected before it.

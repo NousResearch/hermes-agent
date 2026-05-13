@@ -433,6 +433,24 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
+    def _safe_popen_cwd(self) -> str:
+        """Return a valid local cwd for subprocess.Popen.
+
+        The local backend also cd's to the effective command cwd inside the
+        wrapped shell script.  ``Popen(cwd=...)`` is only the shell launch
+        directory, but if the persisted session cwd is corrupted or deleted,
+        the shell never starts and the terminal tool gets stuck returning
+        FileNotFoundError before it can recover.
+        """
+        if self.cwd and os.path.isdir(self.cwd):
+            return self.cwd
+
+        fallback = os.getcwd()
+        if not os.path.isdir(fallback):
+            fallback = "/"
+        self.cwd = fallback
+        return fallback
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:

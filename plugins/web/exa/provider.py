@@ -40,14 +40,22 @@ _exa_client: Any = None
 def _get_exa_client() -> Any:
     """Lazy-import and cache an Exa SDK client.
 
-    Mirrors :func:`tools.web_tools._get_exa_client`. Raises ``ValueError``
-    when ``EXA_API_KEY`` is unset — the dispatcher catches that and
-    surfaces a typed error response.
+    Cache lives on :mod:`tools.web_tools` (as ``_exa_client``) so unit
+    tests that reset that name between cases keep working. Raises
+    ``ValueError`` when ``EXA_API_KEY`` is unset.
     """
-    global _exa_client
+    import tools.web_tools as _wt
 
-    if _exa_client is not None:
-        return _exa_client
+    cached = getattr(_wt, "_exa_client", None)
+    if cached is not None:
+        return cached
+
+    api_key = os.getenv("EXA_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "EXA_API_KEY environment variable not set. "
+            "Get your API key at https://exa.ai"
+        )
 
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
@@ -60,22 +68,17 @@ def _get_exa_client() -> Any:
 
     from exa_py import Exa  # noqa: WPS433 — deliberately lazy
 
-    api_key = os.getenv("EXA_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "EXA_API_KEY environment variable not set. "
-            "Get your API key at https://exa.ai"
-        )
-
-    _exa_client = Exa(api_key=api_key)
-    _exa_client.headers["x-exa-integration"] = "hermes-agent"
-    return _exa_client
+    client = Exa(api_key=api_key)
+    client.headers["x-exa-integration"] = "hermes-agent"
+    _wt._exa_client = client
+    return client
 
 
 def _reset_client_for_tests() -> None:
     """Drop the cached Exa client so tests can re-instantiate cleanly."""
-    global _exa_client
-    _exa_client = None
+    import tools.web_tools as _wt
+
+    _wt._exa_client = None
 
 
 class ExaWebSearchProvider(WebSearchProvider):

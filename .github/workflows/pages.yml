@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
- cache: npm
+          cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install
         working-directory: web
@@ -31,10 +31,10 @@ jobs:
         working-directory: web
         run: npm run build
         env:
-          BASE_URL: /hermes-agent/
+        BASE_URL: /hermes-agent/
       - uses: actions/upload-pages-artifact@v3
         with:
-        path: hermes_cli/web_dist
+       path: hermes_cli/web_dist
 
   deploy:
     needs: build

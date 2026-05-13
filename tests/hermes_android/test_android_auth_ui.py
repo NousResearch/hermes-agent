@@ -52,6 +52,9 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'strings.openProviderKeyPage(option.label)' in auth_screen
     assert 'strings.copyProviderSetupUrl()' in auth_screen
     assert 'AuthProviderCopySetup-${option.id}' in auth_screen
+    assert 'AuthProviderCheckSetup-${option.id}' in auth_screen
+    assert 'viewModel.checkProviderSetupPages(option.id)' in auth_screen
+    assert 'strings.checkProviderSetupUrl()' in auth_screen
     assert 'viewModel.prepareApiKeySetup(option.id)' in auth_screen
     assert 'onOpenSettings()' in auth_screen
     assert 'FlowRow' in auth_screen
@@ -212,6 +215,14 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
+    assert "fun checkProviderSetupPages(methodId: String)" in auth_view_model
+    assert "probeProviderSetupUrl" in auth_view_model
+    assert "ProviderSetupProbeResult" in auth_view_model
+    assert "Checking ${option.label} setup pages from this device" in auth_view_model
+    assert "setup is reachable from Hermes" in auth_view_model
+    assert "No ${option.label} setup page responded from Hermes" in auth_view_model
+    assert "PROVIDER_SETUP_PROBE_TIMEOUT_MS" in auth_view_model
+    assert "MAX_PROVIDER_SETUP_STATUS_LENGTH" in auth_view_model
     assert "private val providerSetupOpenIndexes = mutableMapOf<String, Int>()" in auth_view_model
     assert "ProviderPresets.setupTarget(providerId, nextIndex)" in auth_view_model
     assert "providerSetupOpenIndexes[providerId] = target.nextIndex" in auth_view_model
@@ -297,6 +308,8 @@ def test_settings_opens_official_provider_key_pages():
     assert "Use saved Hermes credential" in strings
     assert "Open $providerLabel setup page" in strings
     assert "Copy setup URL" in strings
+    assert "checkProviderSetupUrl" in strings
+    assert "Check setup" in strings
     assert "ProviderPresets.androidSettingsDefaults.forEach" in settings_screen
     assert "androidSettingsDefaults = defaults" in provider_presets
     assert "PasswordVisualTransformation()" in settings_screen

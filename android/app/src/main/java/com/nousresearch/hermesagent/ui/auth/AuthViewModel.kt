@@ -34,6 +34,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.UnknownHostException
 import java.util.UUID
 
 data class AuthOptionUiState(
@@ -449,6 +452,37 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun checkProviderSetupPages(methodId: String) {
+        val option = AuthCatalog.find(methodId) ?: return
+        val urls = ProviderPresets.setupUrls(option.runtimeProvider)
+        if (urls.isEmpty()) {
+            _uiState.update { it.copy(globalStatus = "No setup URLs are configured for ${option.label}.") }
+            return
+        }
+        copyProviderSetupUrl(methodId, updateStatus = false)
+        _uiState.update { it.copy(globalStatus = "Checking ${option.label} setup pages from this device...") }
+        viewModelScope.launch {
+            val results = withContext(Dispatchers.IO) {
+                urls.map(::probeProviderSetupUrl)
+            }
+            val reachable = results.filter { it.reachable }
+            val firstReachable = reachable.firstOrNull()
+            val status = if (firstReachable != null) {
+                val fallbackHint = if (reachable.size < results.size) {
+                    " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
+                } else {
+                    ""
+                }
+                "${option.label} setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
+            } else {
+                val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
+                "No ${option.label} setup page responded from Hermes. Copied all setup URLs. $failureSummary"
+                    .take(MAX_PROVIDER_SETUP_STATUS_LENGTH)
+            }
+            _uiState.update { it.copy(globalStatus = status) }
+        }
+    }
+
     private fun nextProviderSetupTarget(providerId: String): ProviderSetupTarget? {
         val nextIndex = providerSetupOpenIndexes[providerId] ?: 0
         val target = ProviderPresets.setupTarget(providerId, nextIndex) ?: return null
@@ -494,6 +528,51 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 else -> " and $fallbackCount alternate official pages"
             }
             _uiState.update { it.copy(globalStatus = "Copied ${option.label} setup URL$suffix.") }
+        }
+    }
+
+    private data class ProviderSetupProbeResult(
+        val url: String,
+        val reachable: Boolean,
+        val statusLabel: String,
+    )
+
+    private fun probeProviderSetupUrl(url: String): ProviderSetupProbeResult {
+        val target = url.trim()
+        val parsed = runCatching { Uri.parse(target) }.getOrNull()
+        val scheme = parsed?.scheme?.lowercase().orEmpty()
+        if (target.isBlank() || scheme !in setOf("http", "https") || parsed?.host.isNullOrBlank()) {
+            return ProviderSetupProbeResult(target, reachable = false, statusLabel = "invalid URL")
+        }
+        return try {
+            val connection = (URL(target).openConnection() as HttpURLConnection).apply {
+                connectTimeout = PROVIDER_SETUP_PROBE_TIMEOUT_MS
+                readTimeout = PROVIDER_SETUP_PROBE_TIMEOUT_MS
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "HermesAgentAndroidProviderSetup/1.0")
+                setRequestProperty("Accept", "text/html,application/json,*/*")
+            }
+            connection.use {
+                val code = responseCode
+                ProviderSetupProbeResult(
+                    url = target,
+                    reachable = code in 200..499,
+                    statusLabel = "HTTP $code",
+                )
+            }
+        } catch (_: UnknownHostException) {
+            ProviderSetupProbeResult(target, reachable = false, statusLabel = "unknown host")
+        } catch (error: Exception) {
+            ProviderSetupProbeResult(target, reachable = false, statusLabel = error.javaClass.simpleName)
+        }
+    }
+
+    private inline fun <T> HttpURLConnection.use(block: HttpURLConnection.() -> T): T {
+        return try {
+            block()
+        } finally {
+            disconnect()
         }
     }
 
@@ -625,5 +704,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun isSignedOutStatus(status: String): Boolean {
         return status.trim() in signedOutStatuses
+    }
+
+    private companion object {
+        private const val PROVIDER_SETUP_PROBE_TIMEOUT_MS = 6_000
+        private const val MAX_PROVIDER_SETUP_STATUS_LENGTH = 900
     }
 }

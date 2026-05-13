@@ -306,6 +306,15 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Copy setup URL"
     }
 
+    fun checkProviderSetupUrl(): String = when (language) {
+        AppLanguage.CHINESE -> "检查设置页面"
+        AppLanguage.SPANISH -> "Comprobar configuración"
+        AppLanguage.GERMAN -> "Setup prüfen"
+        AppLanguage.PORTUGUESE -> "Verificar configuração"
+        AppLanguage.FRENCH -> "Vérifier la configuration"
+        AppLanguage.ENGLISH -> "Check setup"
+    }
+
     fun importSavedProviderCredential(): String = when (language) {
         AppLanguage.CHINESE -> "使用已保存的 Hermes 凭据"
         AppLanguage.SPANISH -> "Usar credencial Hermes guardada"

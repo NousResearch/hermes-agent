@@ -110,8 +110,9 @@ dp_cli crashes don't propagate into the FastAPI process. Stderr captured for str
 
 ### Concurrency cap: asyncio.Semaphore(4)
 Global `asyncio.Semaphore(4)` in `run_dp_parse`. No new dependencies. Caps concurrent
-dp_cli subprocesses at 4 — prevents CPU saturation and silent timeouts under bulk upload.
-Semaphore value is tunable via env var `DP_MAX_CONCURRENT_PARSE` (default: 4).
+dp_cli subprocesses at 4 — prevents overloading the DeepParser backend API (dp_cli is
+an HTTP client; local CPU is not the constraint). Semaphore value is tunable via env var
+`DP_MAX_CONCURRENT_PARSE` (default: 4).
 
 ## API Contract Minimums
 
@@ -231,7 +232,7 @@ No file upload required for first experience.
 ## Performance Ceiling (Section 7)
 
 - dp_cli subprocesses don't block the FastAPI event loop (separate OS processes)
-- Real concurrency limit: CPU saturation on the host (~3-5 concurrent dp_cli parse jobs on 1 vCPU)
+- Real concurrency limit: DeepParser backend API capacity (dp_cli is HTTP client; local CPU not the bottleneck; Semaphore(4) protects the remote API, not the host)
 - /ask: <5s per call, not a bottleneck
 - Single Fly.io/Railway instance is sufficient for validation phase (3-50 developers)
 - Scale-out: horizontal replicas if needed; Postgres migration only if SQLite WAL becomes the bottleneck

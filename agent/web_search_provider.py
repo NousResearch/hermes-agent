@@ -99,7 +99,32 @@ class WebSearchProvider(abc.ABC):
         return True
 
     def supports_extract(self) -> bool:
-        """Return True if this provider implements :meth:`extract`."""
+        """Return True if this provider implements :meth:`extract`.
+
+        Both sync and async :meth:`extract` implementations are valid — the
+        dispatcher detects coroutine functions via
+        :func:`inspect.iscoroutinefunction` and awaits as needed. Sync
+        implementations that perform blocking I/O (HTTP, SDK calls) should
+        ideally wrap in :func:`asyncio.to_thread` at the call site; small
+        providers can keep their sync shape and let the dispatcher handle
+        threading.
+        """
+        return False
+
+    def supports_crawl(self) -> bool:
+        """Return True if this provider implements :meth:`crawl`.
+
+        Crawl differs from extract in that the agent provides a *seed URL*
+        and the provider walks linked pages on its own — useful for
+        documentation sites where the agent doesn't know all relevant
+        URLs upfront. Tavily is the only built-in backend that natively
+        crawls today; Firecrawl provides a similar capability that we
+        don't currently surface as a tool.
+
+        Providers that don't crawl should leave this as False; the
+        dispatcher in :func:`tools.web_tools.web_crawl_tool` will fall
+        back to its auxiliary-model summarization path.
+        """
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -113,18 +138,57 @@ class WebSearchProvider(abc.ABC):
             f"{self.name} does not support search (override supports_search)"
         )
 
-    def extract(self, urls: List[str], **kwargs: Any) -> Dict[str, Any]:
+    def extract(self, urls: List[str], **kwargs: Any) -> Any:
         """Extract content from one or more URLs.
 
         Override when :meth:`supports_extract` returns True. The default
         raises NotImplementedError; callers should gate on
         :meth:`supports_extract` before calling.
 
-        ``kwargs`` may carry forward-compat fields (e.g. ``include_raw``,
+        Return shape: a list of result dicts matching what the legacy
+        :func:`tools.web_tools.web_extract_tool` post-processing pipeline
+        expects::
+
+            [
+                {
+                    "url": str,
+                    "title": str,
+                    "content": str,
+                    "raw_content": str,
+                    "metadata": dict,           # optional
+                    "error": str,               # optional, only on per-URL failure
+                },
+                ...
+            ]
+
+        Implementations MAY be ``async def`` — the dispatcher detects
+        coroutines via :func:`inspect.iscoroutinefunction` and awaits.
+
+        ``kwargs`` may carry forward-compat fields (``format``, ``include_raw``,
         ``max_chars``) — implementations should ignore unknown keys.
         """
         raise NotImplementedError(
             f"{self.name} does not support extract (override supports_extract)"
+        )
+
+    def crawl(self, url: str, **kwargs: Any) -> Any:
+        """Crawl a seed URL and return results.
+
+        Override when :meth:`supports_crawl` returns True. The default
+        raises NotImplementedError; callers should gate on
+        :meth:`supports_crawl` before calling.
+
+        Return shape: ``{"results": [{"url": str, "title": str,
+        "content": str, ...}, ...]}`` matching what
+        :func:`tools.web_tools.web_crawl_tool` post-processing expects.
+
+        Implementations MAY be ``async def``.
+
+        ``kwargs`` may carry forward-compat fields (e.g. ``max_depth``,
+        ``include_domains``) — implementations should ignore unknown keys.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support crawl (override supports_crawl)"
         )
 
     def get_setup_schema(self) -> Dict[str, Any]:

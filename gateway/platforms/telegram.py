@@ -439,6 +439,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
         }
+        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
+        # locally-hosted telegram-bot-api server (configured via extra.base_url)
+        # raises that to 2GB, so the presence of base_url is the opt-in.
+        self._max_doc_bytes: int = (
+            2 * 1024 * 1024 * 1024
+            if self.config.extra.get("base_url")
+            else 20 * 1024 * 1024
+        )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -1315,6 +1323,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Using custom Telegram base_url: %s",
                     self.name, custom_base_url,
                 )
+            # In local-mode telegram-bot-api, file_path is an absolute path on the
+            # server's filesystem rather than a relative HTTP path. PTB needs
+            # local_mode=True so download_*() reads from disk instead of issuing
+            # an HTTP GET that would 404. Requires that the same path is
+            # readable by the Hermes process (shared mount, same machine, etc.).
+            if self.config.extra.get("local_mode"):
+                builder = builder.local_mode(True)
+                logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
 
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
             # can trigger "Pool timeout: All connections in the connection pool are occupied"
@@ -4894,11 +4910,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check file size early so image documents cannot bypass the
                 # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                if not doc.file_size or doc.file_size > self._max_doc_bytes:
+                    limit_mb = self._max_doc_bytes // (1024 * 1024)
                     event.text = (
                         "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
+                        f"Maximum: {limit_mb} MB."
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)

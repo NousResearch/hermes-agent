@@ -10,6 +10,71 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 
+class _FakeDingTalkModel:
+    """Tiny stand-in for Alibaba SDK request/header model classes.
+
+    The DingTalk unit tests assert the adapter's behaviour, not the SDK's
+    constructor internals.  CI intentionally installs ``.[all,dev]`` without
+    the optional ``dingtalk`` extra, so tests that exercise card code must
+    provide deterministic model objects instead of depending on whichever
+    optional SDK packages happened to be present in the environment.
+    """
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeChatbotMessage:
+    """Minimal ChatbotMessage used by _IncomingHandler.process tests."""
+
+    @classmethod
+    def from_dict(cls, data):
+        msg = cls()
+        msg.message_id = data.get("msgId", "")
+        msg.conversation_id = data.get("conversationId", "")
+        msg.conversation_type = data.get("conversationType", "1")
+        msg.sender_id = data.get("senderId", "")
+        msg.sender_staff_id = data.get("senderStaffId", "")
+        msg.sender_nick = data.get("senderNick", "")
+        msg.text = data.get("text", {})
+        msg.session_webhook = data.get("sessionWebhook", "")
+        msg.session_webhook_expired_time = data.get("sessionWebhookExpiredTime", 0)
+        msg.is_in_at_list = data.get("isInAtList", False)
+        msg.at_users = data.get("atUsers", [])
+        return msg
+
+
+@pytest.fixture
+def dingtalk_card_sdk_models(monkeypatch):
+    """Patch optional DingTalk card SDK globals with deterministic fakes."""
+    from types import SimpleNamespace
+    import gateway.platforms.dingtalk as dingtalk
+
+    model_names = [
+        "CreateCardRequest",
+        "CreateCardRequestCardData",
+        "CreateCardRequestImGroupOpenSpaceModel",
+        "CreateCardRequestImRobotOpenSpaceModel",
+        "CreateCardHeaders",
+        "DeliverCardRequest",
+        "DeliverCardRequestImGroupOpenDeliverModel",
+        "DeliverCardRequestImRobotOpenDeliverModel",
+        "DeliverCardHeaders",
+        "StreamingUpdateRequest",
+        "StreamingUpdateHeaders",
+    ]
+    card_models = SimpleNamespace(
+        **{name: _FakeDingTalkModel for name in model_names}
+    )
+    tea_models = SimpleNamespace(RuntimeOptions=_FakeDingTalkModel)
+
+    monkeypatch.setattr(dingtalk, "CARD_SDK_AVAILABLE", True)
+    monkeypatch.setattr(dingtalk, "dingtalk_card_models", card_models)
+    monkeypatch.setattr(dingtalk, "tea_util_models", tea_models)
+    return card_models
+
+
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
@@ -631,6 +696,12 @@ class TestIncomingHandlerProcess:
     and dispatches message processing as a background task (fire-and-forget)
     so the SDK ACK is returned immediately."""
 
+    @pytest.fixture(autouse=True)
+    def chatbot_message_model(self, monkeypatch):
+        import gateway.platforms.dingtalk as dingtalk
+
+        monkeypatch.setattr(dingtalk, "ChatbotMessage", _FakeChatbotMessage)
+
     @pytest.mark.asyncio
     async def test_process_extracts_session_webhook(self):
         """session_webhook must be populated from callback data."""
@@ -794,9 +865,8 @@ class TestMessageContextIsolation:
 
 
 class TestCardLifecycle:
-
     @pytest.fixture
-    def adapter_with_card(self):
+    def adapter_with_card(self, dingtalk_card_sdk_models):
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -987,7 +1057,14 @@ class TestDingTalkAdapterAICards:
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+    async def test_send_uses_ai_card_if_configured(
+        self,
+        config,
+        mock_stream_client,
+        mock_http_client,
+        mock_message,
+        dingtalk_card_sdk_models,
+    ):
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)

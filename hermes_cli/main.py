@@ -7653,26 +7653,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                print("✗ Fast-forward update failed; refusing destructive recovery.")
+                stderr = pull_result.stderr.strip()
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                print("  Your checkout was not reset or otherwise rewritten.")
                 print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    f"  Resolve manually, then retry: git fetch origin && git pull --ff-only origin {branch}"
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
-                    )
-                    sys.exit(1)
+                sys.exit(1)
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:

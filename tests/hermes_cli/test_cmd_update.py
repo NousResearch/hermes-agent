@@ -106,6 +106,36 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_pull_failure_does_not_hard_reset(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            if "pull" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="fatal: Not possible to fast-forward"
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(mock_args)
+
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "Fast-forward update failed; refusing destructive recovery" in captured.out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("reset --hard" in c for c in commands)
+
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(

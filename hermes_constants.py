@@ -298,6 +298,11 @@ def get_subprocess_home() -> str | None:
     **never** modified — only subprocess environments should inject this value.
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
+
+    Callers that inject the profile home as ``HOME`` into a subprocess
+    environment should also set ``HERMES_REAL_HOME`` to the **real** user
+    home so that child scripts can distinguish the two (e.g. to locate
+    ``~/.hermes/`` vs the isolated profile home).
     """
     hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
     if not hermes_home:
@@ -306,6 +311,35 @@ def get_subprocess_home() -> str | None:
     if os.path.isdir(profile_home):
         return profile_home
     return None
+
+
+def get_real_home() -> str:
+    """Return the **real** user home directory, ignoring profile isolation.
+
+    This is the value that ``HOME`` held before any profile-level
+    override.  Subprocess helpers should inject this as
+    ``HERMES_REAL_HOME`` alongside any profile-specific ``HOME`` so that
+    child scripts can find ``~/.hermes/`` correctly.
+
+    Resolution order:
+      1. ``HERMES_REAL_HOME`` env var (if already set by a parent process).
+      2. ``HOME`` env var (the real one, set before profile activation).
+      3. ``os.path.expanduser("~")``.
+      4. ``/tmp`` as a safe last resort.
+    """
+    # If a parent process already set this, trust it.
+    explicit = os.getenv("HERMES_REAL_HOME", "").strip()
+    if explicit:
+        return explicit
+    # The current HOME — this is the *real* one because the Python
+    # process never overrides os.environ["HOME"] (only subprocess envs).
+    home = os.getenv("HOME", "").strip()
+    if home:
+        return home
+    expanded = os.path.expanduser("~")
+    if expanded and expanded != "~":
+        return expanded
+    return "/tmp"
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")

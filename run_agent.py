@@ -3721,8 +3721,19 @@ class AIAgent:
     @staticmethod
     def _chatgpt_web_answer_only_mode(original_request: str) -> str:
         lowered = str(original_request or "").strip().lower()
-        if "answer only" not in lowered:
+        terminal_output_only = any(
+            phrase in lowered
+            for phrase in (
+                "reply with the exact text it printed",
+                "reply with the exact terminal output",
+                "answer with only the terminal output",
+                "answer with the exact terminal output",
+            )
+        )
+        if "answer only" not in lowered and not terminal_output_only:
             return ""
+        if terminal_output_only:
+            return "result"
         if (("yes/no" in lowered) or ("yes or no" in lowered)) and "matching path" in lowered:
             return "yes_no_path"
         if (
@@ -4584,34 +4595,9 @@ class AIAgent:
                 return {"code": f"print({expr})"}
 
         if tool_name == "terminal":
-            if "working directory" in lowered or "pwd" in lowered or "current directory" in lowered:
-                return {"command": "pwd"}
-            command_match = re.search(r"\brun\s+(.+?)(?:\.\s*answer only.*|$)", user_text, re.IGNORECASE | re.DOTALL)
-            if not command_match:
-                command_match = re.search(r"`([^`]+)`", user_text)
-            if command_match:
-                command = command_match.group(1).strip().strip('"\'`').rstrip('.')
-                if command:
-                    return {"command": command}
-            if any(
-                keyword in lowered for keyword in (
-                    "platform details",
-                    "platform info",
-                    "platform information",
-                    "system details",
-                    "system info",
-                    "system information",
-                    "what system",
-                    "system you are running on",
-                    "what os",
-                    "operating system",
-                    "kernel",
-                    "uname",
-                )
-            ):
-                return {"command": "uname -a"}
-            if "date" in lowered or re.search(r"\b(?:what time is it|current time|time is it)\b", lowered):
-                return {"command": "date"}
+            command = self._chatgpt_web_infer_terminal_command(user_text)
+            if command:
+                return {"command": command}
 
         return None
 
@@ -6504,8 +6490,19 @@ class AIAgent:
     @staticmethod
     def _chatgpt_web_answer_only_mode(original_request: str) -> str:
         lowered = str(original_request or "").strip().lower()
-        if "answer only" not in lowered:
+        terminal_output_only = any(
+            phrase in lowered
+            for phrase in (
+                "reply with the exact text it printed",
+                "reply with the exact terminal output",
+                "answer with only the terminal output",
+                "answer with the exact terminal output",
+            )
+        )
+        if "answer only" not in lowered and not terminal_output_only:
             return ""
+        if terminal_output_only:
+            return "result"
         if (("yes/no" in lowered) or ("yes or no" in lowered)) and "matching path" in lowered:
             return "yes_no_path"
         if (
@@ -6903,6 +6900,11 @@ class AIAgent:
             return None
 
         answer_only_mode = cls._chatgpt_web_answer_only_mode(request_text)
+        if answer_only_mode == "result":
+            for output_text in reversed(tool_outputs):
+                lines = cls._chatgpt_web_terminal_output_lines(output_text)
+                if lines:
+                    return "\n".join(lines).strip()
         if answer_only_mode == "yes_no" and cls._chatgpt_web_extract_path_exists_target(request_text):
             for output_text in reversed(tool_outputs):
                 yes_no = cls._chatgpt_web_extract_yes_no(output_text)
@@ -7322,6 +7324,16 @@ class AIAgent:
             return synthesized
         answer_only_mode = self._chatgpt_web_answer_only_mode(original_request)
         if answer_only_mode in {"yes_no", "verified", "path"}:
+            return synthesized
+        if answer_only_mode == "result" and any(
+            phrase in request_lower
+            for phrase in (
+                "reply with the exact text it printed",
+                "reply with the exact terminal output",
+                "answer with only the terminal output",
+                "answer with the exact terminal output",
+            )
+        ):
             return synthesized
         if answer_only_mode == "result" and (
             self._chatgpt_web_request_mentions_whoami(original_request)
@@ -7937,9 +7949,17 @@ class AIAgent:
         if whoami_requested and pwd_requested:
             return "whoami && pwd"
 
-        explicit_run = re.search(r"\brun\s+(.+?)(?:\.\s*answer only.*|$)", text, re.IGNORECASE | re.DOTALL)
+        explicit_run = re.search(
+            r"\brun\s+(?:(?:this|the|exact)\s+)?(?:(?:shell|terminal)\s+)?command\s*:\s*(.+?)(?:\.\s*(?:after|then|answer|keep going)\b|$)",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not explicit_run:
+            explicit_run = re.search(r"\brun\s+(.+?)(?:\.\s*answer only.*|$)", text, re.IGNORECASE | re.DOTALL)
         if explicit_run:
-            command = explicit_run.group(1).strip().strip('"\'`').rstrip(".")
+            command = explicit_run.group(1).strip().rstrip(".").strip()
+            if len(command) >= 2 and command[0] == command[-1] and command[0] in "\"'`":
+                command = command[1:-1].strip()
             command_lower = command.lower()
             if re.search(r"\b(?:python|script)\b.*\bthat\b", command_lower):
                 command = ""
@@ -7948,7 +7968,7 @@ class AIAgent:
 
         backtick_match = re.search(r"`([^`]+)`", text)
         if backtick_match:
-            command = backtick_match.group(1).strip().strip('"\'`').rstrip(".")
+            command = backtick_match.group(1).strip().rstrip(".").strip()
             if command:
                 return command
 

@@ -431,11 +431,15 @@ class ProcessRegistry:
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
         """Terminate a host-visible PID without requiring the original process handle."""
-        if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+        try:
+            import psutil
+        except ImportError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError, PermissionError):
+                pass
             return
 
-        import psutil
         try:
             parent = psutil.Process(pid)
             for child in parent.children(recursive=True):
@@ -546,8 +550,15 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        # Git Bash on Windows does not reliably exit from `bash -lic <cmd>`
+        # while stdin is an open pipe; finite background commands can finish
+        # their work but remain stuck as "running" until stdin is closed. The
+        # foreground LocalEnvironment uses a non-login `bash -c` for normal
+        # execution, so mirror that on Windows for tracked non-PTY background
+        # processes. POSIX keeps the historical login shell behavior.
+        shell_flag = "-c" if _IS_WINDOWS else "-lic"
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, shell_flag, f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,

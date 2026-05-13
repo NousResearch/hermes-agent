@@ -296,11 +296,7 @@ class TestStdinHelpers:
         assert result["status"] == "ok"
 
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
-        session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
-            cwd=str(tmp_path),
-            use_pty=False,
-        )
+        session = registry.spawn_local("cat", cwd=str(tmp_path), use_pty=False)
 
         try:
             time.sleep(0.5)
@@ -426,6 +422,53 @@ class TestPruning:
 # =========================================================================
 
 class TestSpawnEnvSanitization:
+    def test_spawn_local_uses_non_login_bash_for_windows_background_pipe(self, registry):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._IS_WINDOWS", True), \
+            patch("tools.process_registry._find_shell", return_value=r"C:\Program Files\Git\bin\bash.exe"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd=r"C:\Users\adyba")
+
+        assert captured["cmd"][1] == "-c"
+
+    def test_spawn_local_keeps_login_bash_for_posix_background_pipe(self, registry):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._IS_WINDOWS", False), \
+            patch("tools.process_registry.os.setsid", lambda: None, create=True), \
+            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["cmd"][1] == "-lic"
+
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
 

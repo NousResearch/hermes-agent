@@ -1,18 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users, X } from "lucide-react";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { Toast } from "@/components/Toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -23,11 +26,18 @@ export default function ProfilesPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const { setEnd } = usePageHeader();
 
-  // Create form
+  // Create modal
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [cloneFromDefault, setCloneFromDefault] = useState(true);
   const [creating, setCreating] = useState(false);
+  const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
+  const createModalRef = useModalBehavior({
+    open: createModalOpen,
+    onClose: closeCreateModal,
+  });
 
   // Inline rename state
   const [renamingFrom, setRenamingFrom] = useState<string | null>(null);
@@ -68,6 +78,7 @@ export default function ProfilesPage() {
       await api.createProfile({ name, clone_from_default: cloneFromDefault });
       showToast(`${t.profiles.created}: ${name}`, "success");
       setNewName("");
+      setCreateModalOpen(false);
       load();
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
@@ -170,6 +181,22 @@ export default function ProfilesPage() {
 
   const pendingName = profileDelete.pendingId;
 
+  // Put "Create" button in page header
+  useLayoutEffect(() => {
+    setEnd(
+      <Button
+        size="sm"
+        onClick={() => setCreateModalOpen(true)}
+      >
+        <Plus className="h-3 w-3" />
+        {t.common.create}
+      </Button>,
+    );
+    return () => {
+      setEnd(null);
+    };
+  }, [setEnd, t.common.create, loading]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -198,51 +225,75 @@ export default function ProfilesPage() {
         loading={profileDelete.isDeleting}
       />
 
-      {/* Create new profile */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Plus className="h-4 w-4" />
-            {t.profiles.newProfile}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="profile-name">{t.profiles.name}</Label>
-              <Input
-                id="profile-name"
-                placeholder={t.profiles.namePlaceholder}
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                aria-invalid={
-                  newName.trim() !== "" &&
-                  !PROFILE_NAME_RE.test(newName.trim())
-                }
-              />
-              <p className="text-xs text-muted-foreground">
-                {t.profiles.nameRule}
-              </p>
-            </div>
+      {/* Create profile modal */}
+      {createModalOpen && (
+        <div
+          ref={createModalRef}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-profile-title"
+        >
+          <div className="relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col">
+            <Button
+              ghost
+              size="icon"
+              onClick={() => setCreateModalOpen(false)}
+              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              <X />
+            </Button>
 
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
+            <header className="p-5 pb-3 border-b border-border">
+              <h2
+                id="create-profile-title"
+                className="font-display text-base tracking-wider uppercase"
+              >
+                {t.profiles.newProfile}
+              </h2>
+            </header>
+
+            <div className="p-5 grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="profile-name">{t.profiles.name}</Label>
+                <Input
+                  id="profile-name"
+                  autoFocus
+                  placeholder={t.profiles.namePlaceholder}
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreate();
+                  }}
+                  aria-invalid={
+                    newName.trim() !== "" &&
+                    !PROFILE_NAME_RE.test(newName.trim())
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t.profiles.nameRule}
+                </p>
+              </div>
+
+              <Checkbox
+                id="clone-from-default"
                 checked={cloneFromDefault}
                 onChange={(e) => setCloneFromDefault(e.target.checked)}
+                label={t.profiles.cloneFromDefault}
               />
-              {t.profiles.cloneFromDefault}
-            </label>
 
-            <div>
-              <Button onClick={handleCreate} disabled={creating}>
-                <Plus className="h-3 w-3" />
-                {creating ? t.common.creating : t.common.create}
-              </Button>
+              <div className="flex justify-end">
+                <Button size="sm" onClick={handleCreate} disabled={creating}>
+                  <Plus className="h-3 w-3" />
+                  {creating ? t.common.creating : t.common.create}
+                </Button>
+              </div>
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      )}
 
       {/* List */}
       <div className="flex flex-col gap-3">

@@ -233,7 +233,7 @@ Silent when both filesystems are under 90%; fires exactly one line per over-thre
 |----------|-----------|-------------|
 | `cronjob --no-agent` (this page) | Your script on Hermes' schedule | Recurring watchdogs / alerts / metrics that don't need reasoning |
 | `cronjob` (default, LLM) | Agent with optional pre-check script | When the message content requires reasoning over data |
-| OS cron + `curl` to a [webhook subscription](/docs/user-guide/features/webhooks) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
+| OS cron + `curl` to a [webhook subscription](/docs/user-guide/messaging/webhooks) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
 
 For critical system-health watchdogs that must fire *even when the gateway is down*, use OS-level cron with a plain `curl` to a Hermes webhook subscription (or any external alerting endpoint) — those run as independent OS processes and don't depend on Hermes being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
 
@@ -241,5 +241,5 @@ For critical system-health watchdogs that must fire *even when the gateway is do
 
 - [Automate Anything with Cron](/docs/guides/automate-with-cron) — LLM-driven cron patterns.
 - [Scheduled Tasks (Cron) reference](/docs/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
-- [Webhook Subscriptions](/docs/user-guide/features/webhooks) — fire-and-forget HTTP entry points for external schedulers.
+- [Webhook Subscriptions](/docs/user-guide/messaging/webhooks) — fire-and-forget HTTP entry points for external schedulers.
 - [Gateway Internals](/docs/developer-guide/gateway-internals) — delivery-router internals.

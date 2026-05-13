@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1306,3 +1307,28 @@ class TestPluginDebugLogging:
             plugins_mod._PLUGINS_DEBUG = original_debug
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+class TestGetPluginManagerThreadSafety:
+    """get_plugin_manager() must return the same singleton from concurrent threads."""
+
+    def test_concurrent_calls_return_same_instance(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+
+        results: list = []
+        barrier = threading.Barrier(8)
+
+        def _call():
+            barrier.wait()
+            results.append(get_plugin_manager())
+
+        threads = [threading.Thread(target=_call) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 8
+        assert len(set(id(r) for r in results)) == 1, "all threads must get the same instance"

@@ -27,9 +27,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
  *    requiring an open chat PTY.
  */
 
+interface ModelOptionEntry {
+  id: string;
+  description?: string;
+}
+
 interface ModelOptionProvider {
   name: string;
   slug: string;
+  model_entries?: ModelOptionEntry[];
   models?: string[];
   total_models?: number;
   is_current?: boolean;
@@ -145,6 +151,13 @@ export function ModelPickerDialog(props: Props) {
     () => selectedProvider?.models ?? [],
     [selectedProvider],
   );
+  const modelEntries = useMemo(
+    () =>
+      selectedProvider?.model_entries?.length
+        ? selectedProvider.model_entries
+        : models.map((id): ModelOptionEntry => ({ id })),
+    [models, selectedProvider],
+  );
 
   const needle = query.trim().toLowerCase();
 
@@ -156,15 +169,26 @@ export function ModelPickerDialog(props: Props) {
             (p) =>
               p.name.toLowerCase().includes(needle) ||
               p.slug.toLowerCase().includes(needle) ||
-              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
+              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)) ||
+              (p.model_entries ?? []).some(
+                (entry) =>
+                  entry.id.toLowerCase().includes(needle) ||
+                  entry.description?.toLowerCase().includes(needle),
+              ),
           ),
     [providers, needle],
   );
 
   const filteredModels = useMemo(
     () =>
-      !needle ? models : models.filter((m) => m.toLowerCase().includes(needle)),
-    [models, needle],
+      !needle
+        ? modelEntries
+        : modelEntries.filter(
+            (entry) =>
+              entry.id.toLowerCase().includes(needle) ||
+              entry.description?.toLowerCase().includes(needle),
+          ),
+    [modelEntries, needle],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
@@ -256,7 +280,7 @@ export function ModelPickerDialog(props: Props) {
           <ModelColumn
             provider={selectedProvider}
             models={filteredModels}
-            allModels={models}
+            allModels={modelEntries}
             selectedModel={selectedModel}
             currentModel={currentModel}
             currentProviderSlug={currentProviderSlug}
@@ -383,8 +407,8 @@ function ModelColumn({
   onConfirm,
 }: {
   provider: ModelOptionProvider | null;
-  models: string[];
-  allModels: string[];
+  models: ModelOptionEntry[];
+  allModels: ModelOptionEntry[];
   selectedModel: string;
   currentModel: string;
   currentProviderSlug: string;
@@ -416,23 +440,26 @@ function ModelColumn({
             : "no models listed for this provider"}
         </div>
       ) : (
-        models.map((m) => {
-          const active = m === selectedModel;
+        models.map((entry) => {
+          const active = entry.id === selectedModel;
           const isCurrent =
-            m === currentModel && provider.slug === currentProviderSlug;
+            entry.id === currentModel && provider.slug === currentProviderSlug;
+          const label = entry.description
+            ? `${entry.id} · ${entry.description}`
+            : entry.id;
 
           return (
             <ListItem
-              key={m}
+              key={entry.id}
               active={active}
-              onClick={() => onSelect(m)}
-              onDoubleClick={() => onConfirm(m)}
+              onClick={() => onSelect(entry.id)}
+              onDoubleClick={() => onConfirm(entry.id)}
               className="px-3 py-1.5 text-xs font-mono"
             >
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
-              <span className="flex-1 truncate">{m}</span>
+              <span className="flex-1 truncate">{label}</span>
               {isCurrent && <CurrentTag />}
             </ListItem>
           );

@@ -3455,6 +3455,10 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
             "slug": "nous",
             "name": "Nous",
             "models": ["moonshotai/kimi-k2.5", "anthropic/claude-opus-4.7"],
+            "model_entries": [
+                {"id": "moonshotai/kimi-k2.5", "description": "recommended"},
+                {"id": "anthropic/claude-opus-4.7", "description": ""},
+            ],
             "total_models": 30,
             "source": "built-in",
             "is_current": False,
@@ -3485,6 +3489,10 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     assert nous["models"] == [
         "moonshotai/kimi-k2.5",
         "anthropic/claude-opus-4.7",
+    ]
+    assert nous["model_entries"] == [
+        {"id": "moonshotai/kimi-k2.5", "description": "recommended"},
+        {"id": "anthropic/claude-opus-4.7", "description": ""},
     ]
     assert nous["total_models"] == 30
     # Handler must not consult the live catalog — curated is the truth.

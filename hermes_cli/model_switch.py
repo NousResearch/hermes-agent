@@ -1245,6 +1245,26 @@ def list_authenticated_providers(
             model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
+        model_entries = [{"id": mid, "description": ""} for mid in top]
+
+        if hermes_id == "openrouter":
+            try:
+                from hermes_cli.models import fetch_openrouter_models
+
+                openrouter_options = fetch_openrouter_models()
+                if openrouter_options:
+                    total = len(openrouter_options)
+                    top = [mid for mid, _ in openrouter_options[:max_models]]
+                    model_entries = [
+                        {"id": mid, "description": desc}
+                        for mid, desc in openrouter_options[:max_models]
+                    ]
+            except Exception:
+                openrouter_desc = dict(OPENROUTER_MODELS)
+                model_entries = [
+                    {"id": mid, "description": openrouter_desc.get(mid, "")}
+                    for mid in top
+                ]
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1256,6 +1276,7 @@ def list_authenticated_providers(
             "is_current": slug == current_provider or mdev_id == current_provider,
             "is_user_defined": False,
             "models": top,
+            "model_entries": model_entries,
             "total_models": total,
             "source": "built-in",
         })
@@ -1752,10 +1773,19 @@ def list_picker_providers(
             try:
                 live = fetch_openrouter_models()
                 live_ids = [mid for mid, _ in live]
+                live_entries = [
+                    {"id": mid, "description": desc}
+                    for mid, desc in live[:max_models]
+                ]
             except Exception:
                 live_ids = list(p.get("models", []))
+                live_entries = list(p.get("model_entries", []))
             p = dict(p)
             p["models"] = live_ids[:max_models]
+            p["model_entries"] = live_entries or [
+                {"id": mid, "description": ""}
+                for mid in live_ids[:max_models]
+            ]
             p["total_models"] = len(live_ids)
 
         has_models = bool(p.get("models"))

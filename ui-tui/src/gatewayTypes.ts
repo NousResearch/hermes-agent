@@ -312,11 +312,17 @@ export interface ToolsConfigureResponse {
 
 // ── Model picker ─────────────────────────────────────────────────────
 
+export interface ModelOptionEntry {
+  description?: string
+  id: string
+}
+
 export interface ModelOptionProvider {
   auth_type?: string
   authenticated?: boolean
   is_current?: boolean
   key_env?: string
+  model_entries?: ModelOptionEntry[]
   models?: string[]
   name: string
   slug: string

@@ -54,6 +54,10 @@ def test_openrouter_models_replaced_with_live_catalog(monkeypatch):
     openrouter = result[0]
     assert openrouter["slug"] == "openrouter"
     assert openrouter["models"] == ["openai/gpt-5.4", "moonshotai/kimi-k2.6"]
+    assert openrouter["model_entries"] == [
+        {"id": "openai/gpt-5.4", "description": "recommended"},
+        {"id": "moonshotai/kimi-k2.6", "description": ""},
+    ]
     assert openrouter["total_models"] == 2
 
 

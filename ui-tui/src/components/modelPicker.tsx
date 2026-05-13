@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import type { ModelOptionEntry, ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -70,6 +70,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
   const provider = providers[providerIdx]
   const models = provider?.models ?? []
+  const modelEntries = provider?.model_entries?.length
+    ? provider.model_entries
+    : models.map((id): ModelOptionEntry => ({ id }))
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
   const back = () => {
@@ -201,7 +204,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       return
     }
 
-    const count = stage === 'provider' ? providers.length : models.length
+    const count = stage === 'provider' ? providers.length : modelEntries.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
 
@@ -241,10 +244,10 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         return
       }
 
-      const model = models[modelIdx]
+      const model = modelEntries[modelIdx]
 
       if (provider && model) {
-        onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
+        onSelect(`${model.id} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
       } else {
         setStage('provider')
       }
@@ -433,7 +436,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   }
 
   // ── Model selection stage ────────────────────────────────────────────
-  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
+  const { items, offset } = windowItems(modelEntries, modelIdx, VISIBLE)
 
   return (
     <Box flexDirection="column" width={width}>
@@ -456,7 +459,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         const idx = offset + i
 
         if (!row) {
-          return !models.length && i === 0 ? (
+          return !modelEntries.length && i === 0 ? (
             <Text color={t.color.muted} key="empty" wrap="truncate-end">
               no models listed for this provider
             </Text>
@@ -467,31 +470,32 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         }
 
-        const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+        const label = row.description ? `${row.id} · ${row.description}` : row.id
+        const prefix = modelIdx === idx ? '▸ ' : row.id === currentModel ? '* ' : '  '
 
         return (
           <Text
             bold={modelIdx === idx}
             color={modelIdx === idx ? t.color.accent : t.color.muted}
             inverse={modelIdx === idx}
-            key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
+            key={`${provider?.slug ?? 'prov'}:${idx}:${row.id}`}
             wrap="truncate-end"
           >
             {prefix}
-            {idx + 1}. {row}
+            {idx + 1}. {label}
           </Text>
         )
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+        {offset + VISIBLE < modelEntries.length ? ` ↓ ${modelEntries.length - offset - VISIBLE} more` : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
         persist: {persistGlobal ? 'global' : 'session'} · g toggle
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
+        {modelEntries.length ? '↑/↓ select · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
       </OverlayHint>
     </Box>
   )

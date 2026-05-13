@@ -84,7 +84,9 @@ def cua_driver_binary_available() -> bool:
 
 def cua_driver_install_hint() -> str:
     return (
-        "cua-driver is not installed. Install with:\n"
+        "cua-driver is not installed. Install with one of:\n"
+        "  hermes computer-use install\n"
+        "Or run the upstream installer directly:\n"
         '  /bin/bash -c "$(curl -fsSL '
         'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"\n'
         "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
@@ -671,5 +673,5 @@ def _parse_element(d: Dict[str, Any]) -> UIElement:
         pid=int(d.get("pid", 0) or 0),
         window_id=int(d.get("windowId", 0) or 0),
         attributes={k: v for k, v in d.items()
-                    if k not in ("index", "role", "label", "bounds", "app", "pid", "windowId")},
+                    if k not in {"index", "role", "label", "bounds", "app", "pid", "windowId"}},
     )

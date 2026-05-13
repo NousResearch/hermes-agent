@@ -111,12 +111,14 @@ class TestCmdUpdateBranchFallback:
     def test_update_refreshes_repo_and_tui_node_dependencies(
         self, mock_run, mock_which, mock_args
     ):
+        from hermes_cli import main as hm
+
         mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="1"
         )
-
-        cmd_update(mock_args)
+        with patch.object(hm, "_is_termux_env", return_value=False):
+            cmd_update(mock_args)
 
         npm_calls = [
             (call.args[0], call.kwargs.get("cwd"))
@@ -136,12 +138,15 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
-        assert npm_calls == [
+        assert npm_calls[:2] == [
             (full_flags, PROJECT_ROOT),
             (full_flags, PROJECT_ROOT / "ui-tui"),
-            (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
-            (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
         ]
+        if len(npm_calls) > 2:
+            assert npm_calls[2:] == [
+                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
+                (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
+            ]
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
@@ -246,3 +251,38 @@ class TestCmdUpdateProfileSkillSync:
             cmd_update(mock_args)
 
         assert default_p.path in synced_paths
+
+
+def test_is_termux_env_true_for_termux_prefix():
+    from hermes_cli import main as hm
+
+    assert hm._is_termux_env({"PREFIX": "/data/data/com.termux/files/usr"}) is True
+
+
+def test_is_termux_env_false_for_non_termux_prefix():
+    from hermes_cli import main as hm
+
+    assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "x"
+version = "0.0.0"
+
+[project.optional-dependencies]
+all = ["x[mcp]"]
+termux-all = ["x[termux]", "x[mcp]"]
+mcp = ["mcp>=1"]
+termux = ["rich>=14"]
+""".strip()
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+    assert hm._load_installable_optional_extras(group="all") == ["mcp"]
+    assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]

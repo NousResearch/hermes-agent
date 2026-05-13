@@ -19,6 +19,7 @@ Query Base (Ethereum L2) blockchain data with USD pricing — wallet balances, t
 | Version | `0.1.0` |
 | Author | youssefea |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Base`, `Blockchain`, `Crypto`, `Web3`, `RPC`, `DeFi`, `EVM`, `L2`, `Ethereum` |
 
 ## Reference: full SKILL.md

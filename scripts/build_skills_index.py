@@ -147,7 +147,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     4. Match skills to their resolved paths
     """
     # Filter to skills.sh entries that need resolution
-    skills_sh = [s for s in skills if s["source"] in ("skills.sh", "skills-sh")]
+    skills_sh = [s for s in skills if s["source"] in {"skills.sh", "skills-sh"}]
     if not skills_sh:
         return skills
 

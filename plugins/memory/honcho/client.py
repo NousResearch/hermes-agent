@@ -687,12 +687,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
+    # Lazy-install the honcho SDK on demand. ensure() honors
+    # security.allow_lazy_installs (default true). On failure we surface
+    # the original ImportError-shape message so existing callers still get
+    # the "go run hermes honcho setup" hint they used to.
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+        _lazy_ensure("memory.honcho", prompt=False)
+    except ImportError:
+        # lazy_deps module missing — fall through to the raw import below.
+        pass
+    except Exception:
+        # FeatureUnavailable or unexpected error. Don't crash here; let the
+        # actual import attempt produce the canonical error message.
+        pass
+
     try:
         from honcho import Honcho
     except ImportError:
         raise ImportError(
             "honcho-ai is required for Honcho integration. "
-            "Install it with: pip install honcho-ai"
+            "Install it with: pip install honcho-ai  "
+            "(or run `hermes honcho setup` to configure)."
         )
 
     # Allow config.yaml honcho.base_url to override the SDK's environment

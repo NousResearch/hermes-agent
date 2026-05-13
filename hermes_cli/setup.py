@@ -89,7 +89,6 @@ _DEFAULT_PROVIDER_MODELS = {
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
         "gemini-2.5-pro",
-        "grok-code-fast-1",
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
@@ -293,9 +292,9 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 
         if not value:
             return default
-        if value in ("y", "yes"):
+        if value in {"y", "yes"}:
             return True
-        if value in ("n", "no"):
+        if value in {"n", "no"}:
             return False
         print_error("Please enter 'y' or 'n'")
 
@@ -642,7 +641,7 @@ def _prompt_container_resources(config: dict):
     persist_str = prompt(
         "  Persist filesystem across sessions? (yes/no)", persist_label
     )
-    terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
+    terminal["container_persistent"] = persist_str.lower() in {"yes", "true", "y", "1"}
 
     # CPU
     current_cpu = terminal.get("container_cpu", 1)
@@ -693,7 +692,7 @@ def _prompt_vercel_sandbox_settings(config: dict):
     persist_label = "yes" if current_persist else "no"
     terminal["container_persistent"] = prompt(
         "  Persist filesystem with snapshots? (yes/no)", persist_label
-    ).lower() in ("yes", "true", "y", "1")
+    ).lower() in {"yes", "true", "y", "1"}
 
     current_cpu = terminal.get("container_cpu", 1)
     cpu_str = prompt("  CPU cores", str(current_cpu))
@@ -709,7 +708,7 @@ def _prompt_vercel_sandbox_settings(config: dict):
     except ValueError:
         pass
 
-    if terminal.get("container_disk", 51200) not in (0, 51200):
+    if terminal.get("container_disk", 51200) not in {0, 51200}:
         print_warning("Vercel Sandbox does not support custom disk sizing; resetting container_disk to 51200.")
     terminal["container_disk"] = 51200
 
@@ -1356,14 +1355,13 @@ def setup_terminal_backend(config: dict):
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
             print_info("Sudo password: configured")
-        else:
-            if prompt_yes_no(
-                "Enable sudo support? (stores password for apt install, etc.)", False
-            ):
-                sudo_pass = prompt("  Sudo password", password=True)
-                if sudo_pass:
-                    save_env_value("SUDO_PASSWORD", sudo_pass)
-                    print_success("Sudo password saved")
+        elif prompt_yes_no(
+            "Enable sudo support? (stores password for apt install, etc.)", False
+        ):
+            sudo_pass = prompt("  Sudo password", password=True)
+            if sudo_pass:
+                save_env_value("SUDO_PASSWORD", sudo_pass)
+                print_success("Sudo password saved")
 
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")
@@ -1731,7 +1729,7 @@ def setup_agent_settings(config: dict):
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in ("off", "new", "all", "verbose"):
+    if mode.lower() in {"off", "new", "all", "verbose"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
@@ -2446,6 +2444,7 @@ def setup_gateway(config: dict):
 
         _is_linux = _platform.system() == "Linux"
         _is_macos = _platform.system() == "Darwin"
+        _is_windows = _platform.system() == "Windows"
 
         from hermes_cli.gateway import (
             _is_service_installed,
@@ -2470,7 +2469,7 @@ def setup_gateway(config: dict):
         service_installed = _is_service_installed()
         service_running = _is_service_running()
         supports_systemd = supports_systemd_services()
-        supports_service_manager = supports_systemd or _is_macos
+        supports_service_manager = supports_systemd or _is_macos or _is_windows
 
         print()
         if supports_systemd and has_conflicting_systemd_units():
@@ -2490,6 +2489,9 @@ def setup_gateway(config: dict):
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.restart()
                 except UserSystemdUnavailableError as e:
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -2512,6 +2514,9 @@ def setup_gateway(config: dict):
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.start()
                 except UserSystemdUnavailableError as e:
                     print_error("  Start failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -2522,7 +2527,12 @@ def setup_gateway(config: dict):
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
         elif supports_service_manager:
-            svc_name = "systemd" if supports_systemd else "launchd"
+            if supports_systemd:
+                svc_name = "systemd"
+            elif _is_macos:
+                svc_name = "launchd"
+            else:
+                svc_name = "Scheduled Task"
             if prompt_yes_no(
                 f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
                 True,
@@ -2530,13 +2540,23 @@ def setup_gateway(config: dict):
                 try:
                     installed_scope = None
                     did_install = False
+                    started_inline = False
                     if supports_systemd:
                         installed_scope, did_install = install_linux_gateway_from_setup(force=False)
-                    else:
+                    elif _is_macos:
                         launchd_install(force=False)
                         did_install = True
+                    else:
+                        # gateway_windows.install() registers the Scheduled
+                        # Task AND starts it immediately (via schtasks /Run
+                        # or a direct spawn fallback), so no separate start
+                        # prompt is needed here.
+                        from hermes_cli import gateway_windows
+                        gateway_windows.install(force=False)
+                        did_install = True
+                        started_inline = True
                     print()
-                    if did_install and prompt_yes_no("  Start the service now?", True):
+                    if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
                         try:
                             if supports_systemd:
                                 systemd_start(system=installed_scope == "system")

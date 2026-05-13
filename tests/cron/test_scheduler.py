@@ -1788,6 +1788,11 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
 
+    def test_hint_present_when_legacy_prompt_is_null(self):
+        job = {"id": "abc123deadbe", "name": None, "prompt": None}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
     def test_delivery_guidance_present(self):
         """Cron hint tells agents their final response is auto-delivered."""
         job = {"prompt": "Generate a report"}

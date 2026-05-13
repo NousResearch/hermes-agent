@@ -166,13 +166,14 @@ class TestPromptToolkitTerminalCompatibility:
     def test_lf_enter_binds_to_submit_handler_posix(self):
         """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
 
-        On POSIX we keep the c-j → submit binding so Enter works on thin
-        PTYs (docker exec, certain SSH configurations). On Windows c-j is
-        reclaimed as the newline keystroke because Windows Terminal
-        delivers Ctrl+Enter as LF, and we want an Enter-involving newline
-        without requiring terminal-settings changes.
+        On a bare local POSIX TTY (no SSH/WSL/WT) we keep c-j → submit so
+        Enter works on thin PTYs (docker exec, certain ssh configurations).
+        On Windows, WSL, SSH sessions, and Windows Terminal we leave c-j
+        unbound here so it can be used as the Ctrl+Enter newline keystroke
+        without conflicting with submit. See issue #22379.
         """
         import sys as _sys
+        import os as _os
         from unittest.mock import patch as _patch
         from prompt_toolkit.key_binding import KeyBindings
 
@@ -181,13 +182,26 @@ class TestPromptToolkitTerminalCompatibility:
         def submit_handler(event):
             return None
 
-        # POSIX: both enter and c-j submit
-        with _patch.object(_sys, "platform", "linux"):
+        # Bare local POSIX (no SSH/WSL markers): both enter and c-j submit.
+        with _patch.object(_sys, "platform", "linux"), \
+             _patch.dict(_os.environ, {}, clear=True), \
+             _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
             bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
             assert bindings[("c-m",)] is submit_handler
             assert bindings[("c-j",)] is submit_handler
+
+        # POSIX over SSH: c-j stays free so Ctrl+Enter (sent as LF by
+        # Windows Terminal / Kitty / mintty over SSH) inserts a newline.
+        with _patch.object(_sys, "platform", "linux"), \
+             _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
+             _patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
 
         # Windows: only enter submits; c-j is free for the newline binding
         # added separately in the prompt setup.

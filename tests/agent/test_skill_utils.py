@@ -1,5 +1,6 @@
 """Tests for agent/skill_utils.py."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from agent.skill_utils import (
@@ -197,3 +198,64 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+# ── iter_skill_index_files: backup-directory exclusion (#25113) ───────────
+
+
+def _touch(path: Path, content: str = "x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def test_iter_skill_index_files_skips_bak_sibling_dir(tmp_path):
+    # Live skill alongside a `.bak-<timestamp>` snapshot left over from
+    # `hermes profile`/`hermes update`. The live file must be the only
+    # one yielded — the backup must not shadow it.
+    live = tmp_path / "core" / "my-skill" / "SKILL.md"
+    bak = tmp_path / "core" / ".bak-20260510_233500" / "my-skill" / "SKILL.md"
+    _touch(live, "live")
+    _touch(bak, "stale")
+
+    result = [p.read_text() for p in iter_skill_index_files(tmp_path, "SKILL.md")]
+    assert result == ["live"]
+
+
+def test_iter_skill_index_files_skips_backup_suffix_in_skill_name(tmp_path):
+    # `<skill_name>.bak-<suffix>` pattern that the convergence skill
+    # uses for in-place backups (#25113 lists both forms).
+    live = tmp_path / "profiles" / "hermes-profile-convergence" / "SKILL.md"
+    bak = (
+        tmp_path
+        / "profiles"
+        / "hermes-profile-convergence.bak-skill-refinement-20260510_234206"
+        / "SKILL.md"
+    )
+    _touch(live, "v3")
+    _touch(bak, "v2")
+
+    result = [p.read_text() for p in iter_skill_index_files(tmp_path, "SKILL.md")]
+    assert result == ["v3"]
+
+
+def test_iter_skill_index_files_skips_dot_backup_dir(tmp_path):
+    # ``.backup-*`` is the documented sibling pattern.
+    live = tmp_path / "a-skill" / "SKILL.md"
+    bak = tmp_path / ".backup-20260510" / "a-skill" / "SKILL.md"
+    _touch(live, "live")
+    _touch(bak, "stale")
+
+    result = [p.read_text() for p in iter_skill_index_files(tmp_path, "SKILL.md")]
+    assert result == ["live"]
+
+
+def test_iter_skill_index_files_keeps_legit_names_containing_bak(tmp_path):
+    # The exclusion uses ``.bak-`` / ``.backup-`` (with the trailing
+    # dash) so legitimate names like ``lookback-tool`` or
+    # ``notebook-skill`` are NOT collateral.
+    _touch(tmp_path / "lookback-tool" / "SKILL.md", "ok-1")
+    _touch(tmp_path / "notebook-skill" / "SKILL.md", "ok-2")
+    _touch(tmp_path / "bak-without-dot" / "SKILL.md", "ok-3")
+
+    result = sorted(p.read_text() for p in iter_skill_index_files(tmp_path, "SKILL.md"))
+    assert result == ["ok-1", "ok-2", "ok-3"]

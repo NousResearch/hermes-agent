@@ -62,6 +62,14 @@ def is_excluded_skill_path(path) -> bool:
     return any(part in EXCLUDED_SKILL_DIRS for part in parts)
 
 
+
+def _is_backup_dir(name: str) -> bool:
+    # ``hermes profile`` and ``hermes update`` rename old skill trees to
+    # ``.bak-<timestamp>`` / ``<skill>.bak-<suffix>`` on upgrade. Those
+    # siblings must not shadow the live skill — alphabetic walk order
+    # would otherwise yield the stale backup's SKILL.md first (#25113).
+    return ".bak-" in name or ".backup-" in name
+
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None
@@ -533,11 +541,17 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes Hermes metadata, VCS, virtualenv/dependency, and cache
-    directories so dependencies cannot register nested skills.
+    directories so dependencies cannot register nested skills, and
+    any ``.bak-*``/``.backup-*`` backup directories left behind by
+    ``hermes profile`` / ``hermes update`` so they don't shadow the
+    live skill (#25113).
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS and not _is_backup_dir(d)
+        ]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

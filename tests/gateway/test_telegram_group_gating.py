@@ -10,6 +10,7 @@ def _make_adapter(
     free_response_chats=None,
     mention_patterns=None,
     ignored_threads=None,
+    allowed_topics=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
@@ -26,12 +27,24 @@ def _make_adapter(
         extra["mention_patterns"] = mention_patterns
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
+    if allowed_topics is not None:
+        extra["allowed_topics"] = allowed_topics
+    else:
+        # Keep unit tests isolated from TELEGRAM_ALLOWED_TOPICS in the parent
+        # environment; production adapters without this explicit key still fall
+        # back to the env var.
+        extra["allowed_topics"] = []
     if allow_from is not None:
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
     if allowed_chats is not None:
         extra["allowed_chats"] = allowed_chats
+    else:
+        # Keep unit tests isolated from TELEGRAM_ALLOWED_CHATS in the parent
+        # environment; production adapters without this explicit key still fall
+        # back to the env var.
+        extra["allowed_chats"] = []
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
 
@@ -216,6 +229,29 @@ def test_ignored_threads_drop_group_messages_before_other_gates():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=99)) is True
 
 
+def test_allowed_topics_drop_other_forum_topics_before_other_gates():
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
+
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=8)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=11)) is False
+    assert adapter._should_process_message(
+        _group_message("hi @hermes_bot", chat_id=-100, thread_id=11, entities=[_mention_entity("hi @hermes_bot")])
+    ) is False
+
+
+def test_allowed_topics_do_not_filter_dms():
+    adapter = _make_adapter(require_mention=False, allowed_topics=["8"])
+
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_allowed_topics_treat_missing_thread_as_general_topic():
+    adapter = _make_adapter(require_mention=False, allowed_topics=["1"])
+
+    assert adapter._should_process_message(_group_message("hello", thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 
@@ -241,7 +277,11 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
-        "    - \"-123\"\n",
+        "    - \"-123\"\n"
+        "  allowed_chats:\n"
+        "    - \"-100\"\n"
+        "  allowed_topics:\n"
+        "    - 8\n",
         encoding="utf-8",
     )
 
@@ -250,6 +290,8 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
     monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
 
     config = load_gateway_config()
 
@@ -258,9 +300,13 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
+    assert __import__("os").environ["TELEGRAM_ALLOWED_TOPICS"] == "8"
     tg_cfg = config.platforms.get(Platform.TELEGRAM)
     assert tg_cfg is not None
     assert tg_cfg.extra.get("guest_mode") is True
+    assert tg_cfg.extra.get("allowed_chats") == ["-100"]
+    assert tg_cfg.extra.get("allowed_topics") == [8]
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):

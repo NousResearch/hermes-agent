@@ -2401,8 +2401,25 @@ def login_spotify_command(args) -> None:
 # =============================================================================
 
 def _is_remote_session() -> bool:
-    """Detect if running in an SSH session where webbrowser.open() won't work."""
-    return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+    """Detect if running in a headless or remote session where webbrowser.open()
+    is unlikely to succeed, or where the verification page may be blocked by
+    anti-bot protections (e.g. Vercel error 249 on server IPs)."""
+    # Explicit opt-out for users who know they're headless
+    if os.getenv("HERMES_HEADLESS"):
+        return True
+    # SSH sessions
+    if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY") or os.getenv("SSH_CONNECTION"):
+        return True
+    # CI environments
+    if os.getenv("CI") or os.getenv("GITHUB_ACTIONS") or os.getenv("GITLAB_CI"):
+        return True
+    # No graphical display available (Linux headless, containers, Raspberry Pi)
+    if sys.platform != "win32" and not os.getenv("DISPLAY") and not os.getenv("WAYLAND_DISPLAY"):
+        return True
+    # Non-interactive (piped, cron, daemon)
+    if not sys.stdin.isatty():
+        return True
+    return False
 
 
 # =============================================================================
@@ -5075,11 +5092,15 @@ def _nous_device_code_login(
     timeout = httpx.Timeout(timeout_seconds)
     verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
-    if _is_remote_session():
+    is_headless = _is_remote_session()
+    if is_headless:
         open_browser = False
 
     print(f"Starting Hermes login via {pconfig.name}...")
     print(f"Portal: {portal_base_url}")
+    if is_headless:
+        print("Headless environment detected. Browser will not be opened.")
+        print("Open the verification URL below on a separate device (phone or laptop).")
     if insecure:
         print("TLS verification: disabled (--insecure)")
     elif ca_bundle:
@@ -5102,6 +5123,10 @@ def _nous_device_code_login(
         print("To continue:")
         print(f"  1. Open: {verification_url}")
         print(f"  2. If prompted, enter code: {user_code}")
+        if is_headless:
+            print()
+            print("  Note: Open this URL on your phone or laptop, not on this machine.")
+            print("  The verification page may block requests from server IPs.")
 
         if open_browser:
             opened = webbrowser.open(verification_url)

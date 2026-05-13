@@ -2657,6 +2657,21 @@ class AIAgent:
         if api_key:
             self.api_key = api_key
 
+        # ── Load credential pool for the new provider ──
+        # switch_model updates all runtime fields (model, provider, key,
+        # base_url, api_mode) and rebuilds the client, but the credential
+        # pool was loaded for the ORIGINAL provider at construction time.
+        # Without re-loading, pool rotation on the new provider is silently
+        # disabled — all 429/401/402 errors burn the same credential with
+        # no rotation, then fall through to cross-provider fallback.
+        # See #25273.
+        try:
+            from agent.credential_pool import load_pool as _load_pool
+            _new_pool = _load_pool(new_provider)
+            self._credential_pool = _new_pool if _new_pool and _new_pool.has_credentials() else None
+        except Exception:
+            self._credential_pool = None
+
         # ── Build new client ──
         if api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
@@ -2752,6 +2767,7 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "credential_pool": getattr(self, "_credential_pool", None),
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -8871,6 +8887,14 @@ class AIAgent:
                 "use_native_cache_layout",
                 self.api_mode == "anthropic_messages" and self.provider == "anthropic",
             )
+
+            # ── Restore credential pool from snapshot ──
+            # If the snapshot includes a credential_pool (written by
+            # switch_model after loading the pool for the new provider),
+            # restore it.  For older snapshots that predate this field,
+            # keep the current pool (loaded at construction time).
+            if "credential_pool" in rt and rt["credential_pool"] is not None:
+                self._credential_pool = rt["credential_pool"]
 
             # ── Rebuild client for the primary provider ──
             if self.api_mode == "anthropic_messages":

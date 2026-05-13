@@ -3115,6 +3115,47 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
+        accept_header = request.headers.get("Accept", "").lower()
+        if body.get("stream") is True and "text/event-stream" in accept_header:
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    **response_headers,
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+            await response.prepare(request)
+            try:
+                await response.write((
+                    "data: "
+                    + json.dumps({
+                        "event": "response.created",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "timestamp": created_at,
+                    })
+                    + "\n\n"
+                ).encode())
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        await response.write(b": keepalive\n\n")
+                        continue
+                    if event is None:
+                        await response.write(b": stream closed\n\n")
+                        break
+                    payload = f"data: {json.dumps(event)}\n\n"
+                    await response.write(payload.encode())
+            except Exception as exc:
+                logger.debug("[api_server] inline SSE stream error for run %s: %s", run_id, exc)
+            finally:
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
+            return response
+
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,

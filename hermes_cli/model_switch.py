@@ -1442,7 +1442,7 @@ def list_authenticated_providers(
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
-            _cp_model_ids = curated.get(_cp.slug, [])
+            _cp_model_ids = provider_model_ids(_cp.slug) or curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 

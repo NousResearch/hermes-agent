@@ -191,6 +191,30 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_start_stream_true_with_sse_accept_returns_event_stream(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "Hello from runs"}
+                mock_agent.session_prompt_tokens = 3
+                mock_agent.session_completion_tokens = 4
+                mock_agent.session_total_tokens = 7
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "stream": True},
+                    headers={"Accept": "text/event-stream"},
+                )
+
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("text/event-stream")
+                body = await resp.text()
+                assert "run.completed" in body
+                assert "Hello from runs" in body
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

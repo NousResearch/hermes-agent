@@ -11,7 +11,10 @@ Two data sources, merged at runtime:
    and additional env vars that models.dev doesn't track.  Small dict,
    maintained here.
 
-3. **User config** (``providers:`` section in config.yaml) — user-defined
+3. **Provider plugins** (``ProviderProfile`` registry) — bundled and user
+    provider plugins discovered from ``plugins/model-providers``.
+
+4. **User config** (``providers:`` section in config.yaml) — user-defined
    endpoints and overrides.  Merged on top of everything else.
 
 Other modules import from this file.  No parallel registries.
@@ -402,7 +405,55 @@ def normalize_provider(name: str) -> str:
     corresponds to a known provider.
     """
     key = name.strip().lower()
-    return ALIASES.get(key, key)
+    canonical = ALIASES.get(key)
+    if canonical:
+        return canonical
+    profile = _get_plugin_provider_profile(key)
+    if profile is not None:
+        return profile.name
+    return key
+
+
+def _get_plugin_provider_profile(name: str):
+    """Return a provider plugin profile by name or alias, if one exists."""
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+    try:
+        return get_provider_profile(key)
+    except Exception:
+        return None
+
+
+def _transport_from_profile_api_mode(api_mode: str) -> str:
+    """Map ProviderProfile.api_mode to ProviderDef.transport."""
+    mode = (api_mode or "chat_completions").strip().lower()
+    if mode == "anthropic_messages":
+        return "anthropic_messages"
+    if mode == "codex_responses":
+        return "codex_responses"
+    if mode == "bedrock_converse":
+        return "bedrock_converse"
+    return "openai_chat"
+
+
+def _provider_def_from_plugin_profile(profile) -> ProviderDef:
+    """Convert a ProviderProfile into the ProviderDef shape used by switchers."""
+    return ProviderDef(
+        id=profile.name,
+        name=profile.display_name or profile.name,
+        transport=_transport_from_profile_api_mode(profile.api_mode),
+        api_key_env_vars=tuple(profile.env_vars or ()),
+        base_url=profile.base_url or "",
+        is_aggregator=False,
+        auth_type=profile.auth_type or "api_key",
+        doc=profile.description or "",
+        source="plugin",
+    )
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
@@ -471,6 +522,10 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             auth_type=overlay.auth_type,
             source="hermes",
         )
+
+    plugin_profile = _get_plugin_provider_profile(canonical)
+    if plugin_profile is not None:
+        return _provider_def_from_plugin_profile(plugin_profile)
 
     return None
 

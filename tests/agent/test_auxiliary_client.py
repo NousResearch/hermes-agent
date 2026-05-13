@@ -2481,6 +2481,12 @@ class TestBuildCallKwargsToolDedup:
         )
         assert "tools" not in kwargs
 
+    def test_auxiliary_calls_are_non_streaming(self):
+        kwargs = _build_call_kwargs(
+            provider="custom", model="deepseek-v4-pro", messages=[]
+        )
+        assert kwargs["stream"] is False
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):

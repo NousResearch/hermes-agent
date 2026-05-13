@@ -82,10 +82,20 @@ def _explode_runtime_resolution():
     )
 
 
+class _FakePool:
+    pass
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+    fake_pool = _FakePool()
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_credential_pool_for_provider",
+        lambda provider: fake_pool if provider == "openai-codex" else None,
+    )
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _CapturingAgent
@@ -123,6 +133,7 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["api_mode"] == "codex_responses"
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
+    assert _CapturingAgent.last_init["credential_pool"] is fake_pool
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
@@ -130,6 +141,12 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+    fake_pool = _FakePool()
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_credential_pool_for_provider",
+        lambda provider: fake_pool if provider == "openai-codex" else None,
+    )
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _CapturingAgent
@@ -162,6 +179,7 @@ async def test_background_task_prefers_session_override_over_global_runtime(monk
     assert _CapturingAgent.last_init["api_mode"] == "codex_responses"
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
+    assert _CapturingAgent.last_init["credential_pool"] is fake_pool
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 def test_gateway_auth_fallback_uses_fallback_model_from_config(tmp_path, monkeypatch):
@@ -217,4 +235,3 @@ fallback_providers:
     assert model == "minimax/minimax-m2.7"
     assert runtime_kwargs["provider"] == "openrouter"
     assert runtime_kwargs["api_key"] == "sk-openrouter"
-

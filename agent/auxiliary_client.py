@@ -4123,6 +4123,7 @@ def _build_call_kwargs(
         "model": model,
         "messages": messages,
         "timeout": timeout,
+        "stream": False,
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)

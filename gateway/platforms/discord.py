@@ -4235,27 +4235,31 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        # Determine message type
+        # Determine message type. Keep a first-pass attachment classification
+        # so document-only messages still dispatch as media even if caching is
+        # skipped, then reconcile against the actual media_types list after
+        # processing to avoid mixed-attachment misclassification.
         msg_type = MessageType.TEXT
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
-            # Check attachment types
             for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
-                            msg_type = MessageType.DOCUMENT
+                content_type = att.content_type or ""
+                if content_type.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                    break
+                if content_type.startswith("video/"):
+                    msg_type = MessageType.VIDEO
+                    break
+                if content_type.startswith("audio/"):
+                    msg_type = MessageType.AUDIO
+                    break
+                doc_ext = ""
+                if att.filename:
+                    _, doc_ext = os.path.splitext(att.filename)
+                    doc_ext = doc_ext.lower()
+                if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                    msg_type = MessageType.DOCUMENT
                     break
 
         # When auto-threading kicked in, route responses to the new thread
@@ -4380,6 +4384,17 @@ class DiscordAdapter(BasePlatformAdapter):
                                 "[Discord] Failed to cache document %s: %s",
                                 att.filename, e, exc_info=True,
                             )
+
+        if msg_type != MessageType.COMMAND and media_types:
+            first_type = media_types[0].lower()
+            if first_type.startswith("image/"):
+                msg_type = MessageType.PHOTO
+            elif first_type.startswith("video/"):
+                msg_type = MessageType.VIDEO
+            elif first_type.startswith("audio/"):
+                msg_type = MessageType.AUDIO
+            else:
+                msg_type = MessageType.DOCUMENT
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.

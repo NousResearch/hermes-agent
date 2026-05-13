@@ -384,3 +384,24 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_mixed_unsupported_then_image_uses_media_type(self, adapter):
+        """A later supported attachment must override an earlier unsupported blob."""
+        with patch(
+            "gateway.platforms.discord.cache_image_from_url",
+            new_callable=AsyncMock,
+            return_value="/tmp/mixed_image.png",
+        ):
+            msg = make_message(
+                [
+                    make_attachment(filename="blob.bin", content_type="application/octet-stream"),
+                    make_attachment(filename="photo.png", content_type="image/png"),
+                ]
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/mixed_image.png"]
+        assert event.media_types == ["image/png"]

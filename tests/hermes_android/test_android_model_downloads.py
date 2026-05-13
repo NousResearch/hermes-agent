@@ -167,10 +167,11 @@ def test_litert_proxy_attempts_gpu_on_real_arm_devices_with_cpu_fallback():
     assert 'else -> "cpu"' in proxy
     assert 'maxNumTokens = maxNumTokens' in proxy
     assert 'resolveEngineMaxNumTokens(' in proxy
-    assert 'memorySafeContextWindowLimit(context, modelPath)' in proxy
+    assert 'decideEngineTokenBudget(' in proxy
+    assert 'memorySafeContextWindowLimit(totalRamBytes, modelBytes)' in proxy
     assert 'put("max_num_tokens", engineInitResult.maxNumTokens ?: JSONObject.NULL)' in proxy
     assert 'put("context_window_policy", engineInitResult.contextWindowPolicy)' in proxy
-    assert 'clamped requested context window $requested to $selected tokens' in proxy
+    assert 'clamped requested context window $requested to $selected on' in proxy
 
 
 def test_on_device_backend_applies_edge_gallery_model_defaults_for_gemma_and_qwen():
@@ -196,11 +197,13 @@ def test_litert_proxy_requests_optional_opencl_native_library_for_adreno():
 def test_native_tool_loop_allows_long_file_generation_prompts():
     native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
-    assert '.put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)' in native_client
+    assert 'timeoutMs: Long = NATIVE_TOOL_GENERATION_TIMEOUT_MS' in native_client
+    assert '.put("timeout_ms", timeoutMs)' in native_client
     assert '.put("temperature", 0.0)' in native_client
     assert '.put("max_tokens", maxTokens)' in native_client
     assert '.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))' in native_client
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
+    assert 'private const val HTML_GENERATION_TIMEOUT_MS = 45_000L' in native_client
     assert 'private const val NATIVE_TOOL_MAX_TOKENS = 1024' in native_client
     assert 'Native tool chat requires a local HTTP base URL' in native_client
     assert 'toolCompletionReply(latestToolResult)' in native_client

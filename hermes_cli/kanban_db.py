@@ -3902,6 +3902,63 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _inject_task_fence_vars(env: dict, task: "Task") -> None:
+    """Extract Plan 002-B fence metadata from the task body and inject into env.
+
+    The dag-dispatcher writes a YAML frontmatter block at the top of every
+    Kanban task body it creates.  This function parses that block and
+    populates the following env vars so spawned subagents have them at
+    startup:
+
+        HERMES_CHILD_FENCE      — subagent's Atlas write fence
+        HERMES_BRIEF_IRI        — IRI of the context brief in Atlas
+        HERMES_CORRELATION_ID   — workflow-level correlation ID
+        HERMES_NODE_ID          — DAG node ID for this task
+
+    Parsing is best-effort: any failure is silently swallowed so a
+    malformed task body never blocks spawning.  Workers that load the
+    delegate-skill can still read this metadata from the task body itself
+    as a fallback.
+    """
+    body = getattr(task, "body", None)
+    if not body:
+        return
+    try:
+        # YAML frontmatter is delimited by lines containing only "---".
+        # We look for the block between the first and second delimiter.
+        lines = body.split("\n")
+        delim_positions = [i for i, ln in enumerate(lines) if ln.strip() == "---"]
+        if len(delim_positions) < 2:
+            return
+        fm_lines = lines[delim_positions[0] + 1 : delim_positions[1]]
+        import yaml as _yaml
+        frontmatter = _yaml.safe_load("\n".join(fm_lines)) or {}
+
+        # Map frontmatter keys to env var names
+        fence_map = {
+            "child_fence":      "HERMES_CHILD_FENCE",
+            "brief_iri":        "HERMES_BRIEF_IRI",
+            "correlation_id":   "HERMES_CORRELATION_ID",
+            "fence":            "HERMES_SESSION_FENCE",
+        }
+        for fm_key, env_key in fence_map.items():
+            value = frontmatter.get(fm_key)
+            if value and str(value).strip():
+                env[env_key] = str(value).strip()
+
+        # node_id lives in the body description, not frontmatter — derive from
+        # the task id as a stable fallback.  The delegate-skill can override
+        # with the full node_id from the brief if needed.
+        if "HERMES_NODE_ID" not in env:
+            node_id_guess = str(getattr(task, "id", "") or "").replace("task-", "")
+            if node_id_guess:
+                env["HERMES_NODE_ID"] = node_id_guess
+
+    except Exception:
+        # Best-effort — never raise from the dispatcher spawn path.
+        pass
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3975,6 +4032,18 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # Plan 002-B: inject HERMES_CHILD_FENCE, HERMES_BRIEF_IRI,
+    # HERMES_CORRELATION_ID, and HERMES_NODE_ID from the task's YAML
+    # frontmatter body.  This completes the deferred 002-A item — env vars
+    # are now propagated into every Kanban-spawned subagent process.
+    #
+    # The dag-dispatcher writes these into the task body as YAML frontmatter
+    # (between leading and trailing "---" delimiters).  We extract them here
+    # so the worker process has them at startup, before it even reads the
+    # Kanban task body itself.  This mirrors how HERMES_KANBAN_TASK is
+    # propagated — via the dispatcher's env injection, not via IPC.
+    _inject_task_fence_vars(env, task)
 
     cmd = [
         *_resolve_hermes_argv(),

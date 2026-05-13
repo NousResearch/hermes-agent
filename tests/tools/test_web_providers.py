@@ -263,3 +263,72 @@ class TestWebSearchUsesSearchBackend:
 
         assert len(called_with) > 0
         assert called_with[0][0] == "search"
+
+
+class TestUnconfiguredErrorEnvelopeParity:
+    """Regression tests for PR #25182: the post-migration dispatcher must
+    emit the same top-level error envelope as pre-migration main when no
+    web backend is configured.
+
+    Plugin-level error wrapping is correct for in-flight errors (per-page
+    SDK exceptions, scrape timeouts) but PRE-FLIGHT configuration errors
+    must surface at the top level so function-calling models that check
+    ``result.get("error")`` detect the failure cleanly.
+    """
+
+    def _clear_web_creds(self, monkeypatch):
+        for k in (
+            "BRAVE_SEARCH_API_KEY",
+            "SEARXNG_URL",
+            "TAVILY_API_KEY",
+            "EXA_API_KEY",
+            "PARALLEL_API_KEY",
+            "FIRECRAWL_API_KEY",
+            "FIRECRAWL_API_URL",
+            "FIRECRAWL_GATEWAY_URL",
+            "TOOL_GATEWAY_DOMAIN",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
+        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
+        — matching main's ``tool_error()`` envelope, not a per-result shape.
+        """
+        import json
+        from tools import web_tools
+
+        self._clear_web_creds(monkeypatch)
+        # Reset firecrawl client cache so the unconfigured state is re-evaluated
+        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
+        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+
+        result = json.loads(web_tools.web_search_tool("hello world", limit=3))
+        assert "error" in result, f"expected top-level 'error' key, got {result}"
+        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
+        assert "Error searching web:" in result["error"]
+        assert "FIRECRAWL_API_KEY" in result["error"]
+        # No per-result burying
+        assert "results" not in result
+
+    def test_unconfigured_crawl_emits_top_level_error(self, monkeypatch):
+        """``web_crawl_tool`` with no creds returns ``{"success": False, "error": "web_crawl requires Firecrawl..."}``
+        — the dispatcher gates on ``provider.is_available()`` BEFORE
+        delegating to the plugin so pre-config errors don't get wrapped
+        into ``results[]``.
+        """
+        import asyncio
+        import json
+        from tools import web_tools
+
+        self._clear_web_creds(monkeypatch)
+        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
+        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+
+        result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
+        assert result.get("success") is False
+        assert "error" in result, f"expected top-level 'error' key, got {result}"
+        assert "web_crawl requires Firecrawl" in result["error"]
+        # Crucially: no per-page burying
+        assert "results" not in result

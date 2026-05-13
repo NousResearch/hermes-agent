@@ -1192,6 +1192,25 @@ async def web_crawl_tool(
         if crawl_provider is None:
             crawl_provider = get_active_crawl_provider()
 
+        # Mirror main's upstream availability gate: when the resolved
+        # provider is configured-but-unavailable (e.g. firecrawl without
+        # FIRECRAWL_API_KEY), short-circuit BEFORE we dispatch so the
+        # error envelope matches the legacy top-level shape
+        # ``{"success": False, "error": "..."}`` rather than burying the
+        # configuration message inside a per-page ``results[]`` entry.
+        if crawl_provider is not None and not crawl_provider.is_available():
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, "
+                        f"FIRECRAWL_API_URL{_firecrawl_backend_help_suffix()}, "
+                        "or use web_search + web_extract instead."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         if crawl_provider is not None:
             # Ensure URL has protocol
             if not url.startswith(('http://', 'https://')):

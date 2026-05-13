@@ -40,10 +40,10 @@ irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/inst
 | Capability | Upstream Hermes | This fork |
 | --- | --- | --- |
 | Chat platforms (Telegram, Slack, Discord, …) | 🟢 | 🟢 |
-| Real email address | 🟡 DIY (SMTP) | 🟢 Built-in |
-| Real phone (SMS + voice) | 🟡 DIY (Twilio + SIP) | 🟢 Built-in |
-| Public webhook tunnel | 🟡 DIY (ngrok / server) | 🟢 Built-in |
-| Persistent contact list | 🟡 DIY (agent memory) | 🟢 Built-in |
+| Real email address | 🟡 DIY (SMTP) | 🟢 |
+| Real phone (SMS + voice) | 🟡 DIY (Twilio + SIP) | 🟢 |
+| Public webhook tunnel | 🟡 DIY (ngrok / server) | 🟢 |
+| Persistent contact list | 🟡 DIY (agent memory) | 🟢 |
 
 Specifically:
 

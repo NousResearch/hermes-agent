@@ -11,17 +11,23 @@ Active selection
 ----------------
 The active provider is chosen by configuration with this precedence:
 
-1. ``web.search_backend`` (for search) or ``web.extract_backend`` (for extract)
-2. ``web.backend`` (shared fallback)
-3. If exactly one capability-eligible provider is registered, use it.
-4. Legacy preference order (``brave-free`` → ``firecrawl`` → ``searxng`` → ``ddgs``)
-   so installs that omitted the config key keep working.
+1. ``web.search_backend`` / ``web.extract_backend`` / ``web.crawl_backend``
+   (per-capability override).
+2. ``web.backend`` (shared fallback).
+3. If exactly one capability-eligible provider is registered AND available,
+   use it.
+4. Legacy preference order — ``firecrawl`` → ``parallel`` → ``tavily`` →
+   ``exa`` → ``searxng`` → ``brave-free`` → ``ddgs`` — filtered by
+   availability. Matches the historic ``tools.web_tools._get_backend()``
+   candidate order so installs that never set a config key keep landing
+   on the same provider they did before the plugin migration.
 5. Otherwise ``None`` — the tool surfaces a helpful error pointing at
    ``hermes tools``.
 
-The capability filter (``supports_search`` vs ``supports_extract``) is applied
-at every step so a search-only provider (``brave-free``) configured as
-``web.extract_backend`` correctly falls through.
+The capability filter (``supports_search`` / ``supports_extract`` /
+``supports_crawl``) is applied at every step so a search-only provider
+(``brave-free``) configured as ``web.extract_backend`` correctly falls
+through to an extract-capable backend.
 """
 
 from __future__ import annotations
@@ -107,10 +113,21 @@ def _read_config_key(*path: str) -> Optional[str]:
     return None
 
 
-# Legacy preference order — preserves behaviour for users who set no config
-# at all. brave-free first because it was the shipped default after the
-# Brave migration; firecrawl second for back-compat with older configs.
-_LEGACY_PREFERENCE = ("brave-free", "firecrawl", "searxng", "ddgs")
+# Legacy preference order — preserves behaviour for users who set no
+# ``web.backend`` / ``web.<capability>_backend`` config key at all. Matches
+# the historic candidate order in :func:`tools.web_tools._get_backend`
+# (paid providers first so existing paid setups don't get downgraded to
+# a free tier on upgrade). Filtered by ``is_available()`` at walk time so
+# we don't surface a provider the user has no credentials for.
+_LEGACY_PREFERENCE = (
+    "firecrawl",
+    "parallel",
+    "tavily",
+    "exa",
+    "searxng",
+    "brave-free",
+    "ddgs",
+)
 
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
@@ -130,10 +147,14 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        supports *capability* AND ``is_available()`` reports True, return it.
 
     3. **Legacy preference walk, filtered by availability.** Walk the
-       :data:`_LEGACY_PREFERENCE` order looking for a provider whose
+       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
+       exa → searxng → brave-free → ddgs) looking for a provider whose
        ``supports_<capability>()`` is True AND whose ``is_available()`` is
-       True. This is the path that fires when no config key is set — pick
-       the highest-priority backend the user actually has credentials for.
+       True. Matches the historic ``tools.web_tools._get_backend()``
+       candidate order so users with credentials but no explicit config
+       key keep landing on the same provider as pre-migration. This is
+       the path that fires when no config key is set — pick the
+       highest-priority backend the user actually has credentials for.
 
     Returns None when no provider is configured AND no available provider
     matches the legacy preference; the dispatcher then returns a "set up a
@@ -179,8 +200,8 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
 
     # 2. + 3. Fallback path — filter by availability so we don't surface
     #    a provider the user has no credentials for. Without this filter,
-    #    brave-free's slot in the legacy preference order would make it
-    #    the "active" provider on a fresh install with no API keys at all.
+    #    a registered-but-unconfigured provider could end up "active" on
+    #    a fresh install with no API keys at all.
     eligible = [
         p for p in snapshot.values()
         if _capable(p) and _is_available_safe(p)
@@ -226,9 +247,10 @@ def get_active_crawl_provider() -> Optional[WebSearchProvider]:
     Reads ``web.crawl_backend`` (preferred) or ``web.backend`` (shared
     fallback) from config.yaml; falls back per the module docstring.
 
-    Crawl is a niche capability — only Tavily implements it among built-in
-    providers. Most callers should expect ``None`` and fall back to a
-    different strategy (e.g. summarize-via-LLM).
+    Crawl is a niche capability — among built-in providers only Tavily and
+    Firecrawl implement it. Callers should expect ``None`` and fall back to
+    a different strategy (e.g. summarize-via-LLM) when neither is
+    configured.
     """
     explicit = _read_config_key("web", "crawl_backend") or _read_config_key("web", "backend")
     return _resolve(explicit, capability="crawl")

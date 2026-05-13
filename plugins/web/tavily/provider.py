@@ -5,8 +5,8 @@ capabilities advertised:
 
 - ``supports_search()``  -> True (Tavily ``/search``)
 - ``supports_extract()`` -> True (Tavily ``/extract``)
-- ``supports_crawl()``   -> True (Tavily ``/crawl``) — Tavily is the only
-  built-in backend that natively crawls
+- ``supports_crawl()``   -> True (Tavily ``/crawl``) — sync HTTP crawl;
+  Firecrawl also advertises ``supports_crawl=True`` (async)
 
 All three are sync — the underlying call is ``httpx.post(...)``. The
 dispatcher in :func:`tools.web_tools.web_crawl_tool` (which is itself

@@ -32,9 +32,10 @@ from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for the Exa client so we don't reconstruct it per
-# call. Matches the legacy `_exa_client` pattern in tools/web_tools.py.
-_exa_client: Any = None
+# Module-level note: the canonical ``_exa_client`` cache slot lives on
+# :mod:`tools.web_tools` so tests that do ``tools.web_tools._exa_client =
+# None`` between cases see fresh state. The plugin reads/writes through
+# that public module (see :func:`_get_exa_client`).
 
 
 def _get_exa_client() -> Any:

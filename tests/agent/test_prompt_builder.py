@@ -939,6 +939,30 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in result
         assert "/workspace" in result
 
+    def test_build_environment_hints_prefers_terminal_cwd(self, monkeypatch):
+        """When TERMINAL_CWD is set, the system prompt should show that path."""
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/test/my-workspace")
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Current working directory: /Users/test/my-workspace" in result
+
+    def test_build_environment_hints_falls_back_to_getcwd(self, monkeypatch):
+        """When TERMINAL_CWD is empty, os.getcwd() is used."""
+        import agent.prompt_builder as _pb
+        import sys, os
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert f"Current working directory: {os.getcwd()}" in result
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb

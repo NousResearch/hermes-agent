@@ -772,7 +772,13 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {os.getcwd()}")
+            # Prefer the explicitly configured terminal.cwd (bridged to
+            # TERMINAL_CWD by the gateway) over the process's actual cwd,
+            # which may be the daemon's launch directory rather than the
+            # user's intended workspace.
+            terminal_cwd = os.getenv("TERMINAL_CWD", "").strip()
+            effective_cwd = terminal_cwd if terminal_cwd else os.getcwd()
+            host_lines.append(f"Current working directory: {effective_cwd}")
         except OSError:
             pass
 

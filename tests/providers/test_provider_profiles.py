@@ -288,3 +288,27 @@ class TestBaseProfile:
         eb, tl = p.build_api_kwargs_extras()
         assert eb == {}
         assert tl == {}
+
+
+class TestDeepSeekProfile:
+    def test_thinking_enabled(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert eb["thinking"] == {"type": "enabled"}
+        # DeepSeek doesn't use reasoning_effort top-level (unlike Kimi)
+        assert "reasoning_effort" not in tl
+
+    def test_thinking_disabled_no_extra_body(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking" not in eb
+
+    def test_no_config_omits_thinking(self):
+        """When reasoning_config is None, no thinking parameter emitted."""
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
+        assert "thinking" not in eb

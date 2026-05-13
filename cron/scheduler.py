@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -122,7 +123,14 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    advance_next_run,
+    delivery_retry_base_seconds,
+    delivery_retry_max_extra,
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -654,6 +662,83 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _is_transient_delivery_failure(message: Optional[str]) -> bool:
+    """Return True if a delivery error string is worth retrying (network blips).
+
+    Conservative: unknown / configuration errors are not retried.
+    """
+    if not message:
+        return False
+    lower = message.lower()
+    if "no delivery target" in lower:
+        return False
+    if "unknown platform" in lower:
+        return False
+    if "failed to load gateway config" in lower:
+        return False
+    if "not configured" in lower and "enabled" in lower:
+        return False
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "econnreset",
+        "etimedout",
+        "econnrefused",
+        "broken pipe",
+        "network is unreachable",
+        "temporarily unavailable",
+        " 502",
+        " 503",
+        " 504",
+        " 429",
+        "status 502",
+        "status 503",
+        "status 504",
+        "status 429",
+        "rate limit",
+        "too many requests",
+        "readerror",
+        "connecterror",
+        "remote end closed connection",
+        "temporary failure",
+    )
+    return any(m in lower for m in transient_markers)
+
+
+def _deliver_result_with_retries(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+) -> Optional[str]:
+    """Call :func:`_deliver_result` with bounded exponential backoff on transient failures."""
+    max_extra = delivery_retry_max_extra(job)
+    base = delivery_retry_base_seconds(job)
+    last_err: Optional[str] = None
+    total = max_extra + 1
+    for attempt in range(total):
+        last_err = _deliver_result(job, content, adapters=adapters, loop=loop)
+        if last_err is None:
+            return None
+        if attempt >= max_extra:
+            break
+        if not _is_transient_delivery_failure(last_err):
+            break
+        delay = min(base * (2**attempt), 60.0)
+        logger.info(
+            "Job '%s': delivery failed (attempt %d/%d), backing off %.1fs: %s",
+            job.get("id", "?"),
+            attempt + 1,
+            total,
+            delay,
+            last_err[:500],
+        )
+        time.sleep(delay)
+    return last_err
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
@@ -1698,12 +1783,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
+        # before any execution begins. This preserves at-most-once semantics.
         for job in due_jobs:
             advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
-        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
+        # Set HERMES_CRON_MAX_PARALLEL=1 to restore serial behaviour.
         _max_workers: Optional[int] = None
         try:
             _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
@@ -1740,7 +1825,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
+                # output is already saved above). Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
@@ -1750,7 +1835,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result_with_retries(
+                            job, deliver_content, adapters=adapters, loop=loop
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -1766,7 +1853,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 return True
 
             except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
+                logger.error("Error processing job %s: %s", job["id"], e)
                 mark_job_run(job["id"], False, str(e))
                 return False
 

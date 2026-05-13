@@ -7,7 +7,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _build_job_prompt,
+    _deliver_result,
+    _deliver_result_with_retries,
+    _is_transient_delivery_failure,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2386,3 +2396,48 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+class TestDeliveryRetryTransientHeuristic:
+    def test_terminal_errors(self):
+        assert not _is_transient_delivery_failure(
+            "no delivery target resolved for deliver=telegram"
+        )
+        assert not _is_transient_delivery_failure("unknown platform 'foo'")
+        assert not _is_transient_delivery_failure("failed to load gateway config: x")
+        assert not _is_transient_delivery_failure(
+            "platform 'telegram' not configured/enabled"
+        )
+
+    def test_transient_errors(self):
+        assert _is_transient_delivery_failure(
+            "delivery to telegram:1 failed: Connection reset by peer"
+        )
+        assert _is_transient_delivery_failure("delivery error: status 503")
+        assert _is_transient_delivery_failure("timed out waiting")
+
+
+class TestDeliverResultWithRetries:
+    def test_succeeds_second_attempt(self):
+        job = {"id": "r1", "delivery_retry_max": 2, "delivery_retry_base_seconds": 1.0}
+        with patch("cron.scheduler._deliver_result", side_effect=["connection reset", None]) as dr, \
+             patch("cron.scheduler.time.sleep") as sleep_mock:
+            err = _deliver_result_with_retries(job, "hello")
+        assert err is None
+        assert dr.call_count == 2
+        sleep_mock.assert_called_once()
+
+    def test_stops_on_terminal_error(self):
+        job = {"id": "r2", "delivery_retry_max": 3}
+        with patch("cron.scheduler._deliver_result", return_value="unknown platform 'x'") as dr, \
+             patch("cron.scheduler.time.sleep") as sleep_mock:
+            err = _deliver_result_with_retries(job, "hello")
+        assert "unknown platform" in err
+        assert dr.call_count == 1
+        sleep_mock.assert_not_called()
+
+    def test_exhausts_transient_retries(self):
+        job = {"id": "r3", "delivery_retry_max": 1, "delivery_retry_base_seconds": 1.0}
+        with patch("cron.scheduler._deliver_result", return_value="readerror something") as dr, \
+             patch("cron.scheduler.time.sleep"):
+            err = _deliver_result_with_retries(job, "hello")
+        assert err is not None
+        assert dr.call_count == 2

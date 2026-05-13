@@ -826,6 +826,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
+    # File-mutation tools: successful writes/patches must not be misclassified
+    # as failures just because their result contains nested lint/LSP diagnostics
+    # with "error" or "failed" keys.  Check for known success markers first.
+    if tool_name in ("write_file", "patch"):
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            # write_file: bytes_written present and no top-level error → success
+            if data.get("bytes_written") and not data.get("error"):
+                return False, ""
+            # patch: success=True → landed regardless of diagnostics
+            if data.get("success") is True:
+                return False, ""
+
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.

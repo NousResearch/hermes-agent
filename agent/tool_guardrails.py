@@ -211,6 +211,17 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
+    # File-mutation tools: successful writes/patches must not be misclassified
+    # as failures just because their result contains nested lint/LSP diagnostics
+    # with "error" or "failed" keys.  Check for known success markers first.
+    if tool_name in ("write_file", "patch"):
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            if data.get("bytes_written") and not data.get("error"):
+                return False, ""
+            if data.get("success") is True:
+                return False, ""
+
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"

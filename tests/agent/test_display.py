@@ -255,3 +255,90 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+# =========================================================================
+# Regression tests for _detect_tool_failure
+# =========================================================================
+
+
+class TestDetectToolFailure:
+    """Regression tests for _detect_tool_failure — file-mutation false positives.
+
+    See #24927: successful write_file / patch results with lint or LSP
+    diagnostics containing "error" keys must NOT be classified as failures.
+    """
+
+    def test_write_file_with_bytes_written_is_success(self):
+        """write_file result with bytes_written (no top-level error) is success."""
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({"bytes_written": 42, "dirs_created": True})
+        is_failure, suffix = _detect_tool_failure("write_file", result)
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_write_file_with_lint_diagnostics_still_success(self):
+        """write_file with lint diagnostics containing error keys is still success."""
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({
+            "bytes_written": 100,
+            "lint": {
+                "errors": [{"line": 1, "message": "unused variable", "severity": "error"}],
+                "warnings": []
+            }
+        })
+        is_failure, suffix = _detect_tool_failure("write_file", result)
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_write_file_with_top_level_error_is_failure(self):
+        """write_file with a top-level error key IS a failure."""
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({"error": "Permission denied", "bytes_written": 0})
+        is_failure, suffix = _detect_tool_failure("write_file", result)
+        assert is_failure is True
+        assert "[error]" in suffix
+
+    def test_patch_with_success_true_is_success(self):
+        """patch result with success=True is success even with diagnostics."""
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({
+            "success": True,
+            "diff": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new",
+            "diagnostics": {"error": "type mismatch", "failed": False}
+        })
+        is_failure, suffix = _detect_tool_failure("patch", result)
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_patch_without_success_true_is_failure(self):
+        """patch result without success=True falls through to heuristic."""
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({"error": "old_string not found"})
+        is_failure, suffix = _detect_tool_failure("patch", result)
+        assert is_failure is True
+
+    def test_none_result_is_success(self):
+        from agent.display import _detect_tool_failure
+        assert _detect_tool_failure("write_file", None) == (False, "")
+
+    def test_terminal_nonzero_exit_is_failure(self):
+        from agent.display import _detect_tool_failure
+        import json
+        result = json.dumps({"exit_code": 1, "output": "fail"})
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert "[exit 1]" in suffix
+
+    def test_generic_error_still_detected(self):
+        """Non-mutation tools with error keys are still classified as failures."""
+        from agent.display import _detect_tool_failure
+        result = '{"error": "something went wrong"}'
+        is_failure, suffix = _detect_tool_failure("web_search", result)
+        assert is_failure is True
+        assert "[error]" in suffix

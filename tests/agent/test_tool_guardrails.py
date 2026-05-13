@@ -236,3 +236,48 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+
+# =========================================================================
+# Regression tests for classify_tool_failure
+# =========================================================================
+
+
+class TestClassifyToolFailureMutationFalsePositive:
+    """Regression: file-mutation tools with diagnostics must not be misclassified.
+
+    Mirrors TestDetectToolFailure in test_display.py for the guardrail's
+    classify_tool_failure mirror function.  See #24927.
+    """
+
+    def test_write_file_with_lint_diagnostics_is_success(self):
+        from agent.tool_guardrails import classify_tool_failure
+        import json
+        result = json.dumps({
+            "bytes_written": 200,
+            "lint": {"errors": [{"message": "unused import"}]}
+        })
+        assert classify_tool_failure("write_file", result) == (False, "")
+
+    def test_write_file_top_level_error_is_failure(self):
+        from agent.tool_guardrails import classify_tool_failure
+        import json
+        result = json.dumps({"error": "write failed"})
+        assert classify_tool_failure("write_file", result) == (True, " [error]")
+
+    def test_patch_success_true_is_success(self):
+        from agent.tool_guardrails import classify_tool_failure
+        import json
+        result = json.dumps({
+            "success": True,
+            "diff": "changes",
+            "diagnostics": {"error": "type issue"}
+        })
+        assert classify_tool_failure("patch", result) == (False, "")
+
+    def test_patch_no_success_key_falls_through(self):
+        from agent.tool_guardrails import classify_tool_failure
+        import json
+        result = json.dumps({"error": "not found"})
+        assert classify_tool_failure("patch", result) == (True, " [error]")

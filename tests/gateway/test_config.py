@@ -542,6 +542,65 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_bridges_gateway_restart_notification_from_telegram_section(self, tmp_path, monkeypatch):
+        # Regression for #24644: setting gateway_restart_notification under
+        # a top-level platform section (e.g. ``telegram:``) was silently
+        # ignored — the bridge loop only copied a fixed allowlist of keys
+        # and PlatformConfig.from_dict() reads gateway_restart_notification
+        # from the platform's top-level data, never from extra.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  gateway_restart_notification: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].gateway_restart_notification is False
+
+    def test_bridges_gateway_restart_notification_true_explicit(self, tmp_path, monkeypatch):
+        # Explicit ``true`` should also flow through (and match the
+        # default), proving the bridge isn't accidentally swallowing the
+        # key when its value already matches the default.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  gateway_restart_notification: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].gateway_restart_notification is True
+
+    def test_gateway_restart_notification_defaults_true_when_unset(self, tmp_path, monkeypatch):
+        # Sanity check that omitting the key keeps the existing default
+        # so this fix doesn't accidentally change behavior for existing
+        # users who never set it.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].gateway_restart_notification is True
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

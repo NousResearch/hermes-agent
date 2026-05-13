@@ -222,11 +222,6 @@ def _get_command_timeout() -> int:
     return result
 
 
-def _get_vision_model() -> Optional[str]:
-    """Model for browser_vision (screenshot analysis — multimodal)."""
-    return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-
-
 def _get_extraction_model() -> Optional[str]:
     """Model for page snapshot text summarization — same as web_extract."""
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
@@ -3048,9 +3043,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Take a screenshot of the current page and analyze it with vision AI.
 
     This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+    to the configured auxiliary vision router for analysis. Useful for
+    understanding visual content that the text-based snapshot may not capture
+    (CAPTCHAs, verification challenges, images, complex layouts, etc.).
 
     The screenshot is saved persistently and its file path is returned alongside
     the analysis, so it can be shared with users via MEDIA:<path> in the response.
@@ -3195,8 +3190,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             f"Focus on answering the user's specific question."
         )
 
-        # Use the centralized LLM router
-        vision_model = _get_vision_model()
+        # Use the centralized LLM router. Do not pass a model here: task="vision"
+        # lets auxiliary.vision provider/model/base_url/api_key resolve together.
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
                      len(_screenshot_bytes))
 
@@ -3233,8 +3228,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             "temperature": vision_temperature,
             "timeout": vision_timeout,
         }
-        if vision_model:
-            call_kwargs["model"] = vision_model
         # Try full-size screenshot; on size-related rejection, downscale and retry.
         try:
             response = call_llm(**call_kwargs)

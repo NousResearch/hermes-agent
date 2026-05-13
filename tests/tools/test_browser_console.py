@@ -160,7 +160,6 @@ class TestBrowserVisionAnnotate:
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
             patch("tools.browser_tool.call_llm") as mock_call_llm,
-            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
         ):
             mock_cmd.return_value = {"success": True, "data": {}}
             # Will fail at screenshot file read, but we can check the command
@@ -181,7 +180,6 @@ class TestBrowserVisionAnnotate:
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
             patch("tools.browser_tool.call_llm") as mock_call_llm,
-            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
         ):
             mock_cmd.return_value = {"success": True, "data": {}}
             try:
@@ -216,7 +214,6 @@ class TestBrowserVisionConfig:
             patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
             patch("tools.browser_tool._cleanup_old_screenshots"),
             patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
-            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
             patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"temperature": 1, "timeout": 45}}}),
             patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
         ):
@@ -240,7 +237,6 @@ class TestBrowserVisionConfig:
             patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
             patch("tools.browser_tool._cleanup_old_screenshots"),
             patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
-            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
             patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
             patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
         ):
@@ -250,6 +246,29 @@ class TestBrowserVisionConfig:
         assert result["analysis"] == "Default screenshot analysis"
         assert mock_llm.call_args.kwargs["temperature"] == 0.1
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
+
+    def test_browser_vision_does_not_pass_stale_env_model(self, tmp_path, monkeypatch):
+        from tools.browser_tool import browser_vision
+
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "stale/gemma")
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Configured screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"model": "configured/model"}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is True
+        assert mock_llm.call_args.kwargs["task"] == "vision"
+        assert "model" not in mock_llm.call_args.kwargs
 
 
 # ── auto-recording config ────────────────────────────────────────────

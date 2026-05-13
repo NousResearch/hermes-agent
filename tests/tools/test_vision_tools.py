@@ -209,13 +209,13 @@ class TestHandleVisionAnalyze:
             assert "Describe the cat" in full_prompt
             assert "Fully describe and explain" in full_prompt
 
-    def test_uses_auxiliary_vision_model_env(self):
-        """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
+    def test_stale_auxiliary_vision_model_env_does_not_override_router(self):
+        """Stale env bridges must not override config-driven vision routing."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
-            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
+            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "stale/gemma"}),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
             coro = _handle_vision_analyze(
@@ -224,17 +224,16 @@ class TestHandleVisionAnalyze:
             coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]  # third positional arg
-            assert model == "custom/model-v1"
+            assert model is None
 
-    def test_falls_back_to_default_model(self):
-        """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
+    def test_does_not_pass_explicit_model_when_env_absent(self):
+        """Without a direct override, call_llm(task="vision") resolves the model."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
             patch.dict(os.environ, {}, clear=False),
         ):
-            # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
             coro = _handle_vision_analyze(
@@ -243,8 +242,6 @@ class TestHandleVisionAnalyze:
             coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
-            # With no AUXILIARY_VISION_MODEL set, model should be None
-            # (the centralized call_llm router picks the default)
             assert model is None
 
     def test_empty_args_graceful(self):

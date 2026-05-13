@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -11,6 +11,9 @@ Provides speech-to-text transcription with six providers:
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **openrouter** — OpenRouter aggregated transcription, requires
+    ``OPENROUTER_API_KEY``. Routes to Whisper-family models via the
+    same OpenRouter credit pool as LLM access. See #24415.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -84,6 +87,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_OPENROUTER_STT_MODEL = os.getenv("STT_OPENROUTER_MODEL", "openai/whisper-1")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -91,6 +95,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+OPENROUTER_STT_BASE_URL = os.getenv("STT_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -99,6 +104,14 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+# OpenRouter prefixes Whisper-family models with "openai/" -- these are the
+# common ones a user is likely to land on; the list is informational only,
+# we do NOT block other model IDs (OpenRouter routinely adds new ones).
+OPENROUTER_MODELS = {
+    "openai/whisper-1",
+    "openai/gpt-4o-mini-transcribe",
+    "openai/gpt-4o-transcribe",
+}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -273,11 +286,26 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "openrouter":
+            if _HAS_OPENAI and get_env_value("OPENROUTER_API_KEY"):
+                return "openrouter"
+            logger.warning(
+                "STT provider 'openrouter' configured but OPENROUTER_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
-    # mistral is intentionally skipped while `mistralai` is quarantined on
-    # PyPI (malicious 2.4.6 release on 2026-05-12).
+    # --- Auto-detect (no explicit provider) ------------------------------
+    #
+    # Order: local > groq > openai > xai > openrouter.  openrouter is
+    # last in the cloud chain because it is a catch-all that many users
+    # already have configured for LLM access -- if they ALSO have a
+    # dedicated STT key (Groq / OpenAI / xAI) we should prefer the
+    # dedicated provider's pricing and routing.  See #24415.
+    #
+    # mistral is intentionally skipped while `mistralai` is quarantined
+    # on PyPI (malicious 2.4.6 release on 2026-05-12).
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -292,6 +320,9 @@ def _get_provider(stt_config: dict) -> str:
     if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"
+    if _HAS_OPENAI and get_env_value("OPENROUTER_API_KEY"):
+        logger.info("No local STT available, using OpenRouter Whisper API")
+        return "openrouter"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -786,6 +817,74 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: openrouter (Whisper-family via OpenRouter aggregator)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_openrouter(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe via OpenRouter's OpenAI-compatible audio endpoint (#24415).
+
+    OpenRouter exposes ``POST /api/v1/audio/transcriptions`` with the
+    same wire format as OpenAI, so the OpenAI SDK with a custom
+    ``base_url`` + ``api_key`` is the cleanest route -- no new
+    dependency.  Lets users with ``OPENROUTER_API_KEY`` already
+    configured for LLM access reuse the same key & billing for STT.
+    """
+    stt_config = _load_stt_config()
+    openrouter_cfg = stt_config.get("openrouter", {}) or {}
+
+    # Per-provider overrides win, env var is the fallback.  Mirrors
+    # how the OpenAI / xAI providers do it -- never reaches outside
+    # this module's resolution rules so users get one consistent story.
+    api_key = openrouter_cfg.get("api_key") or get_env_value("OPENROUTER_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "OPENROUTER_API_KEY not set"}
+
+    if not _HAS_OPENAI:
+        return {"success": False, "transcript": "", "error": "openai package not installed"}
+
+    base_url = str(
+        openrouter_cfg.get("base_url")
+        or os.getenv("STT_OPENROUTER_BASE_URL")
+        or OPENROUTER_STT_BASE_URL
+    ).strip().rstrip("/")
+
+    try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text",
+                )
+
+            transcript_text = _extract_transcript_text(transcription)
+            logger.info(
+                "Transcribed %s via OpenRouter API (%s, %d chars)",
+                Path(file_path).name, model_name, len(transcript_text),
+            )
+            return {"success": True, "transcript": transcript_text, "provider": "openrouter"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except APIConnectionError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except APITimeoutError as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except APIError as e:
+        return {"success": False, "transcript": "", "error": f"API error: {e}"}
+    except Exception as e:
+        logger.error("OpenRouter transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -858,6 +957,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
+    if provider == "openrouter":
+        openrouter_cfg = stt_config.get("openrouter", {}) or {}
+        model_name = model or openrouter_cfg.get("model", DEFAULT_OPENROUTER_STT_MODEL)
+        return _transcribe_openrouter(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -866,8 +970,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, set OPENROUTER_API_KEY "
+            "for OpenRouter Whisper, or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for "
+            "the OpenAI Whisper API."
         ),
     }
 

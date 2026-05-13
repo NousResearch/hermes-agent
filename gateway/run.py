@@ -15842,6 +15842,11 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
+            # Defensive: run_conversation should always return a dict, but
+            # guard against unexpected types (e.g. SendResult from adapter
+            # leaks) so .get() calls below don't crash.  See #25152.
+            if not isinstance(result, dict):
+                result = {"final_response": "", "messages": []}
             adapter = self.adapters.get(source.platform)
             
             # Get pending message from adapter.

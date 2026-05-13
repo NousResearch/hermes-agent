@@ -2321,3 +2321,29 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
     assert resolved["provider"] == "minimax-oauth"
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+
+def test_resolve_runtime_provider_strips_kimi_coding_v1_for_anthropic_messages(monkeypatch):
+    """Regression for #25104: Anthropic SDK appends /v1/messages itself.
+
+    A persisted Kimi Code base URL copied from the OpenAI-compatible /models
+    surface (``.../coding/v1``) must be normalized to ``.../coding`` when the
+    runtime transport is Anthropic Messages, otherwise requests go to
+    ``/coding/v1/v1/messages``.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "kimi-coding", "api_mode": "anthropic_messages"},
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_api_key="sk-kimi-test",
+        explicit_base_url="https://api.kimi.com/coding/v1",
+    )
+
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"

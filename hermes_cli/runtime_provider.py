@@ -896,6 +896,18 @@ def _resolve_explicit_runtime(
                 if detected:
                     api_mode = detected
 
+        if (
+            api_mode == "anthropic_messages"
+            and base_url_host_matches(base_url, "api.kimi.com")
+            and base_url.rstrip("/").lower().endswith("/coding/v1")
+        ):
+            # Kimi Code exposes /models on the OpenAI-compatible /coding/v1
+            # surface, but Anthropic SDK clients append /v1/messages to the
+            # configured base_url.  Strip the catalog suffix for runtime calls
+            # so requests target /coding/v1/messages rather than
+            # /coding/v1/v1/messages.
+            base_url = base_url.rstrip("/")[:-3]
+
         return {
             "provider": provider,
             "api_mode": api_mode,

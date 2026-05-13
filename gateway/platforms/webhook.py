@@ -1,7 +1,7 @@
 """Generic webhook platform adapter.
 
 Runs an aiohttp HTTP server that receives webhook POSTs from external
-services (GitHub, GitLab, JIRA, Stripe, etc.), validates HMAC signatures,
+services (GitHub, GitLab, Linear, JIRA, Stripe, etc.), validates HMAC signatures,
 transforms payloads into agent prompts, and routes responses back to the
 source or to another configured platform.
 
@@ -391,6 +391,7 @@ class WebhookAdapter(BasePlatformAdapter):
         event_type = (
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
+            or request.headers.get("Linear-Event", "")
             or payload.get("event_type", "")
             or "unknown"
         )
@@ -442,9 +443,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
         # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+        delivery_id = (
+            request.headers.get("X-GitHub-Delivery", "")
+            or request.headers.get("Linear-Delivery", "")
+            or request.headers.get("X-Request-ID", "")
+            or str(int(time.time() * 1000))
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -589,7 +592,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Linear, generic HMAC-SHA256)."""
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:
@@ -602,6 +605,14 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Linear: Linear-Signature = <hex HMAC-SHA256>
+        linear_sig = request.headers.get("Linear-Signature", "")
+        if linear_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(linear_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

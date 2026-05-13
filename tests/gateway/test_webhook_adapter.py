@@ -100,6 +100,11 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _linear_signature(body: bytes, secret: str) -> str:
+    """Compute Linear-Signature (plain HMAC-SHA256 hex) for *body*."""
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -169,6 +174,22 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_linear_signature_valid(self):
+        """Valid Linear-Signature (plain HMAC-SHA256 hex) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"type":"AgentSession","action":"created"}'
+        secret = "linear-webhook-secret"
+        sig = _linear_signature(body, secret)
+        req = _mock_request(headers={"Linear-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_linear_signature_invalid(self):
+        """Wrong Linear-Signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"type":"AgentSession","action":"created"}'
+        req = _mock_request(headers={"Linear-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, "linear-webhook-secret") is False
 
 
 # ===================================================================
@@ -304,6 +325,30 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_event_filter_uses_linear_event_header(self):
+        """Linear-Event selects the event type for Linear webhooks."""
+        routes = {
+            "linear": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["AgentSession"],
+                "prompt": "Linear event: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/linear",
+                json={"action": "created"},
+                headers={"Linear-Event": "AgentSession"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "AgentSession"
+
 
 # ===================================================================
 # HTTP handling
@@ -410,6 +455,27 @@ class TestIdempotency:
             assert resp2.status == 200
             data = await resp2.json()
             assert data["status"] == "duplicate"
+
+    @pytest.mark.asyncio
+    async def test_linear_delivery_header_is_used_for_idempotency(self):
+        """Linear-Delivery is used as the delivery/idempotency key."""
+        routes = {"linear": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"Linear-Delivery": "linear-delivery-123"}
+            resp1 = await cli.post("/webhooks/linear", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+            data1 = await resp1.json()
+            assert data1["delivery_id"] == "linear-delivery-123"
+
+            resp2 = await cli.post("/webhooks/linear", json={"a": 1}, headers=headers)
+            assert resp2.status == 200
+            data2 = await resp2.json()
+            assert data2["status"] == "duplicate"
+            assert data2["delivery_id"] == "linear-delivery-123"
 
     @pytest.mark.asyncio
     async def test_expired_delivery_id_allows_reprocess(self):

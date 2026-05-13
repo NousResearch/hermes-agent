@@ -759,7 +759,16 @@ async def vision_analyze_tool(
         comprehensive_prompt = user_prompt
         
         # Prepare the message with base64-encoded image
-        messages = [
+        messages = []
+        # Inject SOUL.md as system message if available so persona carries over
+        try:
+            from agent.prompt_builder import load_soul_md
+            soul = load_soul_md()
+            if soul:
+                messages.append({"role": "system", "content": soul})
+        except Exception:
+            pass
+        messages.append(
             {
                 "role": "user",
                 "content": [
@@ -775,7 +784,7 @@ async def vision_analyze_tool(
                     }
                 ]
             }
-        ]
+        )
         
         logger.info("Processing image with vision model...")
         

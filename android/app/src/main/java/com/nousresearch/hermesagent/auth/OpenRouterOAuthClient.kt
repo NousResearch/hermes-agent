@@ -30,18 +30,16 @@ data class OpenRouterOAuthExchangeResult(
 object OpenRouterOAuthClient {
     private const val AUTH_PROVIDER = "openrouter-oauth"
     private const val AUTH_URL = "https://openrouter.ai/auth"
-    private const val DEFAULT_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
+    internal const val DEFAULT_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
     private const val CODE_CHALLENGE_METHOD = "S256"
     private const val MAX_STATUS_LENGTH = 240
     private val secureRandom = SecureRandom()
 
-    fun createStartRequest(state: String, verifier: String = createCodeVerifier()): OpenRouterOAuthStartRequest {
-        val callbackUrl = Uri.parse(AuthSessionStore.CALLBACK_URI).buildUpon()
-            .appendQueryParameter("method", "openrouter")
-            .appendQueryParameter("provider", "openrouter")
-            .appendQueryParameter("state", state)
-            .build()
-            .toString()
+    fun createStartRequest(
+        state: String,
+        verifier: String = createCodeVerifier(),
+        callbackUrl: String = customSchemeCallbackUrl(state),
+    ): OpenRouterOAuthStartRequest {
         val startUri = Uri.parse(AUTH_URL).buildUpon()
             .appendQueryParameter("callback_url", callbackUrl)
             .appendQueryParameter("code_challenge", codeChallenge(verifier))
@@ -56,6 +54,15 @@ object OpenRouterOAuthClient {
             codeChallengeMethod = CODE_CHALLENGE_METHOD,
         )
         return OpenRouterOAuthStartRequest(pendingRequest, startUri)
+    }
+
+    internal fun customSchemeCallbackUrl(state: String): String {
+        return Uri.parse(AuthSessionStore.CALLBACK_URI).buildUpon()
+            .appendQueryParameter("method", "openrouter")
+            .appendQueryParameter("provider", "openrouter")
+            .appendQueryParameter("state", state)
+            .build()
+            .toString()
     }
 
     fun isOpenRouterCallback(uri: Uri?, pending: PendingAuthRequest?): Boolean {

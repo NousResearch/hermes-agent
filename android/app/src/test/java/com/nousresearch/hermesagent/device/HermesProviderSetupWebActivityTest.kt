@@ -46,7 +46,7 @@ class HermesProviderSetupWebActivityTest {
     }
 
     @Test
-    fun openInAppStartsInternalProviderSetupViewerForAuthAndSetupUrls() {
+    fun openInAppStartsInternalProviderSetupViewerOnlyWhenExplicitlyRequested() {
         val context = RuntimeEnvironment.getApplication()
         val uri = Uri.parse("https://openrouter.ai/auth")
 

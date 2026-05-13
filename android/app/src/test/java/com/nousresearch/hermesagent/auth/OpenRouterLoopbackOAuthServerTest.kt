@@ -14,7 +14,7 @@ import java.net.URL
 @RunWith(RobolectricTestRunner::class)
 class OpenRouterLoopbackOAuthServerTest {
     @Test
-    fun callbackUrlUsesDeviceLoopbackPort3000WithStateAndProviderMetadata() {
+    fun callbackUrlUsesLocalhostPort3000WithStateAndProviderMetadata() {
         val url = OpenRouterLoopbackOAuthServer.callbackUrlForState("state-123")
         val uri = Uri.parse(url)
 

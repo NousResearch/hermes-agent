@@ -47,6 +47,26 @@ class OpenRouterOAuthClientTest {
     }
 
     @Test
+    fun createStartRequestAcceptsLoopbackCallbackUrlForMobileBrowserOAuth() {
+        val callbackUrl = OpenRouterLoopbackOAuthServer.callbackUrlForState("state-123")
+
+        val request = OpenRouterOAuthClient.createStartRequest(
+            state = "state-123",
+            verifier = "test-verifier",
+            callbackUrl = callbackUrl,
+        )
+        val callbackUri = Uri.parse(request.startUri.getQueryParameter("callback_url"))
+
+        assertEquals("http", callbackUri.scheme)
+        assertEquals("localhost", callbackUri.host)
+        assertEquals(3000, callbackUri.port)
+        assertEquals("/hermes/openrouter/callback", callbackUri.path)
+        assertEquals("openrouter", callbackUri.getQueryParameter("method"))
+        assertEquals("openrouter", callbackUri.getQueryParameter("provider"))
+        assertEquals("state-123", callbackUri.getQueryParameter("state"))
+    }
+
+    @Test
     fun exchangeCodeForApiKeyPostsPkcePayloadAndReturnsKey() {
         val server = TestHttpServer { target, body ->
             assertEquals("/api/v1/auth/keys", target)

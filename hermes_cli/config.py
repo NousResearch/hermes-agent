@@ -1968,6 +1968,7 @@ DEFAULT_CONFIG = {
         # When false, commentary falls back to the reasoning channel and is
         # only visible when show_reasoning is enabled.
         "show_commentary": True,
+        "diagnostic_status": "all",  # Gateway: forward internal recovery/diagnostic messages to the platform ("off" to suppress)
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)

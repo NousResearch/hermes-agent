@@ -1941,6 +1941,29 @@ class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
 
+    def test_bundled_example_dashboard_plugin_is_hidden_by_default(self):
+        """The example plugin is an API-auth test fixture, not user navigation.
+
+        It intentionally has a backend API route used by auth tests, but no
+        production frontend bundle. Keep it discoverable for API mounting while
+        preventing an unusable "Example" tab from appearing in the dashboard.
+        """
+        import json
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_file = (
+            repo_root
+            / "plugins"
+            / "example-dashboard"
+            / "dashboard"
+            / "manifest.json"
+        )
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+
+        assert manifest["name"] == "example"
+        assert manifest["tab"]["hidden"] is True
+
     def _write_plugin(self, tmp_path, name, manifest):
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"

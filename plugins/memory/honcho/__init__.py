@@ -306,13 +306,29 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- B5: cost-awareness config -----
             try:
                 raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
+                # Resolve host-scoped overrides first, then fall back to root,
+                # then to defaults — matches client.py:from_global_config pattern
+                # so `hosts.<host>.dialecticCadence` etc. actually take effect.
+                host_block = (raw.get("hosts") or {}).get(cfg.host, {})
+                self._injection_frequency = (
+                    host_block.get("injectionFrequency")
+                    or raw.get("injectionFrequency")
+                    or "every-turn"
+                )
+                self._context_cadence = int(
+                    host_block.get("contextCadence")
+                    or raw.get("contextCadence")
+                    or 1
+                )
                 # Backwards-compat: unset dialecticCadence falls back to 1
                 # (every turn) so existing honcho.json configs without the key
                 # behave as they did before. New setups via `hermes honcho setup`
                 # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                self._dialectic_cadence = int(
+                    host_block.get("dialecticCadence")
+                    or raw.get("dialecticCadence")
+                    or 1
+                )
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
                 self._reasoning_heuristic = cfg.reasoning_heuristic

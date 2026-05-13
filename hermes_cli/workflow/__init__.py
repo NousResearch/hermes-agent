@@ -8,6 +8,7 @@ modules instead of inferring workflow state from Kanban prose.
 from .dag import DagValidationResult, normalize_dag, validate_dag
 from .errors import WorkflowError, WorkflowValidationError
 from .policy import DEFAULT_POLICY, PolicyLoadResult, WorkflowPolicy, load_policy
+from .worktrees import allocate_worktrees
 from .store import (
     WorkflowArtifact,
     WorkflowEvent,
@@ -35,6 +36,7 @@ __all__ = [
     "WorkflowValidationError",
     "add_artifact",
     "add_event",
+    "allocate_worktrees",
     "connect",
     "create_workflow",
     "get_workflow",

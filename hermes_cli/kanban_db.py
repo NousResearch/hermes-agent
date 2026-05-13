@@ -3902,6 +3902,28 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _kanban_worker_git_identity(profile: str) -> tuple[str, str]:
+    """Return the Git author/committer identity for a spawned worker.
+
+    Kanban workers are autonomous agents, so commits they create should be
+    attributable to the profile that did the work rather than to a shared host
+    account, a human operator, or a generic ``Hermes Agent`` identity.  Use a
+    deterministic, non-secret noreply-style address so the mapping covers all
+    current and future profiles without per-profile bootstrap config.
+    """
+    safe_profile = profile.strip() or "hermes-worker"
+    return safe_profile, f"{safe_profile}@users.noreply.github.com"
+
+
+def _inject_kanban_worker_git_identity(env: dict[str, str], profile: str) -> None:
+    """Force Git commits in a spawned worker to use that worker profile."""
+    git_name, git_email = _kanban_worker_git_identity(profile)
+    env["GIT_AUTHOR_NAME"] = git_name
+    env["GIT_AUTHOR_EMAIL"] = git_email
+    env["GIT_COMMITTER_NAME"] = git_name
+    env["GIT_COMMITTER_EMAIL"] = git_email
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3975,6 +3997,11 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # Git reads these environment variables before repository/global config.
+    # Setting them at dispatcher spawn time makes commit author/committer
+    # metadata match the worker profile in every workspace, without touching
+    # per-profile secrets or relying on mutable ~/.gitconfig bootstrap state.
+    _inject_kanban_worker_git_identity(env, profile_arg)
 
     cmd = [
         *_resolve_hermes_argv(),

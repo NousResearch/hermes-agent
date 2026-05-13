@@ -1084,6 +1084,57 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_PROFILE"] == "coder"
+        assert env["GIT_AUTHOR_NAME"] == "coder"
+        assert env["GIT_AUTHOR_EMAIL"] == "coder@users.noreply.github.com"
+        assert env["GIT_COMMITTER_NAME"] == "coder"
+        assert env["GIT_COMMITTER_EMAIL"] == "coder@users.noreply.github.com"
+
+    def test_dispatcher_spawn_overrides_parent_git_identity_with_worker_profile(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setenv("GIT_AUTHOR_NAME", "Hermes Agent")
+        monkeypatch.setenv("GIT_AUTHOR_EMAIL", "hermes-agent@users.noreply.github.com")
+        monkeypatch.setenv("GIT_COMMITTER_NAME", "flees")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "flees@example.com")
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4343
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_dispatch_git_identity",
+            title="x",
+            body=None,
+            assignee="PixelPanda",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_PROFILE"] == "pixelpanda"
+        assert env["GIT_AUTHOR_NAME"] == "pixelpanda"
+        assert env["GIT_AUTHOR_EMAIL"] == "pixelpanda@users.noreply.github.com"
+        assert env["GIT_COMMITTER_NAME"] == "pixelpanda"
+        assert env["GIT_COMMITTER_EMAIL"] == "pixelpanda@users.noreply.github.com"
 
 
 # ---------------------------------------------------------------------------

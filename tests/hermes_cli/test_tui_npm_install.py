@@ -1,6 +1,7 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,3 +121,19 @@ def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
     """dist/entry.js present and no package-lock.json → prebuilt bundle, skip npm install."""
     _touch_tui_entry(tmp_path)
     assert main_mod._tui_need_npm_install(tmp_path) is False
+
+
+def test_launch_tui_missing_ui_dir_exits_with_message(
+    monkeypatch, main_mod, tmp_path, capsys
+) -> None:
+    """_launch_tui exits with a clear message when ui-tui/ doesn't exist and HERMES_TUI_DIR is unset."""
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "ui-tui" in captured.err
+    assert "not available" in captured.err or "not packaged" in captured.err

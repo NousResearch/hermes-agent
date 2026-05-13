@@ -1150,6 +1150,15 @@ def _launch_tui(
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
+    if not tui_dir.is_dir() and not os.environ.get("HERMES_TUI_DIR"):
+        print(
+            "✗ The TUI is not available in this install — ui-tui/ was not packaged.\n"
+            "  Options:\n"
+            "    • Use a source checkout (git clone + uv pip install -e .)\n"
+            "    • Set HERMES_TUI_DIR to a pre-built ui-tui/dist directory",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     import tempfile
 

@@ -771,8 +771,17 @@ class MattermostAdapter(BasePlatformAdapter):
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
-        if message_text.startswith("/"):
+        # Tolerate exactly one leading space before "/" — mobile Mattermost
+        # blocks a literal leading slash. Two or more leading spaces means
+        # plain text, not a command.
+        if message_text.startswith("/") or (
+            message_text.startswith(" /") and not message_text.startswith("  ")
+        ):
             msg_type = MessageType.COMMAND
+            # Normalize the single leading space so downstream get_command()
+            # (which checks text.startswith("/")) recognizes the command.
+            if message_text.startswith(" /"):
+                message_text = message_text[1:]
 
         # Download file attachments immediately (URLs require auth headers
         # that downstream tools won't have).

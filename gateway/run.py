@@ -6589,7 +6589,14 @@ class TurnRunner:
             0 if (_session_was_split or _compacted_in_place) else len(agent_history)
         )
 
-        if not final_response:
+        # Successful end_turn exits often have empty prose; avoid the old
+        # ``if not final_response`` bailout unless failure metadata matches.
+        _empty_final = final_response is None or final_response == ""
+        if _empty_final and (
+            result.get("failed")
+            or result.get("partial")
+            or result.get("error")
+        ):
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
@@ -6615,6 +6622,7 @@ class TurnRunner:
                 "error": result.get("error"),
                 "compression_exhausted": result.get("compression_exhausted", False),
                 "compression_deferred": result.get("compression_deferred", False),
+                "turn_exit_reason": result.get("turn_exit_reason"),
                 "tools": ctx.tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "compacted_in_place": _compacted_in_place,
@@ -6625,6 +6633,10 @@ class TurnRunner:
                 "model": _resolved_model,
                 "context_length": _context_length,
             }
+
+        # Downstream MEDIA scan uses ``not in final_response``.
+        if final_response is None:
+            final_response = ""
 
         # Scan tool results for MEDIA:<path> tags that need to be delivered
         # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
@@ -6697,6 +6709,7 @@ class TurnRunner:
                 ctx.result_holder[0].get("compression_deferred", False)
                 if ctx.result_holder[0] else False
             ),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": _effective_history_offset,
             "compacted_in_place": _compacted_in_place,
@@ -28651,8 +28664,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # run_sync extracted to TurnRunner.run_sync (bound method; the
         # executor call below is unchanged).  Its closed-over locals travel
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
-        run_sync = turn_runner.run_sync
-        
+        run_sync = turn_runner.run_sync        
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the
         # sender drains BOTH tool-progress lines and _thinking scratch bubbles.

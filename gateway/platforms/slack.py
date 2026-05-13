@@ -1950,7 +1950,34 @@ class SlackAdapter(BasePlatformAdapter):
                         user_id=user_id,
                     )
                 )
-                if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                parent_mentions_bot = False
+                if (
+                    is_thread_reply
+                    and event_thread_ts
+                    and not reply_to_bot_thread
+                    and not in_mentioned_thread
+                    and not has_session
+                ):
+                    parent_text = await self._fetch_thread_parent_text(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        team_id=team_id,
+                        strip_bot_mention=False,
+                    )
+                    parent_mentions_bot = bool(bot_uid and f"<@{bot_uid}>" in parent_text)
+                    if parent_mentions_bot:
+                        self._mentioned_threads.add(event_thread_ts)
+                        if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+                            to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
+                            for t in to_remove:
+                                self._mentioned_threads.discard(t)
+
+                if (
+                    not reply_to_bot_thread
+                    and not in_mentioned_thread
+                    and not has_session
+                    and not parent_mentions_bot
+                ):
                     return
 
         if is_mentioned:
@@ -1960,8 +1987,8 @@ class SlackAdapter(BasePlatformAdapter):
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
             # defeat the feature (and re-enable agent-to-agent ack loops).
-            if event_thread_ts and not self._slack_strict_mention():
-                self._mentioned_threads.add(event_thread_ts)
+            if thread_ts and not self._slack_strict_mention():
+                self._mentioned_threads.add(thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
                     for t in to_remove:
@@ -2673,9 +2700,13 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
 
     async def _fetch_thread_parent_text(
-        self, channel_id: str, thread_ts: str, team_id: str = "",
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+        strip_bot_mention: bool = True,
     ) -> str:
-        """Return the raw text of the thread parent message (for reply_to_text).
+        """Return the text of the thread parent message.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
@@ -2706,7 +2737,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = (parent.get("text") or "").strip()
-            if bot_uid:
+            if strip_bot_mention and bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive

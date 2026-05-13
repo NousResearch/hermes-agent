@@ -1922,6 +1922,9 @@ class TestThreadReplyHandling:
     ):
         """Thread replies without mention should be ignored if no active session."""
         mock_session_store._entries = {}  # No active sessions
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={"messages": [{"ts": "123.000", "text": "Parent without mention"}]}
+        )
 
         event = {
             "text": "Just replying in the thread",
@@ -1934,6 +1937,58 @@ class TestThreadReplyHandling:
         }
         await adapter_with_session_store._handle_slack_message(event)
         adapter_with_session_store.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_routes_when_parent_mentioned_bot(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """A plain thread reply should route when the thread parent mentioned the bot."""
+        mock_session_store._entries = {}
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(side_effect=[
+            {
+                "messages": [
+                    {
+                        "ts": "123.000",
+                        "user": "U_USER",
+                        "text": "<@U_BOT> check this and ask me for run",
+                    },
+                ],
+            },
+            {
+                "messages": [
+                    {
+                        "ts": "123.000",
+                        "user": "U_USER",
+                        "text": "<@U_BOT> check this and ask me for run",
+                    },
+                    {
+                        "ts": "123.456",
+                        "user": "U_USER",
+                        "text": "run",
+                    },
+                ],
+            },
+        ])
+
+        event = {
+            "text": "run",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        with patch.object(
+            adapter_with_session_store, "_resolve_user_name", new=AsyncMock(return_value="Kai Yi")
+        ):
+            await adapter_with_session_store._handle_slack_message(event)
+
+        adapter_with_session_store.handle_message.assert_called_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text.endswith("run")
+        assert "check this and ask me for run" in msg_event.text
+        assert "123.000" in adapter_with_session_store._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_thread_reply_without_mention_with_session_processed(
@@ -2012,6 +2067,9 @@ class TestThreadReplyHandling:
     ):
         """If no session store is attached, thread replies without mention should be ignored."""
         # adapter fixture has no session store attached
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={"messages": [{"ts": "123.000", "text": "Parent without mention"}]}
+        )
         event = {
             "text": "Thread reply without mention",
             "user": "U_USER",

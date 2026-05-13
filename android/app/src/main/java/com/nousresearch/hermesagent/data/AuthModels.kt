@@ -132,7 +132,7 @@ object AuthCatalog {
             scope = AuthScope.RuntimeProvider,
             runtimeProvider = "alibaba-coding-plan",
             defaultBaseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
-            defaultModel = "qwen3-coder-plus",
+            defaultModel = "qwen3.6-plus",
             browserSignInSupported = false,
         ),
         AuthOption(
@@ -152,7 +152,17 @@ object AuthCatalog {
             scope = AuthScope.RuntimeProvider,
             runtimeProvider = "zai",
             defaultBaseUrl = "https://api.z.ai/api/paas/v4",
-            defaultModel = "glm-5",
+            defaultModel = "glm-5.1",
+            browserSignInSupported = false,
+        ),
+        AuthOption(
+            id = "zai-coding-plan",
+            label = "Z.AI Coding Plan",
+            description = "Use a Z.AI Coding Plan key with the dedicated GLM coding endpoint.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "zai-coding-plan",
+            defaultBaseUrl = "https://api.z.ai/api/coding/paas/v4",
+            defaultModel = "glm-5.1",
             browserSignInSupported = false,
         ),
     )

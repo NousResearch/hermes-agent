@@ -103,6 +103,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "zai-coding-plan": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=(
+            "GLM_CODING_PLAN_API_KEY",
+            "ZAI_CODING_PLAN_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        ),
+        base_url_override="https://api.z.ai/api/coding/paas/v4",
+        base_url_env_var="GLM_CODING_PLAN_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -245,6 +257,10 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "glm-coding-plan": "zai-coding-plan",
+    "zai-coding": "zai-coding-plan",
+    "zai_coding_plan": "zai-coding-plan",
+    "z-ai-coding-plan": "zai-coding-plan",
 
     # xai
     "x-ai": "xai",
@@ -373,6 +389,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "chatgpt-web": "ChatGPT Web",
     "copilot-acp": "GitHub Copilot ACP",
+    "zai-coding-plan": "Z.AI Coding Plan",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",

@@ -65,6 +65,11 @@ class TestParseModelInput:
         assert provider == "zai"
         assert model == "glm-5"
 
+    def test_zai_coding_plan_alias_resolved(self):
+        provider, model = parse_model_input("glm-coding-plan:glm-5.1", "openrouter")
+        assert provider == "zai-coding-plan"
+        assert model == "glm-5.1"
+
     def test_stepfun_alias_resolved(self):
         provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
         assert provider == "stepfun"
@@ -146,6 +151,10 @@ class TestCuratedModelsForProvider:
         models = curated_models_for_provider("zai")
         assert any("glm" in m[0] for m in models)
 
+    def test_zai_coding_plan_returns_glm_models(self):
+        models = curated_models_for_provider("zai-coding-plan")
+        assert any("glm" in m[0] for m in models)
+
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
@@ -159,6 +168,7 @@ class TestNormalizeProvider:
 
     def test_known_aliases(self):
         assert normalize_provider("glm") == "zai"
+        assert normalize_provider("glm-coding-plan") == "zai-coding-plan"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
@@ -201,6 +211,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_zai_coding_plan_returns_glm_models(self):
+        assert "glm-5.1" in provider_model_ids("zai-coding-plan")
 
     def test_stepfun_prefers_live_catalog(self):
         with patch(

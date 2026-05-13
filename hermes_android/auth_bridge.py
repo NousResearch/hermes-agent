@@ -40,6 +40,7 @@ PROVIDER_ENV_KEYS = {
     "dashscope": "DASHSCOPE_API_KEY",
     "alibaba-coding-plan": "BAILIAN_CODING_PLAN_API_KEY",
     "zai": "GLM_API_KEY",
+    "zai-coding-plan": "GLM_CODING_PLAN_API_KEY",
 }
 
 PROVIDER_AUTH_BUNDLE_KEYS = {
@@ -57,6 +58,15 @@ PROVIDER_AUTH_BUNDLE_KEYS = {
     },
     "zai": {
         "api_key": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+    },
+    "zai-coding-plan": {
+        "api_key": (
+            "GLM_CODING_PLAN_API_KEY",
+            "ZAI_CODING_PLAN_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        ),
     },
     "alibaba": {
         "api_key": "DASHSCOPE_API_KEY",

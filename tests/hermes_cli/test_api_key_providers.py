@@ -34,6 +34,7 @@ class TestProviderRegistry:
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
+        ("zai-coding-plan", "Z.AI Coding Plan", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
@@ -55,6 +56,17 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["zai"]
         assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
+
+    def test_zai_coding_plan_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["zai-coding-plan"]
+        assert pconfig.api_key_env_vars == (
+            "GLM_CODING_PLAN_API_KEY",
+            "ZAI_CODING_PLAN_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        )
+        assert pconfig.base_url_env_var == "GLM_CODING_PLAN_BASE_URL"
 
     def test_xai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["xai"]
@@ -121,6 +133,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
+        assert PROVIDER_REGISTRY["zai-coding-plan"].inference_base_url == "https://api.z.ai/api/coding/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -148,6 +161,7 @@ PROVIDER_ENV_VARS = (
     "LM_API_KEY", "LM_BASE_URL",
     "GOOGLE_API_KEY", "GEMINI_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+    "GLM_CODING_PLAN_API_KEY", "ZAI_CODING_PLAN_API_KEY", "GLM_CODING_PLAN_BASE_URL",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_CN_API_KEY", "MINIMAX_CN_BASE_URL",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
@@ -175,6 +189,9 @@ class TestResolveProvider:
     def test_explicit_zai(self):
         assert resolve_provider("zai") == "zai"
 
+    def test_explicit_zai_coding_plan(self):
+        assert resolve_provider("zai-coding-plan") == "zai-coding-plan"
+
     def test_explicit_kimi_coding(self):
         assert resolve_provider("kimi-coding") == "kimi-coding"
 
@@ -201,6 +218,11 @@ class TestResolveProvider:
 
     def test_alias_zhipu(self):
         assert resolve_provider("zhipu") == "zai"
+
+    def test_alias_zai_coding_plan(self):
+        assert resolve_provider("glm-coding-plan") == "zai-coding-plan"
+        assert resolve_provider("zai-coding") == "zai-coding-plan"
+        assert resolve_provider("z-ai-coding-plan") == "zai-coding-plan"
 
     def test_alias_kimi(self):
         assert resolve_provider("kimi") == "kimi-coding"
@@ -415,6 +437,21 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "glm-secret-key"
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
         assert creds["source"] == "GLM_API_KEY"
+
+    def test_resolve_zai_coding_plan_with_key(self, monkeypatch):
+        monkeypatch.setenv("GLM_CODING_PLAN_API_KEY", "glm-plan-secret-key")
+        creds = resolve_api_key_provider_credentials("zai-coding-plan")
+        assert creds["provider"] == "zai-coding-plan"
+        assert creds["api_key"] == "glm-plan-secret-key"
+        assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+        assert creds["source"] == "GLM_CODING_PLAN_API_KEY"
+
+    def test_zai_coding_plan_base_url_override(self, monkeypatch):
+        monkeypatch.setenv("ZAI_CODING_PLAN_API_KEY", "glm-plan-secret-key")
+        monkeypatch.setenv("GLM_CODING_PLAN_BASE_URL", "https://custom.zai.example/v4")
+        creds = resolve_api_key_provider_credentials("zai-coding-plan")
+        assert creds["base_url"] == "https://custom.zai.example/v4"
+        assert creds["source"] == "ZAI_CODING_PLAN_API_KEY"
 
     def test_resolve_copilot_with_github_token(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")

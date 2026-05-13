@@ -130,9 +130,10 @@ object ProviderPresets {
             id = "alibaba-coding-plan",
             label = "Qwen Coding Plan",
             baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
-            modelHint = "qwen3-coder-plus",
-            apiKeyUrl = "https://docs.qwencloud.com/developer-guides/clients-and-developer-tools/cline",
+            modelHint = "qwen3.6-plus",
+            apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline",
             fallbackSetupUrls = listOf(
+                "https://docs.qwencloud.com/coding-plan/overview",
                 "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
                 "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/",
                 "https://home.qwencloud.com/api-keys",
@@ -156,9 +157,20 @@ object ProviderPresets {
             id = "zai",
             label = "Z.AI / GLM",
             baseUrl = "https://api.z.ai/api/paas/v4",
-            modelHint = "glm-5",
+            modelHint = "glm-5.1",
             apiKeyUrl = "https://z.ai/manage-apikey/apikey-list",
             fallbackSetupUrls = listOf("https://docs.z.ai/guides/"),
+        ),
+        ProviderPreset(
+            id = "zai-coding-plan",
+            label = "Z.AI Coding Plan",
+            baseUrl = "https://api.z.ai/api/coding/paas/v4",
+            modelHint = "glm-5.1",
+            apiKeyUrl = "https://z.ai/manage-apikey/apikey-list",
+            fallbackSetupUrls = listOf(
+                "https://docs.z.ai/devpack/quick-start",
+                "https://docs.z.ai/guides/",
+            ),
         ),
         ProviderPreset(
             id = "nous",
@@ -215,7 +227,7 @@ object ProviderPresets {
         val normalized = baseUrl.trim().trimEnd('/')
         val presetDefault = find(providerId)?.baseUrl.orEmpty().trim().trimEnd('/')
         return when {
-            providerId == "zai" && normalized == presetDefault -> ""
+            providerId in setOf("zai", "zai-coding-plan") && normalized == presetDefault -> ""
             else -> normalized
         }
     }
@@ -235,6 +247,13 @@ object ProviderPresets {
             )
             "qwen-oauth" -> listOf("QWEN_ACCESS_TOKEN", "QWEN_API_KEY", "DASHSCOPE_API_KEY")
             "zai" -> listOf("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
+            "zai-coding-plan" -> listOf(
+                "GLM_CODING_PLAN_API_KEY",
+                "ZAI_CODING_PLAN_API_KEY",
+                "GLM_API_KEY",
+                "ZAI_API_KEY",
+                "Z_AI_API_KEY",
+            )
             "nous" -> listOf("NOUS_API_KEY")
             else -> listOf(providerId.trim().uppercase().replace('-', '_') + "_API_KEY")
         }.distinct()

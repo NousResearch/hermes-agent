@@ -86,17 +86,20 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'id = "alibaba-coding-plan"' in presets
     assert 'id = "qwen-oauth"' in presets
     assert 'id = "zai"' in presets
+    assert 'id = "zai-coding-plan"' in presets
     assert 'apiKeyUrl = "https://openrouter.ai/settings/keys"' in presets
     assert 'https://openrouter.ai/keys' in presets
     assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
     assert 'apiKeyUrl = "https://home.qwencloud.com/api-keys"' in presets
-    assert 'apiKeyUrl = "https://docs.qwencloud.com/developer-guides/clients-and-developer-tools/cline"' in presets
+    assert 'apiKeyUrl = "https://docs.qwencloud.com/coding-plan/tools/cline"' in presets
     assert 'apiKeyUrl = "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"' in presets
     assert 'apiKeyUrl = "https://z.ai/manage-apikey/apikey-list"' in presets
     assert 'fallbackSetupUrls = listOf(' in presets
+    assert 'https://docs.qwencloud.com/coding-plan/overview' in presets
     assert 'https://docs.qwencloud.com/api-reference/preparation/api-key' in presets
     assert 'https://qwen.ai/apiplatform' in presets
     assert 'https://docs.z.ai/guides/' in presets
+    assert 'https://docs.z.ai/devpack/quick-start' in presets
     assert 'data class ProviderSetupTarget' in presets
     assert 'fun setupTarget(providerId: String, requestedIndex: Int): ProviderSetupTarget?' in presets
     assert 'private fun Int.floorMod(divisor: Int): Int' in presets
@@ -109,7 +112,9 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'BAILIAN_CODING_PLAN_API_KEY' in presets
     assert 'ALIBABA_CODING_PLAN_API_KEY' in presets
     assert 'ZAI_API_KEY' in presets
-    assert 'providerId == "zai" && normalized == presetDefault -> ""' in presets
+    assert 'GLM_CODING_PLAN_API_KEY' in presets
+    assert 'ZAI_CODING_PLAN_API_KEY' in presets
+    assert 'providerId in setOf("zai", "zai-coding-plan") && normalized == presetDefault -> ""' in presets
 
 
 def test_auth_callback_hardening_strings_and_base_url_validation_exist():
@@ -195,7 +200,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 
     openrouter_block = auth_models.split('id = "openrouter"', 1)[1].split("AuthOption(", 1)[0]
     assert "browserSignInSupported = true" in openrouter_block
-    for provider in ["openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai"]:
+    for provider in ["openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai", "zai-coding-plan"]:
         block = auth_models.split(f'id = "{provider}"', 1)[1].split("AuthOption(", 1)[0]
         assert "browserSignInSupported = false" in block
 
@@ -208,9 +213,18 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     qwen_coding_block = auth_models.split('id = "qwen-coding-plan"', 1)[1].split("AuthOption(", 1)[0]
     assert 'runtimeProvider = "alibaba-coding-plan"' in qwen_coding_block
     assert 'https://coding-intl.dashscope.aliyuncs.com/v1' in qwen_coding_block
+    assert 'defaultModel = "qwen3.6-plus"' in qwen_coding_block
     qwen_oauth_block = auth_models.split('id = "qwen-oauth"', 1)[1].split("AuthOption(", 1)[0]
     assert 'runtimeProvider = "qwen-oauth"' in qwen_oauth_block
     assert 'https://portal.qwen.ai/v1' in qwen_oauth_block
+    zai_block = auth_models.split('id = "zai"', 1)[1].split("AuthOption(", 1)[0]
+    assert 'runtimeProvider = "zai"' in zai_block
+    assert 'https://api.z.ai/api/paas/v4' in zai_block
+    assert 'defaultModel = "glm-5.1"' in zai_block
+    zai_coding_block = auth_models.split('id = "zai-coding-plan"', 1)[1].split("AuthOption(", 1)[0]
+    assert 'runtimeProvider = "zai-coding-plan"' in zai_coding_block
+    assert 'https://api.z.ai/api/coding/paas/v4' in zai_coding_block
+    assert 'defaultModel = "glm-5.1"' in zai_coding_block
     assert "if (option.supportsBrowserSignIn)" in auth_screen
     assert "enabled = option.browserSignInEnabled" in auth_screen
     assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model

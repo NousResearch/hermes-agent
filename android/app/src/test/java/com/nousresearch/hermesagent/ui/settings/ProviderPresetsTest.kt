@@ -15,6 +15,15 @@ class ProviderPresetsTest {
     }
 
     @Test
+    fun zaiCodingPlanDefaultBaseUrlDoesNotOverrideCliEndpointDetection() {
+        val preset = requireNotNull(ProviderPresets.find("zai-coding-plan"))
+
+        val configBaseUrl = ProviderPresets.runtimeConfigBaseUrl("zai-coding-plan", preset.baseUrl)
+
+        assertEquals("", configBaseUrl)
+    }
+
+    @Test
     fun customZaiBaseUrlIsPreserved() {
         val configBaseUrl = ProviderPresets.runtimeConfigBaseUrl(
             providerId = "zai",
@@ -53,9 +62,9 @@ class ProviderPresetsTest {
         val envHelp = ProviderPresets.credentialInputHelp("alibaba-coding-plan")
 
         assertEquals("https://coding-intl.dashscope.aliyuncs.com/v1", preset.baseUrl)
-        assertEquals("qwen3-coder-plus", preset.modelHint)
+        assertEquals("qwen3.6-plus", preset.modelHint)
         assertEquals(
-            "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
+            "https://docs.qwencloud.com/coding-plan/overview",
             target.url,
         )
         assertEquals(
@@ -97,6 +106,10 @@ class ProviderPresetsTest {
         assertEquals(
             "glm-test",
             ProviderPresets.parseCredentialInput("zai", "\$env:ZAI_API_KEY=\"glm-test\"").apiKey,
+        )
+        assertEquals(
+            "glm-plan-test",
+            ProviderPresets.parseCredentialInput("zai-coding-plan", "ZAI_CODING_PLAN_API_KEY=glm-plan-test").apiKey,
         )
         assertEquals(
             "google-test",

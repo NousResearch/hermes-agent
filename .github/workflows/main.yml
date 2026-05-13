@@ -1,0 +1,55 @@
+name: Hermes Agent CI/CD
+
+on:
+  schedule:
+    - cron: '5 19 * * 6'      # 北京时间周日 03:05
+  workflow_dispatch:
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          # 确保 fetch 深度足够，避免合并时出现 shallow 问题
+          fetch-depth: 0
+
+      - name: Sync with upstream (official) repository
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream
+          git checkout main
+          # 使用 --no-edit 自动合并，如果冲突则不强制覆盖（workflow会失败，需手动处理）
+          git merge upstream/main --no-edit --allow-unrelated-histories || true
+          # 如果合并成功（没有冲突），则推送；否则跳过推送，避免破坏已有代码
+          if [ $? -eq 0 ]; then
+            git push origin main
+          else
+            echo "Merge conflict detected. Please resolve manually."
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/hermes-agent:latest
+            ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/hermes-agent:build-${{ github.run_id }}
+          # 可选的缓存加速（GitHub Actions 自带）
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -34,7 +34,7 @@ class HermesProviderSetupWebActivityTest {
     @Test
     fun openStartsExternalBrowserForHttpProviderSetupUrl() {
         val context = RuntimeEnvironment.getApplication()
-        val uri = Uri.parse("https://home.qwencloud.com/api-keys")
+        val uri = Uri.parse("https://docs.qwencloud.com/api-reference/preparation/api-key")
 
         val result = HermesProviderSetupWebActivity.open(context, uri, "Open Qwen setup")
         val started = Shadows.shadowOf(context).nextStartedActivity

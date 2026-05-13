@@ -120,10 +120,11 @@ object ProviderPresets {
             label = "Qwen Cloud / DashScope API key",
             baseUrl = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             modelHint = "qwen3.6-plus",
-            apiKeyUrl = "https://home.qwencloud.com/api-keys",
+            apiKeyUrl = "https://docs.qwencloud.com/api-reference/preparation/api-key",
             fallbackSetupUrls = listOf(
-                "https://docs.qwencloud.com/api-reference/preparation/api-key",
                 "https://docs.qwencloud.com/developer-guides/administration/api-keys",
+                "https://home.qwencloud.com/api-keys",
+                "https://account.alibabacloud.com/login/login.htm",
             ),
         ),
         ProviderPreset(

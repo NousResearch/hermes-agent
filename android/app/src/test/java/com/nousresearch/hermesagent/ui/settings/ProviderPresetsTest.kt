@@ -56,6 +56,18 @@ class ProviderPresetsTest {
     }
 
     @Test
+    fun qwenCloudOpensDocsBeforeHeavyAccountLoginPages() {
+        val first = requireNotNull(ProviderPresets.setupTarget("alibaba", 0))
+        val second = requireNotNull(ProviderPresets.setupTarget("alibaba", 1))
+        val third = requireNotNull(ProviderPresets.setupTarget("alibaba", 2))
+
+        assertEquals("https://docs.qwencloud.com/api-reference/preparation/api-key", first.url)
+        assertEquals("https://docs.qwencloud.com/developer-guides/administration/api-keys", second.url)
+        assertEquals("https://home.qwencloud.com/api-keys", third.url)
+        assertEquals(4, first.total)
+    }
+
+    @Test
     fun qwenCodingPlanUsesDedicatedEndpointAndCliEnvAliases() {
         val preset = requireNotNull(ProviderPresets.find("alibaba-coding-plan"))
         val target = requireNotNull(ProviderPresets.setupTarget("alibaba-coding-plan", 1))

@@ -34,7 +34,7 @@ class HermesExternalBrowserLauncherTest {
     @Suppress("DEPRECATION")
     fun createChooserIntentRemainsAvailableAsFallback() {
         val context = RuntimeEnvironment.getApplication()
-        val uri = Uri.parse("https://home.qwencloud.com/api-keys")
+        val uri = Uri.parse("https://docs.qwencloud.com/api-reference/preparation/api-key")
 
         val intent = HermesExternalBrowserLauncher.createChooserIntent(context, uri, "Open Qwen setup")
         val wrapped = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)

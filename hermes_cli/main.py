@@ -3552,11 +3552,11 @@ def _remove_custom_provider(config):
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
-    Always probes the endpoint's /models API to let the user pick a model.
-    If a model was previously saved, it is pre-selected in the menu.
-    Falls back to the saved model if probing fails.
+    When a model is already saved, offers a quick-reuse option before probing.
+    Otherwise probes the endpoint and delegates to _prompt_model_selection.
+    Falls back to manual input if probing fails.
     """
-    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
     from hermes_cli.config import load_config, save_config
     from hermes_cli.models import fetch_api_models
 
@@ -3579,6 +3579,75 @@ def _model_flow_named_custom(config, provider_info):
         print(f"  Current:  {saved_model}")
     print()
 
+    # When a model is already saved, let the user choose before probing
+    if saved_model:
+        choice_items = [
+            f"  Use saved model ({saved_model})",
+            "  Browse available models",
+            "  Cancel",
+        ]
+        try:
+            from simple_term_menu import TerminalMenu
+
+            pre_menu = TerminalMenu(
+                choice_items,
+                cursor_index=0,
+                menu_cursor="-> ",
+                menu_cursor_style=("fg_green", "bold"),
+                menu_highlight_style=("fg_green",),
+                cycle_cursor=True,
+                clear_screen=False,
+                title=f"Model for {name}:",
+            )
+            pre_idx = pre_menu.show()
+            from hermes_cli.curses_ui import flush_stdin
+
+            flush_stdin()
+            print()
+        except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+            for i, item in enumerate(choice_items, 1):
+                print(f"  {i}. {item.strip()}")
+            print()
+            try:
+                val = input(f"Choice [1-{len(choice_items)}]: ").strip()
+                pre_idx = int(val) - 1 if val else None
+            except (ValueError, KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+
+        if pre_idx is None or pre_idx == 2:
+            print("Cancelled.")
+            return
+        if pre_idx == 0:
+            model_name = saved_model
+            # Activate immediately without probing
+            _save_model_choice(model_name)
+            cfg = load_config()
+            model = cfg.get("model")
+            if not isinstance(model, dict):
+                model = {"default": model} if model else {}
+                cfg["model"] = model
+            if provider_key:
+                model["provider"] = provider_key
+                model.pop("base_url", None)
+                model.pop("api_key", None)
+            else:
+                model["provider"] = "custom"
+                model["base_url"] = base_url
+                if config_api_key:
+                    model["api_key"] = config_api_key
+            custom_api_mode = provider_info.get("api_mode", "")
+            if custom_api_mode:
+                model["api_mode"] = custom_api_mode
+            else:
+                model.pop("api_mode", None)
+            save_config(cfg)
+            deactivate_provider()
+            print(f"Model set to: {model_name}")
+            return
+
+        # pre_idx == 1: Browse available models — fall through to probe
+
     print("Fetching available models...")
     fetch_kwargs = {"timeout": 8.0}
     if api_mode:
@@ -3586,55 +3655,12 @@ def _model_flow_named_custom(config, provider_info):
     models = fetch_api_models(api_key, base_url, **fetch_kwargs)
 
     if models:
-        default_idx = 0
-        if saved_model and saved_model in models:
-            default_idx = models.index(saved_model)
-
         print(f"Found {len(models)} model(s):\n")
-        try:
-            from simple_term_menu import TerminalMenu
-
-            menu_items = [
-                f"  {m} (current)" if m == saved_model else f"  {m}" for m in models
-            ] + ["  Cancel"]
-            menu = TerminalMenu(
-                menu_items,
-                cursor_index=default_idx,
-                menu_cursor="-> ",
-                menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
-                cycle_cursor=True,
-                clear_screen=False,
-                title=f"Select model from {name}:",
-            )
-            idx = menu.show()
-            from hermes_cli.curses_ui import flush_stdin
-
-            flush_stdin()
-            print()
-            if idx is None or idx >= len(models):
-                print("Cancelled.")
-                return
-            model_name = models[idx]
-        except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
-            for i, m in enumerate(models, 1):
-                suffix = " (current)" if m == saved_model else ""
-                print(f"  {i}. {m}{suffix}")
-            print(f"  {len(models) + 1}. Cancel")
-            print()
-            try:
-                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
-                if not val:
-                    print("Cancelled.")
-                    return
-                idx = int(val) - 1
-                if idx < 0 or idx >= len(models):
-                    print("Cancelled.")
-                    return
-                model_name = models[idx]
-            except (ValueError, KeyboardInterrupt, EOFError):
-                print("\nCancelled.")
-                return
+        selected = _prompt_model_selection(models, current_model=saved_model)
+        if not selected:
+            print("Cancelled.")
+            return
+        model_name = selected
     elif saved_model:
         print("Could not fetch models from endpoint.")
         try:

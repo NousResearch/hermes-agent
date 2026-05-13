@@ -4293,7 +4293,7 @@ def _prompt_model_selection(
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
 ) -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+    """Interactive model selection. Returns chosen model ID or None.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
@@ -4305,12 +4305,12 @@ def _prompt_model_selection(
 
     _unavailable = unavailable_models or []
 
-    # Reorder: current model first, then the rest (deduplicated)
+    # Preserve original list order; deduplicate only
+    seen = set()
     ordered = []
-    if current_model and current_model in model_ids:
-        ordered.append(current_model)
     for mid in model_ids:
-        if mid not in ordered:
+        if mid not in seen:
+            seen.add(mid)
             ordered.append(mid)
 
     # All models for column-width computation (selectable + unavailable)
@@ -4356,7 +4356,6 @@ def _prompt_model_selection(
             base += "  ← currently in use"
         return base
 
-    # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
 
     # Build a pricing header hint for the menu title

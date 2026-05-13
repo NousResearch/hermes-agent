@@ -554,6 +554,15 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    # The Anthropic SDK appends /v1/messages to the base URL.  If the user
+    # configured base_url with a trailing /v1 (e.g. the setup wizard default
+    # https://api.anthropic.com/v1), the SDK produces a double-path like
+    # /v1/v1/messages → 404.  Strip the trailing /v1 for non-Azure endpoints.
+    # Azure AI Foundry uses its own versioning scheme and does NOT want stripping.
+    if normalized_base_url:
+        _stripped = normalized_base_url.rstrip("/")
+        if _stripped.endswith("/v1") and "azure.com" not in _stripped.lower():
+            normalized_base_url = _stripped[:-3].rstrip("/") or ""
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),

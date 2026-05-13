@@ -639,22 +639,42 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps(
-                {
-                    "part_index": part_index,
-                    "name": name,
-                    "thought_signature": thought_signature,
-                },
-                sort_keys=True,
-            )
-            slot = tool_call_indices.get(call_key)
+
+            # Find an existing slot whose recorded identity matches this
+            # part and whose accumulated args either equals args_str or
+            # is a prefix of it (delta continuation). Without the prefix
+            # check, distinct parallel function calls that share
+            # (part_index, name, thought_signature) — common when Gemini
+            # streams each call in its own event with parts[0] only, so
+            # part_index is always 0 — would collide on a single slot
+            # and the delta logic below would concatenate their args
+            # (e.g. `{"q":"a"}{"q":"b"}`), producing invalid JSON that
+            # the downstream consumer reads as truncated tool args.
+            slot = None
+            for existing in tool_call_indices.values():
+                if not isinstance(existing, dict):
+                    continue
+                if (
+                    existing.get("_match_part_index") != part_index
+                    or existing.get("_match_name") != name
+                    or existing.get("_match_thought_signature") != thought_signature
+                ):
+                    continue
+                last = str(existing.get("last_arguments") or "")
+                if (not last) or args_str == last or args_str.startswith(last):
+                    slot = existing
+                    break
             if slot is None:
                 slot = {
+                    "_match_part_index": part_index,
+                    "_match_name": name,
+                    "_match_thought_signature": thought_signature,
                     "index": len(tool_call_indices),
                     "id": f"call_{uuid.uuid4().hex[:12]}",
                     "last_arguments": "",
                 }
-                tool_call_indices[call_key] = slot
+                # Key is arbitrary; lookup is value-based above.
+                tool_call_indices[f"slot_{slot['index']}"] = slot
             emitted_arguments = args_str
             last_arguments = str(slot.get("last_arguments") or "")
             if last_arguments:

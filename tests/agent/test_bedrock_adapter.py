@@ -879,6 +879,47 @@ class TestClientCache:
         assert len(_bedrock_control_client_cache) == 0
 
 
+class TestRequireBoto3LazyInstall:
+    """Regression: _require_boto3 must route through tools.lazy_deps.ensure.
+
+    Post-2026-05-12, boto3 lives in LAZY_DEPS["provider.bedrock"] rather
+    than [all]. Without this hop, fresh installs hit the manual-install
+    error on the very first Bedrock call even though lazy installs are
+    enabled. Mirrors the pattern in agent.anthropic_adapter.
+    """
+
+    def test_require_boto3_calls_ensure_provider_bedrock(self):
+        from agent import bedrock_adapter
+
+        calls = []
+
+        def fake_ensure(feature, prompt=True):
+            calls.append((feature, prompt))
+
+        with patch("tools.lazy_deps.ensure", side_effect=fake_ensure):
+            bedrock_adapter._require_boto3()
+
+        assert ("provider.bedrock", False) in calls, (
+            "_require_boto3 should call ensure('provider.bedrock', prompt=False); "
+            f"got {calls!r}"
+        )
+
+    def test_require_boto3_tolerates_ensure_failure(self):
+        # If ensure() raises (e.g. FeatureUnavailable because lazy installs
+        # are disabled, or offline), _require_boto3 must fall through to the
+        # normal import attempt rather than propagating.
+        from agent import bedrock_adapter
+
+        with patch(
+            "tools.lazy_deps.ensure",
+            side_effect=RuntimeError("lazy installs disabled"),
+        ):
+            # boto3 is importable in the test env, so this should succeed
+            # despite ensure() blowing up.
+            mod = bedrock_adapter._require_boto3()
+            assert mod is not None
+
+
 # ---------------------------------------------------------------------------
 # Streaming with callbacks
 # ---------------------------------------------------------------------------

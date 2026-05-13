@@ -46,7 +46,22 @@ _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
 def _require_boto3():
-    """Import boto3, raising a clear error if not installed."""
+    """Import boto3, lazily installing the ``bedrock`` extra if missing.
+
+    Mirrors :func:`agent.anthropic_adapter._get_anthropic_sdk` — the
+    2026-05-12 policy (see ``pyproject.toml`` comment above ``[all]``)
+    moves ``boto3`` out of the eager install and into
+    ``tools.lazy_deps.LAZY_DEPS["provider.bedrock"]``. Without this
+    ``ensure()`` hop, every fresh install hits the manual-install
+    message below on first Bedrock call.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("provider.bedrock", prompt=False)
+    except ImportError:
+        pass  # lazy_deps module itself unavailable — fall through to import
+    except Exception:
+        pass  # FeatureUnavailable (opt-out / offline) — let ImportError below surface it
     try:
         import boto3
         return boto3

@@ -179,6 +179,7 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_command_timeout_lock = threading.Lock()
 
 
 def _get_command_timeout() -> int:
@@ -187,23 +188,27 @@ def _get_command_timeout() -> int:
     Reads ``config["browser"]["command_timeout"]`` and falls back to
     ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.  Result is
     cached after the first call and cleared by ``cleanup_all_browsers()``.
+    Thread-safe via double-checked locking (issue #24669).
     """
     global _cached_command_timeout, _command_timeout_resolved
     if _command_timeout_resolved:
         return _cached_command_timeout  # type: ignore[return-value]
 
-    _command_timeout_resolved = True
-    result = DEFAULT_COMMAND_TIMEOUT
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        val = cfg_get(cfg, "browser", "command_timeout")
-        if val is not None:
-            result = max(int(val), 5)  # Floor at 5s to avoid instant kills
-    except Exception as e:
-        logger.debug("Could not read command_timeout from config: %s", e)
-    _cached_command_timeout = result
-    return result
+    with _command_timeout_lock:
+        if _command_timeout_resolved:
+            return _cached_command_timeout  # type: ignore[return-value]
+        result = DEFAULT_COMMAND_TIMEOUT
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "browser", "command_timeout")
+            if val is not None:
+                result = max(int(val), 5)  # Floor at 5s to avoid instant kills
+        except Exception as e:
+            logger.debug("Could not read command_timeout from config: %s", e)
+        _cached_command_timeout = result
+        _command_timeout_resolved = True
+    return _cached_command_timeout  # type: ignore[return-value]
 
 
 def _get_vision_model() -> Optional[str]:
@@ -401,6 +406,7 @@ _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
+_allow_private_urls_lock = threading.Lock()
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
@@ -408,6 +414,7 @@ _agent_browser_resolved = False
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
+_browser_engine_lock = threading.Lock()
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -517,6 +524,7 @@ def _is_local_backend() -> bool:
 
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
+_auto_local_for_private_urls_lock = threading.Lock()
 
 
 def _get_browser_engine() -> str:
@@ -534,37 +542,42 @@ def _get_browser_engine() -> str:
     """
     global _cached_browser_engine, _browser_engine_resolved
     if _browser_engine_resolved:
-        return _cached_browser_engine
+        return _cached_browser_engine  # type: ignore[return-value]
 
-    _browser_engine_resolved = True
-    _cached_browser_engine = "auto"  # safe default
+    with _browser_engine_lock:
+        if _browser_engine_resolved:
+            return _cached_browser_engine  # type: ignore[return-value]
 
-    # Config file takes priority
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        val = cfg.get("browser", {}).get("engine")
-        if val and str(val).strip():
-            _cached_browser_engine = str(val).strip().lower()
-    except Exception as e:
-        logger.debug("Could not read browser.engine from config: %s", e)
+        result = "auto"  # safe default
 
-    # Fall back to env var (only if config didn't set a value)
-    if _cached_browser_engine == "auto":
-        env_val = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower()
-        if env_val:
-            _cached_browser_engine = env_val
+        # Config file takes priority
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            val = cfg.get("browser", {}).get("engine")
+            if val and str(val).strip():
+                result = str(val).strip().lower()
+        except Exception as e:
+            logger.debug("Could not read browser.engine from config: %s", e)
 
-    # Validate: agent-browser only accepts "chrome" and "lightpanda".
-    _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
-    if _cached_browser_engine not in _VALID_ENGINES:
-        logger.warning(
-            "Unknown browser engine %r (valid: %s), falling back to 'auto'",
-            _cached_browser_engine, ", ".join(sorted(_VALID_ENGINES)),
-        )
-        _cached_browser_engine = "auto"
+        # Fall back to env var (only if config didn't set a value)
+        if result == "auto":
+            env_val = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower()
+            if env_val:
+                result = env_val
 
-    return _cached_browser_engine
+        # Validate: agent-browser only accepts "chrome" and "lightpanda".
+        _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
+        if result not in _VALID_ENGINES:
+            logger.warning(
+                "Unknown browser engine %r (valid: %s), falling back to 'auto'",
+                result, ", ".join(sorted(_VALID_ENGINES)),
+            )
+            result = "auto"
+
+        _cached_browser_engine = result
+        _browser_engine_resolved = True
+    return _cached_browser_engine  # type: ignore[return-value]
 
 
 def _should_inject_engine(engine: str) -> bool:
@@ -867,17 +880,20 @@ def _auto_local_for_private_urls() -> bool:
     if _auto_local_for_private_urls_resolved:
         return _cached_auto_local_for_private_urls
 
-    _auto_local_for_private_urls_resolved = True
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict) and "auto_local_for_private_urls" in browser_cfg:
-            _cached_auto_local_for_private_urls = bool(
-                browser_cfg.get("auto_local_for_private_urls")
-            )
-    except Exception as e:
-        logger.debug("Could not read auto_local_for_private_urls from config: %s", e)
+    with _auto_local_for_private_urls_lock:
+        if _auto_local_for_private_urls_resolved:
+            return _cached_auto_local_for_private_urls
+        result = True  # safe default (match _cached_auto_local_for_private_urls init)
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            browser_cfg = cfg.get("browser", {})
+            if isinstance(browser_cfg, dict) and "auto_local_for_private_urls" in browser_cfg:
+                result = bool(browser_cfg.get("auto_local_for_private_urls"))
+        except Exception as e:
+            logger.debug("Could not read auto_local_for_private_urls from config: %s", e)
+        _cached_auto_local_for_private_urls = result
+        _auto_local_for_private_urls_resolved = True
     return _cached_auto_local_for_private_urls
 
 
@@ -997,24 +1013,29 @@ def _allow_private_urls() -> bool:
 
     Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
     for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    Thread-safe via double-checked locking (issue #24669).
     """
     global _cached_allow_private_urls, _allow_private_urls_resolved
     if _allow_private_urls_resolved:
-        return _cached_allow_private_urls
+        return _cached_allow_private_urls  # type: ignore[return-value]
 
-    _allow_private_urls_resolved = True
-    _cached_allow_private_urls = False  # safe default
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
-                browser_cfg.get("allow_private_urls"), default=False
-            )
-    except Exception as e:
-        logger.debug("Could not read allow_private_urls from config: %s", e)
-    return _cached_allow_private_urls
+    with _allow_private_urls_lock:
+        if _allow_private_urls_resolved:
+            return _cached_allow_private_urls  # type: ignore[return-value]
+        result = False  # safe default
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            browser_cfg = cfg.get("browser", {})
+            if isinstance(browser_cfg, dict):
+                result = is_truthy_value(
+                    browser_cfg.get("allow_private_urls"), default=False
+                )
+        except Exception as e:
+            logger.debug("Could not read allow_private_urls from config: %s", e)
+        _cached_allow_private_urls = result
+        _allow_private_urls_resolved = True
+    return _cached_allow_private_urls  # type: ignore[return-value]
 
 
 def _socket_safe_tmpdir() -> str:

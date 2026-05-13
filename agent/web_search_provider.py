@@ -12,13 +12,14 @@ Providers live in ``<repo>/plugins/web/<name>/`` (built-in, auto-loaded as
 ``kind: backend``) or ``~/.hermes/plugins/web/<name>/`` (user, opt-in via
 ``plugins.enabled``).
 
-This ABC is the plugin-facing surface. The legacy
-:mod:`tools.web_providers.base` module retains its own ABCs for in-tree
-consumers that haven't migrated yet; over time those will all flow through
-this provider.
+This ABC is the SINGLE plugin-facing surface for web providers — every
+provider in the tree (brave-free, ddgs, searxng, exa, parallel, tavily,
+firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
+ABCs were deleted in PR #25182 along with the per-vendor inline helpers
+in ``tools/web_tools.py``; the response-shape contract documented below
+is preserved bit-for-bit so the tool wrapper does not have to translate.
 
-Response shape (mirrors the legacy contract in ``tools/web_providers/base.py``
-so the tool wrapper does not have to translate):
+Response shape (preserved from the legacy contract):
 
 Search results::
 

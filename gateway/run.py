@@ -662,6 +662,39 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# OTEL bootstrap — plan 002-E (additive, optional, never crashes the gateway)
+# ---------------------------------------------------------------------------
+# All imports guarded: missing opentelemetry packages are a no-op.
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 to send traces
+# to the local collector; unset = ConsoleSpanExporter (stdout).
+try:
+    import os as _os
+    from opentelemetry import trace as _trace
+    from opentelemetry.sdk.resources import SERVICE_NAME as _SERVICE_NAME, Resource as _Resource
+    from opentelemetry.sdk.trace import TracerProvider as _TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor as _BSP, ConsoleSpanExporter as _CSE
+    _otel_resource = _Resource.create({_SERVICE_NAME: "hermes-gateway"})
+    _otel_provider = _TracerProvider(resource=_otel_resource)
+    _otel_endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    if _otel_endpoint:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as _GRPCExporter
+        _otel_exporter = _GRPCExporter(endpoint=_otel_endpoint, insecure=True)
+    else:
+        _otel_exporter = _CSE()
+    _otel_provider.add_span_processor(_BSP(_otel_exporter))
+    _trace.set_tracer_provider(_otel_provider)
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor as _HXI
+        _HXI().instrument()
+    except ImportError:
+        pass
+    logger.info("otel.initialized service=hermes-gateway endpoint=%s", _otel_endpoint or "console")
+except ImportError:
+    logger.debug("otel.sdk_missing — pip install opentelemetry-sdk[grpc] to enable tracing")
+except Exception as _otel_exc:
+    logger.warning("otel.init_failed error=%s", _otel_exc)
+
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same

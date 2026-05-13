@@ -6024,7 +6024,7 @@ class AIAgent:
                 # Phase 2: Auto-install if lockfile is newer than modules
                 if should_auto_install(_apm_cwd):
                     logger.info("APM lockfile newer than modules — running apm install")
-                    ok, _out = install_apm_dependencies(_apm_cwd)
+                    _ok, _out = install_apm_dependencies(_apm_cwd)
             except Exception:
                 pass  # Non-fatal
 
@@ -6144,7 +6144,7 @@ class AIAgent:
                 # ── APM: security audit ──
                 try:
                     from agent.apm_consumer import run_apm_audit, audit_report_for_prompt
-                    audit_clean, audit_findings = run_apm_audit(_context_cwd)
+                    _audit_clean, audit_findings = run_apm_audit(_context_cwd)
                     if audit_findings:
                         audit_block = audit_report_for_prompt(audit_findings)
                         if audit_block:

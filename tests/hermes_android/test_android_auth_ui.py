@@ -147,8 +147,8 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'HermesExternalBrowserLauncher.open' in auth_view_model
     open_auth_start_page = auth_view_model.split("private fun openAuthStartPage", 1)[1].split("fun copyPendingSignInUrl", 1)[0]
-    assert "preferInApp: Boolean = false" in open_auth_start_page
-    assert "HermesProviderSetupWebActivity.openInApp" in open_auth_start_page
+    assert "preferInApp" not in open_auth_start_page
+    assert "HermesProviderSetupWebActivity.openInApp" not in open_auth_start_page
     assert "HermesExternalBrowserLauncher.open" in open_auth_start_page
     assert 'Intent.createChooser' in browser_launcher
     assert 'putExtra(Browser.EXTRA_APPLICATION_ID' in browser_launcher
@@ -306,7 +306,8 @@ def test_settings_opens_official_provider_key_pages():
     assert "ProviderPresets.credentialInputHelp(providerId)" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(targetUrl)" in settings_view_model
-    assert "HermesProviderSetupWebActivity.openInApp" in settings_view_model
+    assert "HermesProviderSetupWebActivity.open(" in settings_view_model
+    assert "HermesProviderSetupWebActivity.openInApp" not in settings_view_model
     assert "fun checkProviderKeyPage(url: String)" in settings_view_model
     assert "ProviderSetupUrlProbe::probe" in settings_view_model
     assert "ProviderSetupUrlProbe.MAX_STATUS_LENGTH" in settings_view_model

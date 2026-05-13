@@ -65,7 +65,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`kanban-orchestrator`](/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + specialist-roster conventions + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban wor... | `devops/kanban-orchestrator` |
+| [`kanban-orchestrator`](/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill... | `devops/kanban-orchestrator` |
 | [`kanban-worker`](/docs/user-guide/skills/bundled/devops/devops-kanban-worker) | Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper det... | `devops/kanban-worker` |
 | [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
 
@@ -120,16 +120,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`audiocraft-audio-generation`](/docs/user-guide/skills/bundled/mlops/mlops-models-audiocraft) | AudioCraft: MusicGen text-to-music, AudioGen text-to-sound. | `mlops/models/audiocraft` |
-| [`axolotl`](/docs/user-guide/skills/bundled/mlops/mlops-training-axolotl) | Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO). | `mlops/training/axolotl` |
 | [`dspy`](/docs/user-guide/skills/bundled/mlops/mlops-research-dspy) | DSPy: declarative LM programs, auto-optimize prompts, RAG. | `mlops/research/dspy` |
 | [`huggingface-hub`](/docs/user-guide/skills/bundled/mlops/mlops-huggingface-hub) | HuggingFace hf CLI: search/download/upload models, datasets. | `mlops/huggingface-hub` |
 | [`llama-cpp`](/docs/user-guide/skills/bundled/mlops/mlops-inference-llama-cpp) | llama.cpp local GGUF inference + HF Hub model discovery. | `mlops/inference/llama-cpp` |
 | [`evaluating-llms-harness`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). | `mlops/evaluation/lm-evaluation-harness` |
 | [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) | OBLITERATUS: abliterate LLM refusals (diff-in-means). | `mlops/inference/obliteratus` |
-| [`outlines`](/docs/user-guide/skills/bundled/mlops/mlops-inference-outlines) | Outlines: structured JSON/regex/Pydantic LLM generation. | `mlops/inference/outlines` |
 | [`segment-anything-model`](/docs/user-guide/skills/bundled/mlops/mlops-models-segment-anything) | SAM: zero-shot image segmentation via points, boxes, masks. | `mlops/models/segment-anything` |
-| [`fine-tuning-with-trl`](/docs/user-guide/skills/bundled/mlops/mlops-training-trl-fine-tuning) | TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF. | `mlops/training/trl-fine-tuning` |
-| [`unsloth`](/docs/user-guide/skills/bundled/mlops/mlops-training-unsloth) | Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM. | `mlops/training/unsloth` |
 | [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | vLLM: high-throughput LLM serving, OpenAI API, quantization. | `mlops/inference/vllm` |
 | [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. | `mlops/evaluation/weights-and-biases` |
 

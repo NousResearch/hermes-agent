@@ -29,8 +29,6 @@ from hermes_cli.profiles import (
     rename_profile,
     export_profile,
     import_profile,
-    generate_bash_completion,
-    generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
@@ -1011,32 +1009,6 @@ class TestProfileIsolation:
         # Verify both exist and are independent dirs
         assert (alpha_dir / "skills").is_dir()
         assert (beta_dir / "skills").is_dir()
-
-
-# ===================================================================
-# TestCompletion
-# ===================================================================
-
-class TestCompletion:
-    """Tests for bash/zsh completion generators."""
-
-    def test_bash_completion_contains_complete(self):
-        script = generate_bash_completion()
-        assert len(script) > 0
-        assert "complete" in script
-
-    def test_zsh_completion_contains_compdef(self):
-        script = generate_zsh_completion()
-        assert len(script) > 0
-        assert "compdef" in script
-
-    def test_bash_completion_has_hermes_profiles_function(self):
-        script = generate_bash_completion()
-        assert "_hermes_profiles" in script
-
-    def test_zsh_completion_has_hermes_function(self):
-        script = generate_zsh_completion()
-        assert "_hermes" in script
 
 
 # ===================================================================

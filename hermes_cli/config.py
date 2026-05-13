@@ -28,6 +28,48 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Track which (config_path, mtime_ns, size) tuples we've already warned about
+# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
+# every time. Cleared automatically when the file changes (different mtime).
+_CONFIG_PARSE_WARNED: set = set()
+
+
+def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
+    """Surface a config.yaml parse failure to user, log, and stderr.
+
+    A YAML parse error in ``~/.hermes/config.yaml`` causes ``load_config()``
+    to silently fall back to ``DEFAULT_CONFIG``, which means every user
+    override (auxiliary providers, fallback chain, model overrides, etc.)
+    is dropped. Before this helper that was a one-line ``print(...)`` that
+    scrolled off-screen on the first invocation and was never seen again.
+
+    Now: warn once per (path, mtime_ns, size) on stderr **and** in
+    ``agent.log`` / ``errors.log`` at WARNING level so ``hermes logs``
+    surfaces it. Re-warns automatically if the file changes (different
+    mtime/size), so users editing the config see the next failure.
+    """
+    try:
+        st = config_path.stat()
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(config_path), 0, 0)
+    if key in _CONFIG_PARSE_WARNED:
+        return
+    _CONFIG_PARSE_WARNED.add(key)
+
+    msg = (
+        f"Failed to parse {config_path}: {exc}. "
+        f"Falling back to default config — every user override "
+        f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
+        f"Fix the YAML and restart."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
@@ -435,6 +477,12 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Maximum time (seconds) the gateway will block an agent waiting for
+        # a clarify-tool response from the user.  Hit this and the agent
+        # unblocks with "[user did not respond within Xm]" so it can adapt
+        # rather than pinning the running-agent guard forever.  CLI clarify
+        # blocks indefinitely (input() is synchronous) and ignores this.
+        "clarify_timeout": 600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -537,6 +585,7 @@ DEFAULT_CONFIG = {
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
         "docker_mount_cwd_to_workspace": False,
+        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
@@ -585,6 +634,12 @@ DEFAULT_CONFIG = {
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
+            # Optional externally managed Camofox identity. Useful when another
+            # app owns the visible browser and Hermes should operate in it.
+            "user_id": "",
+            "session_key": "",
+            # Rehydrate tab_id from Camofox before creating a new tab.
+            "adopt_existing_tab": False,
         },
     },
 
@@ -859,6 +914,7 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
@@ -866,6 +922,14 @@ DEFAULT_CONFIG = {
         "persistent_output": True,
         "persistent_output_max_lines": 200,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        # File-mutation verifier footer.  When true (default), the agent
+        # appends a one-line advisory to its final response whenever a
+        # write_file / patch call failed during the turn and was never
+        # superseded by a successful write to the same path.  This catches
+        # the "batch of parallel patches, half fail, model claims success"
+        # class of over-claim that otherwise forces users to run
+        # `git status` to verify edits landed.  Set false to suppress.
+        "file_mutation_verifier": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
@@ -1281,6 +1345,21 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        # Acknowledged supply-chain security advisories. Each entry is the
+        # ID of an advisory the user has read and acted on (uninstalled the
+        # compromised package, rotated credentials). Acked advisories no
+        # longer trigger the startup banner. Add via `hermes doctor --ack
+        # <id>`; remove by editing the list directly. See
+        # ``hermes_cli/security_advisories.py`` for the catalog.
+        "acked_advisories": [],
+        # Allow Hermes to lazy-install opt-in backend packages from PyPI
+        # the first time the user enables a backend that needs them
+        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
+        # their TTS provider). Set to false to require explicit
+        # ``pip install`` for everything beyond the base set — appropriate
+        # for restricted networks, audited environments, or air-gapped
+        # systems where any runtime install is unacceptable.
+        "allow_lazy_installs": True,
     },
 
     "cron": {
@@ -1417,6 +1496,53 @@ DEFAULT_CONFIG = {
         # disable backups entirely, set ``pre_update_backup: false`` above
         # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+    },
+
+    # Language Server Protocol — semantic diagnostics from real
+    # language servers (pyright, gopls, rust-analyzer, etc.) wired
+    # into the post-write lint check used by ``write_file`` and
+    # ``patch``.
+    #
+    # LSP is gated on git-workspace detection: when the agent's
+    # cwd (or the file being edited) is inside a git worktree, LSP
+    # runs against that workspace.  When neither is in a git repo,
+    # LSP stays dormant and the in-process syntax check is the only
+    # tier — handy for Telegram/Discord chats where the cwd is the
+    # user's home directory.
+    "lsp": {
+        # Master toggle.  Setting this to false disables the entire
+        # subsystem — no servers spawn, no background event loop, no
+        # cost.
+        "enabled": True,
+
+        # Diagnostic-wait mode for the post-write check.
+        # ``"document"`` waits up to ``wait_timeout`` seconds for the
+        # current file's diagnostics; ``"full"`` additionally requests
+        # workspace-wide diagnostics (slower).
+        "wait_mode": "document",
+        "wait_timeout": 5.0,
+
+        # How to handle missing server binaries.
+        # ``"auto"`` — try to install via npm/go/pip into
+        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
+        # ``"manual"`` — only use binaries already on PATH.
+        # ``"off"`` — alias for ``manual``.
+        "install_strategy": "auto",
+
+        # Per-server overrides.  Each key is a server_id from the
+        # registry (``pyright``, ``typescript``, ``gopls``,
+        # ``rust-analyzer``, etc.) and accepts:
+        #   disabled: true
+        #     — skip this server even when its extensions match
+        #   command: ["full/path/to/server", "--stdio"]
+        #     — pin a custom binary path; bypasses auto-install
+        #   env: {"KEY": "value"}
+        #     — extra env vars passed to the spawned process
+        #   initialization_options: {...}
+        #     — merged into the LSP ``initializationOptions``
+        # Empty by default; the registry defaults work for typical
+        # setups.
+        "servers": {},
     },
 
     # Config schema version - bump this when adding new required fields
@@ -3158,7 +3284,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     terminal_cfg = config.get("terminal", {})
     config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
     # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
+    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
 
     lines: list[str] = []
     if messaging_cwd:
@@ -3218,10 +3344,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if "tool_progress" not in display:
             old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
             old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
-            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+            if old_enabled and old_enabled.lower() in {"false", "0", "no"}:
                 display["tool_progress"] = "off"
                 results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
-            elif old_mode and old_mode.lower() in ("new", "all"):
+            elif old_mode and old_mode.lower() in {"new", "all"}:
                 display["tool_progress"] = old_mode.lower()
                 results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
             else:
@@ -3300,7 +3426,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 new_entry = {"api": old_url}
                 if old_name:
                     new_entry["name"] = old_name
-                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                if old_key and old_key not in {"no-key", "no-key-required", ""}:
                     new_entry["api_key"] = old_key
 
                 # Carry over model and api_mode if present
@@ -3358,7 +3484,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             stt.pop("model", None)
             # Place it in the appropriate provider section only if the
             # user didn't already set a model there
-            if provider in ("local", "local_command"):
+            if provider in {"local", "local_command"}:
                 # Don't migrate an OpenAI model name into the local section
                 _local_models = {
                     "tiny.en", "tiny", "base.en", "base", "small.en", "small",
@@ -3442,7 +3568,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not aux_comp.get("model"):
                     aux_comp["model"] = str(s_model).strip()
                     migrated_keys.append(f"model={s_model}")
-            if s_provider and str(s_provider).strip() not in ("", "auto"):
+            if s_provider and str(s_provider).strip() not in {"", "auto"}:
                 aux = config.setdefault("auxiliary", {})
                 aux_comp = aux.setdefault("compression", {})
                 if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
@@ -3673,7 +3799,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
 
-            if answer in ("y", "yes"):
+            if answer in {"y", "yes"}:
                 print()
                 for name, info in new_and_unset:
                     if info.get("url"):
@@ -3734,7 +3860,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         except (EOFError, KeyboardInterrupt):
             answer = "n"
 
-        if answer in ("y", "yes"):
+        if answer in {"y", "yes"}:
             print()
             config = load_config()
             try:
@@ -4004,7 +4130,8 @@ def read_raw_config() -> Dict[str, Any]:
         try:
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-        except Exception:
+        except Exception as e:
+            _warn_config_parse_failure(config_path, e)
             return {}
 
         if not isinstance(data, dict):
@@ -4054,7 +4181,7 @@ def load_config() -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
-                print(f"Warning: Failed to load config: {e}")
+                _warn_config_parse_failure(config_path, e)
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
@@ -4815,9 +4942,9 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
-    if value.lower() in ('true', 'yes', 'on'):
+    if value.lower() in {'true', 'yes', 'on'}:
         value = True
-    elif value.lower() in ('false', 'no', 'off'):
+    elif value.lower() in {'false', 'no', 'off'}:
         value = False
     elif value.isdigit():
         value = int(value)
@@ -5022,7 +5149,7 @@ def _inject_profile_env_vars() -> None:
     try:
         from providers import list_providers
         for _pp in list_providers():
-            if _pp.auth_type not in ("api_key",):
+            if _pp.auth_type not in {"api_key",}:
                 continue
             for _var in _pp.env_vars:
                 if _var in OPTIONAL_ENV_VARS:

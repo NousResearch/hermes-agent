@@ -664,7 +664,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         # None both mean "clear the field" (restore old behaviour).
         if "workdir" in updates:
             _wd = updates["workdir"]
-            if _wd in (None, "", False):
+            if _wd in {None, "", False}:
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
@@ -811,7 +811,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
-                    if kind in ("cron", "interval"):
+                    if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
                             job["last_error"] = (
@@ -855,7 +855,7 @@ def advance_next_run(job_id: str) -> bool:
         for job in jobs:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
-                if kind not in ("cron", "interval"):
+                if kind not in {"cron", "interval"}:
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)
@@ -909,7 +909,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # next_run_at unset.  Without this branch, such jobs are
             # silently skipped forever; recompute next_run_at from the
             # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in ("cron", "interval"):
+            if not recovered_next and kind in {"cron", "interval"}:
                 recovered_next = compute_next_run(schedule, now.isoformat())
                 if recovered_next:
                     recovery_kind = kind
@@ -940,7 +940,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
@@ -1082,9 +1082,8 @@ def rewrite_skill_refs(
                         new_skills.append(target)
                 elif name in pruned_set:
                     dropped.append(name)
-                else:
-                    if name not in new_skills:
-                        new_skills.append(name)
+                elif name not in new_skills:
+                    new_skills.append(name)
 
             if not mapped and not dropped:
                 continue

@@ -22,6 +22,7 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+!deepparser/examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh

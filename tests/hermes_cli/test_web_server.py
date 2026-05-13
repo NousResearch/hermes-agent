@@ -246,6 +246,56 @@ class TestWebServerEndpoints:
         assert resp.status_code == 404
         assert "workflow not found: missing" in resp.json()["detail"]
 
+    def test_workflow_node_endpoint_returns_detail_drawer_payload(self):
+        from hermes_cli.workflow.store import add_event, connect, create_workflow, save_dag
+
+        dag = {
+            "workflow_id": "wf_node",
+            "nodes": [
+                {"id": "plan", "title": "Plan", "role": "architect", "profile": "architect", "status": "waiting"},
+                {
+                    "id": "build",
+                    "title": "Build",
+                    "role": "engineer",
+                    "profile": "engineer",
+                    "status": "waiting",
+                    "parents": ["plan"],
+                    "definition_of_done": ["Build tests pass."],
+                    "scope": {"summary": "Implement feature."},
+                },
+            ],
+            "edges": [{"source": "plan", "target": "build", "kind": "depends_on"}],
+        }
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_node", title="Node Workflow", board="core", status="dag_approved", now=1.0)
+            save_dag(conn, workflow_id="wf_node", normalized_dag=dag, now=2.0)
+            add_event(conn, workflow_id="wf_node", event_type="node_started", node_id="build", actor_type="workflow", now=3.0)
+
+        resp = self.client.get("/api/workflows/wf_node/nodes/build")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert data["facts"]["workflowId"] == "wf_node"
+        assert data["facts"]["node"]["id"] == "build"
+        assert data["facts"]["node"]["parents"] == ["plan"]
+        assert data["facts"]["node"]["definitionOfDone"] == ["Build tests pass."]
+        assert data["facts"]["node"]["scope"] == {"summary": "Implement feature."}
+        assert [event["eventType"] for event in data["facts"]["events"]] == ["node_started"]
+
+    def test_workflow_node_endpoint_returns_404_for_missing_node(self):
+        from hermes_cli.workflow.store import connect, create_workflow, save_dag
+
+        dag = {"workflow_id": "wf_node", "nodes": [{"id": "plan", "title": "Plan", "role": "architect", "profile": "architect"}]}
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_node", title="Node Workflow", board="core", status="dag_approved", now=1.0)
+            save_dag(conn, workflow_id="wf_node", normalized_dag=dag, now=2.0)
+
+        resp = self.client.get("/api/workflows/wf_node/nodes/missing")
+
+        assert resp.status_code == 404
+        assert "workflow node not found: missing" in resp.json()["detail"]
+
     def test_workflow_endpoints_require_session_token(self):
         from starlette.testclient import TestClient
 
@@ -255,11 +305,14 @@ class TestWebServerEndpoints:
 
         list_resp = unauthenticated_client.get("/api/workflows")
         dag_resp = unauthenticated_client.get("/api/workflows/wf_dag/dag")
+        node_resp = unauthenticated_client.get("/api/workflows/wf_dag/nodes/build")
 
         assert list_resp.status_code == 401
         assert list_resp.json()["detail"] == "Unauthorized"
         assert dag_resp.status_code == 401
         assert dag_resp.json()["detail"] == "Unauthorized"
+        assert node_resp.status_code == 401
+        assert node_resp.json()["detail"] == "Unauthorized"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

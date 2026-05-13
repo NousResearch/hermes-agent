@@ -8,6 +8,7 @@ noise.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -170,50 +171,48 @@ def build_handoff_packet(
         usage = f"{pct}% 사용 중 ({context_tokens:,}/{context_length:,} 토큰)"
 
     next_step = current_step or "Read this packet, inspect the current files/state, then continue from the latest user request."
-    session_line = f"- Source session: {session_id}" if session_id else "- Source session: unknown"
     title_line = f"- Title: {title}" if title else "- Title: unknown"
+
+    packet_body = "\n".join(
+        [
+            "## 목표",
+            f"- {_truncate(goal, 360)}",
+            "",
+            "## 현재 상태",
+            title_line.replace("Title", "제목"),
+            f"- 대화 용량: {usage}",
+            f"- 메시지: 사용자 {user_count} / Hermes {assistant_count} / 도구 {tool_count}",
+            f"- 마지막 사용자 요청: {_truncate(latest_user, 360)}",
+            "",
+            "## 완료한 것",
+            f"- {_truncate(latest_assistant, 420)}",
+            "",
+            "## 중요 결정",
+            "- 컨텍스트가 무거워지면 손실 압축보다 새 세션 이동을 우선합니다.",
+            "- 이 인계문은 작업 재개 기준점이며, 증명은 아닙니다.",
+            "",
+            "## 변경/검증 상태",
+            "- 먼저 실제 파일/상태를 확인하고, 완료 전 가장 작은 관련 테스트를 다시 실행하세요.",
+            "- 파일 변경, git 상태, 외부 서비스 상태는 이 인계문만 믿지 말고 재조회하세요.",
+            "",
+            "## 다음 작업",
+            f"- {_truncate(next_step, 420)}",
+            "- 이전 완료 작업을 반복하지 말고 위 상태 확인 후 바로 이어가세요.",
+            "",
+            "## 완료 기준",
+            "- 새 세션이 목표, 현재 상태, 변경/검증 상태, 다음 작업을 숨은 이전 문맥 없이 설명할 수 있어야 합니다.",
+        ]
+    )
+    packet_hash = hashlib.sha256(packet_body.encode("utf-8")).hexdigest()
 
     return "\n".join(
         [
-            "[새 세션 이어가기 안내]",
+            "[세션 이동 인계문]",
+            f"원본 세션: {session_id or 'unknown'}",
+            "기준: 현재 세션 전체 요약",
+            f"본문 해시: sha256:{packet_hash}",
+            "목적: 새 세션에서 가벼운 컨텍스트로 같은 작업을 이어갑니다.",
             "",
-            "## 목표",
-            f"- {_truncate(goal)}",
-            "",
-            "## 현재 상태",
-            session_line.replace("Source session", "원본 세션"),
-            title_line.replace("Title", "제목"),
-            f"- 대화 용량: {usage}",
-            f"- 포함된 메시지: 사용자 {user_count}개 / Hermes {assistant_count}개 / 도구 {tool_count}개",
-            f"- 마지막 사용자 요청: {_truncate(latest_user)}",
-            "",
-            "## 완료한 일",
-            f"- 마지막 진행 요약: {_truncate(latest_assistant)}",
-            "- 이 안내는 기준점일 뿐 증명이 아닙니다. 편집 전 관련 파일과 현재 상태를 다시 확인하세요.",
-            "",
-            "## 남은 일",
-            f"- 다음으로 할 일: {_truncate(next_step)}",
-            "- 이 안내 뒤의 최신 사용자 요청부터 이어가세요. 이전 완료 작업을 다시 반복하지 마세요.",
-            "",
-            "## 확인할 것",
-            "- 완료라고 말하기 전에 가장 작은 관련 테스트/검사를 다시 실행하세요.",
-            "- 이전 도구 출력이 중요하면 요약을 믿지 말고 원본 파일을 읽거나 명령을 다시 실행하세요.",
-            "",
-            "## 중요한 판단",
-            "- 품질이나 장기 작업 연속성이 중요할 때는 손실 압축보다 새 세션 이어가기를 우선합니다.",
-            "- 압축은 세션 생존용 안전장치이며, 품질 보존의 기본 경로가 아닙니다.",
-            "",
-            "## 주의",
-            "- 이 안내를 과거 작업을 다시 하라는 요청으로 해석하지 마세요.",
-            "- 생성된 요약은 무손실이 아닙니다. 파일, 테스트, 외부 상태를 직접 확인하세요.",
-            "",
-            "## 다음 세션 시작 방법",
-            "1. 이 안내를 먼저 읽습니다.",
-            "2. 이 안내 뒤에 있는 최신 사용자 요청을 확인합니다.",
-            "3. 그 요청에 필요한 실제 파일/상태를 다시 확인합니다.",
-            "4. 가장 작은 안전한 다음 단계부터 진행하고 검증합니다.",
-            "",
-            "## 완료 기준",
-            "- 다음 세션이 숨은 이전 문맥에 의존하지 않고, 무엇을 바꿨고 무엇을 검증했으며 무엇이 남았는지 말할 수 있어야 합니다.",
+            packet_body,
         ]
     )

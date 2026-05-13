@@ -98,9 +98,15 @@ export function parseSafeUrl(value: string): null | URL {
 type OpenCommand = { command: string; args: readonly string[] }
 
 /**
- * Per-platform open command. Matches Sindre Sorhus's `open` package
- * behavior but doesn't pull in another dependency — we only need the
- * straight-line case (default browser, no flags).
+ * Per-platform open command. We deliberately avoid `cmd.exe /c start` on
+ * Windows even though it's the canonical example, because `start` is a cmd
+ * builtin: the URL string is reparsed by cmd's command-line tokenizer and
+ * characters like `&`, `|`, `^`, `<`, `>` either break the command or get
+ * interpreted as additional commands. That undermines the protocol
+ * allowlist's safety story and also breaks plain http(s) URLs with `&` in
+ * query strings. `explorer.exe <url>` is the safe, non-shell alternative —
+ * it invokes the registered protocol handler for http(s) without going
+ * through cmd. Linux/BSD use `xdg-open` directly with no shell wrapping.
  */
 export function openCommand(platformId: string): OpenCommand | null {
   if (platformId === 'darwin') {
@@ -108,14 +114,8 @@ export function openCommand(platformId: string): OpenCommand | null {
   }
 
   if (platformId === 'win32') {
-    // `start` is a cmd builtin, not a binary. The leading empty argument
-    // is the window title slot — without it, a quoted URL would be parsed
-    // as the title rather than the URL on Windows.
-    return { command: 'cmd.exe', args: ['/s', '/c', 'start', '""', '/b'] }
+    return { command: 'explorer.exe', args: [] }
   }
 
-  // Linux, BSD, etc.: xdg-open is the standard. WSL ships with it too;
-  // explorer.exe is a fallback that some users prefer but requires extra
-  // detection — punt on it for now.
   return { command: 'xdg-open', args: [] }
 }

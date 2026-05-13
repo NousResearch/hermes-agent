@@ -116,6 +116,26 @@ class _BackgroundLoop:
             fut.cancel()
             raise
 
+    def start_task(self, coro, *, name: Optional[str] = None) -> None:
+        """Schedule a coroutine on the background loop as a fire-and-forget task.
+
+        Returns immediately; the task runs in the background until
+        completion or cancellation.  Exceptions are logged but never
+        propagate.
+        """
+        if self._loop is None:
+            raise RuntimeError("background loop not started")
+
+        async def _wrapped() -> None:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("background task %s failed: %s", name or "?", exc)
+
+        asyncio.run_coroutine_threadsafe(_wrapped(), self._loop)
+
     def stop(self) -> None:
         loop = self._loop
         if loop is None:
@@ -182,6 +202,9 @@ class LSPService:
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Start the periodic reaper that shuts down idle clients.
+        self._start_reaper()
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -420,6 +443,51 @@ class LSPService:
             logger.debug("LSP shutdown error: %s", e)
         self._loop.stop()
         clear_cache()
+
+    # ------------------------------------------------------------------
+    # idle reaper
+    # ------------------------------------------------------------------
+
+    def _start_reaper(self) -> None:
+        """Kick off a background reaper task that shuts down clients that
+        haven't been used for longer than ``_idle_timeout`` seconds.
+
+        Called once at the end of ``__init__``.  The reaper runs for
+        the lifetime of the service on the background event loop.
+        """
+        if not self._enabled:
+            return
+        self._loop.start_task(self._reap_idle_clients(), name="lsp-reaper")
+
+    async def _reap_idle_clients(self) -> None:
+        """Background coroutine: every 60 s, walk ``_last_used`` and
+        shut down clients whose idle time exceeds ``_idle_timeout``."""
+        while True:
+            try:
+                await asyncio.sleep(60.0)
+                now = time.time()
+                threshold = now - self._idle_timeout
+                with self._state_lock:
+                    stale_keys = [
+                        k
+                        for k, last in self._last_used.items()
+                        if last < threshold
+                    ]
+                for key in stale_keys:
+                    client = None
+                    with self._state_lock:
+                        if key in self._last_used and self._last_used[key] < threshold:
+                            client = self._clients.pop(key, None)
+                            self._last_used.pop(key, None)
+                    if client is not None:
+                        try:
+                            await client.shutdown()
+                        except Exception:  # noqa: BLE001
+                            pass
+            except asyncio.CancelledError:
+                break
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # async internals

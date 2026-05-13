@@ -735,15 +735,8 @@ DEFAULT_CONFIG = {
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
-    # long_lived_prefix: when true (default), Claude on Anthropic / OpenRouter / Nous
-    #   Portal uses a split layout: tools[-1] + stable system prefix at long_lived_ttl
-    #   (cross-session cache), last 2 messages at cache_ttl (within-session rolling).
-    #   Set false to keep the legacy "system + last 3 messages" single-tier layout.
-    # long_lived_ttl: TTL for the cross-session prefix tier ("5m" or "1h"; default "1h").
     "prompt_caching": {
         "cache_ttl": "5m",
-        "long_lived_prefix": True,
-        "long_lived_ttl": "1h",
     },
 
     # OpenRouter-specific settings.

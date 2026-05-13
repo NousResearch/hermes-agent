@@ -9,28 +9,117 @@ on:
       - 'website/**'
       - 'skills/**'
       - 'optional-skills/**'
+      - 'supabase/**'
+      - 'vercel.json'
+      - 'website/vercel.json'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
 
-permissions:
-  pages: write
-  id-token: write
+permissions: {}
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  deploy-vercel:
-    if: github.event_name == 'release'
+  supabase-migrations:
+    if: github.repository == 'NousResearch/hermes-agent' && github.ref == 'refs/heads/main' && vars.SUPABASE_MIGRATIONS_ENABLED == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: supabase-production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check for committed migrations
+        id: migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          migrations=(supabase/migrations/*.sql)
+          if [ "${#migrations[@]}" -eq 0 ]; then
+            echo "has_migrations=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Supabase migration SQL files are committed; skipping db push."
+          else
+            echo "has_migrations=true" >> "$GITHUB_OUTPUT"
+            printf 'Found %s migration(s).\n' "${#migrations[@]}"
+          fi
+
+      - name: Validate Supabase deployment secrets
+        if: steps.migrations.outputs.has_migrations == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is not configured"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - uses: supabase/setup-cli@df56b21da46c98abb12a9804e4fb1f657773e333  # v2
+        if: steps.migrations.outputs.has_migrations == 'true'
+        with:
+          version: ${{ vars.SUPABASE_CLI_VERSION || 'latest' }}
+
+      - name: Link Supabase project
+        if: steps.migrations.outputs.has_migrations == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Push Supabase migrations
+        if: steps.migrations.outputs.has_migrations == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase db push
+
+  deploy-vercel:
+    needs: supabase-migrations
+    if: >-
+      always() &&
+      github.repository == 'NousResearch/hermes-agent' &&
+      (github.event_name == 'release' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.supabase-migrations.result == 'success' || needs.supabase-migrations.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Trigger Vercel Deploy
-        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_DEPLOY_HOOK:-}" ]; then
+            echo "::error::VERCEL_DEPLOY_HOOK secret is not configured"
+            exit 1
+          fi
+          curl --fail-with-body --show-error --silent -X POST "$VERCEL_DEPLOY_HOOK"
 
   deploy-docs:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'release'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

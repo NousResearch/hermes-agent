@@ -1,0 +1,11 @@
+# Supabase CLI local state and secrets
+.temp/
+.env
+.env.*
+
+# Keep migrations, seeds, edge functions, and config committed.
+!.gitignore
+!config.toml
+!README.md
+!migrations/
+!migrations/.gitkeep

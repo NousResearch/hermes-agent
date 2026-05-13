@@ -1,0 +1,9 @@
+# Supabase CLI project metadata for Hermes Agent deployments.
+#
+# The production project reference is intentionally not committed here. CI links
+# to the production project at runtime via the SUPABASE_PROJECT_ID GitHub secret.
+project_id = "hermes-agent"
+
+[db.migrations]
+enabled = true
+schema_paths = []

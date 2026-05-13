@@ -199,6 +199,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'developer-guide/contributing',
+        'developer-guide/site-deployment',
         {
           type: 'category',
           label: 'Architecture',

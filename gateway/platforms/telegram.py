@@ -2772,7 +2772,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     {"thread_id": str(thread_id)},
                                 )
                             )
-                        await self._bot.send_message(**send_kwargs)
+                        await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return

@@ -7,6 +7,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
+- GET  /v1/profiles                — lists Hermes profiles available for request scoping
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
@@ -61,6 +62,7 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+MAX_CHAT_COMPLETIONS_TOOL_OUTPUT_EVENT_CHARS = 65_536  # 64 KB cap per custom SSE tool-output event
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -652,6 +654,37 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    @staticmethod
+    def _chat_completion_debug_payload(value: Any, *, max_chars: int = MAX_CHAT_COMPLETIONS_TOOL_OUTPUT_EVENT_CHARS) -> Dict[str, Any]:
+        """Return a JSON-safe payload for custom chat-completions debug SSE events."""
+        truncated = False
+        structured: Any = None
+        text: str
+        if isinstance(value, str):
+            text = value
+            try:
+                structured = json.loads(value)
+            except Exception:
+                structured = None
+        else:
+            try:
+                text = json.dumps(value, default=str, ensure_ascii=False)
+                structured = value
+            except Exception:
+                text = str(value)
+                structured = None
+        if len(text) > max_chars:
+            text = text[:max_chars]
+            truncated = True
+        payload: Dict[str, Any] = {"output": text, "truncated": truncated}
+        if structured is not None:
+            try:
+                json.dumps(structured, default=str)
+                payload["structured"] = structured
+            except Exception:
+                pass
+        return payload
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -720,6 +753,49 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+
+    def _parse_profile_header(
+        self, request: "web.Request"
+    ) -> tuple[str, Optional["web.Response"]]:
+        """Extract and validate X-Hermes-Profile, defaulting to the base profile."""
+        raw = request.headers.get("X-Hermes-Profile", "").strip() or "default"
+        if re.search(r'[\r\n\x00]', raw):
+            return "default", web.json_response(
+                {"error": {"message": "Invalid profile", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        try:
+            from hermes_cli.profiles import normalize_profile_name, validate_profile_name, profile_exists
+            profile = normalize_profile_name(raw)
+            validate_profile_name(profile)
+            if not profile_exists(profile):
+                return "default", web.json_response(
+                    _openai_error(f"Unknown Hermes profile: {raw}", code="profile_not_found"),
+                    status=404,
+                )
+            return profile, None
+        except ValueError as e:
+            return "default", web.json_response(
+                _openai_error(str(e), code="invalid_profile"),
+                status=400,
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve Hermes profile %r: %s", raw, e)
+            return "default", web.json_response(
+                _openai_error("Unable to resolve Hermes profile", err_type="server_error"),
+                status=500,
+            )
+
+    @staticmethod
+    def _profile_home_for_env(profile_name: Optional[str]) -> Optional[str]:
+        if not profile_name or profile_name == "default":
+            return None
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            return str(get_profile_dir(profile_name))
+        except Exception:
+            return None
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -791,6 +867,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _maybe_auto_title_api_session(
+        self,
+        session_id: Optional[str],
+        assistant_response: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Name an API-created session from its first assistant response.
+
+        Runs in a fire-and-forget background thread via title_generator so the
+        API response path is never delayed.  The title is stored in the
+        existing SessionDB ``title`` column; no schema changes are needed.
+        """
+        if not session_id or not assistant_response:
+            return
+        try:
+            from agent.title_generator import maybe_auto_title_from_response
+            maybe_auto_title_from_response(
+                self._ensure_session_db(),
+                session_id,
+                assistant_response,
+                conversation_history or [],
+            )
+        except Exception:
+            logger.debug("Failed to schedule API session auto-title", exc_info=True)
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -803,7 +904,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
+        profile_name: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -851,6 +954,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -908,6 +1012,39 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_profiles(self, request: "web.Request") -> "web.Response":
+        """GET /v1/profiles — return Hermes profiles available to X-Hermes-Profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.profiles import list_profiles
+            profiles = list_profiles()
+        except Exception as e:
+            logger.error("Error listing Hermes profiles: %s", e, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Unable to list Hermes profiles: {e}", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response({
+            "object": "list",
+            "data": [
+                {
+                    "id": profile.name,
+                    "object": "hermes.profile",
+                    "name": profile.name,
+                    "is_default": profile.is_default,
+                    "model": profile.model,
+                    "provider": profile.provider,
+                    "gateway_running": profile.gateway_running,
+                    "skill_count": profile.skill_count,
+                }
+                for profile in profiles
+            ],
+        })
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -948,7 +1085,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
-                "approval_events": True,
+                "chat_completions_tool_output_events": True,
+                "chat_completions_reasoning_summary_events": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -957,6 +1095,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "profiles": {"method": "GET", "path": "/v1/profiles"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -1031,6 +1170,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        profile_name, profile_err = self._parse_profile_header(request)
+        if profile_err is not None:
+            return profile_err
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -1105,6 +1247,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # (e.g. internal/filtered tools) is silently dropped instead of
             # producing an orphaned event clients can't correlate.
             _started_tool_call_ids: set[str] = set()
+            _reasoning_summary_parts: list[str] = []
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Emit ``hermes.tool.progress`` with ``status: running``.
@@ -1133,12 +1276,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }))
 
             def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                """Emit the matching ``status: completed`` event.
-
-                Dropped if the start was filtered (internal tool, missing
-                id, or never seen) so clients never get an orphaned
-                ``completed`` they can't correlate to a prior ``running``.
-                """
+                """Emit completed lifecycle + full tool output debug events."""
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
@@ -1146,6 +1284,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
+                }))
+                payload = self._chat_completion_debug_payload(function_result)
+                payload.update({
+                    "tool": function_name,
+                    "toolCallId": tool_call_id,
+                    "status": "completed",
+                })
+                _stream_q.put(("__tool_output__", payload))
+
+            def _on_reasoning_summary(text):
+                """Emit provider reasoning deltas as custom debug SSE events."""
+                if not text:
+                    return
+                delta = str(text)
+                _reasoning_summary_parts.append(delta)
+                _stream_q.put(("__reasoning_summary__", {
+                    "delta": delta,
+                    "summary": "".join(_reasoning_summary_parts),
                 }))
 
             # Start agent in background.  agent_ref is a mutable container
@@ -1165,8 +1321,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning_summary,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                profile_name=profile_name,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1186,6 +1344,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                profile_name=profile_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1252,6 +1411,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        effective_session_id = result.get("session_id", session_id)
+        self._maybe_auto_title_api_session(
+            effective_session_id,
+            final_response,
+            result.get("messages") or history,
+        )
+
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1336,16 +1502,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples are sent as custom SSE events for Hermes debug UIs:
+                ``__tool_progress__`` -> ``event: hermes.tool.progress``;
+                ``__tool_output__`` -> ``event: Hermes.tool.output``;
+                ``__reasoning_summary__`` -> ``event: Hermes.reasoning.summary``.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
+                    event_data = json.dumps(item[1], default=str)
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_output__":
+                    event_data = json.dumps(item[1], default=str)
+                    await response.write(
+                        f"event: Hermes.tool.output\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning_summary__":
+                    event_data = json.dumps(item[1], default=str)
+                    await response.write(
+                        f"event: Hermes.reasoning.summary\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -1388,6 +1563,13 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                if isinstance(result, dict):
+                    final_response = result.get("final_response") or result.get("error") or ""
+                    self._maybe_auto_title_api_session(
+                        result.get("session_id", session_id),
+                        final_response,
+                        result.get("messages") or [],
+                    )
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
@@ -1966,6 +2148,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     result,
                     final_response_text,
                 )
+                self._maybe_auto_title_api_session(
+                    session_id,
+                    final_response_text,
+                    full_history,
+                )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
@@ -2046,6 +2233,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        profile_name, profile_err = self._parse_profile_header(request)
+        if profile_err is not None:
+            return profile_err
 
         # Parse request body
         try:
@@ -2199,6 +2389,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                profile_name=profile_name,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2261,6 +2452,12 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
+
+        self._maybe_auto_title_api_session(
+            session_id,
+            final_response,
+            result.get("messages") or conversation_history,
+        )
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
@@ -2688,8 +2885,10 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        profile_name: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2705,28 +2904,42 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-                gateway_session_key=gateway_session_key,
-            )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
+            previous_home = os.environ.get("HERMES_HOME")
+            profile_home = self._profile_home_for_env(profile_name)
+            if profile_home:
+                os.environ["HERMES_HOME"] = profile_home
+            elif profile_name == "default":
+                os.environ.pop("HERMES_HOME", None)
+            try:
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                    reasoning_callback=reasoning_callback,
+                    gateway_session_key=gateway_session_key,
+                    profile_name=profile_name,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+            finally:
+                if previous_home is None:
+                    os.environ.pop("HERMES_HOME", None)
+                else:
+                    os.environ["HERMES_HOME"] = previous_home
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
             # triggered session rotations. (#16938)
@@ -3345,6 +3558,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/profiles", self._handle_profiles)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)

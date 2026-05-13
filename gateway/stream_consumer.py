@@ -596,6 +596,14 @@ class GatewayStreamConsumer:
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    _IMAGE_B64_FIELD_RE = re.compile(
+        r'(?P<prefix>"image_base64"\s*:\s*")(?P<data>[A-Za-z0-9+/=\r\n]*)(?P<suffix>"?)',
+        re.DOTALL,
+    )
+    _DATA_IMAGE_RE = re.compile(
+        r'data:(?P<mime>image/[A-Za-z0-9.+-]+);base64,(?P<data>[A-Za-z0-9+/=\r\n]*)',
+        re.DOTALL,
+    )
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -608,10 +616,23 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "image_base64" not in text
+            and "data:image/" not in text
+        ):
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        cleaned = GatewayStreamConsumer._IMAGE_B64_FIELD_RE.sub(
+            lambda m: f'{m.group("prefix")}[omitted; sent as image attachment]{m.group("suffix") or ""}',
+            cleaned,
+        )
+        cleaned = GatewayStreamConsumer._DATA_IMAGE_RE.sub(
+            lambda m: f'data:{m.group("mime")};base64,[omitted; sent as image attachment]',
+            cleaned,
+        )
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content

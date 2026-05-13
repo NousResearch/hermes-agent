@@ -294,11 +294,41 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def _find_profile_dir_case_insensitive(canon: str) -> Optional[Path]:
+    """Return an existing profile directory for *canon*, tolerating legacy case.
+
+    Profile creation now normalizes names to lowercase, but older/manual profile
+    directories may exist as ``profiles/Ollama``. API and CLI ingress normalize
+    user input to lowercase, so resolve those legacy folders case-insensitively
+    when there is no exact lowercase directory.
+    """
+    profiles_root = _get_profiles_root()
+    if not profiles_root.is_dir():
+        return None
+    try:
+        # Prefer exact canonical directory names, but on case-insensitive
+        # filesystems return the directory entry's real casing instead of the
+        # synthetic lowercase path.
+        entries = [entry for entry in profiles_root.iterdir() if entry.is_dir()]
+        for entry in entries:
+            if entry.name == canon:
+                return entry
+        for entry in entries:
+            if entry.name.casefold() == canon.casefold():
+                return entry
+    except OSError:
+        return None
+    return None
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
     if canon == "default":
         return _get_default_hermes_home()
+    existing = _find_profile_dir_case_insensitive(canon)
+    if existing is not None:
+        return existing
     return _get_profiles_root() / canon
 
 
@@ -307,7 +337,7 @@ def profile_exists(name: str) -> bool:
     canon = normalize_profile_name(name)
     if canon == "default":
         return True
-    return get_profile_dir(canon).is_dir()
+    return _find_profile_dir_case_insensitive(canon) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -513,8 +543,11 @@ def list_profiles() -> List[ProfileInfo]:
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
                 continue
-            name = entry.name
-            if not _PROFILE_ID_RE.match(name):
+            raw_name = entry.name
+            try:
+                name = normalize_profile_name(raw_name)
+                validate_profile_name(name)
+            except ValueError:
                 continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name

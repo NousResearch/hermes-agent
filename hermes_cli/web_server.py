@@ -794,6 +794,13 @@ async def get_sessions(limit: int = 20, offset: int = 0):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _split_csv_filter(value: Optional[str]) -> Optional[List[str]]:
+    if not value:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5."""
@@ -834,6 +841,74 @@ async def search_sessions(q: str = "", limit: int = 20):
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
+
+
+@app.get("/api/sessions/search/conversations")
+async def search_session_conversations(
+    q: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    source: Optional[str] = None,
+    role: Optional[str] = None,
+):
+    """Search message content and return complete conversations for matching sessions."""
+    if not q or not q.strip():
+        return {
+            "results": [],
+            "limit": max(1, min(int(limit), 100)),
+            "offset": max(0, int(offset)),
+            "matched_messages": 0,
+            "matched_sessions": 0,
+        }
+
+    try:
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid limit or offset")
+
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            matches = db.search_messages(
+                query=q,
+                source_filter=_split_csv_filter(source),
+                role_filter=_split_csv_filter(role),
+                limit=limit,
+                offset=offset,
+            )
+            sessions_by_id: Dict[str, Dict[str, Any]] = {}
+            for match in matches:
+                sid = match.get("session_id")
+                if not sid:
+                    continue
+                if sid not in sessions_by_id:
+                    session = db.get_session(sid)
+                    if not session:
+                        continue
+                    sessions_by_id[sid] = {
+                        "session_id": sid,
+                        "session": session,
+                        "matches": [],
+                        "messages": db.get_messages(sid),
+                    }
+                sessions_by_id[sid]["matches"].append(match)
+
+            return {
+                "results": list(sessions_by_id.values()),
+                "limit": limit,
+                "offset": offset,
+                "matched_messages": len(matches),
+                "matched_sessions": len(sessions_by_id),
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/sessions/search/conversations failed")
+        raise HTTPException(status_code=500, detail="Conversation search failed")
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:

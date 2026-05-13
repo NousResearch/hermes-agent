@@ -305,6 +305,14 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
 END;
 """
 
+# Compatibility fallback for SQLite builds that have FTS5 but not the optional
+# trigram tokenizer.  Keep the same table/trigger names so the rest of the
+# search code can run; CJK/substring ranking degrades gracefully to unicode61.
+FTS_TRIGRAM_FALLBACK_SQL = FTS_TRIGRAM_SQL.replace(
+    "    content,\n    tokenize='trigram'",
+    "    content",
+)
+
 
 class SessionDB:
     """
@@ -547,6 +555,17 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _ensure_trigram_fts(self, cursor: sqlite3.Cursor) -> None:
+        try:
+            cursor.executescript(FTS_TRIGRAM_SQL)
+        except sqlite3.OperationalError as exc:
+            if "no such tokenizer" not in str(exc).lower():
+                raise
+            logger.warning(
+                "SQLite FTS5 trigram tokenizer unavailable; using unicode61 fallback for messages_fts_trigram"
+            )
+            cursor.executescript(FTS_TRIGRAM_FALLBACK_SQL)
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -598,7 +617,7 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     _fts_trigram_exists = False
                 if not _fts_trigram_exists:
-                    cursor.executescript(FTS_TRIGRAM_SQL)
+                    self._ensure_trigram_fts(cursor)
                     cursor.execute(
                         "INSERT INTO messages_fts_trigram(rowid, content) "
                         "SELECT id, content FROM messages WHERE content IS NOT NULL"
@@ -630,7 +649,7 @@ class SessionDB:
                 # Recreate virtual tables + triggers with the new inline-mode
                 # schema that indexes content || tool_name || tool_calls.
                 cursor.executescript(FTS_SQL)
-                cursor.executescript(FTS_TRIGRAM_SQL)
+                self._ensure_trigram_fts(cursor)
                 # Backfill both indexes from every existing messages row.
                 cursor.execute(
                     "INSERT INTO messages_fts(rowid, content) "
@@ -673,7 +692,7 @@ class SessionDB:
         try:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
         except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+            self._ensure_trigram_fts(cursor)
 
         self._conn.commit()
 

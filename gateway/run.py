@@ -10044,11 +10044,25 @@ class GatewayRunner:
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            media_files, _ = adapter.extract_media(response)
-            _, cleaned = adapter.extract_images(response)
+            media_files, media_cleaned = adapter.extract_media(response)
+            extract_base64_images = getattr(
+                adapter,
+                "extract_base64_images",
+                BasePlatformAdapter.extract_base64_images,
+            )
+            base64_image_files, base64_cleaned = extract_base64_images(media_cleaned)
+            _, cleaned = adapter.extract_images(base64_cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            if hasattr(self, "_thread_metadata_for_source"):
+                _thread_meta = self._thread_metadata_for_source(
+                    event.source,
+                    getattr(self, "_reply_anchor_for_event", _reply_anchor_for_event)(event),
+                )
+            else:
+                _thread_meta = ({"thread_id": getattr(event.source, "thread_id")}
+                                if getattr(event.source, "thread_id", None) is not None
+                                else None)
 
             from gateway.platforms.base import should_send_media_as_audio
 
@@ -10071,6 +10085,12 @@ class GatewayRunner:
                     non_image_media.append((media_path, is_voice))
 
             non_image_local: list = []
+            for file_path in base64_image_files:
+                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                        and not force_document_attachments):
+                    image_paths.append(file_path)
+                else:
+                    non_image_local.append(file_path)
             for file_path in local_files:
                 if (Path(file_path).suffix.lower() in _IMAGE_EXTS
                         and not force_document_attachments):

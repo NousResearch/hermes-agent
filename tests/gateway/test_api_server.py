@@ -356,6 +356,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/profiles", adapter._handle_profiles)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
@@ -567,6 +568,50 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_profiles_returns_hermes_profiles(self, adapter):
+        fake_profile = MagicMock()
+        fake_profile.name = "coder"
+        fake_profile.is_default = False
+        fake_profile.model = "anthropic/claude-sonnet-4"
+        fake_profile.provider = "anthropic"
+        fake_profile.gateway_running = False
+        fake_profile.skill_count = 12
+        app = _create_app(adapter)
+        with patch("hermes_cli.profiles.list_profiles", return_value=[fake_profile]):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/profiles")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                assert data["data"][0]["id"] == "coder"
+                assert data["data"][0]["object"] == "hermes.profile"
+                assert data["data"][0]["model"] == "anthropic/claude-sonnet-4"
+
+    def test_parse_profile_header_validates_known_profile(self, adapter):
+        request = MagicMock()
+        request.headers = {"X-Hermes-Profile": "Coder"}
+        with (
+            patch("hermes_cli.profiles.normalize_profile_name", return_value="coder"),
+            patch("hermes_cli.profiles.validate_profile_name"),
+            patch("hermes_cli.profiles.profile_exists", return_value=True),
+        ):
+            profile, err = adapter._parse_profile_header(request)
+        assert err is None
+        assert profile == "coder"
+
+    def test_parse_profile_header_rejects_unknown_profile(self, adapter):
+        request = MagicMock()
+        request.headers = {"X-Hermes-Profile": "missing"}
+        with (
+            patch("hermes_cli.profiles.normalize_profile_name", return_value="missing"),
+            patch("hermes_cli.profiles.validate_profile_name"),
+            patch("hermes_cli.profiles.profile_exists", return_value=False),
+        ):
+            profile, err = adapter._parse_profile_header(request)
+        assert profile == "default"
+        assert err.status == 404
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1044,62 @@ class TestChatCompletionsEndpoint:
             assert pairs[1] == ("completed", "call_terminal_1"), pairs
 
     @pytest.mark.asyncio
+    async def test_stream_includes_reasoning_summary_and_tool_output_events(self, adapter):
+        """Chat-completions streaming exposes Hermes debug SSE events for reasoning and tool output."""
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if reasoning_cb:
+                    reasoning_cb("Need to inspect the filesystem.")
+                if ts_cb:
+                    ts_cb("call_terminal_1", "terminal", {"command": "pwd"})
+                if tc_cb:
+                    tc_cb("call_terminal_1", "terminal", {"command": "pwd"}, {"output": "/tmp\\n", "exit_code": 0})
+                if cb:
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "debug"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "event: Hermes.reasoning.summary" in body
+        assert "Need to inspect the filesystem." in body
+        assert "event: Hermes.tool.output" in body
+        assert '"tool": "terminal"' in body
+        assert '"toolCallId": "call_terminal_1"' in body
+        assert "/tmp" in body
+
+        for line in body.splitlines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            try:
+                chunk = _json.loads(line[len("data: "):])
+            except _json.JSONDecodeError:
+                continue
+            if chunk.get("object") == "chat.completion.chunk":
+                content = "".join(choice.get("delta", {}).get("content", "") for choice in chunk.get("choices", []))
+                assert "Need to inspect" not in content
+                assert "/tmp" not in content
+
+    @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
         """Internal tools (``_thinking``-style) and ``completed`` events
         without a prior matching ``running`` must produce no lifecycle
@@ -1071,7 +1172,10 @@ class TestChatCompletionsEndpoint:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch.object(adapter, "_maybe_auto_title_api_session") as mock_title,
+            ):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
                     "/v1/chat/completions",
@@ -1091,6 +1195,8 @@ class TestChatCompletionsEndpoint:
             assert data["choices"][0]["message"]["content"] == "Hello! How can I help you today?"
             assert data["choices"][0]["finish_reason"] == "stop"
             assert "usage" in data
+            mock_title.assert_called_once()
+            assert mock_title.call_args.args[1] == "Hello! How can I help you today?"
 
     @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):
@@ -1299,7 +1405,10 @@ class TestResponsesEndpoint:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch.object(adapter, "_maybe_auto_title_api_session") as mock_title,
+            ):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
                     "/v1/responses",
@@ -1318,6 +1427,8 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+            mock_title.assert_called_once()
+            assert mock_title.call_args.args[1] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):

@@ -390,22 +390,28 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         Sync; matches the legacy ``_get_firecrawl_client().search(...)``
         call directly. Normalizes the response across SDK/direct/gateway
         shapes via :func:`_extract_web_search_results`.
+
+        Pre-flight errors (``ValueError`` from configuration check,
+        ``ImportError`` from missing SDK) propagate to the dispatcher's
+        top-level handler, which wraps them as ``tool_error(...)`` —
+        matching the legacy ``{"error": "Error searching web: ..."}``
+        envelope. Only in-flight errors are caught and surfaced as
+        ``{"success": False, "error": ...}``.
         """
+        from tools.interrupt import is_interrupted
+
+        if is_interrupted():
+            return {"success": False, "error": "Interrupted"}
+
+        logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
+        # _get_firecrawl_client() raises ValueError on unconfigured systems —
+        # let it propagate so the dispatcher emits the legacy envelope shape.
+        client = _get_firecrawl_client()
         try:
-            from tools.interrupt import is_interrupted
-
-            if is_interrupted():
-                return {"success": False, "error": "Interrupted"}
-
-            logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
-            response = _get_firecrawl_client().search(query=query, limit=limit)
+            response = client.search(query=query, limit=limit)
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}
-        except ValueError as exc:
-            return {"success": False, "error": str(exc)}
-        except ImportError as exc:
-            return {"success": False, "error": f"Firecrawl SDK not installed: {exc}"}
         except Exception as exc:  # noqa: BLE001
             logger.warning("Firecrawl search error: %s", exc)
             return {"success": False, "error": f"Firecrawl search failed: {exc}"}

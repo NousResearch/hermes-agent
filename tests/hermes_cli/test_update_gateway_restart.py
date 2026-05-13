@@ -148,6 +148,15 @@ class TestLaunchdPlistReplace:
         replace_idx = string_values.index("--replace")
         assert replace_idx == run_idx + 1
 
+    def test_plist_exit_timeout_covers_restart_drain(self, monkeypatch):
+        """launchd should not SIGKILL the gateway before restart drain finishes."""
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 123)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>ExitTimeOut</key>" in plist
+        assert "<integer>153</integer>" in plist
+
 
 class TestLaunchdPlistPath:
     def test_plist_contains_environment_variables(self):

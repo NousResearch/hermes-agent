@@ -2748,6 +2748,13 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
+    # Match systemd's TimeoutStopSec: give launchd long enough to drain
+    # active agent runs (agent.restart_drain_timeout, default 180s) before
+    # escalating to SIGKILL. Without this, launchd's 5s ExitTimeOut default
+    # kills the gateway mid-drain on every /restart, cutting off in-flight
+    # conversations.
+    _drain_timeout = int(_get_restart_drain_timeout() or 0)
+    exit_timeout = max(60, _drain_timeout) + 30
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -2818,7 +2825,10 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    
+
+    <key>ExitTimeOut</key>
+    <integer>{exit_timeout}</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     

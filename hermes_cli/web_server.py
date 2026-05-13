@@ -48,6 +48,11 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli.workflow import (
+    get_workflow_dag as workflow_get_workflow_dag,
+    list_workflow_summaries as workflow_list_workflow_summaries,
+)
+from hermes_cli.workflow.store import connect as workflow_connect
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -638,6 +643,27 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+@app.get("/api/workflows")
+async def list_workflows_endpoint(board: Optional[str] = None, status: Optional[str] = None, limit: int = 100):
+    try:
+        with workflow_connect() as conn:
+            return workflow_list_workflow_summaries(conn, board=board, status=status, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/workflows/{workflow_id}/dag")
+async def get_workflow_dag_endpoint(workflow_id: str):
+    try:
+        with workflow_connect() as conn:
+            return workflow_get_workflow_dag(conn, workflow_id)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
 
 
 # ---------------------------------------------------------------------------

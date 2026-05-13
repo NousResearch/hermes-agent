@@ -191,6 +191,76 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_workflow_list_endpoint_returns_read_model_payload(self):
+        from hermes_cli.workflow.store import connect, create_workflow
+
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_core", title="Core Workflow", board="core", status="running", now=1.0)
+            create_workflow(conn, workflow_id="wf_web", title="Web Workflow", board="webui", status="running", now=2.0)
+
+        resp = self.client.get("/api/workflows?board=core&status=running")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert [workflow["id"] for workflow in data["facts"]["workflows"]] == ["wf_core"]
+        assert data["facts"]["count"] == 1
+
+    def test_workflow_dag_endpoint_returns_nodes_and_edges(self):
+        from hermes_cli.workflow.store import connect, create_workflow, save_dag
+
+        dag = {
+            "workflow_id": "wf_dag",
+            "nodes": [
+                {"id": "plan", "title": "Plan", "role": "architect", "profile": "architect", "status": "waiting"},
+                {
+                    "id": "build",
+                    "title": "Build",
+                    "role": "engineer",
+                    "profile": "engineer",
+                    "status": "waiting",
+                    "parents": ["plan"],
+                },
+            ],
+            "edges": [{"source": "plan", "target": "build", "kind": "depends_on"}],
+        }
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_dag", title="DAG Workflow", board="core", status="dag_approved", now=1.0)
+            save_dag(conn, workflow_id="wf_dag", normalized_dag=dag, now=2.0)
+
+        resp = self.client.get("/api/workflows/wf_dag/dag")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert data["facts"]["workflow"]["id"] == "wf_dag"
+        assert data["facts"]["edges"] == [{"source": "plan", "target": "build", "kind": "depends_on"}]
+        node_by_id = {node["id"]: node for node in data["facts"]["nodes"]}
+        assert set(node_by_id) == {"plan", "build"}
+        assert node_by_id["plan"]["children"] == ["build"]
+        assert node_by_id["build"]["parents"] == ["plan"]
+
+    def test_workflow_dag_endpoint_returns_404_for_missing_workflow(self):
+        resp = self.client.get("/api/workflows/missing/dag")
+
+        assert resp.status_code == 404
+        assert "workflow not found: missing" in resp.json()["detail"]
+
+    def test_workflow_endpoints_require_session_token(self):
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import app
+
+        unauthenticated_client = TestClient(app)
+
+        list_resp = unauthenticated_client.get("/api/workflows")
+        dag_resp = unauthenticated_client.get("/api/workflows/wf_dag/dag")
+
+        assert list_resp.status_code == 401
+        assert list_resp.json()["detail"] == "Unauthorized"
+        assert dag_resp.status_code == 401
+        assert dag_resp.json()["detail"] == "Unauthorized"
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,11 +26,14 @@ REPORT_DIR = HERMES_HOME / "reports" / "bounty-candidates"
 WORKSPACE = HERMES_HOME / "bounty-workspace"
 WATCHLIST_FILE = HERMES_HOME / "config" / "bounty-watchlist.json"
 ALGORA_BOUNTIES_URL = "https://algora.io/bounties"
+CRON_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 LANGUAGES = ("Python", "TypeScript", "Rust", "Go")
 LIMIT_PER_QUERY = int(os.environ.get("BOUNTY_SCOUT_LIMIT_PER_QUERY", "18"))
 ENRICH_LIMIT = int(os.environ.get("BOUNTY_SCOUT_ENRICH_LIMIT", "36"))
-TAKE_THRESHOLD = int(os.environ.get("BOUNTY_SCOUT_TAKE_THRESHOLD", "82"))
+TAKE_THRESHOLD = int(os.environ.get("BOUNTY_SCOUT_TAKE_THRESHOLD", "70"))
+PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("BOUNTY_SCOUT_PIPELINE_TIMEOUT_SECONDS", "180"))
+COMMAND_TIMEOUT_SECONDS = int(os.environ.get("BOUNTY_SCOUT_COMMAND_TIMEOUT_SECONDS", "30"))
 
 FIELDS = "title,url,repository,labels,updatedAt,createdAt,commentsCount,body,number,state"
 NOTIFY_CMD = [
@@ -37,6 +41,30 @@ NOTIFY_CMD = [
     "-e",
     'display notification "Found/Commented on Bounty" with title "Hermes Bounty Alert"',
 ]
+
+
+def ensure_cli_path() -> None:
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    for entry in reversed(CRON_PATH.split(os.pathsep)):
+        if entry not in path_entries:
+            path_entries.insert(0, entry)
+    os.environ["PATH"] = os.pathsep.join(entry for entry in path_entries if entry)
+
+
+def load_env_file() -> None:
+    env_path = HERMES_HOME / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in {"GITHUB_TOKEN", "GH_TOKEN"} and key not in os.environ:
+            os.environ[key] = value.strip().strip("'\"")
 
 LABEL_QUERIES = ("bounty", "help wanted", "good first issue")
 TERM_QUERIES = (
@@ -145,8 +173,19 @@ class SourceResult:
     reason: str = ""
 
 
-def run_json(args: list[str]) -> Any:
-    completed = subprocess.run(args, text=True, capture_output=True, check=False)
+def run_json(args: list[str], timeout: int = COMMAND_TIMEOUT_SECONDS) -> Any:
+    try:
+        completed = subprocess.run(
+            args,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return []
+    except subprocess.TimeoutExpired:
+        return []
     if completed.returncode != 0:
         return []
     text = completed.stdout.strip()
@@ -225,7 +264,10 @@ def inspect_sources() -> list[SourceResult]:
 
 
 def notify() -> None:
-    subprocess.run(NOTIFY_CMD, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(NOTIFY_CMD, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
 
 
 def repo_name(item: dict[str, Any]) -> str:
@@ -271,13 +313,15 @@ def gh_search(args: list[str], language: str) -> list[Candidate]:
     return candidates
 
 
-def scout() -> list[Candidate]:
+def scout(deadline: float) -> list[Candidate]:
     if not shutil.which("gh"):
         return []
 
     found: dict[str, Candidate] = {}
     for language in LANGUAGES:
         for label in LABEL_QUERIES:
+            if time.monotonic() >= deadline:
+                return list(found.values())
             args = [
                 "gh",
                 "search",
@@ -300,6 +344,8 @@ def scout() -> list[Candidate]:
                 found.setdefault(candidate.url, candidate)
 
         for term in TERM_QUERIES:
+            if time.monotonic() >= deadline:
+                return list(found.values())
             query = f"{term} is:issue is:open archived:false"
             args = [
                 "gh",
@@ -569,20 +615,15 @@ def score(candidate: Candidate) -> Candidate:
 
 
 def maybe_clone(candidate: Candidate | None) -> Path | None:
+    """Return the expected local repo path without cloning or fetching.
+
+    Unattended bounty cron runs are read-only against GitHub and should not
+    mutate local workspaces either. A TAKE is only a reminder for explicit user
+    confirmation.
+    """
     if not candidate or candidate.gate != "TAKE":
         return None
-    repo_dir = WORKSPACE / candidate.repo.replace("/", "__")
-    if repo_dir.exists():
-        subprocess.run(["git", "-C", str(repo_dir), "fetch", "--all", "--prune"], check=False)
-        return repo_dir
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["gh", "repo", "clone", candidate.repo, str(repo_dir), "--", "--depth=1"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return repo_dir if repo_dir.exists() else None
+    return WORKSPACE / candidate.repo.replace("/", "__")
 
 
 def report_header(now: str, gate: str, take: Candidate | None) -> list[str]:
@@ -593,9 +634,10 @@ def report_header(now: str, gate: str, take: Candidate | None) -> list[str]:
         "- Scout + Score + Repo Analysis Gate + Report during unattended runs.",
         "- Actual available workflow used: GitHub CLI search/issue inspection plus local deterministic scoring/reporting.",
         "- Agent skills are not loaded during this no-agent cron script; code-review/TDD/debugging skills are reserved for user-confirmed follow-up work.",
-        "- May clone or fetch candidate repositories into the local bounty workspace for inspection and reporting.",
-        "- After explicit TAKE confirmation in this thread, code changes may be prepared in the local cloned workspace only.",
-        "- Claiming/reserving bounties, creating branches, committing, pushing, or opening PRs still requires separate explicit user instruction and must be allowed by the repository and bounty terms.",
+        "- Do not claim bounties, fork repositories, create branches, commit, push, comment, or open PRs.",
+        "- Do not clone or fetch target repositories during unattended runs; report the next safe read-only command instead.",
+        "- A TAKE means only that the user should confirm whether to proceed.",
+        "- Any claiming/reserving, local code work, branch creation, committing, pushing, or PR creation requires separate explicit user instruction and must be allowed by the repository and bounty terms.",
         "- Must not run unauthorized scanning, spam comments, disclose private vulnerabilities publicly, fabricate findings, bypass platform rules, or publish payout-sensitive data.",
         "",
         "## Gate Result",
@@ -688,7 +730,8 @@ def render(
                 f"- Legitimacy signals: open public issue, recent update `{take.updated_at or '?'}`, low linked-PR crowding `{take.linked_pr_count}`.",
                 "- Smallest viable fix/contribution: after user confirmation, inspect the issue acceptance criteria and prepare the narrowest verifiable patch.",
                 f"- Likely files: {likely_files}",
-                f"- Local clone/fetch: `{cloned}`" if cloned else "- Local clone/fetch: not available",
+                f"- Suggested local workspace path after confirmation: `{cloned}`" if cloned else "- Suggested local workspace path: not available",
+                f"- Next safe read-only command: `gh issue view {issue_number(take) or '<issue_id>'} --repo {take.repo} --json title,url,state,labels,comments,updatedAt`",
                 "- Tests to run: project-specific unit tests, lint/typecheck, and the smallest regression test for the touched behavior.",
                 "- Claim/reservation path: do not claim or reserve during the unattended run. Only do this after separate explicit user instruction and only if public issue/bounty rules permit it.",
                 "- Branch/commit/push/PR path: do not create branches, commit, push, or open PRs during the unattended run. After separate explicit instruction, use the repository's contribution rules.",
@@ -696,7 +739,7 @@ def render(
                 "## Validation Checklist",
                 "- [ ] User confirms this TAKE target in the current thread",
                 "- [ ] Re-read issue body and maintainer comments for payout and acceptance terms",
-                "- [ ] Inspect local clone/fetch without code changes first",
+                "- [ ] Inspect issue and repository metadata with read-only commands first",
                 "- [ ] Confirm any claim/reservation, branch, push, or PR action has separate explicit user instruction",
                 "- [ ] Confirm those actions are allowed by public repository or bounty terms",
                 "- [ ] Identify minimal files and tests",
@@ -705,7 +748,7 @@ def render(
                 "- [ ] Commit, push, or open PR/submission only after separate explicit instruction, passing verification, and rule confirmation",
                 "",
                 "## Rollback / Debug Path",
-                f"- Remove cloned workspace: `rm -rf {cloned}`" if cloned else "- No cloned workspace to remove",
+                f"- Remove local workspace if later created manually: `rm -rf {cloned}`" if cloned else "- No cloned workspace to remove",
                 "- Re-run this script manually with `HERMES_HOME=.hermes python .hermes/scripts/github_bounty_income_30m.py`.",
                 "- If GitHub returns no results, verify `gh auth status` and search rate limits.",
             ]
@@ -724,13 +767,18 @@ def render(
 
 
 def main() -> int:
+    ensure_cli_path()
+    load_env_file()
+    deadline = time.monotonic() + PIPELINE_TIMEOUT_SECONDS
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACE.mkdir(parents=True, exist_ok=True)
 
-    candidates = scout()
+    candidates = scout(deadline)
     seed_ranked = sorted(candidates, key=lambda c: (c.comments_count, c.updated_at), reverse=True)
     enriched: list[Candidate] = []
     for candidate in seed_ranked[:ENRICH_LIMIT]:
+        if time.monotonic() >= deadline:
+            break
         enriched.append(score(enrich(candidate)))
 
     seen = {candidate.url for candidate in enriched}
@@ -750,9 +798,10 @@ def main() -> int:
     if take:
         notify()
         print(report)
+        print(json.dumps({"wakeAgent": True, "report": str(report_path), "take_count": 1, "score": take.score}))
     else:
         print('DONT_NOTIFY: No TAKE candidate met the gate on this run.')
-        print(json.dumps({"wakeAgent": False, "report": str(report_path)}))
+        print(json.dumps({"wakeAgent": False, "report": str(report_path), "take_count": 0}))
     return 0
 
 

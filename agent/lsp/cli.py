@@ -140,6 +140,17 @@ def _cmd_status(emit_json: bool) -> int:
         disabled = info.get("disabled_servers") or []
         if disabled:
             out.append(f"  disabled in cfg: {', '.join(disabled)}")
+
+    # Surface backend-tool gaps that aren't visible in the registry table:
+    # some servers spawn fine but emit no diagnostics without a sidecar
+    # binary (bash-language-server -> shellcheck).
+    backend_warnings = _backend_warnings()
+    if backend_warnings:
+        out.append("")
+        out.append("Backend warnings")
+        out.append("================")
+        for line in backend_warnings:
+            out.append(f"  ! {line}")
     out.append("")
     out.append("Registered Servers")
     out.append("==================")
@@ -268,3 +279,30 @@ def _recipe_pkg_for(server_id: str) -> str:
         "typescript": "typescript-language-server",
     }
     return aliases.get(server_id, server_id)
+
+
+def _backend_warnings() -> list:
+    """Return human-readable notes about LSP backend tools that are missing
+    in a way that won't surface elsewhere.
+
+    Some language servers ship as thin wrappers around an external CLI for
+    actual diagnostics — they spawn cleanly but never emit any errors when
+    the sidecar binary isn't on PATH.  bash-language-server / shellcheck
+    is the load-bearing example.
+
+    Returned strings are short, actionable, and include the install
+    suggestion across common platforms.
+    """
+    import shutil as _shutil
+    from agent.lsp.install import hermes_lsp_bin_dir
+    notes: list = []
+    bash_installed = _shutil.which("bash-language-server") is not None or (
+        (hermes_lsp_bin_dir() / "bash-language-server").exists()
+    )
+    if bash_installed and _shutil.which("shellcheck") is None:
+        notes.append(
+            "bash-language-server is installed but shellcheck is missing — "
+            "diagnostics will be empty (apt: shellcheck, brew: shellcheck, "
+            "scoop: shellcheck)."
+        )
+    return notes

@@ -160,6 +160,36 @@ def test_auth_bridge_recognizes_zai_cli_env_aliases(tmp_path, monkeypatch):
     assert "Z_AI_API_KEY=" in cleared
 
 
+def test_auth_bridge_recognizes_zai_coding_plan_env_aliases(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert provider_env_key("zai-coding-plan") == "GLM_CODING_PLAN_API_KEY"
+    assert provider_env_keys("zai-coding-plan") == (
+        "GLM_CODING_PLAN_API_KEY",
+        "ZAI_CODING_PLAN_API_KEY",
+        "GLM_API_KEY",
+        "ZAI_API_KEY",
+        "Z_AI_API_KEY",
+    )
+
+    (hermes_home / ".env").write_text("ZAI_CODING_PLAN_API_KEY=zai-plan-fallback\n", encoding="utf-8")
+    assert read_provider_api_key("zai-coding-plan") == "zai-plan-fallback"
+    assert read_provider_auth_bundle("zai-coding-plan")["api_key"] == "zai-plan-fallback"
+
+    write_provider_api_key("zai-coding-plan", "primary-zai-plan-key")
+    assert read_provider_api_key("zai-coding-plan") == "primary-zai-plan-key"
+
+    clear_provider_auth_bundle("zai-coding-plan")
+    cleared = (hermes_home / ".env").read_text(encoding="utf-8")
+    assert "GLM_CODING_PLAN_API_KEY=" in cleared
+    assert "ZAI_CODING_PLAN_API_KEY=" in cleared
+    assert "GLM_API_KEY=" in cleared
+    assert "ZAI_API_KEY=" in cleared
+    assert "Z_AI_API_KEY=" in cleared
+
+
 
 def test_auth_bridge_supports_qwen_oauth_bundle_via_home_scoped_cli_file(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"

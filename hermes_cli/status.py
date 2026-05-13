@@ -8,6 +8,8 @@ import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 import importlib.util
+import sqlite3
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -56,6 +58,138 @@ def _format_iso_timestamp(value) -> str:
     except Exception:
         return value
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _format_compact_tokens(value: int | float | None) -> str:
+    """Human-readable token count for bounded session health summaries."""
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)
+
+
+def _collect_session_health(hermes_home: Path | None = None, *, limit: int = 20, now: float | None = None) -> dict:
+    """Collect bounded, read-only session/token metadata from state.db.
+
+    Uses only the sessions table metadata and caps row reads to recent sessions;
+    it intentionally does not scan message bodies or mutate state.
+    """
+    home = hermes_home or get_hermes_home()
+    db_path = home / "state.db"
+    if not db_path.exists():
+        return {"available": False, "path": db_path, "reason": "missing"}
+
+    current_time = time.time() if now is None else now
+    stale_before = current_time - (24 * 60 * 60)
+    bounded_limit = max(1, min(int(limit), 100))
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_sessions,
+                    SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open_sessions,
+                    SUM(CASE WHEN ended_at IS NULL AND started_at < ? THEN 1 ELSE 0 END) AS stale_open_sessions
+                FROM sessions
+                """,
+                (stale_before,),
+            ).fetchone()
+            recent = conn.execute(
+                """
+                SELECT id, source, model, started_at, ended_at, end_reason,
+                       message_count, input_tokens, output_tokens, cache_read_tokens,
+                       cache_write_tokens, reasoning_tokens, api_call_count, estimated_cost_usd
+                  FROM sessions
+                 ORDER BY COALESCE(started_at, 0) DESC
+                 LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+    except Exception as exc:
+        return {"available": False, "path": db_path, "reason": "error", "error": str(exc)}
+
+    recent_rows = [dict(row) for row in recent]
+    max_input = max((int(row.get("input_tokens") or 0) for row in recent_rows), default=0)
+    max_total = max(
+        (
+            int(row.get("input_tokens") or 0)
+            + int(row.get("output_tokens") or 0)
+            + int(row.get("cache_read_tokens") or 0)
+            + int(row.get("cache_write_tokens") or 0)
+            + int(row.get("reasoning_tokens") or 0)
+            for row in recent_rows
+        ),
+        default=0,
+    )
+    total_input = sum(int(row.get("input_tokens") or 0) for row in recent_rows)
+    total_output = sum(int(row.get("output_tokens") or 0) for row in recent_rows)
+    return {
+        "available": True,
+        "path": db_path,
+        "limit": bounded_limit,
+        "total_sessions": int(totals["total_sessions"] or 0),
+        "open_sessions": int(totals["open_sessions"] or 0),
+        "stale_open_sessions": int(totals["stale_open_sessions"] or 0),
+        "recent_count": len(recent_rows),
+        "max_input_tokens": max_input,
+        "max_total_tokens": max_total,
+        "recent_input_tokens": total_input,
+        "recent_output_tokens": total_output,
+    }
+
+
+def _format_session_health_lines(health: dict) -> list[str]:
+    """Format status-friendly lines for bounded session health."""
+    if not health.get("available"):
+        if health.get("reason") == "error":
+            return ["Store:        state.db (error reading session metadata)"]
+        return ["Store:        state.db not found"]
+
+    total = health.get("total_sessions", 0)
+    open_count = health.get("open_sessions", 0)
+    stale_count = health.get("stale_open_sessions", 0)
+    recent_count = health.get("recent_count", 0)
+    limit = health.get("limit", recent_count)
+    lines = [
+        f"Store:        state.db ({total} sessions)",
+        f"Open:         {open_count} ({stale_count} stale >24h)",
+        (
+            "Prompt budget: "
+            f"max input {_format_compact_tokens(health.get('max_input_tokens'))} tokens "
+            f"(last {limit} sessions)"
+        ),
+        (
+            "Recent tokens: "
+            f"{_format_compact_tokens(health.get('recent_input_tokens'))} in / "
+            f"{_format_compact_tokens(health.get('recent_output_tokens'))} out "
+            f"(last {limit} sessions)"
+        ),
+    ]
+    return lines
+
+
+def _format_job_attribution_line(jobs: list[dict]) -> str:
+    """Summarize whether scheduled jobs carry normalized provenance fields."""
+    total = len(jobs)
+    if total == 0:
+        return "Attributed:   0/0 jobs"
+    attributed = sum(1 for job in jobs if job.get("run_type") or job.get("attribution"))
+    platforms = sorted(
+        {
+            str(job.get("source_platform") or (job.get("attribution") or {}).get("source_platform"))
+            for job in jobs
+            if job.get("source_platform") or (job.get("attribution") or {}).get("source_platform")
+        }
+    )
+    suffix = f" ({', '.join(platforms[:3])})" if platforms else ""
+    return f"Attributed:   {attributed}/{total} jobs{suffix}"
 
 
 def _configured_model_label(config: dict) -> str:
@@ -485,6 +619,7 @@ def show_status(args):
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
                 print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
+                print(f"  {_format_job_attribution_line(jobs)}")
         except Exception:
             print("  Jobs:         (error reading jobs file)")
     else:
@@ -496,17 +631,19 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
+    health = _collect_session_health(get_hermes_home())
+    for line in _format_session_health_lines(health):
+        print(f"  {line}")
+
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
-    if sessions_file.exists():
+    if not health.get("available") and sessions_file.exists():
         import json
         try:
             with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)
-                print(f"  Active:       {len(data)} session(s)")
+                print(f"  Active:       {len(data)} session(s) in sessions.json")
         except Exception:
             print("  Active:       (error reading sessions file)")
-    else:
-        print("  Active:       0")
 
     # =========================================================================
     # Deep checks

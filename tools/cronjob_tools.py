@@ -30,6 +30,7 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job,
+    validate_job_definition,
 )
 
 
@@ -369,6 +370,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
             )
+            preflight = validate_job_definition(job)
             return json.dumps(
                 {
                     "success": True,
@@ -380,6 +382,7 @@ def cronjob(
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
                     "next_run_at": job["next_run_at"],
+                    "warnings": preflight["warnings"],
                     "job": _format_job(job),
                     "message": f"Cron job '{job['name']}' created.",
                 },
@@ -511,7 +514,8 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            preflight = validate_job_definition(updated)
+            return json.dumps({"success": True, "job": _format_job(updated), "warnings": preflight["warnings"]}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 

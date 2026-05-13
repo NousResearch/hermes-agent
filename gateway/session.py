@@ -64,7 +64,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
-from utils import atomic_replace
+from utils import atomic_replace, normalize_attribution
 
 
 @dataclass
@@ -136,6 +136,10 @@ class SessionSource:
             d["message_id"] = self.message_id
         return d
 
+    def attribution(self, *, run_type: str = "gateway", actor: Optional[str] = None) -> Dict[str, Optional[str]]:
+        """Flat provenance fields shared by gateway, cron, and delegation output."""
+        return normalize_attribution(self, run_type=run_type, actor=actor)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
         return cls(
@@ -180,6 +184,7 @@ class SessionContext:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source.to_dict(),
+            "attribution": self.source.attribution(run_type="gateway"),
             "connected_platforms": [p.value for p in self.connected_platforms],
             "home_channels": {
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
@@ -521,6 +526,7 @@ class SessionEntry:
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
+            result["attribution"] = self.origin.attribution(run_type="gateway")
         return result
     
     @classmethod

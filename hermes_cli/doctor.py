@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+import time
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -163,6 +164,46 @@ def check_fail(text: str, detail: str = ""):
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+
+
+def _print_session_health(issues: list[str]) -> None:
+    """Print bounded, read-only session/token health checks."""
+    from hermes_cli.status import (
+        _collect_session_health,
+        _format_compact_tokens,
+    )
+
+    print()
+    print(color("◆ Session Store", Colors.CYAN, Colors.BOLD))
+    health = _collect_session_health(HERMES_HOME, now=time.time())
+    if not health.get("available"):
+        if health.get("reason") == "error":
+            check_warn("state.db session metadata unreadable")
+        else:
+            check_warn("state.db session store not found", "(no recorded sessions yet)")
+        return
+
+    check_ok(f"state.db sessions: {health.get('total_sessions', 0)}")
+    stale = int(health.get("stale_open_sessions") or 0)
+    open_count = int(health.get("open_sessions") or 0)
+    open_text = f"Open sessions: {open_count} ({stale} stale >24h)"
+    if stale:
+        check_warn(open_text)
+        issues.append("Review stale open sessions")
+    else:
+        check_ok(open_text)
+    checked_limit = health.get("limit", health.get("recent_count", 0))
+    check_info(
+        "Prompt budget: "
+        f"max input {_format_compact_tokens(health.get('max_input_tokens'))} tokens "
+        f"(last {checked_limit} sessions)"
+    )
+    check_info(
+        "Recent tokens: "
+        f"{_format_compact_tokens(health.get('recent_input_tokens'))} in / "
+        f"{_format_compact_tokens(health.get('recent_output_tokens'))} out "
+        f"(last {checked_limit} sessions)"
+    )
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -1774,6 +1815,8 @@ def run_doctor(args):
                 check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
+
+    _print_session_health(issues)
 
     # =========================================================================
     # Profiles

@@ -77,6 +77,37 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_id == "12345"
         assert isinstance(restored.chat_id, str)
 
+    def test_source_attribution_uses_flat_operator_fields(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            user_name="alice",
+            thread_id="topic-7",
+        )
+
+        attribution = source.attribution()
+
+        assert attribution == {
+            "source_platform": "telegram",
+            "source_chat_id": "12345",
+            "source_thread_id": "topic-7",
+            "actor": "alice",
+            "run_type": "gateway",
+        }
+
+    def test_context_dict_includes_legacy_source_and_flat_attribution(self):
+        config = GatewayConfig()
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345")
+        context = build_session_context(source, config)
+
+        data = context.to_dict()
+
+        assert data["source"]["platform"] == "telegram"
+        assert data["source"]["chat_id"] == "12345"
+        assert data["attribution"]["source_platform"] == "telegram"
+        assert data["attribution"]["source_chat_id"] == "12345"
+        assert data["attribution"]["run_type"] == "gateway"
+
     def test_missing_optional_fields(self):
         restored = SessionSource.from_dict({
             "platform": "discord",

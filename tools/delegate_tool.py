@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import base_url_hostname, is_truthy_value
+from utils import base_url_hostname, is_truthy_value, normalize_attribution
 
 
 # Tools that children must never have access to
@@ -302,6 +302,144 @@ def _looks_like_error_output(content: str) -> bool:
         or first.startswith("traceback ")
         or first.startswith("exception:")
     )
+
+
+def _infer_acceptance_disposition(
+    entry: Dict[str, Any],
+    goal: str = "",
+) -> Dict[str, Any]:
+    """Classify a child result for parent-side acceptance triage.
+
+    This is intentionally advisory.  It never changes the legacy child
+    ``status``/``summary`` fields and it does not fail delegation when proof is
+    missing; it only adds a disposition and warnings for the parent to inspect.
+    """
+    status = str(entry.get("status") or "").strip().lower()
+    exit_reason = str(entry.get("exit_reason") or "").strip().lower()
+    summary = str(entry.get("summary") or "").strip()
+    goal_text = str(goal or "").strip().lower()
+    summary_text = summary.lower()
+    tool_trace = entry.get("tool_trace") if isinstance(entry.get("tool_trace"), list) else []
+
+    warnings: List[str] = []
+    evidence: List[str] = []
+
+    if summary:
+        evidence.append("summary")
+    if tool_trace:
+        evidence.append("tool_trace")
+    if isinstance(entry.get("diagnostic_path"), str) and entry.get("diagnostic_path"):
+        evidence.append("diagnostic_path")
+
+    hard_failure_statuses = {"error", "timeout", "interrupted"}
+    if status in hard_failure_statuses or exit_reason in hard_failure_statuses:
+        if status == "timeout":
+            warnings.append("Child timed out before producing accepted work.")
+        elif status == "interrupted":
+            warnings.append("Child was interrupted before producing accepted work.")
+        else:
+            warnings.append("Child returned an execution error.")
+        return {
+            "disposition": "Failed",
+            "warnings": warnings,
+            "evidence": evidence,
+        }
+
+    if not summary:
+        warnings.append("Child did not produce a final summary for parent review.")
+        return {
+            "disposition": "Revision Needed",
+            "warnings": warnings,
+            "evidence": evidence,
+        }
+
+    if status not in {"completed", ""}:
+        warnings.append(f"Child status is {status!r}, not 'completed'.")
+
+    if exit_reason == "max_iterations":
+        warnings.append("Child hit max_iterations; review the summary before accepting.")
+
+    if any(
+        isinstance(t, dict) and str(t.get("status") or "").lower() == "error"
+        for t in tool_trace
+    ):
+        warnings.append("Child tool trace includes at least one tool error.")
+
+    high_risk_terms = (
+        "edit", "modify", "patch", "write", "implement", "code", "test",
+        "verify", "file", "create", "delete", "deploy", "migrate", "update",
+    )
+    proof_terms = (
+        "test", "passed", "verified", "diff", "path", "file", "artifact",
+        "http", "status", "screenshot", "log", "output", "commit",
+    )
+    high_risk = any(term in goal_text for term in high_risk_terms)
+    has_proof = bool(tool_trace) or any(term in summary_text for term in proof_terms)
+    if high_risk and not has_proof:
+        warnings.append(
+            "High-risk delegated work lacks proof/artifact evidence; parent should verify before accepting."
+        )
+
+    return {
+        "disposition": "Revision Needed" if warnings else "Done",
+        "warnings": warnings,
+        "evidence": evidence,
+    }
+
+
+def _annotate_acceptance_disposition(
+    entry: Dict[str, Any],
+    goal: str = "",
+) -> Dict[str, Any]:
+    """Add advisory acceptance metadata to a delegate result in-place."""
+    acceptance = _infer_acceptance_disposition(entry, goal)
+    entry["acceptance"] = acceptance
+    # Flat alias for clients that prefer a simple field; legacy fields remain.
+    entry["acceptance_disposition"] = acceptance["disposition"]
+    return entry
+
+
+def _parent_attribution_source(parent_agent: Any) -> Dict[str, Any]:
+    """Extract best-effort source fields from the parent without coupling to gateway types."""
+    if parent_agent is None:
+        return {}
+    known_attrs = getattr(parent_agent, "__dict__", {}) or {}
+    for attr in ("session_source", "_session_source", "source", "origin"):
+        source = known_attrs.get(attr)
+        if source is not None:
+            return source
+    session_context = known_attrs.get("session_context") or known_attrs.get(
+        "_session_context"
+    )
+    source = getattr(session_context, "source", None)
+    if source:
+        return source
+    return {
+        "platform": known_attrs.get("platform"),
+        "chat_id": known_attrs.get("chat_id"),
+        "thread_id": known_attrs.get("thread_id"),
+        "user_name": known_attrs.get("user_name"),
+        "user_id": known_attrs.get("user_id"),
+    }
+
+
+def _annotate_delegate_attribution(
+    entry: Dict[str, Any],
+    parent_agent: Any,
+) -> Dict[str, Any]:
+    """Add normalized, flat provenance fields to a delegate result in-place."""
+    attribution = normalize_attribution(
+        _parent_attribution_source(parent_agent),
+        run_type="delegate",
+        actor="subagent",
+    )
+    entry["attribution"] = attribution
+    entry["source_platform"] = attribution["source_platform"]
+    entry["source_chat_id"] = attribution["source_chat_id"]
+    entry["source_thread_id"] = attribution["source_thread_id"]
+    entry["actor"] = attribution["actor"]
+    entry["run_type"] = attribution["run_type"]
+    return entry
 
 
 def _normalize_role(r: Optional[str]) -> str:
@@ -2191,6 +2329,24 @@ def delegate_task(
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
+
+    # Add non-blocking parent-side acceptance metadata and normalized source
+    # attribution to every child result. Both are additive only: legacy fields
+    # (status, summary, error, etc.) stay unchanged for existing clients.
+    for entry in results:
+        try:
+            _annotate_delegate_attribution(entry, parent_agent)
+        except Exception:
+            logger.debug("delegate attribution annotation failed", exc_info=True)
+        try:
+            _task_goal = (
+                task_list[entry["task_index"]]["goal"]
+                if entry.get("task_index", -1) < len(task_list)
+                else ""
+            )
+            _annotate_acceptance_disposition(entry, _task_goal)
+        except Exception:
+            logger.debug("acceptance disposition annotation failed", exc_info=True)
 
     # Notify parent's memory provider of delegation outcomes
     if (

@@ -22,7 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, normalize_attribution
 
 try:
     from croniter import croniter
@@ -69,6 +69,23 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+
+    attribution_source = normalized.get("attribution") or normalized.get("origin") or normalized
+    attribution = normalize_attribution(
+        attribution_source,
+        run_type=normalized.get("run_type") or "cron",
+        actor=normalized.get("actor") or "cron",
+    )
+    existing_attribution = normalized.get("attribution") if isinstance(normalized.get("attribution"), dict) else {}
+    normalized["attribution"] = {
+        **attribution,
+        **{k: v for k, v in existing_attribution.items() if v not in (None, "")},
+    }
+    normalized.setdefault("source_platform", normalized["attribution"]["source_platform"])
+    normalized.setdefault("source_chat_id", normalized["attribution"]["source_chat_id"])
+    normalized.setdefault("source_thread_id", normalized["attribution"]["source_thread_id"])
+    normalized.setdefault("actor", normalized["attribution"]["actor"])
+    normalized.setdefault("run_type", normalized["attribution"]["run_type"])
     return normalized
 
 
@@ -479,6 +496,81 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def validate_cron_script_path(script: Optional[str]) -> Optional[str]:
+    """Return an error string if a cron script path is unsafe, else None.
+
+    Cron job scripts are intentionally constrained to relative paths under
+    ``HERMES_HOME/scripts``.  The scheduler has a second containment check at
+    execution time; this preflight catches bad job definitions before they are
+    persisted.
+    """
+    if script is None:
+        return None
+    raw = str(script).strip()
+    if not raw:
+        return None
+
+    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
+        return (
+            "Script path must be relative to the Hermes scripts directory "
+            f"(got {raw!r}). Place scripts in ~/.hermes/scripts/ and use the relative filename."
+        )
+
+    scripts_dir = HERMES_DIR / "scripts"
+    scripts_dir_resolved = scripts_dir.resolve()
+    candidate = (scripts_dir / raw).resolve()
+    try:
+        candidate.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    return None
+
+
+def validate_job_definition(job_or_fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Preflight a cron job definition and return status/errors/warnings.
+
+    This helper is deliberately small: errors block create/update, warnings are
+    operator-facing lint for risky-but-valid jobs that doctor/status can reuse.
+    """
+    fields = dict(job_or_fields or {})
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    no_agent = bool(fields.get("no_agent", False))
+    prompt = str(fields.get("prompt") or "").strip()
+    script = str(fields.get("script") or "").strip()
+    skills = _normalize_skill_list(fields.get("skill"), fields.get("skills"))
+
+    if no_agent:
+        if not script:
+            errors.append(
+                "no_agent=True requires a script — with no agent and no script there is nothing for the job to run."
+            )
+        if prompt or skills:
+            warnings.append("no_agent=True ignores prompt and skills; only script stdout is delivered.")
+    else:
+        if not prompt and not skills:
+            errors.append("agent cron job requires either prompt or at least one skill.")
+        if script:
+            warnings.append(
+                "script output will be injected into an LLM-run cron job; keep script stdout bounded and non-secret."
+            )
+
+    script_error = validate_cron_script_path(script)
+    if script_error:
+        errors.append(script_error)
+
+    status = "error" if errors else "warning" if warnings else "ok"
+    return {"status": status, "errors": errors, "warnings": warnings}
+
+
+def _raise_on_preflight_errors(fields: Dict[str, Any]) -> Dict[str, Any]:
+    preflight = validate_job_definition(fields)
+    if preflight["errors"]:
+        raise ValueError("; ".join(preflight["errors"]))
+    return preflight
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -575,15 +667,6 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
 
-    # no_agent jobs are meaningless without a script — the script IS the job.
-    # Surface this as a clear ValueError at create time so bad configs never
-    # reach the scheduler.
-    if normalized_no_agent and not normalized_script:
-        raise ValueError(
-            "no_agent=True requires a script — with no agent and no script "
-            "there is nothing for the job to run."
-        )
-
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
         context_from = [context_from.strip()] if context_from.strip() else None
@@ -594,6 +677,7 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+    attribution = normalize_attribution(origin, run_type="cron", actor="cron")
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -625,9 +709,18 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Flat attribution aliases keep operator provenance scannable without
+        # replacing legacy delivery/origin fields.
+        "attribution": attribution,
+        "source_platform": attribution["source_platform"],
+        "source_chat_id": attribution["source_chat_id"],
+        "source_thread_id": attribution["source_thread_id"],
+        "actor": attribution["actor"],
+        "run_type": attribution["run_type"],
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    _raise_on_preflight_errors(job)
 
     jobs = load_jobs()
     jobs.append(job)
@@ -669,6 +762,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
 
+        if "script" in updates:
+            _script = updates["script"]
+            updates["script"] = str(_script).strip() if isinstance(_script, str) else _script
+            if updates["script"] in (None, "", False):
+                updates["script"] = None
+
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
 
@@ -694,6 +793,26 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+        definition_fields = {
+            "prompt",
+            "skill",
+            "skills",
+            "script",
+            "no_agent",
+            "schedule",
+            "schedule_display",
+            "deliver",
+            "model",
+            "provider",
+            "base_url",
+            "context_from",
+            "enabled_toolsets",
+            "workdir",
+            "repeat",
+        }
+        if definition_fields.intersection(updates):
+            _raise_on_preflight_errors(updated)
 
         jobs[i] = updated
         save_jobs(jobs)

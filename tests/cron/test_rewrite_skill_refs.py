@@ -223,7 +223,7 @@ class TestRewriteSkillRefsMultipleJobs:
 
         j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"])
         j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"])
-        j3 = create_job(prompt="", schedule="every 1h", skills=[])
+        j3 = create_job(prompt="No skill job", schedule="every 1h", skills=[])
 
         report = rewrite_skill_refs(
             consolidated={"legacy": "umbrella"},

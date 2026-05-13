@@ -279,6 +279,46 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
 
+    def test_update_rejects_effective_agent_job_without_prompt_or_skill(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Check status", schedule="every 1h")
+        )
+        assert created["success"] is True
+
+        result = json.loads(
+            cronjob(action="update", job_id=created["job_id"], prompt="", skills=[])
+        )
+
+        assert result["success"] is False
+        assert "prompt" in result["error"].lower()
+
+    def test_create_surfaces_non_blocking_preflight_warnings(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Summarize collector output",
+                schedule="every 1h",
+                script="collector.py",
+                deliver="telegram:12345",
+            )
+        )
+
+        assert created["success"] is True
+        assert created["warnings"]
+
+    def test_update_surfaces_non_blocking_preflight_warnings(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Check status", schedule="every 1h")
+        )
+        assert created["success"] is True
+
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], script="collector.py")
+        )
+
+        assert updated["success"] is True
+        assert updated["warnings"]
+
     def test_create_normalizes_list_form_deliver(self):
         """deliver=['telegram'] (list) is stored as the string 'telegram'.
 

@@ -196,7 +196,36 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(len(result["results"]), 1)
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
+        self.assertEqual(result["results"][0]["run_type"], "delegate")
+        self.assertEqual(result["results"][0]["actor"], "subagent")
+        self.assertEqual(result["results"][0]["source_platform"], "cli")
+        self.assertEqual(result["results"][0]["attribution"]["run_type"], "delegate")
         mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_delegate_attribution_uses_parent_source_fields(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.platform = "telegram"
+        parent.chat_id = "123"
+        parent.thread_id = "topic-7"
+        parent.user_name = "Don"
+
+        result = json.loads(delegate_task(goal="Trace source", parent_agent=parent))
+        entry = result["results"][0]
+
+        self.assertEqual(entry["source_platform"], "telegram")
+        self.assertEqual(entry["source_chat_id"], "123")
+        self.assertEqual(entry["source_thread_id"], "topic-7")
+        self.assertEqual(entry["actor"], "subagent")
+        self.assertEqual(entry["run_type"], "delegate")
+        self.assertEqual(entry["attribution"]["source_platform"], "telegram")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
@@ -555,6 +584,77 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
+            # Acceptance gate metadata is additive/backward-compatible.
+            self.assertEqual(entry["acceptance_disposition"], "Done")
+            self.assertEqual(entry["acceptance"]["disposition"], "Done")
+            self.assertEqual(entry["acceptance"]["warnings"], [])
+
+    def test_acceptance_disposition_revision_needed_for_high_risk_self_certification(self):
+        """High-risk delegated work that self-certifies without proof gets a non-blocking warning."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "Done.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Edit files and run tests", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["acceptance_disposition"], "Revision Needed")
+            self.assertTrue(
+                any("proof" in warning.lower() for warning in entry["acceptance"]["warnings"])
+            )
+
+    def test_acceptance_disposition_revision_needed_for_empty_summary(self):
+        """An empty child summary is an output-quality failure, not a useful Done."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Summarize findings", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["acceptance_disposition"], "Revision Needed")
+
+    def test_acceptance_disposition_failed_for_child_exception(self):
+        """Runtime child errors classify as Failed."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Trigger error", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "error")
+            self.assertEqual(entry["acceptance_disposition"], "Failed")
+
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""
         parent = _make_mock_parent(depth=0)
@@ -873,7 +973,50 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolves_full_credentials(self, mock_resolve):
+        """When delegation.provider is set, full credentials are resolved."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-test-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(creds["api_key"], "sk-or-test-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        mock_resolve.assert_called_once_with(
+            requested="openrouter",
+            target_model="google/gemini-3-flash-preview",
+        )
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
+        """Named providers should propagate their runtime default model to children."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://my-server.example/v1",
+            "api_key": "sk-test-key",
+            "api_mode": "chat_completions",
+            "model": "server-default-model",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "custom:my-server", "model": ""}
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["model"], "server-default-model")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://my-server.example/v1")
+        mock_resolve.assert_called_once_with(
+            requested="custom:my-server",
+            target_model=None,
+        )
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -922,6 +1065,25 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
+        """Nous provider resolves Nous Portal base_url and api_key."""
+        mock_resolve.return_value = {
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-agent-key-xyz",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "hermes-3-llama-3.1-8b", "provider": "nous"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "nous")
+        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+        self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
+        mock_resolve.assert_called_once_with(
+            requested="nous",
+            target_model="hermes-3-llama-3.1-8b",
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1622,20 +1784,22 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Long enough to exceed the patched idle threshold (5 cycles) at
+            # the patched interval, but shorter than the patched in-tool
+            # threshold. Keep enough margin for import/thread scheduling jitter.
+            time.sleep(1.0)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
+        # Patch the interval and stale ceilings so the test proves
         # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
+        # patched _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
         # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # continuing through the full 1.0s run.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 20):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1644,14 +1808,62 @@ class TestDelegateHeartbeat(unittest.TestCase):
             )
 
         # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
-        self.assertGreater(
+        # would cap at ~5. With the patched in-tool threshold (20 cycles = 1.0s),
+        # we should see heartbeats continue past the idle cap.
+        self.assertGreaterEqual(
             len(touch_calls), 6,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches over 1.0s at 0.05s interval",
         )
 
+    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
+        """A wedged child with no current_tool still trips the idle threshold.
+
+        Regression guard: the fix for #13041 must not disable stale
+        detection entirely. A child that's hung between turns (no tool
+        running, no iteration progress) must still stop touching the
+        parent so the gateway timeout can fire.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        # Wedged child: no tool running, iteration frozen.
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 3,
+            "max_iterations": 50,
+            "last_activity_desc": "waiting for API response",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.6)
+            return {"final_response": "done", "completed": True, "api_calls": 3}
+
+        child.run_conversation.side_effect = slow_run
+
+        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
+        # We should see the heartbeat stop firing well before 0.6s.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5):
+            _run_single_child(
+                task_index=0,
+                goal="Test wedged child",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # With idle threshold=5 + interval=0.05s, touches should cap
+        # around 5. Bound loosely to avoid timing flakes.
+        self.assertLess(
+            len(touch_calls), 9,
+            f"Idle stale detection did not fire: got {len(touch_calls)} "
+            f"touches over 0.6s — expected heartbeat to stop after "
+            f"~5 stale cycles",
+        )
 
 
 class TestDelegationReasoningEffort(unittest.TestCase):

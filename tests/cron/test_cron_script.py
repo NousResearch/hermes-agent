@@ -4,7 +4,7 @@ Tests cover:
 - Script field in job creation / storage / update
 - Script execution and output injection into prompts
 - Error handling (missing script, timeout, non-zero exit)
-- Path resolution (absolute, relative to HERMES_HOME/scripts/)
+- Path resolution (relative to HERMES_HOME/scripts/; unsafe absolute paths block at job definition time)
 """
 
 import json
@@ -50,12 +50,12 @@ class TestJobScriptField:
         job = create_job(
             prompt="Analyze the data",
             schedule="every 30m",
-            script="/path/to/monitor.py",
+            script="monitor.py",
         )
-        assert job["script"] == "/path/to/monitor.py"
+        assert job["script"] == "monitor.py"
 
         loaded = get_job(job["id"])
-        assert loaded["script"] == "/path/to/monitor.py"
+        assert loaded["script"] == "monitor.py"
 
     def test_create_job_without_script(self, cron_env):
         from cron.jobs import create_job
@@ -75,14 +75,14 @@ class TestJobScriptField:
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
 
-        updated = update_job(job["id"], {"script": "/new/script.py"})
-        assert updated["script"] == "/new/script.py"
+        updated = update_job(job["id"], {"script": "script.py"})
+        assert updated["script"] == "script.py"
 
     def test_update_job_clear_script(self, cron_env):
         from cron.jobs import create_job, update_job
 
-        job = create_job(prompt="Hello", schedule="every 1h", script="/some/script.py")
-        assert job["script"] == "/some/script.py"
+        job = create_job(prompt="Hello", schedule="every 1h", script="script.py")
+        assert job["script"] == "script.py"
 
         updated = update_job(job["id"], {"script": None})
         assert updated.get("script") is None
@@ -144,6 +144,7 @@ class TestRunJobScript:
         assert success is True
         assert output == ""
 
+    @pytest.mark.live_system_guard_bypass
     def test_script_timeout(self, cron_env, monkeypatch):
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
@@ -213,6 +214,18 @@ class TestBuildJobPromptWithScript:
         assert "## Script Output" not in prompt
         assert "Simple job." in prompt
 
+    def test_script_empty_output_skips_agent_call(self, cron_env):
+        from cron.scheduler import _build_job_prompt
+
+        script = cron_env / "scripts" / "noop.py"
+        script.write_text("# nothing\n")
+
+        job = {
+            "prompt": "Check status.",
+            "script": str(script),
+        }
+        prompt = _build_job_prompt(job)
+        assert prompt is None
 
 
 class TestCronjobToolScript:

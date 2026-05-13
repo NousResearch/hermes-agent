@@ -24,6 +24,7 @@ from cron.jobs import (
     advance_next_run,
     get_due_jobs,
     save_job_output,
+    validate_job_definition,
 )
 
 
@@ -254,6 +255,72 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_job_adds_flat_attribution_without_replacing_origin(self, tmp_cron_dir):
+        origin = {
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "topic-7",
+            "user_name": "Don",
+        }
+        job = create_job(prompt="Test", schedule="30m", origin=origin)
+
+        assert job["origin"] == origin
+        assert job["attribution"] == {
+            "source_platform": "telegram",
+            "source_chat_id": "123",
+            "source_thread_id": "topic-7",
+            "actor": "cron",
+            "run_type": "cron",
+        }
+        assert job["source_platform"] == "telegram"
+        assert job["source_chat_id"] == "123"
+        assert job["source_thread_id"] == "topic-7"
+        assert job["actor"] == "cron"
+        assert job["run_type"] == "cron"
+
+    def test_list_jobs_backfills_flat_attribution_for_legacy_jobs(self, tmp_cron_dir):
+        save_jobs([
+            {
+                "id": "legacy",
+                "prompt": "Test",
+                "skill": None,
+                "schedule": {"kind": "interval", "minutes": 30},
+                "enabled": True,
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+        ])
+
+        job = list_jobs()[0]
+
+        assert job["origin"] == {"platform": "telegram", "chat_id": "123"}
+        assert job["attribution"]["source_platform"] == "telegram"
+        assert job["source_chat_id"] == "123"
+        assert job["actor"] == "cron"
+        assert job["run_type"] == "cron"
+
+    def test_create_agent_job_requires_prompt_or_skill(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="requires either prompt or at least one skill"):
+            create_job(prompt="", schedule="every 1h")
+
+    def test_create_job_rejects_unsafe_script_path(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="scripts directory"):
+            create_job(prompt="collect data", schedule="every 1h", script="../escape.sh")
+
+    def test_validate_job_definition_returns_warnings_without_errors(self, tmp_cron_dir):
+        result = validate_job_definition(
+            {
+                "prompt": "Summarize script output",
+                "schedule": {"kind": "interval", "minutes": 60},
+                "script": "collector.py",
+                "no_agent": False,
+                "deliver": "telegram:12345",
+            }
+        )
+
+        assert result["status"] == "warning"
+        assert result["errors"] == []
+        assert result["warnings"]
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -299,6 +366,18 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_job_rejects_effective_no_agent_without_script(self, tmp_cron_dir):
+        job = create_job(prompt="Run normally", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="no_agent=True requires a script"):
+            update_job(job["id"], {"no_agent": True})
+
+    def test_update_job_rejects_effective_agent_without_prompt_or_skill(self, tmp_cron_dir):
+        job = create_job(prompt="Run normally", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="requires either prompt or at least one skill"):
+            update_job(job["id"], {"prompt": "", "skills": [], "skill": None})
 
 
 class TestPauseResumeJob:

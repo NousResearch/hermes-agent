@@ -5,6 +5,8 @@ import sys
 import types
 import io
 import contextlib
+import sqlite3
+import time
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -14,6 +16,57 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from hermes_state import SessionDB
+
+
+def _write_session_health_fixture(home, *, now=None):
+    now = now or time.time()
+    home.mkdir(parents=True, exist_ok=True)
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("recent-high", source="cli", model="test-model")
+        db.update_token_counts("recent-high", input_tokens=25_000, output_tokens=2_000)
+        db.create_session("recent-open", source="telegram", model="test-model")
+        db.update_token_counts("recent-open", input_tokens=5_000, output_tokens=500)
+        db.create_session("stale-open", source="cron", model="test-model")
+        db.update_token_counts("stale-open", input_tokens=1_000, output_tokens=100)
+
+        conn = sqlite3.connect(home / "state.db")
+        conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 90_000, "stale-open"),
+        )
+        conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 60, "recent-high"),
+        )
+        conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 30, "recent-open"),
+        )
+        conn.commit()
+        conn.close()
+    finally:
+        db.close()
+
+
+class TestDoctorSessionHealth:
+    def test_prints_bounded_session_health_and_stale_warning(self, monkeypatch, capsys, tmp_path):
+        home = tmp_path / ".hermes"
+        _write_session_health_fixture(home, now=1_700_000_000)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod.time, "time", lambda: 1_700_000_000, raising=False)
+
+        issues = []
+        doctor_mod._print_session_health(issues)
+
+        output = capsys.readouterr().out
+        assert "Session Store" in output
+        assert "state.db sessions: 3" in output
+        assert "Open sessions: 3 (1 stale >24h)" in output
+        assert "Prompt budget: max input 25.0K tokens" in output
+        assert "last 20 sessions" in output
+        assert "Review stale open sessions" in issues
 
 
 class TestDoctorPlatformHints:

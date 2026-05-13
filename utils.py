@@ -6,7 +6,7 @@ import os
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Dict, Optional, Union
 from urllib.parse import urlparse
 
 import yaml
@@ -31,6 +31,61 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
 def env_var_enabled(name: str, default: str = "") -> bool:
     """Return True when an environment variable is set to a truthy value."""
     return is_truthy_value(os.getenv(name, default), default=False)
+
+
+def _attribution_value(value: Any) -> Optional[str]:
+    """Return a string value suitable for operator-facing attribution fields."""
+    if value in (None, ""):
+        return None
+    enum_value = getattr(value, "value", None)
+    if enum_value not in (None, ""):
+        return str(enum_value)
+    return str(value)
+
+
+def normalize_attribution(
+    source: Any = None,
+    *,
+    run_type: str,
+    actor: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Normalize provenance fields across gateway, cron, and delegation surfaces.
+
+    This is deliberately small and schema-free: callers keep their legacy
+    fields, then add these flat aliases so operators can scan where a run came
+    from without learning every subsystem's naming convention.
+    """
+
+    def get_value(key: str) -> Any:
+        if isinstance(source, dict):
+            return source.get(key)
+        if source is not None:
+            return getattr(source, key, None)
+        return None
+
+    source_platform = _attribution_value(
+        get_value("source_platform") or get_value("platform")
+    )
+    source_chat_id = _attribution_value(
+        get_value("source_chat_id") or get_value("chat_id")
+    )
+    source_thread_id = _attribution_value(
+        get_value("source_thread_id") or get_value("thread_id")
+    )
+    resolved_actor = _attribution_value(
+        actor
+        or get_value("actor")
+        or get_value("user_name")
+        or get_value("user_id")
+    )
+
+    return {
+        "source_platform": source_platform,
+        "source_chat_id": source_chat_id,
+        "source_thread_id": source_thread_id,
+        "actor": resolved_actor,
+        "run_type": _attribution_value(run_type),
+    }
 
 
 def _preserve_file_mode(path: Path) -> "int | None":

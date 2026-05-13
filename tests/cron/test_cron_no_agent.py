@@ -85,9 +85,10 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
     script_path.write_text("echo hi\n")
     job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
 
-    update_job(job["id"], {"no_agent": False})
+    update_job(job["id"], {"no_agent": False, "prompt": "Summarize script output"})
     reloaded = get_job(job["id"])
     assert reloaded["no_agent"] is False
+    assert reloaded["prompt"] == "Summarize script output"
 
     update_job(job["id"], {"no_agent": True})
     reloaded = get_job(job["id"])

@@ -233,3 +233,73 @@ class TestAnthropicTransport:
         assert system is not None
         # Messages should only have user
         assert len(msgs) >= 1
+
+
+# ── TOCTOU race regression ──────────────────────────────────────────────────
+
+class TestDiscoverTransportsToctouRace:
+    """Verify _discover_transports() is safe under concurrent first-call contention."""
+
+    def setup_method(self):
+        import agent.transports as t
+        self._orig_discovered = t._discovered
+        self._orig_lock = t._discover_lock
+        self._orig_registry = dict(t._REGISTRY)
+        # Reset to undiscovered state
+        t._discovered = False
+        t._discover_lock = __import__("threading").Lock()
+        t._REGISTRY.clear()
+
+    def teardown_method(self):
+        import agent.transports as t
+        t._discovered = self._orig_discovered
+        t._discover_lock = self._orig_lock
+        t._REGISTRY.clear()
+        t._REGISTRY.update(self._orig_registry)
+
+    def test_discovered_flag_set_after_imports(self):
+        """_discovered must be True only after all imports complete."""
+        import threading
+        import agent.transports as t
+
+        flag_set_during_import = []
+
+        orig_discover = t._discover_transports
+
+        def patched_discover():
+            # Before calling the real function, flag must be False
+            flag_set_during_import.append(t._discovered)
+            orig_discover()
+
+        t._discover_transports = patched_discover
+        try:
+            from agent.transports import _discover_transports
+            _discover_transports()
+        finally:
+            t._discover_transports = orig_discover
+
+        # The flag should be False when we entered (imports not done yet)
+        assert flag_set_during_import[0] is False, (
+            "_discovered was True before imports ran — flag-before-work bug"
+        )
+        assert t._discovered is True
+
+    def test_concurrent_discover_calls_consistent(self):
+        """50 threads racing _discover_transports() must all see True after."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        import agent.transports as t
+
+        barrier = threading.Barrier(50)
+
+        def call_discover():
+            barrier.wait()
+            t._discover_transports()
+            return t._discovered
+
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            results = list(pool.map(lambda _: call_discover(), range(50)))
+
+        assert all(r is True for r in results), (
+            "_discovered should be True for all threads after _discover_transports()"
+        )

@@ -1122,7 +1122,9 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 200
             data = await resp.json()
             assert data["choices"][0]["message"]["content"] == "Runtime limit reached in test."
-            assert data["choices"][0]["finish_reason"] == "stop"
+            assert data["choices"][0]["finish_reason"] == "error"
+            assert data["hermes"]["failed"] is True
+            assert data["hermes"]["error_code"] == "agent_error"
             assert data["usage"]["total_tokens"] == 0
             mock_run.assert_not_called()
 

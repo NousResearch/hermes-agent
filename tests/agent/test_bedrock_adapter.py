@@ -18,6 +18,15 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
+def _fake_botocore_session(mock_session):
+    fake_session_module = SimpleNamespace(get_session=MagicMock(return_value=mock_session))
+    fake_botocore = SimpleNamespace(session=fake_session_module)
+    return patch.dict(
+        "sys.modules",
+        {"botocore": fake_botocore, "botocore.session": fake_session_module},
+    )
+
+
 # ---------------------------------------------------------------------------
 # AWS credential detection
 # ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with _fake_botocore_session(mock_session):
             assert resolve_bedrock_region({}) == "us-east-1"
 
     def test_falls_back_to_botocore_profile_region(self):
@@ -128,13 +137,17 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with _fake_botocore_session(mock_session):
             assert resolve_bedrock_region({}) == "eu-central-1"
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch
-        with patch("botocore.session.get_session", side_effect=Exception("no botocore")):
+        fake_session_module = SimpleNamespace(get_session=MagicMock(side_effect=Exception("no botocore")))
+        fake_botocore = SimpleNamespace(session=fake_session_module)
+        with patch.dict(
+            "sys.modules",
+            {"botocore": fake_botocore, "botocore.session": fake_session_module},
+        ):
             assert resolve_bedrock_region({}) == "us-east-1"
 
 

@@ -66,10 +66,11 @@ class TestBankrWalletPrompt:
 
         prompt = build_bankr_wallet_prompt()
 
-        assert "lightweight runtime note" in prompt
-        assert "Bankr-managed Base wallet" in prompt
+        assert "# Bankr wallet" in prompt
+        assert "Bankr-managed wallet on Base" in prompt
         assert "BANKR_API_KEY" in prompt
         assert "BANKR_WALLET_ADDRESS" in prompt
+        assert "0x000000000000000000000000000000000000ba5e" in prompt
         assert "load the relevant wallet or Bankr skill" in prompt
         assert "Do not include API key values" in prompt
         assert "Base-only" in prompt
@@ -1212,4 +1213,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-

@@ -13,6 +13,57 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## IT Automation Lab Operating Rules
+
+This checkout may also be used as a controlled IT automation laboratory. Keep
+that lab layer compatible with the Hermes Agent codebase instead of replacing
+or bypassing the development workflow documented here.
+
+### Lab workflow
+
+1. Inspect the repository, target host, or target service before acting.
+2. Document repeatable operations as runbooks under `docs/runbooks/`.
+3. Add or update scripts only after the manual procedure and risk level are
+   clear.
+4. Prefer read-only discovery first; use `--dry-run` for state-changing
+   automation whenever practical.
+5. Verify results with commands, tests, logs, or captured output.
+6. Do not commit or push lab changes unless the user has explicitly approved
+   that action.
+
+### Safety and approvals
+
+Ask for explicit scope confirmation before destructive or production-impacting
+work, including file deletion, force pushes, service restarts, package upgrades,
+firewall changes, credential rotation, cloud-resource deletion, or database
+mutation. Before executing risky work, state the target, expected effect,
+rollback or recovery path, and verification command.
+
+Never assume a host, API, account, or branch is non-production. Verify context
+first and treat unknown targets as high risk.
+
+### Script standards
+
+Operational scripts should be safe by default:
+
+- provide `--help` or usage text;
+- support `--dry-run` when they change state;
+- validate required commands and inputs;
+- avoid printing secrets;
+- use deterministic exit codes;
+- be idempotent where practical;
+- reference a related runbook for non-trivial IT operations.
+
+Shell scripts should normally use `set -euo pipefail`. Python scripts should
+use `argparse`, `logging`, `pathlib` where applicable, and a `main()` entry
+point.
+
+### Runbook standards
+
+Runbooks should include purpose, scope, prerequisites, inputs, risk level,
+procedure, verification, rollback or recovery, troubleshooting, and related
+scripts. Use `docs/runbooks/template.md` for new operational procedures.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

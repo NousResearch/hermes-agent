@@ -79,6 +79,21 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+## IT Automation Lab Usage
+
+This checkout can also be used as a controlled IT automation laboratory: document a runbook, prototype a safe script, run it in read-only or dry-run mode first, then verify the result before committing or pushing changes.
+
+Start here:
+
+- [`docs/lab/overview.md`](docs/lab/overview.md) — lab purpose, scope, and operating model
+- [`docs/lab/safety.md`](docs/lab/safety.md) — approval, secrets, production-access, and destructive-action rules
+- [`docs/lab/environment.md`](docs/lab/environment.md) — local environment and validation checklist
+- [`docs/lab/workflow.md`](docs/lab/workflow.md) — add new automation experiments safely
+- [`docs/runbooks/`](docs/runbooks/) — repeatable operational procedures and templates
+- [`scripts/README.md`](scripts/README.md) — script catalog and new-script checklist
+
+Example lab scenarios include system inventory, log triage, service health checks, backup verification, scheduled reports, gateway-driven operations, and GitHub/CI automation. Treat production targets as high-risk until verified and prefer explicit `--dry-run` support for any state-changing script.
+
 ## CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.

@@ -32,17 +32,19 @@ _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """Parse YAML with SafeLoader for untrusted input.
+
+    SafeLoader is a pure-Python YAML parser that only constructs simple
+    data types (dicts, lists, strings, numbers, bools, None). It CANNOT
+    execute arbitrary Python code via !!python/object or similar tags.
+
+    Using SafeLoader (not CSafeLoader) explicitly avoids any C-extension
+    attack surface and keeps behaviour consistent across Python versions.
+    """
     global _yaml_load_fn
     if _yaml_load_fn is None:
         import yaml
-
-        loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
-        def _load(value: str):
-            return yaml.load(value, Loader=loader)
-
-        _yaml_load_fn = _load
+        _yaml_load_fn = lambda value: yaml.load(value, Loader=yaml.SafeLoader)
     return _yaml_load_fn(content)
 
 

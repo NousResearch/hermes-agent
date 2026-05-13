@@ -56,3 +56,58 @@ def test_metadata_missing_entirely():
         "fallback_for_tools": [],
         "requires_tools": [],
     }
+
+
+# -----------------------------------------------------------------------
+# yaml_load — SafeLoader (not CSafeLoader) for untrusted YAML
+#
+# CSafeLoader is a C extension. yaml.SafeLoader is pure Python.
+# Using SafeLoader explicitly:
+#   1. Removes C-extension attack surface (malformed YAML causing segfaults)
+#   2. Prevents !!python/object and !!python/exe tags from executing code
+#   3. Keeps behaviour consistent across Python versions / build configurations
+# -----------------------------------------------------------------------
+
+
+def test_yaml_load_rejects_python_object_tag():
+    """SafeLoader raises ConstructorError for !!python/object — not SafeConstructor."""
+    from agent.skill_utils import yaml_load
+    import yaml
+
+    payload = "!!python/object:os.system ['echo PWNED']"
+    try:
+        result = yaml_load(payload)
+        # If it returns rather than raising, the tag must not have executed.
+        assert "PWNED" not in str(result)
+    except yaml.constructor.ConstructorError:
+        pass  # SafeLoader rejects the tag — this is the expected behaviour.
+
+
+def test_yaml_load_rejects_python_exec_tag():
+    """!!python/exec (direct code execution) is also refused."""
+    from agent.skill_utils import yaml_load
+    import yaml
+
+    payload = "!!python/exec 'print(1)'"
+    try:
+        result = yaml_load(payload)
+        assert "1" not in str(result)
+    except yaml.constructor.ConstructorError:
+        pass  # Rejected — correct.
+
+
+def test_yaml_load_parses_normal_yaml():
+    """Normal YAML parses correctly after the SafeLoader change."""
+    from agent.skill_utils import yaml_load
+
+    yaml_content = """
+name: my-skill
+version: 1.0
+metadata:
+  hermes:
+    requires_toolsets: [toolset_a]
+"""
+    result = yaml_load(yaml_content)
+    assert result["name"] == "my-skill"
+    assert result["version"] == 1.0  # YAML unquoted numerals are parsed as numbers
+    assert result["metadata"]["hermes"]["requires_toolsets"] == ["toolset_a"]

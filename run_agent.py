@@ -1599,7 +1599,15 @@ class AIAgent:
                 # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
                 # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
                 _is_native_anthropic = self.provider == "anthropic"
-                effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+                # Distinguish "not provided" (None) from "explicitly empty" ("").
+                # None → fall back to env token (native Anthropic) or empty (third-party).
+                # ""   → use empty string as-is (explicit, no env fallback).
+                if api_key is not None:
+                    effective_key = api_key
+                elif _is_native_anthropic:
+                    effective_key = resolve_anthropic_token() or ""
+                else:
+                    effective_key = ""
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = base_url

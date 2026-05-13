@@ -136,9 +136,10 @@ _PRIVATE_KEY_RE = re.compile(
 )
 
 # Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
+# Catches postgres, mysql, mongodb, redis, amqp, mssql, oracle, odbc, cassandra,
+# couchbase, and influxDB URLs and redacts the password.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql|oracle|odbc|cassandra|couchbase|influx(?:db)?)://[^:]+:)([^@]+)(@)",
     re.IGNORECASE,
 )
 

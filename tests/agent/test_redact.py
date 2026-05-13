@@ -511,3 +511,41 @@ class TestFormBodyRedaction:
         text = "first=1\nsecond=2"
         # Should pass through (still subject to other redactors)
         assert "first=1" in redact_sensitive_text(text)
+
+
+class TestDatabaseConnectionStrings:
+    """DB connection strings with expanded scheme coverage.
+
+    Regression for a pre-commit check that was silently missing mssql, oracle,
+    odbc, cassandra, couchbase, and influxdb schemes. The _DB_CONNSTR_RE pattern
+    now covers all common database connection string formats so passwords in
+    those URLs are redacted before logging.
+    """
+
+    @pytest.mark.parametrize(
+        "connstr",
+        [
+            # Already-covered schemes (regression guard)
+            "postgres://admin:super_secret@db.internal:5432/app",
+            "postgresql://admin:super_secret@db.internal:5432/app",
+            "mysql://admin:super_secret@db.internal:3306/app",
+            "mongodb://admin:super_secret@db.internal:27017/app",
+            "mongodb+srv://admin:super_secret@db.internal:27017/app",
+            "redis://admin:super_secret@db.internal:6379/0",
+            "amqp://admin:super_secret@mq.internal:5672/vhost",
+            # Newly covered schemes
+            "mssql://admin:super_secret@db.internal:1433/app",
+            "oracle://admin:super_secret@db.internal:1521/app",
+            "odbc://admin:super_secret@db.internal:5432/app",
+            "cassandra://admin:super_secret@db.internal:9042/app",
+            "couchbase://admin:super_secret@db.internal:8093/bucket",
+            "influxdb://admin:super_secret@db.internal:8086/db",
+            "influx://admin:super_secret@db.internal:8086/db",
+        ],
+    )
+    def test_db_connstr_password_redacted(self, connstr):
+        """Every supported DB scheme has its password redacted."""
+        result = redact_sensitive_text(connstr)
+        assert "super_secret" not in result, f"password leaked in: {connstr}"
+        # The redact replaces the password with '***', leaving 'user:***@host'
+        assert ":***@" in result, f"expected ':***@' redaction pattern in: {result}"

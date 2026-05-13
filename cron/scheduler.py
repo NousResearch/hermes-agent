@@ -130,6 +130,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+NO_REPLY_MARKER = "NO_REPLY"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -1042,9 +1043,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
         "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "with exactly \"[SILENT]\" or \"NO_REPLY\" (nothing else) to suppress delivery. "
+        "Never combine these markers with content — either report your "
+        "findings normally, or say one marker and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -1874,9 +1875,20 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                stripped_delivery = deliver_content.strip()
+                should_deliver = bool(stripped_delivery)
+                upper_delivery = stripped_delivery.upper()
+                suppress_delivery = (
+                    SILENT_MARKER in upper_delivery
+                    or upper_delivery == NO_REPLY_MARKER
+                )
+                if should_deliver and success and suppress_delivery:
+                    logger.info(
+                        "Job '%s': agent returned no-delivery marker (%s/%s) — skipping delivery",
+                        job["id"],
+                        SILENT_MARKER,
+                        NO_REPLY_MARKER,
+                    )
                     should_deliver = False
 
                 delivery_error = None

@@ -280,7 +280,7 @@ Can't check all boxes? You skipped TDD. Start over.
 | Must mock everything | Code too coupled. Use dependency injection. |
 | Test setup huge | Extract helpers. Still complex? Simplify the design. |
 
-## Hermes Agent Integration
+## Jade Integration
 
 ### Running Tests
 

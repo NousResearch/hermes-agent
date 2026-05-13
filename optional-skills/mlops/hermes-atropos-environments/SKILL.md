@@ -1,6 +1,6 @@
 ---
 name: hermes-atropos-environments
-description: Build, test, and debug Hermes Agent RL environments for Atropos training. Covers the HermesAgentBaseEnv interface, reward functions, agent loop integration, evaluation with tools, wandb logging, and the three CLI modes (serve/process/evaluate). Use when creating, reviewing, or fixing RL environments in the hermes-agent repo.
+description: Build, test, and debug Jade RL environments for Atropos training. Covers the HermesAgentBaseEnv interface, reward functions, agent loop integration, evaluation with tools, wandb logging, and the three CLI modes (serve/process/evaluate). Use when creating, reviewing, or fixing RL environments in the hermes-agent repo.
 version: 1.1.0
 author: Hermes Agent
 license: MIT
@@ -11,7 +11,7 @@ metadata:
     related_skills: [axolotl, fine-tuning-with-trl, lm-evaluation-harness]
 ---
 
-# Hermes Agent Atropos Environments
+# Jade Atropos Environments
 
 Guide for building RL environments in the hermes-agent repo that integrate with the Atropos training framework.
 
@@ -28,7 +28,7 @@ Atropos BaseEnv (atroposlib/envs/base.py)
                                     compute_reward, evaluate, wandb_log
 ```
 
-Hermes environments are special because they run a **multi-turn agent loop with tool calling** — not just single-turn completions. The base env handles the loop; you implement the task and scoring.
+Jade environments are special because they run a **multi-turn agent loop with tool calling** — not just single-turn completions. The base env handles the loop; you implement the task and scoring.
 
 ## File Locations
 

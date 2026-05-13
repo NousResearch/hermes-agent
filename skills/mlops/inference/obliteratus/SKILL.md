@@ -20,11 +20,11 @@ metadata:
 
 Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
-**License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
+**License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Jade's MIT license clean.
 
 ## Video Guide
 
-Walkthrough of OBLITERATUS used by a Hermes agent to abliterate Gemma:
+Walkthrough of OBLITERATUS used by a Jade agent to abliterate Gemma:
 https://www.youtube.com/watch?v=8fG9BrNTeHs ("OBLITERATUS: An AI Agent Removed Gemma 4's Safety Guardrails")
 
 Useful when the user wants a visual overview of the end-to-end workflow before running it themselves.

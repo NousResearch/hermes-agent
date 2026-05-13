@@ -10,7 +10,7 @@ metadata:
 
 # Webhook Subscriptions
 
-Create dynamic webhook subscriptions so external services (GitHub, GitLab, Stripe, CI/CD, IoT sensors, monitoring tools) can trigger Hermes agent runs by POSTing events to a URL.
+Create dynamic webhook subscriptions so external services (GitHub, GitLab, Stripe, CI/CD, IoT sensors, monitoring tools) can trigger Jade agent runs by POSTing events to a URL.
 
 ## Setup (Required First)
 

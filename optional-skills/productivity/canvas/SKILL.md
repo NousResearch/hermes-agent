@@ -25,7 +25,7 @@ Read-only access to Canvas LMS for listing courses and assignments.
 1. Log in to your Canvas instance in a browser
 2. Go to **Account → Settings** (click your profile icon, then Settings)
 3. Scroll to **Approved Integrations** and click **+ New Access Token**
-4. Name the token (e.g., "Hermes Agent"), set an optional expiry, and click **Generate Token**
+4. Name the token (e.g., "Jade"), set an optional expiry, and click **Generate Token**
 5. Copy the token and add to `~/.hermes/.env`:
 
 ```

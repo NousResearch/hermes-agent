@@ -19,7 +19,7 @@ metadata:
 
 # NeuroSkill BCI Integration
 
-Connect Hermes to a running [NeuroSkill](https://neuroskill.com/) instance to read
+Connect Jade to a running [NeuroSkill](https://neuroskill.com/) instance to read
 real-time brain and body metrics from a BCI wearable. Use this to give
 cognitively-aware responses, suggest interventions, and track mental performance
 over time.

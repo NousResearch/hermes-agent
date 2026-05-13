@@ -11,7 +11,7 @@ metadata:
     related_skills: [writing-plans, requesting-code-review]
 ---
 
-# Authoring Hermes-Agent Skills (in-repo)
+# Authoring Jade-Agent Skills (in-repo)
 
 ## Overview
 
@@ -78,7 +78,7 @@ One or two paragraphs: what and why.
 ## <Topic sections specific to the skill>
 - Quick-reference tables are common
 - Code blocks with exact commands
-- Hermes-specific recipes (tests via scripts/run_tests.sh, ui-tui paths, etc.)
+- Jade-specific recipes (tests via scripts/run_tests.sh, ui-tui paths, etc.)
 
 ## Common Pitfalls
 Numbered list of mistakes and their fixes.

@@ -138,7 +138,7 @@ mutation($input: ProductCreateInput!) {
     product { id handle }
     userErrors { field message }
   }
-}' '{"input":{"title":"Test Hoodie","status":"DRAFT","vendor":"Hermes","productType":"Apparel","tags":["test"]}}'
+}' '{"input":{"title":"Test Hoodie","status":"DRAFT","vendor":"Jade","productType":"Apparel","tags":["test"]}}'
 ```
 
 Variants now have their own mutations in recent versions:

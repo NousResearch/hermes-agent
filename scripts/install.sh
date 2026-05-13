@@ -890,7 +890,7 @@ clone_repo() {
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
                 git stash push --include-untracked -m "$stash_name"
-                autostash_ref="$(git rev-parse --verify refs/stash)"
+                autostash_ref="stash@{0}"
             fi
 
             git fetch origin

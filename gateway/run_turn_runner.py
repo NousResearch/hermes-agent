@@ -1102,7 +1102,8 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
-        agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
+        agent.status_callback = ctx._status_callback_sync if ctx._diagnostic_status_enabled else None
+        agent.notice_callback = self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier

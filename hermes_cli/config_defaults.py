@@ -840,6 +840,7 @@ DEFAULT_CONFIG = {
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
+        "diagnostic_status": "all",  # gateway: forward internal recovery/diagnostic messages ("off" to suppress)
         "tool_progress_command": False,  # enable /verbose command in messaging gateway
         # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
         # still honored at runtime and folded into platforms by migration.

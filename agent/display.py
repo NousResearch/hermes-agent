@@ -14,6 +14,7 @@ from difflib import unified_diff
 from pathlib import Path
 
 from utils import safe_json_loads
+from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -809,6 +810,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     failures.  On success, returns ``(False, "")``.
     """
     if result is None:
+        return False, ""
+    if file_mutation_result_landed(tool_name, result):
         return False, ""
 
     if tool_name == "terminal":

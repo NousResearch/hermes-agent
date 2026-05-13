@@ -450,3 +450,78 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+# ---------------------------------------------------------------------------
+# diagnostic_status — string enum "all" / "off" matching tool_progress pattern
+# ---------------------------------------------------------------------------
+
+class TestDiagnosticStatus:
+    """``diagnostic_status`` defaults "all"; operators suppress with "off"."""
+
+    def test_default_all_for_all_platforms(self):
+        """No config → diagnostic_status is "all" for all platforms (preserves existing behavior)."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "whatsapp", "discord", "slack", "signal", "email"):
+            assert resolve_display_setting({}, plat, "diagnostic_status") == "all", plat
+
+    def test_global_suppress_with_off(self):
+        """display.diagnostic_status: off suppresses for all platforms."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"diagnostic_status": "off"}}
+        assert resolve_display_setting(config, "telegram", "diagnostic_status") == "off"
+        assert resolve_display_setting(config, "whatsapp", "diagnostic_status") == "off"
+
+    def test_per_platform_suppress(self):
+        """display.platforms.<plat>.diagnostic_status: off suppresses for that platform only."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {"diagnostic_status": "off"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "diagnostic_status") == "off"
+        assert resolve_display_setting(config, "telegram", "diagnostic_status") == "all"
+
+    def test_per_platform_wins_over_global_off(self):
+        """Per-platform "all" beats a global "off"."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "diagnostic_status": "off",
+                "platforms": {
+                    "telegram": {"diagnostic_status": "all"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "diagnostic_status") == "all"
+        assert resolve_display_setting(config, "discord", "diagnostic_status") == "off"
+
+    def test_yaml_bare_off_normalises_to_string_off(self):
+        """YAML 1.1 bare ``off`` (parsed as False by PyYAML) normalises to "off"."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"diagnostic_status": False}}}}
+        assert resolve_display_setting(config, "whatsapp", "diagnostic_status") == "off"
+
+    def test_yaml_bare_true_normalises_to_all(self):
+        """YAML boolean True normalises to "all"."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"diagnostic_status": True}}}}
+        assert resolve_display_setting(config, "telegram", "diagnostic_status") == "all"
+
+    def test_yaml_string_off_variants(self):
+        """String "off" (and YAML-False) both suppress correctly."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("off", False):
+            config = {"display": {"platforms": {"telegram": {"diagnostic_status": val}}}}
+            result = resolve_display_setting(config, "telegram", "diagnostic_status")
+            assert result == "off", f"val={val!r} → {result!r}"

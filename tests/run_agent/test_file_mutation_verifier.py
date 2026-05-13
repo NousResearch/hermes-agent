@@ -166,6 +166,56 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_write_file_with_lint_error_counts_as_landed(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/a.py", "content": "bad"},
+            json.dumps({"error": "write failed"}),
+            is_error=True,
+        )
+        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+
+        result = json.dumps({
+            "bytes_written": 24,
+            "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
+        })
+
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/a.py", "content": "def nope(:\n"},
+            result,
+            is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+
+    def test_patch_with_lsp_diagnostics_counts_as_landed(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/a.py", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+
+        result = json.dumps({
+            "success": True,
+            "diff": "--- a/tmp.py\n+++ b/tmp.py\n",
+            "files_modified": ["/tmp/a.py"],
+            "lsp_diagnostics": "<diagnostics>ERROR [1:1] type mismatch</diagnostics>",
+        })
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/a.py", "old_string": "x", "new_string": "y"},
+            result,
+            is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+
     def test_repeated_failure_keeps_first_error(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(

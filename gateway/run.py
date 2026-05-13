@@ -8653,8 +8653,13 @@ class GatewayRunner:
         # service restart path: exit with code 75 so the service manager
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
-        # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # processes in the cgroup, including the detached helper.  macOS
+        # launchd similarly owns the gateway process and may not preserve a
+        # detached helper during service teardown, so detect both managers.
+        xpc_service_name = os.environ.get("XPC_SERVICE_NAME", "")
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or xpc_service_name.startswith(
+            "ai.hermes.gateway"
+        )
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:

@@ -554,14 +554,25 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_gracefully_signals_and_waits_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_restart",
+            lambda previous_pid=None, timeout=60.0: calls.append(
+                ("wait", previous_pid, timeout)
+            )
+            or True,
+        )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -576,11 +587,12 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
-            ("term", 321, False),
+            ("graceful", 321, 17.0),
             ["launchctl", "kickstart", "-k", target],
+            ("wait", 321, 60.0),
         ]
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_self_request_waits_for_verified_replacement(self, monkeypatch, capsys):
         calls = []
 
         monkeypatch.setattr(
@@ -593,6 +605,14 @@ class TestLaunchdServiceRecovery:
             lambda pid: calls.append(("self", pid)) or True,
         )
         monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_restart",
+            lambda previous_pid=None, timeout=60.0: calls.append(
+                ("wait", previous_pid, timeout)
+            )
+            or True,
+        )
+        monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",
             lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
@@ -600,8 +620,22 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert calls == [("self", 321), ("wait", 321, 60.0)]
+        assert "restarting gracefully" in capsys.readouterr().out.lower()
+
+    def test_wait_for_launchd_restart_waits_for_runtime_running(self, monkeypatch, capsys):
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 999)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_gateway_runtime_status_for_pid",
+            lambda pid: {"pid": pid, "gateway_state": "running"},
+        )
+
+        assert (
+            gateway_cli._wait_for_launchd_service_restart(previous_pid=321, timeout=0.1)
+            is True
+        )
+        assert "restarted (pid 999)" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

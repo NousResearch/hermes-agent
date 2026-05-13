@@ -858,6 +858,62 @@ def _wait_for_systemd_service_restart(
     return False
 
 
+def _wait_for_launchd_service_restart(
+    *,
+    previous_pid: int | None = None,
+    timeout: float = 60.0,
+) -> bool:
+    """Wait for a launchd-managed gateway to come back after restart.
+
+    launchctl can accept a kickstart/restart request before the new gateway is
+    actually healthy. Treat a restart as complete only after the PID changes
+    and the gateway runtime status reports ``gateway_state=running``.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    printed_runtime_wait = False
+
+    while time.monotonic() < deadline:
+        try:
+            from gateway.status import get_running_pid
+
+            new_pid = get_running_pid()
+        except Exception:
+            new_pid = None
+
+        if new_pid and (previous_pid is None or new_pid != previous_pid):
+            runtime_state = _gateway_runtime_status_for_pid(new_pid)
+            gateway_state = (runtime_state or {}).get("gateway_state")
+            if gateway_state == "running":
+                print(f"✓ Service restarted (PID {new_pid})")
+                return True
+            if gateway_state == "startup_failed":
+                reason = (runtime_state or {}).get("exit_reason") or "startup failed"
+                print(
+                    f"⚠ Service process restarted (PID {new_pid}), "
+                    f"but gateway startup failed: {reason}"
+                )
+                return False
+            if not printed_runtime_wait:
+                print(
+                    f"⏳ Service process started (PID {new_pid}); "
+                    "waiting for gateway runtime..."
+                )
+                printed_runtime_wait = True
+
+        time.sleep(1)
+
+    from hermes_constants import display_hermes_home as _dhh
+
+    print(
+        f"⚠ Service did not report a healthy replacement process within {int(timeout)}s.\n"
+        "  Check status: hermes gateway status\n"
+        f"  Check logs:   tail -80 {_dhh()}/logs/gateway.log"
+    )
+    return False
+
+
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
     result = props.get("Result", "").lower()
     sub_state = props.get("SubState", "").lower()
@@ -2994,31 +3050,35 @@ def launchd_restart():
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
+    pid = get_running_pid()
+    if pid is not None:
+        print(f"⏳ Service restarting gracefully (PID {pid})...")
+        if _request_gateway_self_restart(pid):
+            if _wait_for_launchd_service_restart(previous_pid=pid):
+                return
+            print("⚠ Service restart request was not verified; forcing launchd restart...")
+        elif _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+            if _wait_for_launchd_service_restart(previous_pid=pid):
+                return
+            print("⚠ Service restart was not verified; forcing launchd restart...")
+        else:
+            print(
+                f"⚠ Graceful restart did not complete within {int(drain_timeout + 5)}s; "
+                "forcing launchd restart..."
+            )
+
     try:
-        pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
-        if pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
-        print("✓ Service restarted")
+        _wait_for_launchd_service_restart(previous_pid=pid)
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
-        # Job not loaded — bootstrap and start fresh
+        # Job not loaded — bootstrap and start fresh.
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+        _wait_for_launchd_service_restart(previous_pid=pid)
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

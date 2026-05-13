@@ -38,6 +38,29 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
 
 @pytest.mark.asyncio
+async def test_restart_command_while_busy_requests_service_restart_under_launchd(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m1-launchd",
+    )
+    session_key = build_session_key(event.source)
+    running_agent = MagicMock()
+    runner._running_agents[session_key] = running_agent
+
+    result = await runner._handle_message(event)
+
+    assert result == "⏳ Draining 1 active agent(s) before restart..."
+    running_agent.interrupt.assert_not_called()
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
 async def test_drain_queue_mode_queues_follow_up_without_interrupt():
     runner, adapter = make_restart_runner()
     runner._draining = True

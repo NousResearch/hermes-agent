@@ -918,7 +918,7 @@ def _url_is_private(url: str) -> bool:
         # Hostname — must resolve to confirm it's private (bare "localhost"
         # resolves to 127.0.0.1 via /etc/hosts).  Short-circuit on obvious
         # names to avoid a DNS hop.
-        if hostname in ("localhost",) or hostname.endswith(".localhost"):
+        if hostname in {"localhost",} or hostname.endswith(".localhost"):
             return True
         if hostname.endswith(".local") or hostname.endswith(".lan") or hostname.endswith(".internal"):
             return True
@@ -2499,7 +2499,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         JSON string with scroll result
     """
     # Validate direction
-    if direction not in ["up", "down"]:
+    if direction not in {"up", "down"}:
         return json.dumps({
             "success": False,
             "error": f"Invalid direction '{direction}'. Use 'up' or 'down'."
@@ -2671,6 +2671,53 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # --- Fast path: route through the supervisor's persistent CDP WS ---------
+    # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
+    # on the already-connected WebSocket — zero subprocess startup cost vs
+    # spawning an ``agent-browser eval`` CLI process.  Falls through to the
+    # subprocess path on any error so behaviour is unchanged when no
+    # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        if supervisor is not None:
+            sup_result = supervisor.evaluate_runtime(expression)
+            if sup_result.get("ok"):
+                raw_result = sup_result.get("result")
+                # Match the agent-browser path: if the value is a JSON string,
+                # parse it so the model gets structured data.
+                parsed = raw_result
+                if isinstance(raw_result, str):
+                    try:
+                        parsed = json.loads(raw_result)
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # keep as string
+                response = {
+                    "success": True,
+                    "result": parsed,
+                    "result_type": type(parsed).__name__,
+                    "method": "cdp_supervisor",
+                }
+                return json.dumps(response, ensure_ascii=False, default=str)
+            # JS exception is a real failure — surface it instead of falling
+            # through to the subprocess path (which would just re-run and
+            # produce the same exception, but slower).
+            err = sup_result.get("error") or "evaluate_runtime failed"
+            if "supervisor" not in err.lower():
+                # Real JS-side error — return it.
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            # Supervisor-side failure (loop down, no session) — fall through.
+            logger.debug(
+                "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
+                err,
+            )
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
+
+    # --- Fallback: agent-browser CLI subprocess (original path) -------------
     result = _run_browser_command(effective_task_id, "eval", [expression])
 
     if not result.get("success"):

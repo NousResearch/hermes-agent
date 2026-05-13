@@ -145,7 +145,9 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openai": "openai",
     "openai-codex": "openai",
     "zai": "zai",
+    "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
+    "moonshot": "kimi-for-coding",
     "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
@@ -346,6 +348,28 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
             ctx = _extract_context(mdata)
             if ctx:
                 return ctx
+
+    # Suffix-aware fallback: some providers (e.g. ollama-cloud) store
+    # model IDs with :cloud / -cloud suffixes in models.dev while the
+    # live API returns bare names.  Without this, kimi-k2.6 misses the
+    # kimi-k2.6:cloud entry and falls through to stale OpenRouter metadata
+    # reporting 32768 — tripping the 64k minimum-context guard.
+    # The suffix-stripping in fetch_ollama_cloud_models() handles the
+    # model-picker UX; this handles the context-length lookup path.
+    for suffix in (":cloud", "-cloud"):
+        suffixed_key = model + suffix
+        entry = models.get(suffixed_key)
+        if entry:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+        # Also try case-insensitive
+        suffixed_lower = model_lower + suffix
+        for mid, mdata in models.items():
+            if mid.lower() == suffixed_lower:
+                ctx = _extract_context(mdata)
+                if ctx:
+                    return ctx
 
     return None
 

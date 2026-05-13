@@ -101,7 +101,7 @@ def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bo
 
     normalized = raw.replace("\\", "/")
     path = PurePosixPath(normalized)
-    parts = [part for part in path.parts if part not in ("", ".")]
+    parts = [part for part in path.parts if part not in {"", "."}]
 
     if normalized.startswith("/") or path.is_absolute():
         raise ValueError(f"Unsafe {field_name}: {path_value}")
@@ -1415,7 +1415,7 @@ class SkillsShSource(SkillSource):
                         dir_name = entry["name"]
                         if dir_name.startswith((".", "_")):
                             continue
-                        if dir_name in ("skills", ".agents", ".claude"):
+                        if dir_name in {"skills", ".agents", ".claude"}:
                             continue  # already tried
                         # Try direct: repo/dir/skill_token
                         direct_id = f"{repo}/{dir_name}/{skill_token}"

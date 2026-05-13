@@ -104,8 +104,16 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
+            from agent.model_metadata import grok_supports_reasoning_effort
+
             kwargs["include"] = ["reasoning.encrypted_content"]
-            kwargs["reasoning"] = {"effort": reasoning_effort}
+            # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
+            # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
+            # those models reason natively. Only send the effort dial when
+            # the target model is on the allowlist; otherwise send no
+            # `reasoning` key at all and let the model reason on its own.
+            if grok_supports_reasoning_effort(model):
+                kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")

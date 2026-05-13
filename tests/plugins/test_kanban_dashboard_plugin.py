@@ -534,6 +534,9 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Deliberately DO NOT call kb.init_db().
 
@@ -1034,6 +1037,20 @@ def test_create_task_without_skills_defaults_to_empty_list(client):
     # dataclasses.asdict which keeps it None. The drawer's
     # `t.skills && t.skills.length > 0` guard handles both null and [].
     assert task.get("skills") in (None, [])
+
+
+def test_create_task_with_toolset_name_in_skills_is_rejected(client):
+    """POST /tasks fails fast when callers confuse toolsets with skills."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "bad skills payload",
+            "assignee": "linguist",
+            "skills": ["web"],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "toolset name" in r.json()["detail"]
 
 
 
@@ -1723,3 +1740,57 @@ def test_dashboard_requests_default_board_explicitly():
     assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
     assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
     assert "}, [loadBoardList, switchBoard, board]);" in dist
+
+
+def test_dashboard_search_includes_body_and_result():
+    """Client-side search must match body, result, latest_summary, and summary
+    so full card contents are findable."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "t.body || \"\"" in dist
+    assert "t.result || \"\"" in dist
+    assert "t.latest_summary || \"\"" in dist
+
+
+def test_dashboard_bulk_actions_include_reclaim_first():
+    """Bulk action bar must expose reclaim_first checkbox and expanded status buttons."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "reclaim_first: reclaimFirst" in dist
+    assert "hermes-kanban-bulk-reclaim-first" in dist
+    assert '"→ todo"' in dist
+    assert '"Block"' in dist
+    assert '"Unblock"' in dist
+
+
+def test_dashboard_shift_click_range_selection_exists():
+    """Shift-click must trigger range selection via toggleRange."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "function toggleRange" in dist or "const toggleRange =" in dist
+    assert "props.toggleRange(t.id)" in dist or "props.toggleRange" in dist
+    assert "e.shiftKey" in dist
+
+
+def test_dashboard_multi_move_bulk_exists():
+    """Dragging a selected card with other selections must use /tasks/bulk."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "onMoveSelected" in dist
+    assert "props.onMoveSelected" in dist
+    assert "`${API}/tasks/bulk`" in dist
+
+
+def test_dashboard_failed_card_highlight_class_exists():
+    """Partial bulk failures must highlight failing cards."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "hermes-kanban-card--failed" in js
+    assert "hermes-kanban-card--failed" in css
+    assert "failedIds" in js

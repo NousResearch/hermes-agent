@@ -989,7 +989,7 @@ def _default_export_ignore(root_dir: Path):
             if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
                 ignored.add(entry)
             # npm lockfiles can appear at root
-            elif entry in ("package.json", "package-lock.json"):
+            elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
         # Root-level exclusions
         if Path(directory) == root_dir:
@@ -1057,7 +1057,7 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
     ):
         raise ValueError(f"Unsafe archive member path: {member_name}")
 
-    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    parts = [part for part in posix_path.parts if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe archive member path: {member_name}")
     return parts

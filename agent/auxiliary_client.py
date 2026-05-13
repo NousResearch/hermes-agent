@@ -175,7 +175,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         # Resolve to the user's actual main provider so named custom providers
         # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
         main_prov = (_read_main_provider() or "").strip().lower()
-        if main_prov and main_prov not in ("auto", "main", ""):
+        if main_prov and main_prov not in {"auto", "main", ""}:
             normalized = main_prov
         else:
             return "custom"
@@ -382,7 +382,28 @@ _AI_GATEWAY_HEADERS = {
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
-NOUS_EXTRA_BODY = {"tags": ["product=hermes-agent"]}
+#
+# The tags are computed from agent.portal_tags so the client= marker stays
+# in lockstep with hermes_cli.__version__ across every Portal call site
+# (main loop, aux, compression, web_extract). Do not inline a literal here;
+# see agent/portal_tags.py for the rationale.
+from agent.portal_tags import nous_portal_tags as _nous_portal_tags
+
+
+def _nous_extra_body() -> dict:
+    """Return a fresh Nous Portal ``extra_body`` dict.
+
+    Computed at call time so a hot-reloaded ``hermes_cli.__version__`` is
+    reflected without restarting long-running processes.
+    """
+    return {"tags": _nous_portal_tags()}
+
+
+# Backwards-compatible module attribute. Some callers (tests, third-party
+# plugins) read ``NOUS_EXTRA_BODY`` directly; keep it as a snapshot of the
+# current tags. Callers that need the freshest value should call
+# ``_nous_extra_body()`` or import ``nous_portal_tags`` directly.
+NOUS_EXTRA_BODY = _nous_extra_body()
 
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
@@ -578,7 +599,7 @@ def _convert_content_for_responses(content: Any) -> Any:
             if detail:
                 entry["detail"] = detail
             converted.append(entry)
-        elif ptype in ("input_text", "input_image"):
+        elif ptype in {"input_text", "input_image"}:
             # Already in Responses format — pass through
             converted.append(part)
         else:
@@ -706,6 +727,16 @@ class _CodexCompletionsAdapter:
                     close()
                 except Exception:
                     logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
+            # The cached auxiliary client wraps this same ``self._client``
+            # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
+            # this instance).  After we close the httpx transport above, the
+            # cache must drop that entry — otherwise the next auxiliary call
+            # (compression retry, memory flush, etc.) reuses the dead client
+            # and fails fast with a connection error.  See issue #23432.
+            try:
+                _evict_cached_client_instance(self._client)
+            except Exception:
+                logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
@@ -788,7 +819,7 @@ class _CodexCompletionsAdapter:
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
                         ptype = _item_get(part, "type")
-                        if ptype in ("output_text", "text"):
+                        if ptype in {"output_text", "text"}:
                             text_parts.append(_item_get(part, "text", ""))
                 elif item_type == "function_call":
                     tool_calls_raw.append(SimpleNamespace(
@@ -890,6 +921,14 @@ class AsyncCodexAuxiliaryClient:
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # Mirror the sync wrapper's _real_client so cache eviction by leaf
+        # OpenAI client (e.g. _close_client_on_timeout in #23482) drops
+        # this async entry too. Without this, sync and async cache entries
+        # diverge on poisoning: the sync entry is evicted but the async
+        # entry keeps reusing the closed transport, failing every
+        # subsequent async aux call with 'Connection error' until the
+        # gateway restarts.
+        self._real_client = sync_wrapper._real_client
 
 
 class _AnthropicCompletionsAdapter:
@@ -1025,6 +1064,9 @@ class AsyncAnthropicAuxiliaryClient:
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
+        # eviction on a poisoned underlying client also drops this entry.
+        self._real_client = sync_wrapper._real_client
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
@@ -1820,6 +1862,113 @@ def _get_provider_chain() -> List[tuple]:
     ]
 
 
+# ── Auxiliary "recently 402'd" unhealthy-provider cache ────────────────────
+#
+# When an auxiliary provider returns HTTP 402 (Payment Required / credit
+# exhaustion), retrying it on every subsequent aux call is wasteful — the
+# provider stays depleted for hours or days, but the chain re-tries it as
+# the FIRST entry on every compression/title-gen/session-search call,
+# burns ~1 RTT, gets 402 again, then falls back. On a long Discord/LCM
+# session that adds up to dozens of doomed 402s.
+#
+# Solution: when ANY caller observes a payment error against a provider,
+# mark it unhealthy for ``_AUX_UNHEALTHY_TTL_SECONDS``. ``_resolve_auto``
+# Step-2 and ``_try_payment_fallback`` both consult this cache and skip
+# unhealthy entries (logging once per skip-reason so the user sees what
+# happened). Entries auto-expire so a topped-up account recovers without
+# manual intervention.
+#
+# Failure isolation: the cache is in-process only. A second hermes
+# process won't inherit the unhealthy mark — that's intentional, since
+# the user might be running two profiles with different OpenRouter keys.
+
+_AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
+_aux_unhealthy_until: Dict[str, float] = {}
+_aux_unhealthy_logged_at: Dict[str, float] = {}
+
+# Map provider names that show up in resolved_provider / explicit-config
+# back to the chain labels used by _get_provider_chain(). Keep in sync
+# with the alias map in _try_payment_fallback below.
+_AUX_UNHEALTHY_LABEL_ALIASES = {
+    "openrouter": "openrouter",
+    "nous": "nous",
+    "custom": "local/custom",
+    "local/custom": "local/custom",
+    "openai-codex": "openai-codex",
+    "codex": "openai-codex",
+}
+
+
+def _normalize_chain_label(provider: str) -> str:
+    """Normalize a resolved_provider value to a chain label used by
+    ``_get_provider_chain()``. Falls back to the lowercased input for
+    direct API-key providers (deepseek, alibaba, minimax, etc.) which
+    each report their own provider name from the api-key chain.
+    """
+    if not provider:
+        return ""
+    p = str(provider).strip().lower()
+    return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
+
+
+def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
+    """Mark ``provider`` as recently-402'd, hidden from chain iteration
+    until the TTL expires. Called from the payment-fallback branches in
+    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+    """
+    label = _normalize_chain_label(provider)
+    if not label:
+        return
+    expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
+    _aux_unhealthy_until[label] = expires_at
+    logger.warning(
+        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Subsequent auxiliary calls will skip it until %s.",
+        label,
+        int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        time.strftime("%H:%M:%S", time.localtime(expires_at)),
+    )
+
+
+def _is_provider_unhealthy(label: str) -> bool:
+    """True iff ``label`` is in the unhealthy cache and the TTL hasn't expired.
+    Lazily evicts expired entries so the cache stays small.
+    """
+    if not label:
+        return False
+    expires_at = _aux_unhealthy_until.get(label)
+    if expires_at is None:
+        return False
+    if time.time() >= expires_at:
+        _aux_unhealthy_until.pop(label, None)
+        _aux_unhealthy_logged_at.pop(label, None)
+        return False
+    return True
+
+
+def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
+    """Emit a single info-level log per minute when we skip an unhealthy
+    provider. Avoids spamming the log on bursty sessions while still
+    giving the user a trail.
+    """
+    now = time.time()
+    last = _aux_unhealthy_logged_at.get(label, 0.0)
+    if now - last >= 60:
+        _aux_unhealthy_logged_at[label] = now
+        expires_at = _aux_unhealthy_until.get(label, now)
+        logger.info(
+            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
+            task or "call", label, max(0, int(expires_at - now)),
+        )
+
+
+def _reset_aux_unhealthy_cache() -> None:
+    """Clear the unhealthy cache. Used by tests and by a future explicit
+    user trigger (e.g. ``hermes config aux reset``)."""
+    _aux_unhealthy_until.clear()
+    _aux_unhealthy_logged_at.clear()
+
+
 def _is_payment_error(exc: Exception) -> bool:
     """Detect payment/credit/quota exhaustion errors.
 
@@ -1832,7 +1981,7 @@ def _is_payment_error(exc: Exception) -> bool:
     err_lower = str(exc).lower()
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
-    if status in (402, 429, None):
+    if status in {402, 429, None}:
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
                                            "payment required")):
@@ -1984,6 +2133,41 @@ def _evict_cached_clients(provider: str) -> None:
             _client_cache.pop(key, None)
 
 
+def _evict_cached_client_instance(target: Any) -> bool:
+    """Drop the cache entry whose stored client is *target*.
+
+    Used when a specific cached client has been poisoned (closed httpx
+    transport after a timeout, broken streaming session, etc.) so the next
+    auxiliary call rebuilds rather than reusing the dead instance.
+
+    Walks both sync and async wrappers (``CodexAuxiliaryClient``,
+    ``AnthropicAuxiliaryClient``, ``AsyncCodexAuxiliaryClient``, etc.) via
+    their ``_real_client`` attribute so a timeout that closes the underlying
+    ``OpenAI`` (or native provider) client evicts every cached shim that
+    exposed it. Async wrappers must mirror their sync sibling's
+    ``_real_client`` for this to work — otherwise the sync entry is evicted
+    but the async entry survives and keeps reusing the dead transport.
+
+    Returns True when at least one entry was evicted.
+    """
+    if target is None:
+        return False
+    evicted = False
+    with _client_cache_lock:
+        for key in list(_client_cache.keys()):
+            entry = _client_cache.get(key)
+            if entry is None:
+                continue
+            cached = entry[0]
+            if cached is None:
+                continue
+            real = getattr(cached, "_real_client", None)
+            if cached is target or real is target:
+                del _client_cache[key]
+                evicted = True
+    return evicted
+
+
 def _pool_cache_hint(
     provider: str,
     *,
@@ -1994,7 +2178,7 @@ def _pool_cache_hint(
     if normalized == "auto":
         runtime = _normalize_main_runtime(main_runtime)
         normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
-    if normalized in ("", "auto", "custom"):
+    if normalized in {"", "auto", "custom"}:
         return ""
     entry = _peek_pool_entry(normalized)
     if entry is None:
@@ -2016,7 +2200,7 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
 def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
-    if normalized not in ("", "auto", "custom"):
+    if normalized not in {"", "auto", "custom"}:
         return normalized
     base = str(getattr(client, "base_url", "") or "")
     if base_url_host_matches(base, "chatgpt.com"):
@@ -2261,6 +2445,10 @@ def _try_payment_fallback(
     for label, try_fn in _get_provider_chain():
         if label in skip_chain_labels:
             continue
+        if _is_provider_unhealthy(label):
+            _log_skip_unhealthy(label, task)
+            tried.append(f"{label} (unhealthy)")
+            continue
         client, model = try_fn()
         if client is not None:
             logger.info(
@@ -2329,7 +2517,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
-            and main_provider not in ("auto", "")):
+            and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
@@ -2337,21 +2525,34 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
-        client, resolved = resolve_provider_client(
-            resolved_provider,
-            main_model,
-            explicit_base_url=explicit_base_url,
-            explicit_api_key=explicit_api_key,
-            api_mode=runtime_api_mode or None,
-        )
-        if client is not None:
-            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
+        # Skip Step-1 if the main provider was recently 402'd. The unhealthy
+        # cache TTL bounds how long we bypass it, so a topped-up account
+        # recovers automatically. If we tried Step-1 anyway, every aux call
+        # on a depleted main provider would pay one doomed 402 RTT before
+        # falling to Step-2.
+        main_chain_label = _normalize_chain_label(resolved_provider)
+        if main_chain_label and _is_provider_unhealthy(main_chain_label):
+            _log_skip_unhealthy(main_chain_label)
+        else:
+            client, resolved = resolve_provider_client(
+                resolved_provider,
+                main_model,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=runtime_api_mode or None,
+            )
+            if client is not None:
+                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                            main_provider, resolved or main_model)
+                return client, resolved or main_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():
+        if _is_provider_unhealthy(label):
+            _log_skip_unhealthy(label)
+            tried.append(f"{label} (unhealthy)")
+            continue
         client, model = try_fn()
         if client is not None:
             if tried:
@@ -2977,7 +3178,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -3086,7 +3287,7 @@ def get_available_vision_backends() -> List[str]:
     available: List[str] = []
     # 1. Active provider — if the user configured a provider, try it first.
     main_provider = _read_main_provider()
-    if main_provider and main_provider not in ("auto", ""):
+    if main_provider and main_provider not in {"auto", ""}:
         if main_provider in _VISION_AUTO_PROVIDER_ORDER:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
@@ -3132,7 +3333,7 @@ def resolve_vision_provider_client(
 
     if resolved_base_url:
         provider_for_base_override = (
-            requested if requested and requested not in ("", "auto") else "custom"
+            requested if requested and requested not in {"", "auto"} else "custom"
         )
         client, final_model = resolve_provider_client(
             provider_for_base_override,
@@ -3160,7 +3361,7 @@ def resolve_vision_provider_client(
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
-        if main_provider and main_provider not in ("auto", ""):
+        if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
@@ -3257,7 +3458,7 @@ def get_auxiliary_extra_body() -> dict:
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
     """
-    return dict(NOUS_EXTRA_BODY) if auxiliary_is_nous else {}
+    return _nous_extra_body() if auxiliary_is_nous else {}
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:
@@ -3648,7 +3849,7 @@ def _resolve_task_provider_model(
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None, resolved_api_mode
+            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
@@ -3846,7 +4047,7 @@ def _build_call_kwargs(
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
     if provider == "nous" or auxiliary_is_nous:
-        merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
+        merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
@@ -3966,7 +4167,7 @@ def call_llm(
             # credentials were found, fail fast instead of silently routing
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
@@ -4096,7 +4297,7 @@ def call_llm(
 
         # ── Auth refresh retry ───────────────────────────────────────
         if (_is_auth_error(first_err)
-                and resolved_provider not in ("auto", "", None)
+                and resolved_provider not in {"auto", "", None}
                 and not client_is_nous):
             if _refresh_provider_credentials(resolved_provider):
                 logger.info(
@@ -4179,10 +4380,17 @@ def call_llm(
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
+                # Resolve the actual provider label (resolved_provider may be
+                # "auto"; the client's base_url tells us which backend got the
+                # 402). Mark THAT label unhealthy so subsequent aux calls
+                # skip it instead of paying another doomed RTT.
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
@@ -4200,6 +4408,17 @@ def call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+        # Connection/timeout errors leave the cached client poisoned (closed
+        # httpx transport, half-read stream, dead async loop).  Drop it from
+        # the cache regardless of whether we found a fallback above so the
+        # next auxiliary call rebuilds a fresh client instead of reusing the
+        # dead one.  See issue #23432.
+        if _is_connection_error(first_err):
+            try:
+                _evict_cached_client_instance(client)
+            except Exception:
+                logger.debug("Auxiliary: cache eviction after connection error failed",
+                             exc_info=True)
         raise
 
 
@@ -4317,7 +4536,7 @@ async def async_call_llm(
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
@@ -4428,7 +4647,7 @@ async def async_call_llm(
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         if (_is_auth_error(first_err)
-                and resolved_provider not in ("auto", "", None)
+                and resolved_provider not in {"auto", "", None}
                 and not client_is_nous):
             if _refresh_provider_credentials(resolved_provider):
                 logger.info(
@@ -4490,10 +4709,13 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
@@ -4517,4 +4739,12 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+        # Mirror the sync path: drop poisoned clients on connection/timeout
+        # so the next aux call rebuilds.  See issue #23432.
+        if _is_connection_error(first_err):
+            try:
+                _evict_cached_client_instance(client)
+            except Exception:
+                logger.debug("Auxiliary (async): cache eviction after connection error failed",
+                             exc_info=True)
         raise

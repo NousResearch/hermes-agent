@@ -130,7 +130,9 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                if termux_capture:
+                if os.environ.get('PULSE_SERVER'):
+                    notices.append("No PortAudio devices detected but PULSE_SERVER is set -- continuing")
+                elif termux_capture:
                     notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
                 else:
                     warnings.append("No audio input/output devices detected")
@@ -456,8 +458,7 @@ class AudioRecorder:
             # Compute RMS for level display and silence detection
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
-            if rms > self._peak_rms:
-                self._peak_rms = rms
+            self._peak_rms = max(self._peak_rms, rms)
 
             # Silence detection
             if self._on_silence_stop is not None:

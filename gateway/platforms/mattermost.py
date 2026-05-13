@@ -611,7 +611,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 # succeed on retry — stop reconnecting instead of looping forever.
                 import aiohttp
                 err_str = str(exc).lower()
-                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
+                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
@@ -649,21 +649,21 @@ class MattermostAdapter(BasePlatformAdapter):
             if self._closing:
                 return
 
-            if raw_msg.type in (
+            if raw_msg.type in {
                 raw_msg.type.TEXT,
                 raw_msg.type.BINARY,
-            ):
+            }:
                 try:
                     event = json.loads(raw_msg.data)
                 except (json.JSONDecodeError, TypeError):
                     continue
                 await self._handle_ws_event(event)
-            elif raw_msg.type in (
+            elif raw_msg.type in {
                 raw_msg.type.ERROR,
                 raw_msg.type.CLOSE,
                 raw_msg.type.CLOSING,
                 raw_msg.type.CLOSED,
-            ):
+            }:
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
@@ -732,7 +732,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in ("false", "0", "no")
+            ).lower() not in {"false", "0", "no"}
 
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}

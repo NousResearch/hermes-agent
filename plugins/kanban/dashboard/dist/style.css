@@ -202,8 +202,10 @@
   align-items: center;
   gap: 0.4rem;
   font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  /* Assignee/profile names are case-sensitive. Do not visually uppercase
+   * lane headers, otherwise a valid `analyst` profile appears as `ANALYST`
+   * in the WebUI and users may copy the wrong casing back into edits. */
+  letter-spacing: 0.02em;
   color: var(--color-muted-foreground);
   padding: 0 0.1rem;
 }
@@ -536,6 +538,15 @@
   background: color-mix(in srgb, var(--color-ring) 6%, var(--color-card));
 }
 
+/* Batch drag source styling — cards that are part of the current multi-drag.
+   The browser ghost image floats; we dim the original DOM nodes so the user
+   sees the whole set is in-flight. */
+.hermes-kanban-card--dragging-source :where(.hermes-kanban-card-content) {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
 .hermes-kanban-card-check {
   width: 0.85rem;
   height: 0.85rem;
@@ -774,6 +785,22 @@
   transition: none;
 }
 
+/* ---- Multi-drag ghost ----------------------------------------------- */
+
+.hermes-kanban-drag-ghost {
+  position: fixed;
+  left: -9999px;
+  padding: 0.45rem 0.8rem;
+  background: var(--color-card);
+  border: 2px solid var(--color-ring);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0.95;
+}
 
 /* ---- Staleness tiers ------------------------------------------------ */
 
@@ -861,15 +888,56 @@
   padding: 0.15rem 0 0;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+/* Run metadata is a secondary detail panel. Render it as a clearly-labeled
+ * sub-block with a thin left rule, capped height, and muted treatment so
+ * a verbose JSON blob (e.g. changed_files + URLs from a writer task) does
+ * not visually swamp the parent run row or get mistaken for a crash dump.
+ * Uses a native <details>/<summary> pair so collapse is browser-handled
+ * (zero JS); large blobs default collapsed via the open=false attribute.
+ * See issue #19548. */
+.hermes-kanban-run-meta-block {
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 2px solid var(--color-border);
+  background: transparent;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label {
+  cursor: pointer;
+  list-style: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::-webkit-details-marker {
+  display: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::before {
+  content: "▶ ";
+  display: inline-block;
+  font-size: 0.6rem;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+}
+.hermes-kanban-run-meta-block[open] > summary.hermes-kanban-run-meta-label::before {
+  transform: rotate(90deg);
+}
+.hermes-kanban-run-meta-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted-foreground);
+  padding-bottom: 0.15rem;
+}
 .hermes-kanban-run-meta {
   display: block;
+  max-height: 8.5rem;
+  overflow: auto;
   font-size: 0.72rem;
   line-height: 1.5;
-  padding: 0.15rem 0 0;
+  padding: 0;
   color: var(--color-muted-foreground);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
+  background: transparent;
 }
 
 /* -------------------------------------------------------------------------
@@ -1373,4 +1441,52 @@
   background: rgba(255, 107, 61, 0.12);
   color: #ff8b6b;
   border: 1px solid rgba(255, 107, 61, 0.3);
+}
+/* ---- Partial failure highlight --------------------------------------- */
+.hermes-kanban-card--failed :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+
+/* ---- Larger checkbox hit target -------------------------------------- */
+.hermes-kanban-card-check-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.3rem;
+  cursor: pointer;
+}
+.hermes-kanban-card-check {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Column select-all checkbox -------------------------------------- */
+.hermes-kanban-col-check {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0 0.15rem 0 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar extras ------------------------------------------ */
+.hermes-kanban-bulk-priority {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-bulk-reclaim-first {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  cursor: pointer;
 }

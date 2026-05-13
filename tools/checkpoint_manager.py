@@ -639,7 +639,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in ("/", str(Path.home())):
+        if abs_dir in {"/", str(Path.home())}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
@@ -1312,8 +1312,7 @@ def prune_checkpoints(
                 for p in child.rglob("*"):
                     try:
                         mt = p.stat().st_mtime
-                        if mt > newest:
-                            newest = mt
+                        newest = max(newest, mt)
                     except OSError:
                         continue
             except OSError:
@@ -1455,8 +1454,7 @@ def prune_checkpoints(
 
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after
-    if delta > result["bytes_freed"]:
-        result["bytes_freed"] = delta
+    result["bytes_freed"] = max(result["bytes_freed"], delta)
 
     return result
 

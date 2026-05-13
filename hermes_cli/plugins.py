@@ -86,9 +86,9 @@ logger = logging.getLogger(__name__)
 # The env var is read once at import time; tests that need to flip it
 # mid-process can call ``_install_plugin_debug_handler(force=True)``.
 
-_PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in (
+_PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
     "1", "true", "yes", "on",
-)
+}
 _DEBUG_HANDLER_INSTALLED = False
 
 
@@ -100,9 +100,9 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
     """
     global _DEBUG_HANDLER_INSTALLED, _PLUGINS_DEBUG
     if force:
-        _PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in (
+        _PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
             "1", "true", "yes", "on",
-        )
+        }
     if not _PLUGINS_DEBUG or _DEBUG_HANDLER_INSTALLED:
         return
     handler = logging.StreamHandler(sys.stderr)
@@ -290,6 +290,27 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        # Lazy-built host-owned LLM facade — see ctx.llm property below.
+        self._llm: Any = None
+
+    # -- host-owned LLM access ----------------------------------------------
+
+    @property
+    def llm(self) -> Any:
+        """Return the plugin's :class:`agent.plugin_llm.PluginLlm` facade.
+
+        Lets trusted plugins run host-owned chat or structured completions
+        against the user's active model and auth without bringing their
+        own provider keys. Override capability (model, agent id, auth
+        profile) is fail-closed by default and gated through
+        ``plugins.entries.<plugin_id>.llm.*`` config keys.
+
+        See :mod:`agent.plugin_llm` for the full surface."""
+        if self._llm is None:
+            from agent.plugin_llm import PluginLlm
+            plugin_id = self.manifest.key or self.manifest.name
+            self._llm = PluginLlm(plugin_id=plugin_id)
+        return self._llm
 
     # -- tool registration --------------------------------------------------
 
@@ -803,7 +824,7 @@ class PluginManager:
             # Bundled platform plugins (gateway adapters like IRC) auto-load
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
+            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
                 self._load_plugin(manifest)
                 continue
 
@@ -1054,7 +1075,7 @@ class PluginManager:
         )
 
         try:
-            if manifest.source in ("user", "project", "bundled"):
+            if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)

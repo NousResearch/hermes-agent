@@ -2,6 +2,7 @@ import asyncio
 import pytest
 
 from pathlib import Path
+from types import SimpleNamespace
 from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -76,7 +77,13 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 @pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
 async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     """
-    Event kind of gave_up, crashed, time_out would be cover, and remove subscription
+    Event kinds gave_up / crashed / timed_out send a notification but DO
+    NOT delete the subscription. The dispatcher may respawn the task and
+    fire the same event kind again (e.g. a worker that crashes, gets
+    reclaimed, and crashes a second time); the user must hear about the
+    second event too. Subscriptions are removed only when the task hits
+    a truly final status (done / archived) — see the comment on
+    TERMINAL_KINDS in gateway/run.py and PR #21398.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -114,15 +121,27 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
+    # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
     assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
 
+    # ...but the subscription survives so a respawn-then-same-event cycle
+    # reaches the user too. The cursor (last_event_id) advanced inside
+    # the same write txn as the claim, so the same event won't re-fire.
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == [], "Subscription should be unsub after abnormal crash"
+    assert len(subs) == 1, (
+        f"Subscription should survive {kind!r} so the next cycle of the "
+        f"same event reaches the user; got {subs!r}"
+    )
+    assert int(subs[0]["last_event_id"]) >= 1, (
+        "Cursor should have advanced past the delivered event "
+        "(claim_unseen_events_for_sub advances atomically inside the "
+        "same write txn as the read)."
+    )
 
 
 @pytest.mark.asyncio
@@ -301,3 +320,162 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
         "_kanban_notifier_watcher must not call _kb.init_db(board=slug) — "
         "see issue #21378."
     )
+
+
+@pytest.mark.asyncio
+async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
+    """Each gateway keeps its watcher on, but only the subscribing profile claims."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned task", assignee="backend-engineer")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "business-partner"
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_not_called()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) == 0, "wrong profile must not claim the event"
+
+
+@pytest.mark.asyncio
+async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_home):
+    """The gateway for the profile that created/subscribed the task reports it."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned task", assignee="backend-engineer")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert subs == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
+    """`/kanban --board <slug> create ...` must subscribe on that board.
+
+    The gateway handler currently auto-subscribes after `/kanban create`,
+    but the create detection must still work when the shared `--board`
+    flag appears before the subcommand, and the subscription must land in
+    that board's DB rather than the ambient/default board.
+    """
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    kb.create_board("projx")
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        thread_id="th1",
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban --board projx create "hello" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "subscribed" in out.lower()
+
+    conn = kb.connect(board="projx")
+    try:
+        subs = kb.list_notify_subs(conn)
+        tasks = kb.list_tasks(conn)
+    finally:
+        conn.close()
+
+    assert [t.title for t in tasks] == ["hello"]
+    assert len(subs) == 1
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "th1"
+
+    conn = kb.connect(board="default")
+    try:
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()

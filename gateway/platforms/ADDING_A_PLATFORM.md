@@ -33,6 +33,17 @@ status display, gateway setup, and more.
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
 
+**Subclassing for platform-specific UX.** When a platform has a hard
+time-window constraint that the base adapter can't anticipate (LINE's
+60s single-use reply token, WhatsApp's 24h session window, etc.), an
+adapter can override `_keep_typing` to layer a mid-flight bubble at a
+threshold without expanding the kwarg surface. Always
+`await super()._keep_typing(...)` so the typing heartbeat keeps running,
+and tear down your side task in `finally`. See `plugins/platforms/line/`
+for the full pattern (Template Buttons postback at 45s, `RequestCache`
+state machine, `interrupt_session_activity` override for `/stop`
+orphans) and the developer-guide page for the prose walkthrough.
+
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full

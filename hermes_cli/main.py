@@ -10989,6 +10989,154 @@ Examples:
     # =========================================================================
     # sessions command
     # =========================================================================
+
+    def _cmd_sessions_repair(args) -> None:
+        """Scan on-disk session files and import any missing from the SQLite DB."""
+        import gzip as _gzip
+
+        sessions_dir = get_hermes_home() / "sessions"
+        if not sessions_dir.is_dir():
+            print("No sessions directory found.")
+            return
+
+        dry_run = getattr(args, "dry_run", False)
+        limit = getattr(args, "limit", 0) or 0
+
+        try:
+            from hermes_state import SessionDB
+        except Exception as e:
+            print(f"Error: Could not open session database: {e}")
+            return
+
+        # Gather all session IDs from the database
+        db = SessionDB()
+        db_session_ids = set()
+        try:
+            for row in db._conn.execute("SELECT id FROM sessions"):
+                db_session_ids.add(row[0])
+        except Exception as e:
+            print(f"Error reading session database: {e}")
+            db.close()
+            return
+
+        # Scan on-disk session files
+        orphans = []
+        for fp in sorted(sessions_dir.iterdir()):
+            name = fp.name
+            if name.startswith("session_") and (
+                name.endswith(".json") or name.endswith(".json.gz")
+            ):
+                if name.endswith(".json.gz"):
+                    sid = name.replace("session_", "").replace(".json.gz", "")
+                else:
+                    sid = name.replace("session_", "").replace(".json", "")
+
+                if sid not in db_session_ids:
+                    orphans.append(fp)
+
+        if not orphans:
+            print("No orphaned session files found. All on-disk sessions are in the database.")
+            db.close()
+            return
+
+        print(f"Found {len(orphans)} orphaned session file(s) not in the database.")
+
+        # Skip request_dump files (not full session transcripts)
+        orphans = [f for f in orphans if "request_dump" not in f.name]
+        if limit > 0:
+            orphans = orphans[:limit]
+
+        if dry_run:
+            print(f"\nDry run — would import {len(orphans)} session(s):")
+            for fp in orphans[:10]:
+                name = fp.name
+                if name.endswith(".json.gz"):
+                    sid = name.replace("session_", "").replace(".json.gz", "")
+                else:
+                    sid = name.replace("session_", "").replace(".json", "")
+                print(f"  {sid}  ({fp.stat().st_size / 1024:.1f} KB)")
+            if len(orphans) > 10:
+                print(f"  ... and {len(orphans) - 10} more")
+            print(f"\nRun without --dry-run to import.")
+            db.close()
+            return
+
+        # Import orphaned sessions
+        imported = 0
+        skipped = 0
+        errors = 0
+        total_messages = 0
+
+        for i, fp in enumerate(orphans, 1):
+            name = fp.name
+            if name.endswith(".json.gz"):
+                sid = name.replace("session_", "").replace(".json.gz", "")
+            else:
+                sid = name.replace("session_", "").replace(".json", "")
+
+            # Skip if already in DB (re-entrant safety)
+            if sid in db_session_ids:
+                skipped += 1
+                continue
+
+            try:
+                # Read the session file
+                if name.endswith(".json.gz"):
+                    with _gzip.open(fp, "rt", encoding="utf-8") as f:
+                        data = json.loads(f.read())
+                else:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        data = json.loads(f.read())
+
+                msgs = data.get("messages", [])
+                if not msgs:
+                    skipped += 1
+                    continue
+
+                # Import into DB
+                started_at_str = data.get("session_start", "")
+                started_at_ts = None
+                if started_at_str:
+                    from datetime import datetime
+                    try:
+                        dt = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
+                        started_at_ts = dt.timestamp()
+                    except (ValueError, OSError):
+                        pass
+
+                imported_count = db.batch_import_session(
+                    session_id=sid,
+                    source=data.get("platform", "cli"),
+                    model=data.get("model"),
+                    model_config=None,
+                    system_prompt=data.get("system_prompt"),
+                    parent_session_id=None,
+                    started_at=started_at_ts,
+                    messages=msgs,
+                )
+
+                if imported_count > 0:
+                    imported += 1
+                    total_messages += imported_count
+                    db_session_ids.add(sid)  # prevent re-count
+                    if i % 50 == 0 or i == len(orphans):
+                        print(f"  Progress: {i}/{len(orphans)} files processed, {imported} imported, {total_messages} messages...")
+                else:
+                    skipped += 1
+
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    print(f"  ERROR importing {sid}: {e}")
+
+        db.close()
+
+        print(f"\nRepair complete:")
+        print(f"  Session files scanned: {len(orphans)}")
+        print(f"  Newly imported: {imported} sessions, {total_messages} messages")
+        print(f"  Already present: {skipped}")
+        print(f"  Errors: {errors}")
+
     sessions_parser = subparsers.add_parser(
         "sessions",
         help="Manage session history (list, rename, export, prune, delete)",
@@ -11050,6 +11198,22 @@ Examples:
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
+    )
+
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Scan on-disk session files and import any missing from the SQLite database",
+    )
+    sessions_repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report orphaned sessions without importing them",
+    )
+    sessions_repair.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Import at most N orphaned sessions (0 = all)",
     )
 
     def _confirm_prompt(prompt: str) -> bool:
@@ -11218,6 +11382,10 @@ Examples:
             if db_path.exists():
                 size_mb = os.path.getsize(db_path) / (1024 * 1024)
                 print(f"Database size: {size_mb:.1f} MB")
+
+        elif action == "repair":
+            db.close()  # close before repair opens its own connection
+            _cmd_sessions_repair(args)
 
         else:
             sessions_parser.print_help()

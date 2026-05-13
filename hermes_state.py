@@ -1596,6 +1596,116 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def batch_import_session(
+        self,
+        session_id: str,
+        source: str,
+        model: str = None,
+        model_config: dict = None,
+        system_prompt: str = None,
+        parent_session_id: str = None,
+        started_at: float = None,
+        messages: List[Dict[str, Any]] = None,
+    ) -> int:
+        """Import a full session (row + messages) in a single transaction.
+
+        Uses INSERT OR IGNORE for the session row so re-imports are safe.
+        Returns the number of messages imported, or 0 if the session already
+        existed (already imported by a previous run).
+        """
+        messages = messages or []
+        now_ts = started_at or time.time()
+
+        def _do(conn):
+            nonlocal now_ts
+            # Check if session already exists — skip entire import if so.
+            cursor = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            )
+            if cursor.fetchone() is not None:
+                return 0  # already present
+
+            # Create session row with original timestamp
+            conn.execute(
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                   system_prompt, parent_session_id, started_at, ended_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    source,
+                    None,
+                    model,
+                    json.dumps(model_config) if model_config else None,
+                    system_prompt,
+                    parent_session_id,
+                    now_ts,
+                    now_ts + 1,
+                ),
+            )
+
+            # Batch insert all messages
+            total_messages = 0
+            total_tool_calls = 0
+            for msg in messages:
+                role = msg.get("role", "unknown")
+                raw_content = msg.get("content")
+                tool_calls = msg.get("tool_calls")
+                reasoning = msg.get("reasoning") if role == "assistant" else None
+                reasoning_content = msg.get("reasoning_content") if role == "assistant" else None
+                reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                codex_reasoning_items = msg.get("codex_reasoning_items") if role == "assistant" else None
+                codex_message_items = msg.get("codex_message_items") if role == "assistant" else None
+
+                reasoning_details_json = (
+                    json.dumps(reasoning_details) if reasoning_details else None
+                )
+                codex_items_json = (
+                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+                )
+                codex_message_items_json = (
+                    json.dumps(codex_message_items) if codex_message_items else None
+                )
+                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                stored_content = self._encode_content(raw_content)
+
+                conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                       codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        stored_content,
+                        msg.get("tool_call_id"),
+                        tool_calls_json,
+                        msg.get("tool_name"),
+                        now_ts,
+                        msg.get("token_count"),
+                        msg.get("finish_reason"),
+                        reasoning,
+                        reasoning_content,
+                        reasoning_details_json,
+                        codex_items_json,
+                        codex_message_items_json,
+                    ),
+                )
+                total_messages += 1
+                if tool_calls is not None:
+                    total_tool_calls += (
+                        len(tool_calls) if isinstance(tool_calls, list) else 1
+                    )
+                now_ts += 1e-6
+
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, session_id),
+            )
+            return total_messages
+
+        return self._execute_write(_do)
+
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
         with self._lock:

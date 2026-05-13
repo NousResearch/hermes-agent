@@ -2559,6 +2559,19 @@ class HermesCLI:
             self._session_db = SessionDB()
         except Exception as e:
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            # Surface to user — they need to know their session won't be
+            # searchable cross-session.  Transient failures (WAL contention
+            # during DB init) are NOT retried at this layer; _ensure_db_session
+            # in run_agent.py handles per-call retries.  If the DB itself can't
+            # even be opened, the user should be warned.
+            try:
+                click.echo(
+                    f"WARNING: SQLite session store unavailable — "
+                    f"this session will NOT appear in session_search. ({e})",
+                    err=True,
+                )
+            except Exception:
+                pass
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so

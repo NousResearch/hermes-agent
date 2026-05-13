@@ -3974,6 +3974,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_allowed_topics(self) -> set[str]:
+        """Return the whitelist of Telegram forum topic IDs this bot handles.
+
+        When non-empty, group/supergroup messages from other topics are
+        silently ignored. DMs are never filtered by topic. Telegram may omit
+        ``message_thread_id`` for the forum General topic, so ``None`` is
+        treated as topic ``1`` for matching purposes.
+        """
+        raw = self.config.extra.get("allowed_topics")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOWED_TOPICS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
@@ -4165,6 +4180,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+            if topic_id not in allowed_topics:
+                return False
+
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():

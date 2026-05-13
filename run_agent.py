@@ -2163,6 +2163,21 @@ class AIAgent:
             _config_context_length = _model_cfg.get("context_length")
         else:
             _config_context_length = None
+
+        # Read explicit preserve_dots override from model config. Opt-in flag
+        # for third-party Anthropic-compatible proxies (OneAPI, LiteLLM,
+        # FastGPT, company gateways, etc.) whose registered model IDs contain
+        # dots — e.g. ``Claude Opus 4.6`` — and would otherwise be mangled
+        # into ``Claude Opus 4-6`` by ``normalize_model_name``. Consumed by
+        # ``_anthropic_preserve_dots`` below. Only bools are honored; other
+        # types fall through to the provider/base_url allowlist.
+        if isinstance(_model_cfg, dict):
+            _explicit_preserve_dots = _model_cfg.get("preserve_dots")
+            self._model_preserve_dots_override = (
+                _explicit_preserve_dots if isinstance(_explicit_preserve_dots, bool) else None
+            )
+        else:
+            self._model_preserve_dots_override = None
         if _config_context_length is not None:
             try:
                 _config_context_length = int(_config_context_length)
@@ -9355,7 +9370,20 @@ class AIAgent:
         the hyphenated form with
         ``HTTP 400 The provided model identifier is invalid``.
         Regression for #11976; mirrors the opencode-go fix for #5211
-        (commit f77be22c), which extended this same allowlist."""
+        (commit f77be22c), which extended this same allowlist.
+
+        Users on third-party Anthropic-compatible proxies (OneAPI,
+        LiteLLM, FastGPT, company-internal gateways, etc.) whose
+        registered model IDs contain dots — e.g. ``Claude Opus 4.6`` —
+        can opt in explicitly by setting ``model.preserve_dots: true``
+        in ``~/.hermes/config.yaml``. This overrides the auto-detection
+        below so any Anthropic-compatible endpoint can route correctly
+        without Hermes having to hardcode its URL.
+        """
+        override = getattr(self, "_model_preserve_dots_override", None)
+        if isinstance(override, bool):
+            return override
+
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",

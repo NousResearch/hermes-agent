@@ -72,8 +72,8 @@ from utils import atomic_json_write
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
-CHANNEL_VERSION = "2.2.0"
-ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
+CHANNEL_VERSION = "2.4.3"
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 3
 
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
@@ -82,6 +82,8 @@ EP_GET_CONFIG = "ilink/bot/getconfig"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
+EP_NOTIFY_START = "ilink/bot/msg/notifystart"
+EP_NOTIFY_STOP = "ilink/bot/msg/notifystop"
 
 LONG_POLL_TIMEOUT_MS = 35_000
 API_TIMEOUT_MS = 15_000
@@ -204,7 +206,7 @@ def _random_wechat_uin() -> str:
 
 
 def _base_info() -> Dict[str, Any]:
-    return {"channel_version": CHANNEL_VERSION}
+    return {"channel_version": CHANNEL_VERSION, "bot_agent": ""}
 
 
 def _headers(token: Optional[str], body: str) -> Dict[str, str]:
@@ -482,6 +484,38 @@ async def _send_typing(
             "typing_ticket": typing_ticket,
             "status": status,
         },
+        token=token,
+        timeout_ms=CONFIG_TIMEOUT_MS,
+    )
+
+
+async def _notify_start(
+    session: "aiohttp.ClientSession",
+    *,
+    base_url: str,
+    token: str,
+) -> Dict[str, Any]:
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=EP_NOTIFY_START,
+        payload={},
+        token=token,
+        timeout_ms=CONFIG_TIMEOUT_MS,
+    )
+
+
+async def _notify_stop(
+    session: "aiohttp.ClientSession",
+    *,
+    base_url: str,
+    token: str,
+) -> Dict[str, Any]:
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=EP_NOTIFY_STOP,
+        payload={},
         token=token,
         timeout_ms=CONFIG_TIMEOUT_MS,
     )
@@ -1273,6 +1307,10 @@ class WeixinAdapter(BasePlatformAdapter):
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
+        try:
+            await _notify_start(self._send_session, base_url=self._base_url, token=self._token)
+        except Exception as exc:
+            logger.warning("[%s] notifyStart failed (continuing startup): %s", self.name, exc)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
@@ -1300,6 +1338,11 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        if self._send_session and not self._send_session.closed:
+            try:
+                await _notify_stop(self._send_session, base_url=self._base_url, token=self._token)
+            except Exception as exc:
+                logger.warning("[%s] notifyStop failed during disconnect: %s", self.name, exc)
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None

@@ -239,6 +239,73 @@ class TestWeixinConfig:
         assert config.get_connected_platforms() == []
 
 
+class TestWeixinProtocol:
+    def test_ilink_protocol_version_and_base_info_match_openclaw_2_4_3(self):
+        assert weixin.CHANNEL_VERSION == "2.4.3"
+        assert weixin.ILINK_APP_CLIENT_VERSION == (2 << 16) | (4 << 8) | 3
+        assert weixin._base_info() == {"channel_version": "2.4.3", "bot_agent": ""}
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_notify_start_before_polling(self):
+        adapter = _make_adapter()
+        poll_session = AsyncMock()
+        poll_session.closed = False
+        send_session = AsyncMock()
+        send_session.closed = False
+
+        with patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.platforms.weixin.CRYPTO_AVAILABLE", True), \
+             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("gateway.platforms.weixin._make_ssl_connector", return_value=None), \
+             patch("gateway.platforms.weixin._notify_start", new_callable=AsyncMock) as notify_start_mock, \
+             patch("gateway.platforms.weixin._notify_stop", new_callable=AsyncMock), \
+             patch.object(WeixinAdapter, "_poll_loop", new_callable=AsyncMock) as poll_loop_mock:
+            session_cls.side_effect = [poll_session, send_session]
+
+            async def _assert_notify_start_before_poll(*_args, **_kwargs):
+                assert not poll_loop_mock.called
+                return {}
+
+            notify_start_mock.side_effect = _assert_notify_start_before_poll
+
+            assert await adapter.connect() is True
+            await adapter.disconnect()
+
+        notify_start_mock.assert_awaited_once_with(
+            send_session,
+            base_url=adapter._base_url,
+            token="test-token",
+        )
+        assert poll_loop_mock.called
+
+    @pytest.mark.asyncio
+    async def test_disconnect_sends_notify_stop_and_still_closes_on_failure(self):
+        adapter = _make_adapter()
+        send_session = AsyncMock()
+        send_session.closed = False
+        poll_session = AsyncMock()
+        poll_session.closed = False
+        adapter._send_session = send_session
+        adapter._poll_session = poll_session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+
+        with patch("gateway.platforms.weixin._notify_stop", new_callable=AsyncMock) as notify_stop_mock:
+            notify_stop_mock.side_effect = RuntimeError("iLink unavailable")
+
+            await adapter.disconnect()
+
+        notify_stop_mock.assert_awaited_once_with(
+            send_session,
+            base_url="https://weixin.example.com",
+            token="test-token",
+        )
+        poll_session.close.assert_awaited_once()
+        send_session.close.assert_awaited_once()
+        assert adapter._poll_session is None
+        assert adapter._send_session is None
+
+
 class TestWeixinStatePersistence:
     def test_save_weixin_account_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
         account_path = tmp_path / "weixin" / "accounts" / "acct.json"

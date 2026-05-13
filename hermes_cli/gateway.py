@@ -1878,6 +1878,18 @@ def _detect_venv_dir() -> Path | None:
 
 
 def get_python_path() -> str:
+    # First, try to find venv from PROJECT_ROOT (most reliable for our setup)
+    project_root = PROJECT_ROOT
+    for candidate in ("venv", ".venv"):
+        venv_candidate = project_root / candidate
+        if venv_candidate.is_dir():
+            if is_windows():
+                venv_python = venv_candidate / "Scripts" / "python.exe"
+            else:
+                venv_python = venv_candidate / "bin" / "python"
+            if venv_python.exists():
+                return str(venv_python)
+    # Fallback to detecting from sys.prefix
     venv = _detect_venv_dir()
     if venv is not None:
         if is_windows():
@@ -1961,13 +1973,22 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     the first ``import``. Keep the symlinked path so the venv activates
     its own environment. Lexical expansion only via ``expanduser``.
     """
-    current_home = Path.home()
-    p = Path(path).expanduser()
+    current_home = Path.home().resolve()
+    # Don't resolve() symlinks - we want to keep venv paths like
+    # /root/.hermes/hermes-agent/venv/bin/python as-is, not resolve them
+    # to their actual targets like /root/.local/share/uv/python-.../bin/python3.11
+    path_obj = Path(path)
     try:
-        relative = p.relative_to(current_home)
+        relative = path_obj.relative_to(current_home)
         return str(Path(target_home_dir) / relative)
     except ValueError:
-        return str(p)
+        # Fallback: try with resolved path for non-symlink paths
+        resolved = path_obj.resolve()
+        try:
+            relative = resolved.relative_to(current_home)
+            return str(Path(target_home_dir) / relative)
+        except ValueError:
+            return path
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:

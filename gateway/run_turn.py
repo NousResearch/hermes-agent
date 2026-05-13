@@ -1395,12 +1395,6 @@ class GatewayTurnMixin:
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
 
-        # "(empty)" = the model produced no visible content after exhausting all retries.
-        if response == "(empty)" and not _intentional_silence:
-            response = (
-                "⚠️ The model returned no response after processing tool results. This can happen "
-                "with some models — try again or rephrase your question."
-            )
         agent_messages = agent_result.get("messages", [])
         logger.info(
             "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",

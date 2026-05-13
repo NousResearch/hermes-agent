@@ -181,7 +181,10 @@ from agent.tool_guardrails import (
     append_toolguard_guidance,
     toolguard_synthetic_result,
 )
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    file_mutation_result_landed,
+)
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -350,7 +353,7 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Tools that mutate files on disk.  Used by the per-turn verifier that
 # surfaces silently-failed file edits so the model can't over-claim success.
-_FILE_MUTATING_TOOLS = frozenset({"write_file", "patch"})
+# Imported above as `_FILE_MUTATING_TOOLS` from `agent.tool_result_classification`.
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8

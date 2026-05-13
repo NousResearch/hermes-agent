@@ -134,7 +134,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "ollama"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -167,7 +167,7 @@ def _get_search_backend() -> str:
     3. Auto-detect from env vars
 
     This enables using different providers for search vs extract
-    (e.g. SearXNG for search + Firecrawl for extract).
+    (e.g. SearXNG/Ollama for search + Firecrawl for extract).
     """
     return _get_capability_backend("search")
 
@@ -212,6 +212,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "ollama":
+        return _is_ollama_web_search_available()
     return False
 
 
@@ -228,6 +230,73 @@ def _ddgs_package_importable() -> bool:
         return True
     except ImportError:
         return False
+
+
+# ─── Ollama Web Search ───────────────────────────────────────────────────────
+
+OLLAMA_WEB_SEARCH_PATH = "/api/experimental/web_search"
+
+
+def _get_ollama_base_url() -> str:
+    """Return the local Ollama host used for keyless web search."""
+    configured = (_load_web_config().get("ollama_base_url") or "").strip()
+    env_host = os.getenv("OLLAMA_HOST", "").strip()
+    base = configured or env_host or "http://127.0.0.1:11434"
+    if not base.startswith(("http://", "https://")):
+        base = f"http://{base}"
+    return base.rstrip("/")
+
+
+def _is_ollama_web_search_available() -> bool:
+    """Return True when a local Ollama host is reachable.
+
+    The actual web-search endpoint may still require ``ollama signin``; query-time
+    errors are surfaced by ``_ollama_search`` with actionable messages.
+    """
+    try:
+        with httpx.Client(timeout=1.0) as client:
+            response = client.get(f"{_get_ollama_base_url()}/api/tags")
+        return response.status_code < 500
+    except Exception:
+        return False
+
+
+def _ollama_search(query: str, limit: int) -> Dict[str, Any]:
+    """Search via Ollama's local experimental web-search endpoint."""
+    count = min(max(int(limit or 5), 1), 10)
+    url = f"{_get_ollama_base_url()}{OLLAMA_WEB_SEARCH_PATH}"
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                url,
+                json={"query": query, "max_results": count},
+                headers={"Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        raise ValueError(f"Ollama web search failed: {exc}") from exc
+
+    if response.status_code == 401:
+        raise ValueError("Ollama web search authentication failed. Run `ollama signin`.")
+    if response.status_code == 403:
+        raise ValueError(
+            "Ollama web search is unavailable. Ensure cloud-backed web search is enabled on the Ollama host."
+        )
+    if response.status_code >= 400:
+        raise ValueError(f"Ollama web search failed ({response.status_code}): {response.text[:1000]}")
+
+    payload = response.json()
+    web_results = []
+    for idx, item in enumerate(payload.get("results") or [], start=1):
+        url_value = str(item.get("url") or "").strip()
+        if not url_value:
+            continue
+        web_results.append({
+            "title": str(item.get("title") or ""),
+            "url": url_value,
+            "description": str(item.get("content") or "")[:500],
+            "position": idx,
+        })
+    return {"success": True, "data": {"web": web_results}}
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -303,6 +372,9 @@ def _web_requires_env() -> list[str]:
     is set, the tool sees it; if not, it doesn't.  Not-logged-in users
     simply don't have the vars set, so the extra entries are harmless.
     """
+    cfg = _load_web_config()
+    if (cfg.get("backend") or cfg.get("search_backend") or "").lower().strip() == "ollama":
+        return []
     return [
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
@@ -1295,6 +1367,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "ollama":
+            response_data = _ollama_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1400,6 +1481,14 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
+        backend = _get_extract_backend()
+        if backend in ("searxng", "ollama"):
+            return json.dumps({
+                "success": False,
+                "error": f"{backend} is a search-only backend and cannot extract URL content. "
+                         "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
+            }, ensure_ascii=False)
+
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
@@ -1416,8 +1505,6 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
             elif backend == "exa":
@@ -2115,9 +2202,16 @@ def check_firecrawl_api_key() -> bool:
 
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    cfg = _load_web_config()
+    configured = cfg.get("backend", "").lower().strip()
+    search_configured = cfg.get("search_backend", "").lower().strip()
+    configured_backends = {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "ollama"}
+    if configured in configured_backends:
         return _is_backend_available(configured)
+    if search_configured in configured_backends:
+        return _is_backend_available(search_configured)
+    # Do not auto-enable Ollama just because a local daemon is running; unlike
+    # env/package-driven backends, it must be explicitly selected in config.
     return any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
@@ -2162,6 +2256,8 @@ if __name__ == "__main__":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
+        elif backend == "ollama":
+            print(f"   Using Ollama Web Search (search only): {_get_ollama_base_url()}")
         elif firecrawl_url_available:
             print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
         elif firecrawl_key_available:

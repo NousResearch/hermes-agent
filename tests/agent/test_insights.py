@@ -37,7 +37,13 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 2 * day,))
     db.end_session("s1", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's1'", (now - 2 * day + 3600,))
-    db.update_token_counts("s1", input_tokens=50000, output_tokens=15000)
+    db.update_token_counts(
+        "s1",
+        input_tokens=50000,
+        output_tokens=15000,
+        cache_read_tokens=100000,
+        cache_write_tokens=10000,
+    )
     db.append_message("s1", role="user", content="Hello, help me fix a bug")
     db.append_message("s1", role="assistant", content="Sure, let me look into that.")
     db.append_message("s1", role="assistant", content="Let me search the files.",
@@ -66,7 +72,12 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's2'", (now - 5 * day,))
     db.end_session("s2", end_reason="timeout")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's2'", (now - 5 * day + 1800,))
-    db.update_token_counts("s2", input_tokens=20000, output_tokens=8000)
+    db.update_token_counts(
+        "s2",
+        input_tokens=20000,
+        output_tokens=8000,
+        cache_read_tokens=20000,
+    )
     db.append_message("s2", role="user", content="Search the web for something")
     db.append_message("s2", role="assistant", content="Searching...",
                       tool_calls=[{"function": {"name": "web_search"}}])
@@ -285,9 +296,17 @@ class TestInsightsPopulated:
 
         expected_input = 50000 + 20000 + 100000 + 10000
         expected_output = 15000 + 8000 + 40000 + 5000
+        expected_cache_read = 100000 + 20000
+        expected_cache_write = 10000
         assert overview["total_input_tokens"] == expected_input
         assert overview["total_output_tokens"] == expected_output
-        assert overview["total_tokens"] == expected_input + expected_output
+        assert overview["total_cache_read_tokens"] == expected_cache_read
+        assert overview["total_cache_write_tokens"] == expected_cache_write
+        assert overview["total_prompt_tokens"] == expected_input + expected_cache_read + expected_cache_write
+        assert overview["total_tokens"] == expected_input + expected_output + expected_cache_read + expected_cache_write
+        assert overview["cache_hit_rate"] == pytest.approx(
+            expected_cache_read / overview["total_prompt_tokens"] * 100
+        )
 
     def test_overview_cost_positive(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -447,6 +466,7 @@ class TestTerminalFormatting:
 
         assert "Hermes Insights" in text
         assert "Overview" in text
+        assert "Prompt Cache" in text
         assert "Models Used" in text
         assert "Top Tools" in text
         assert "Top Skills" in text
@@ -460,10 +480,12 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
+        assert "Cache hit" in text
+        assert "Cache read" in text
+        assert "Cache write" in text
+        assert "Prompt total" in text
+        # Cost metrics are intentionally hidden (pricing was unreliable).
         assert "Est. cost" not in text
-        assert "Cache read" not in text
-        assert "Cache write" not in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -514,13 +536,13 @@ class TestGatewayFormatting:
         assert "**" in text  # Markdown bold
 
     def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+        """Gateway format omits dollar figures but includes concise cache efficiency."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
         assert "$" not in text
-        assert "cache" not in text.lower()
+        assert "Prompt cache" in text
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)

@@ -414,6 +414,17 @@ class InsightsEngine:
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
         total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
         total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
+        total_prompt_tokens = total_input + total_cache_read + total_cache_write
+        cache_hit_rate = (
+            (total_cache_read / total_prompt_tokens * 100)
+            if total_prompt_tokens
+            else 0.0
+        )
+        uncached_input_rate = (
+            (total_input / total_prompt_tokens * 100)
+            if total_prompt_tokens
+            else 0.0
+        )
         total_tokens = total_input + total_output + total_cache_read + total_cache_write
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
@@ -464,6 +475,9 @@ class InsightsEngine:
             "total_output_tokens": total_output,
             "total_cache_read_tokens": total_cache_read,
             "total_cache_write_tokens": total_cache_write,
+            "total_prompt_tokens": total_prompt_tokens,
+            "cache_hit_rate": cache_hit_rate,
+            "uncached_input_rate": uncached_input_rate,
             "total_tokens": total_tokens,
             "estimated_cost": total_cost,
             "actual_cost": actual_cost,
@@ -768,6 +782,22 @@ class InsightsEngine:
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
+        # Prompt cache efficiency
+        if o.get("total_cache_read_tokens") or o.get("total_cache_write_tokens"):
+            lines.append("  🧊 Prompt Cache")
+            lines.append("  " + "─" * 56)
+            lines.append(
+                f"  Cache hit:         {o['cache_hit_rate']:.1f}%"
+                f"          Uncached:        {o['uncached_input_rate']:.1f}%"
+            )
+            lines.append(
+                f"  Fresh input:       {o['total_input_tokens']:<12,}  Cache read:      {o['total_cache_read_tokens']:,}"
+            )
+            lines.append(
+                f"  Cache write:       {o['total_cache_write_tokens']:<12,}  Prompt total:    {o['total_prompt_tokens']:,}"
+            )
+            lines.append("")
+
         # Model breakdown
         if report["models"]:
             lines.append("  🤖 Models Used")
@@ -878,6 +908,11 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        if o.get("total_cache_read_tokens") or o.get("total_cache_write_tokens"):
+            lines.append(
+                f"**Prompt cache:** {o['cache_hit_rate']:.1f}% hit "
+                f"({o['total_cache_read_tokens']:,} read / {o['total_input_tokens']:,} fresh)"
+            )
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")

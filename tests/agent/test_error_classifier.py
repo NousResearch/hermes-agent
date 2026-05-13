@@ -722,6 +722,73 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    # ── Model-output errors: should NOT fallback (#12770) ──
+
+    def test_400_invalid_tool_call_arguments_no_fallback(self):
+        """400 with 'invalid tool call arguments' → format_error, no fallback.
+
+        The model generated malformed JSON in tool call arguments.
+        Another provider will produce different (not better) output,
+        so cascading through all fallback providers wastes 20-60s.
+        """
+        e = MockAPIError(
+            "invalid tool call arguments",
+            status_code=400,
+            body={"error": {"message": "invalid tool call arguments"}},
+        )
+        result = classify_api_error(e, approx_tokens=5000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_tool_use_not_valid_json_no_fallback(self):
+        """400 with 'tool_use block is not valid json' → no fallback."""
+        e = MockAPIError(
+            "tool_use block is not valid json",
+            status_code=400,
+            body={"error": {"message": "tool_use block is not valid json"}},
+        )
+        result = classify_api_error(e, approx_tokens=5000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_unterminated_string_no_fallback(self):
+        """400 with 'unterminated string' → no fallback."""
+        e = MockAPIError(
+            "unterminated string in tool call arguments",
+            status_code=400,
+            body={"error": {"message": "unterminated string in tool call arguments"}},
+        )
+        result = classify_api_error(e, approx_tokens=5000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_failed_to_parse_tool_no_fallback(self):
+        """400 with 'failed to parse tool' → no fallback."""
+        e = MockAPIError(
+            "failed to parse tool call: unexpected end of input",
+            status_code=400,
+            body={"error": {"message": "failed to parse tool call: unexpected end of input"}},
+        )
+        result = classify_api_error(e, approx_tokens=5000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_non_tool_error_still_fallback(self):
+        """400 with generic non-tool-related message → still allows fallback."""
+        e = MockAPIError(
+            "invalid request: unknown parameter 'foo'",
+            status_code=400,
+            body={"error": {"message": "invalid request: unknown parameter 'foo'"}},
+        )
+        result = classify_api_error(e, approx_tokens=5000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_400_flat_body_descriptive_not_context_overflow(self):
         """Responses API flat body with descriptive error + large session → format error.
 

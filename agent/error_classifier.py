@@ -89,6 +89,22 @@ class ClassifiedError:
 
 # ── Provider-specific patterns ──────────────────────────────────────────
 
+# Patterns that indicate model-output errors (malformed tool calls, invalid
+# JSON in arguments).  These are *not* infrastructure problems — a different
+# provider will NOT fix them, so fallback is wasteful.  See issue #12770.
+_MODEL_OUTPUT_ERROR_PATTERNS = [
+    "invalid tool call arguments",
+    "invalid tool_call",
+    "malformed tool call",
+    "invalid json in tool",
+    "could not parse tool",
+    "tool input did not match",
+    "failed to parse tool",
+    "tool_use block is not valid json",
+    "is not valid json",
+    "unterminated string",
+]
+
 # Patterns that indicate billing exhaustion (not transient rate limit)
 _BILLING_PATTERNS = [
     "insufficient credits",
@@ -825,7 +841,17 @@ def _classify_400(
             should_compress=True,
         )
 
-    # Non-retryable format error
+    # Model-output errors (e.g. malformed tool call arguments) — the
+    # model itself produced bad JSON.  Another provider will NOT fix this,
+    # so falling back only wastes 20-60s per cascade.  (#12770)
+    if any(p in error_msg for p in _MODEL_OUTPUT_ERROR_PATTERNS):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # Non-retryable format error (unknown cause — fallback may help)
     return result_fn(
         FailoverReason.format_error,
         retryable=False,

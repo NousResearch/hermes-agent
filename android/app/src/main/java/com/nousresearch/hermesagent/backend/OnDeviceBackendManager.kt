@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import android.os.Looper
 import android.os.Process
+import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.models.HermesModelDownloadManager
@@ -154,7 +155,7 @@ object OnDeviceBackendManager {
             modelPath = modelFile.absolutePath,
             requestedModelName = preferred.title,
             port = LITERT_LM_PORT,
-            inferenceConfig = inferenceConfigFor(preferred),
+            inferenceConfig = inferenceConfigFor(preferred, speculativeDecodingModeFor(context)),
         )
         currentStatus = status
         return status
@@ -248,7 +249,11 @@ object OnDeviceBackendManager {
             )
     }
 
-    private fun inferenceConfigFor(preferred: LocalModelDownloadRecord): LiteRtLmOpenAiProxy.InferenceConfig {
+    private fun inferenceConfigFor(
+        preferred: LocalModelDownloadRecord,
+        speculativeDecodingMode: LiteRtLmOpenAiProxy.SpeculativeDecodingMode =
+            LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+    ): LiteRtLmOpenAiProxy.InferenceConfig {
         val lower = preferred.modelIdentityText()
         val modelDefaults = when {
             "gemma-4" in lower || "gemma4" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
@@ -280,7 +285,16 @@ object OnDeviceBackendManager {
             maxContextLength = modelDefaults.maxContextLength,
             supportImage = preferred.supportsImageInput(),
             supportAudio = preferred.supportsAudioInput(),
+            speculativeDecodingMode = speculativeDecodingMode,
         )
+    }
+
+    private fun speculativeDecodingModeFor(context: Context): LiteRtLmOpenAiProxy.SpeculativeDecodingMode {
+        return when (AppSettingsStore(context).load().liteRtLmSpeculativeDecodingMode.lowercase(Locale.US)) {
+            "enabled", "on", "force" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.ENABLED
+            "disabled", "off" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.DISABLED
+            else -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO
+        }
     }
 
     private fun LocalModelDownloadRecord.supportsImageInput(): Boolean {

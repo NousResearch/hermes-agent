@@ -130,6 +130,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 corr3xtBaseUrl = normalized,
                 dataSaverMode = existing.dataSaverMode,
                 onDeviceBackend = existing.onDeviceBackend,
+                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
                 languageTag = existing.languageTag,
             )
         )
@@ -352,6 +353,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 corr3xtBaseUrl = existing.corr3xtBaseUrl,
                 dataSaverMode = existing.dataSaverMode,
                 onDeviceBackend = existing.onDeviceBackend,
+                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
                 languageTag = existing.languageTag,
             )
         )

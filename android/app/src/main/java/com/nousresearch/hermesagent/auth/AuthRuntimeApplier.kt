@@ -55,6 +55,7 @@ object AuthRuntimeApplier {
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                 dataSaverMode = existingSettings.dataSaverMode,
                 onDeviceBackend = existingSettings.onDeviceBackend,
+                liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
                 languageTag = existingSettings.languageTag,
             )
         )

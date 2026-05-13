@@ -276,6 +276,25 @@ Voice messages you send on Telegram are automatically transcribed by Hermes's co
 - `groq` uses Groq Whisper and requires `GROQ_API_KEY`
 - `openai` uses OpenAI Whisper and requires `VOICE_TOOLS_OPENAI_KEY`
 
+#### Skipping STT: pass the raw audio file to the agent
+
+If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:
+
+```yaml
+stt:
+  enabled: false
+```
+
+With STT disabled, the gateway still downloads the voice/audio attachment into Hermes's audio cache, but **does not transcribe it**. The agent receives the message with a marker like:
+
+```
+[The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]
+```
+
+Your tools or skills can then read that path directly (e.g., hand it off to a local diarization pipeline, a richer transcription model, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
+
+This pairs naturally with the [local Bot API server](#large-files-20mb--via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
+
 ### Outgoing Voice (Text-to-Speech)
 
 When the agent generates audio via TTS, it's delivered as native Telegram **voice bubbles** — the round, inline-playable kind.
@@ -294,6 +313,135 @@ brew install ffmpeg
 Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, but uses the rectangular player instead of a voice bubble).
 
 Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
+
+## Large Files (>20MB) via Local Bot API Server
+
+Telegram's **public** Bot API caps `getFile` downloads at **20 MB**, so any voice note, audio file, video, or document larger than that is silently rejected by Hermes with a "too large" reply. The documented way around this is to run a **local** [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) daemon — the same server software Telegram uses, but running on your network. A local server raises the file ceiling to **2 GB** and Hermes auto-lifts its own internal cap when it sees a custom `base_url` configured.
+
+This unlocks workflows like:
+
+- Sending long voice memos (45-minute meetings, podcasts) to the bot
+- Uploading large videos for vision-tool processing
+- Archiving raw audio for offline pipelines like diarization, alignment, or training data
+
+### Step 1: Obtain Telegram API credentials
+
+The local server talks directly to Telegram's MTProto layer (not the public Bot API), so it needs **MTProto credentials**:
+
+1. Visit [my.telegram.org/apps](https://my.telegram.org/apps) and sign in with your Telegram account.
+2. Create a new application (any name and short description will do).
+3. Copy the `api_id` and `api_hash` — both are required.
+
+### Step 2: Run the telegram-bot-api server
+
+The community-maintained [`aiogram/telegram-bot-api`](https://hub.docker.com/r/aiogram/telegram-bot-api) Docker image is the easiest path. A minimal `docker-compose.yaml` (use `--local` mode to enable the higher limits):
+
+```yaml
+services:
+  tg-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: tg-bot-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8081"   # bind to loopback only; see security note
+    environment:
+      TELEGRAM_API_ID: "12345"           # your api_id from Step 1
+      TELEGRAM_API_HASH: "abcdef..."     # your api_hash from Step 1
+      TELEGRAM_LOCAL: "1"                # enable --local mode (raises 20MB → 2GB)
+    volumes:
+      - ./tg-bot-api-data:/var/lib/telegram-bot-api
+```
+
+Bring it up:
+
+```bash
+docker compose up -d tg-bot-api
+docker logs --tail 20 tg-bot-api
+```
+
+:::warning Security
+The local Bot API server takes your bot token in the URL path (e.g. `/bot<TOKEN>/getMe`) with **no additional auth**. Anyone who can reach the port can fully control your bot — read every message it can see, send messages as it, etc. Bind the container to `127.0.0.1` and/or front it with a reverse proxy on a private network. **Never expose port 8081 to the public internet.**
+:::
+
+### Step 3: Log the bot out of the public API (one-time)
+
+A bot can only be active on **one** Bot API server at a time. If your bot was already running against `api.telegram.org` (which it almost certainly was), you must explicitly log it out there before the local server will accept it:
+
+```bash
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/logOut"
+# expected response: {"ok":true,"result":true}
+```
+
+This is a one-shot migration step — you don't repeat it on every restart. Telegram delivers any messages received after `logOut` through the new server instead.
+
+Verify the local server can talk to Telegram on the bot's behalf:
+
+```bash
+curl "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/getMe"
+# expected response: {"ok":true,"result":{"id":...,"is_bot":true,...}}
+```
+
+### Step 4: Point Hermes at the local server
+
+Add the URLs under `platforms.telegram.extra` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      base_url: "http://127.0.0.1:8081/bot"
+      base_file_url: "http://127.0.0.1:8081/file/bot"
+      local_mode: true        # see Step 5 below — only set this if the bot's data
+                              # directory is readable by the Hermes process
+```
+
+:::caution Use `platforms.telegram.extra`, not `telegram.extra`
+At the moment only the `platforms.<name>.extra` form is deep-merged into the platform config. Keys placed directly under a top-level `telegram.extra` block are silently dropped.
+:::
+
+When `base_url` is set, Hermes:
+
+- Builds the python-telegram-bot client against the local server
+- Auto-lifts its internal document/audio size cap from 20 MB → 2 GB
+- Reports the active limit in the "too large" error message (`Maximum: 2048 MB.`) so it's obvious which mode you're in
+
+Restart the gateway and look for a confirmation log line:
+
+```bash
+hermes gateway restart
+grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.hermes/logs/gateway.log | tail
+```
+
+### Step 5: `local_mode` — file access on disk
+
+The local server has **two ways** to deliver files:
+
+1. **Without `--local`** (the default): files are served over HTTP at `/file/bot<TOKEN>/<path>`, same as the public Bot API. The 20MB ceiling stays in effect. Useful as a network-fix only (e.g. when `api.telegram.org` is unreachable but you can self-host); not what you want for the size lift.
+2. **With `--local`** (set via `TELEGRAM_LOCAL=1` above): files are written to the server's filesystem and the `getFile` response returns an **absolute path** instead of an HTTP URL. The 20MB ceiling is lifted. Hermes must then read the bytes **from disk**, not over HTTP.
+
+To make the disk-read path work, set `local_mode: true` in the config above **and** make sure the Hermes process can read the path the server returns. Two scenarios:
+
+- **Same machine** — telegram-bot-api and Hermes run on the same host. Bind-mount the data volume to a directory that Hermes can read (e.g., `/var/lib/telegram-bot-api`), and make sure the file ownership matches. The container drops privileges to its internal `telegram-bot-api` user (uid varies by image); the simplest fix is to add `user: "<UID>:<GID>"` to the compose service so files are owned by a uid Hermes already runs as.
+- **Different machines** — the bot server runs on one host (e.g., a NAS, a separate VM) and Hermes on another. The server's data directory must be shared with the Hermes machine at the **same absolute path** the server reports (typically `/var/lib/telegram-bot-api`). NFS works well for this; CIFS/SMB with `uid=` mount remapping is friendlier if you don't want to deal with uid mismatches at the filesystem level.
+
+If `local_mode: true` is set but Hermes can't `stat` the returned file path (permissions or wrong mount), python-telegram-bot silently falls back to an HTTP `getFile` against the local server — which in `--local` mode responds with `404 Not Found`. The symptom shows up in `gateway.log` as:
+
+```
+[Telegram] Failed to cache voice: Not Found
+telegram.error.InvalidToken: Not Found
+```
+
+If you see that, the cap-lift is working but the file-share isn't. Verify `ls -la /var/lib/telegram-bot-api/<TOKEN>/voice/` from the Hermes host as the user the gateway runs as, and confirm a single file is `cat`-able without a permission error.
+
+### Step 6: Test it
+
+Send the bot a voice note or audio file that's bigger than 20 MB. Tail the gateway log:
+
+```bash
+tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
+```
+
+You should see a `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` line and **no** "too large" rejection. Combined with `stt.enabled: false` (above), the path to the original audio file then lands in the agent's inbound message for downstream processing.
 
 ## Group Chat Usage
 

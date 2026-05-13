@@ -201,6 +201,26 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
+def _build_models_probe_request(pname: str, url: str, key: str) -> tuple[str, dict]:
+    """Build the URL and headers for a provider /models health check.
+
+    Most OpenAI-compatible providers accept ``Authorization: Bearer``.
+    Google's native Generative Language API validates API keys via the ``key``
+    query parameter instead; sending the key as Bearer returns 401 and makes
+    ``hermes doctor`` report false negatives for valid Gemini keys.
+    """
+    headers = {
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+    if base_url_host_matches(url, "generativelanguage.googleapis.com"):
+        from urllib.parse import quote as _url_quote
+
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}key={_url_quote(key, safe='')}", headers
+    headers["Authorization"] = f"Bearer {key}"
+    return url, headers
+
+
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
@@ -1442,10 +1462,7 @@ def run_doctor(args):
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
             url = (base.rstrip("/") + "/models") if base else default_url
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "User-Agent": _HERMES_USER_AGENT,
-            }
+            url, headers = _build_models_probe_request(pname, url, key)
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)

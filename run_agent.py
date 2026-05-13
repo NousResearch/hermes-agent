@@ -1319,6 +1319,35 @@ class AIAgent:
 
             if self.provider not in _AGGREGATOR_PROVIDERS:
                 self.model = normalize_model_for_provider(self.model, self.provider)
+            else:
+                # When provider routing resolved to an aggregator
+                # (openrouter / nous) but the live ``base_url`` points
+                # directly at a native vendor endpoint (the user set
+                # model.base_url to api.openai.com/v1, etc.), the request
+                # bypasses the aggregator entirely.  The aggregator-style
+                # ``vendor/model`` prefix is invalid at the native vendor's
+                # API and is rejected with HTTP 400 "model does not exist".
+                # Strip the matching prefix in that case so e.g.
+                # ``openai/gpt-4o-mini`` becomes ``gpt-4o-mini`` before the
+                # outgoing request body is built.  See BUG-1.
+                _native_route_map = (
+                    ("api.openai.com",    "openai"),
+                    ("api.anthropic.com", "anthropic"),
+                    ("api.x.ai",          "xai"),
+                    ("api.deepseek.com",  "deepseek"),
+                    ("api.mistral.ai",    "mistral"),
+                    ("api.groq.com",      "groq"),
+                )
+                _hits_native = False
+                for _domain, _vendor_prefix in _native_route_map:
+                    if base_url_host_matches(self.base_url, _domain):
+                        if self.model.startswith(_vendor_prefix + "/"):
+                            self.model = self.model.split("/", 1)[1]
+                        _hits_native = True
+                        break
+                # Mark intentionally unused for static checkers — kept
+                # readable by leaving the loop's terminal state.
+                del _hits_native
         except Exception:
             pass
 

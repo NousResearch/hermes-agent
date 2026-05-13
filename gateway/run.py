@@ -7257,11 +7257,19 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            audio_file_paths: list[str] = []  # audio file attachments — not for STT
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
+                # MessageType.VOICE = voice message (Opus/OGG) — always STT
+                if event.message_type == MessageType.AUDIO:
+                    audio_file_paths.append(path)
+                elif event.message_type == MessageType.VOICE or (
+                    mtype.startswith("audio/")
+                    and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+                ):
                     audio_paths.append(path)
 
             if image_paths:
@@ -7322,6 +7330,21 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+
+        if audio_file_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            for _apath in audio_file_paths:
+                _basename = os.path.basename(_apath)
+                _parts = _basename.split("_", 2)
+                _display = _parts[2] if len(_parts) >= 3 else _basename
+                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _agent_path = _to_agent_path(_apath)
+                _note = (
+                    f"[The user sent an audio file attachment: '{_display}'. "
+                    f"It is saved at: {_agent_path}. "
+                    f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
+                )
+                message_text = f"{_note}\n\n{message_text}"
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes

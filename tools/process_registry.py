@@ -41,7 +41,13 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell,
+    _prepend_shell_init,
+    _resolve_safe_cwd,
+    _resolve_shell_init_files,
+    _sanitize_subprocess_env,
+)
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -148,6 +154,10 @@ class ProcessRegistry:
         "no job control in this shell",
         "cannot set terminal process group",
         "tcsetattr: Inappropriate ioctl for device",
+        "Inappropriate ioctl for device",
+        "터미널 프로세스 그룹",
+        "터미털 프로세스 그룹",
+        "작업 제어 없음",
     )
 
     def __init__(self):
@@ -185,6 +195,26 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    @staticmethod
+    def _background_shell_script(command: str) -> str:
+        """Build the script run by a non-PTY background login shell.
+
+        Background pipe mode has no controlling TTY.  Running bash with ``-i``
+        in that context emits localized job-control warnings before the user's
+        command output (for example Korean ``작업 제어 없음``).  Keep the login
+        shell for PATH/profile consistency, explicitly source configured shell
+        init files like ``LocalEnvironment`` does, but do not request an
+        interactive shell.
+        """
+        script = f"set +m; {command}"
+        try:
+            init_files = _resolve_shell_init_files()
+        except Exception:
+            init_files = []
+        if init_files:
+            script = _prepend_shell_init(script, init_files)
+        return script
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -547,7 +577,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-l", "-c", self._background_shell_script(command)],
             text=True,
             cwd=session.cwd,
             env=bg_env,

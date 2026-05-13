@@ -66,6 +66,64 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
 
 
 # =========================================================================
+# Shell startup noise / spawn mode
+# =========================================================================
+
+class TestShellNoiseAndSpawnMode:
+    def test_clean_shell_noise_removes_localized_bash_job_control_prefix(self):
+        noisy = (
+            "bash: 터미털 프로세스 그룹(-1)을 설정할 수 없음: "
+            "Inappropriate ioctl for device\n"
+            "bash: 이 셸에 작업 제어 없음\n"
+            "HERMES_BG_OK\n"
+        )
+
+        assert ProcessRegistry._clean_shell_noise(noisy) == "HERMES_BG_OK\n"
+
+    def test_spawn_local_pipe_mode_uses_non_interactive_login_shell(self, registry, tmp_path):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = MagicMock()
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("tools.process_registry._resolve_shell_init_files", return_value=[]), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd=str(tmp_path), use_pty=False)
+
+        assert captured["cmd"] == ["/bin/bash", "-l", "-c", "set +m; echo hello"]
+        assert "-i" not in captured["cmd"]
+        assert captured["kwargs"]["stderr"] is subprocess.STDOUT
+        fake_thread.start.assert_called_once()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell startup noise regression")
+    def test_spawn_local_pipe_mode_live_output_has_no_job_control_noise(self, registry, tmp_path):
+        session = registry.spawn_local("printf HERMES_BG_OK", cwd=str(tmp_path), use_pty=False)
+
+        try:
+            result = registry.wait(session.id, timeout=10)
+            assert result["status"] == "exited", result
+            assert result["exit_code"] == 0
+            assert result["output"] == "HERMES_BG_OK"
+            assert "no job control" not in result["output"]
+            assert "작업 제어 없음" not in result["output"]
+            assert "Inappropriate ioctl" not in result["output"]
+        finally:
+            registry.kill_process(session.id)
+
+
+# =========================================================================
 # Get / Poll
 # =========================================================================
 

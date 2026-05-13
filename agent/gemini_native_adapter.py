@@ -616,6 +616,26 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
+    # Tool-call streaming strategy
+    # ----------------------------
+    # OpenAI streaming clients reconstruct tool_call.function.arguments by
+    # concatenating successive `delta.tool_calls[].function.arguments`
+    # fragments grouped by `index`. That works cleanly only when every
+    # subsequent fragment is a strict suffix of the cumulative string.
+    #
+    # Gemini's native API doesn't honour that contract for SSE replay: it
+    # tends to re-send the whole functionCall (with the full args dict) in
+    # repeated events, and may even mutate the args mid-stream. Naively
+    # emitting `json.dumps(args)` every time produces concatenations like
+    # `{"q":"A"}{"q":"AB"}` which fail JSON parsing on the consumer side
+    # and silently discard the tool call.
+    #
+    # Approach: on the first sighting of a (part_index, name, signature) tuple
+    # we open the slot by emitting a "header" chunk with name+id and empty
+    # arguments. We cache the latest args in the slot. When the finishReason
+    # arrives we flush the final args in a single chunk per slot before the
+    # finish chunk. This keeps the consumer's JSON valid regardless of how
+    # many times Gemini re-emits the call or how the args evolve.
     candidates = event.get("candidates") or []
     if not candidates:
         return []
@@ -648,36 +668,56 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
+            extra_content = _tool_call_extra_from_part(part)
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
                     "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "last_arguments": "",
+                    "name": name,
+                    "args_str": args_str,
+                    "extra_content": extra_content,
+                    "header_emitted": False,
+                    "args_flushed": False,
                 }
                 tool_call_indices[call_key] = slot
-            emitted_arguments = args_str
-            last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments:
-                if args_str == last_arguments:
-                    emitted_arguments = ""
-                elif args_str.startswith(last_arguments):
-                    emitted_arguments = args_str[len(last_arguments):]
-            slot["last_arguments"] = args_str
-            chunks.append(
-                _make_stream_chunk(
-                    model=model,
-                    tool_call_delta={
-                        "index": slot["index"],
-                        "id": slot["id"],
-                        "name": name,
-                        "arguments": emitted_arguments,
-                        "extra_content": _tool_call_extra_from_part(part),
-                    },
+            else:
+                slot["args_str"] = args_str
+                if extra_content:
+                    slot["extra_content"] = extra_content
+            if not slot["header_emitted"]:
+                chunks.append(
+                    _make_stream_chunk(
+                        model=model,
+                        tool_call_delta={
+                            "index": slot["index"],
+                            "id": slot["id"],
+                            "name": name,
+                            "arguments": "",
+                            "extra_content": slot["extra_content"],
+                        },
+                    )
                 )
-            )
+                slot["header_emitted"] = True
 
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
+        for slot in tool_call_indices.values():
+            if slot.get("args_flushed"):
+                continue
+            args_str = slot.get("args_str") or ""
+            if args_str:
+                chunks.append(
+                    _make_stream_chunk(
+                        model=model,
+                        tool_call_delta={
+                            "index": slot["index"],
+                            "id": slot["id"],
+                            "name": slot.get("name") or "",
+                            "arguments": args_str,
+                        },
+                    )
+                )
+            slot["args_flushed"] = True
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
         finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
         # Attach usage from this event's usageMetadata so the streaming

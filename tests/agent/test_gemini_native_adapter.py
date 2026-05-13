@@ -296,12 +296,32 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     first = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
     second = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
 
-    assert first[0].choices[0].delta.tool_calls[0].index == 0
-    assert second[0].choices[0].delta.tool_calls[0].index == 0
-    assert first[0].choices[0].delta.tool_calls[0].id == second[0].choices[0].delta.tool_calls[0].id
-    assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
-    assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
+    def _tool_call_chunks(chunks):
+        return [
+            tc
+            for chunk in chunks
+            for tc in (chunk.choices[0].delta.tool_calls or [])
+        ]
+
+    first_tcs = _tool_call_chunks(first)
+    second_tcs = _tool_call_chunks(second)
+
+    # Replay of the same event must not re-open or re-emit args for the slot:
+    # the consumer already received a full picture from the first translation.
+    assert second_tcs == []
+
+    # Indices and ids are stable across emissions of the slot.
+    assert {tc.index for tc in first_tcs} == {0}
+    ids = {tc.id for tc in first_tcs}
+    assert len(ids) == 1
+
+    # Concatenating arguments per OpenAI streaming protocol reconstructs the full args.
+    assert _collect_arguments_for_index(first, index=0) == '{"q": "abc"}'
+
+    # Finish chunk is present in both translations of an event carrying finishReason,
+    # and signals tool_calls when any slot is open.
     assert first[-1].choices[0].finish_reason == "tool_calls"
+    assert second[-1].choices[0].finish_reason == "tool_calls"
 
 
 def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
@@ -326,3 +346,124 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def _collect_arguments_for_index(chunks, index):
+    """OpenAI streaming protocol: client concatenates delta.tool_calls[].function.arguments
+    fragments per index to reconstruct the full JSON args string."""
+    fragments = []
+    for chunk in chunks:
+        deltas = chunk.choices[0].delta.tool_calls or []
+        for tc in deltas:
+            if getattr(tc, "index", None) == index:
+                fragments.append(getattr(tc.function, "arguments", "") or "")
+    return "".join(fragments)
+
+
+def test_stream_event_translation_handles_non_prefix_args_change():
+    """Bug repro: when Gemini re-emits a functionCall across SSE events with
+    args that are NOT a prefix extension of the previous version, the adapter
+    must not produce concatenated fragments that yield invalid JSON.
+
+    OpenAI streaming clients concatenate `delta.tool_calls[].function.arguments`
+    by index. Emitting full `{"q":"AB"}` after full `{"q":"A"}` yields
+    `{"q":"A"}{"q":"AB"}` — invalid JSON, crashing the consumer.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event_one = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "A"}}}
+                    ]
+                },
+            }
+        ]
+    }
+    event_two = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "AB"}}}
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks_one = translate_stream_event(
+        event_one, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
+    chunks_two = translate_stream_event(
+        event_two, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
+
+    all_chunks = chunks_one + chunks_two
+    args_concat = _collect_arguments_for_index(all_chunks, index=0)
+
+    # Primary protocol guarantee: concat must be valid JSON.
+    parsed = json.loads(args_concat)
+
+    # Slot must remain a single tool_call (no spurious split into two index slots).
+    indices_seen = {
+        tc.index
+        for chunk in all_chunks
+        for tc in (chunk.choices[0].delta.tool_calls or [])
+    }
+    assert indices_seen == {0}, f"expected single slot, got {indices_seen}"
+
+    # Final args should be one of the emitted versions (either keep first or last —
+    # implementation choice, but must be deterministic and valid).
+    assert parsed in ({"q": "A"}, {"q": "AB"})
+
+
+def test_stream_event_translation_handles_prefix_grow_args():
+    """Gemini may stream tool_call args token-by-token (cumulative prefix).
+    Adapter should emit only the delta suffix so concat yields the final args.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event_one = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                },
+            }
+        ]
+    }
+    event_two = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "search",
+                                "args": {"q": "abcdef"},
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks_one = translate_stream_event(
+        event_one, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
+    chunks_two = translate_stream_event(
+        event_two, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
+
+    args_concat = _collect_arguments_for_index(chunks_one + chunks_two, index=0)
+    assert json.loads(args_concat) == {"q": "abcdef"}

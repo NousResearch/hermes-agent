@@ -5,7 +5,7 @@ Video Generation Tool -- Text-to-Video via FAL.ai
 Provides video generation from text prompts using FAL.ai's video models.
 Currently supports:
   - Seedance 2.0 (ByteDance) -- cinematic, native audio, multi-shot
-  - Kling v3 4K -- professional-grade 4K output
+  - Kling v3 Pro -- cinematic visuals, fluid motion, native audio
 
 Architecture mirrors image_generation_tool.py:
   - FAL_VIDEO_MODELS catalog with per-model metadata
@@ -135,7 +135,7 @@ FAL_VIDEO_MODELS: Dict[str, Dict[str, Any]] = {
         "display": "Seedance 2.0 (ByteDance)",
         "speed": "~10s",
         "strengths": "Cinematic, native audio, multi-shot editing",
-        "price": "~$0.15/s",
+        "price": "$0.30/s (720p with audio)",
         "duration_range": (3, 15),
         "aspect_ratios": {
             "landscape": "16:9",
@@ -158,7 +158,7 @@ FAL_VIDEO_MODELS: Dict[str, Dict[str, Any]] = {
         "display": "Seedance 2.0 Fast (ByteDance)",
         "speed": "~5s",
         "strengths": "Lower latency, cost-effective",
-        "price": "~$0.08/s",
+        "price": "$0.24/s (720p fast with audio)",
         "duration_range": (3, 10),
         "aspect_ratios": {
             "landscape": "16:9",
@@ -176,11 +176,11 @@ FAL_VIDEO_MODELS: Dict[str, Dict[str, Any]] = {
             "negative_prompt", "enable_safety_checker",
         },
     },
-    "kling-video/v3/4k/text-to-video": {
-        "display": "Kling v3 4K",
+    "kling-video/v3/pro/text-to-video": {
+        "display": "Kling v3 Pro",
         "speed": "~30s",
-        "strengths": "Professional-grade 4K output",
-        "price": "~$0.30/s",
+        "strengths": "Professional-grade output with native audio",
+        "price": "$0.17/s (with audio)",
         "duration_range": (5, 10),
         "aspect_ratios": {
             "landscape": "16:9",

@@ -8,6 +8,10 @@ description: "Connect Open WebUI to Hermes Agent via the OpenAI-compatible API s
 
 [Open WebUI](https://github.com/open-webui/open-webui) (126k★) is the most popular self-hosted chat interface for AI. With Hermes Agent's built-in API server, you can use Open WebUI as a polished web frontend for your agent — complete with conversation management, user accounts, and a modern chat interface.
 
+:::warning Third-party frontend
+Open WebUI is an **independent project** published by the open-webui community, not Hermes Desktop or a Hermes-native UI. The Hermes bootstrap script just wires the two together by enabling the Hermes API server and running `pip install open-webui` into a dedicated virtualenv. All Open WebUI code, accounts, and chat history live in the Open WebUI installation, not in Hermes. Read the [Open WebUI documentation](https://docs.openwebui.com/) for its own privacy, licensing, and update policies.
+:::
+
 ## Architecture
 
 ```mermaid
@@ -67,6 +71,45 @@ On Linux, automatic background service setup requires a working `systemd --user`
 ```bash
 OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
 ```
+
+### What the bootstrap touches
+
+The script is idempotent and limits itself to a small, explicit set of locations. Nothing else in `~/.hermes` is read or written.
+
+In `~/.hermes/`:
+
+- `~/.hermes/.env` — upserts (does not overwrite other keys) `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_PORT`, `API_SERVER_KEY`, `API_SERVER_MODEL_NAME`. A new `API_SERVER_KEY` is generated only if one is not already set. The file is `chmod 600`'d.
+- `~/.hermes/logs/openwebui.log` and `openwebui.error.log` — created if the service path is taken; Open WebUI writes its own stdout/stderr here.
+
+Outside `~/.hermes/` (Open WebUI's own files — Hermes does not read these afterwards):
+
+- `~/.local/open-webui-venv/` — dedicated Python virtualenv with `open-webui` installed via pip.
+- `~/.local/bin/start-open-webui-hermes.sh` — launcher script that exports Open WebUI env vars and execs `open-webui serve`.
+- `~/.local/share/open-webui/data/` — Open WebUI's data directory (user accounts, chat history, saved connections — owned and managed by Open WebUI, not Hermes).
+- macOS: `~/Library/LaunchAgents/ai.openwebui.hermes.plist` — `launchd` user agent, bootstrapped and kickstarted.
+- Linux (`systemd --user` available): `~/.config/systemd/user/openwebui-hermes.service` — user service enabled and started.
+
+The gateway is restarted once at the end so the new `API_SERVER_*` settings take effect. No `config.yaml`, profile files, platform tokens, memory database, or skill files are read or modified.
+
+### What Open WebUI can read from Hermes
+
+The bootstrap only exposes Hermes through two narrow channels:
+
+- The **launcher script** reads exactly one value out of `~/.hermes/.env` at start time — `API_SERVER_KEY` — and exports it as `OPENAI_API_KEY` so Open WebUI can authenticate to the API server. No other env var is forwarded into Open WebUI's process.
+- **Open WebUI's HTTP client** talks to `http://127.0.0.1:8642/v1/*` (or your configured `API_SERVER_HOST:API_SERVER_PORT`). The API server only exposes OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/health`) and serves only the API server's own profile-scoped agent runtime.
+
+This means Open WebUI cannot read:
+
+- Telegram/Discord/Slack/WeCom bot tokens, chat IDs, or any other entries in `~/.hermes/.env` other than `API_SERVER_KEY`
+- `~/.hermes/config.yaml` or any profile config
+- Your long-term memory, kanban, or skill files directly
+- Other profiles' API servers (each profile listens on its own `API_SERVER_PORT`)
+
+What Open WebUI **does** see is whatever the agent returns over `/v1/chat/completions` — final text plus inline tool-progress messages. If the agent reads a file or runs a command as part of fulfilling a request, the agent's response can include that content. This is no different from any other Hermes frontend (Telegram, CLI, etc.): the agent acts on the API-server host with its full configured toolset, and the conversation reflects that work.
+
+:::warning Network exposure
+If you set `API_SERVER_HOST=0.0.0.0` or otherwise expose the API server beyond `127.0.0.1`, anyone with the `API_SERVER_KEY` can drive the agent — including running terminal/file tools on the API-server host. Keep `API_SERVER_KEY` secret and bind to a loopback or trusted network only.
+:::
 
 ### 1. Enable the API server
 
@@ -332,3 +375,45 @@ docker run --network=host -e OPENAI_API_BASE_URL=http://localhost:8642/v1 ...
 # Option 3: Use Docker bridge IP
 docker run -e OPENAI_API_BASE_URL=http://172.17.0.1:8642/v1 ...
 ```
+
+## Uninstalling Open WebUI
+
+The bootstrap is reversible without touching anything in `~/.hermes` (the gateway and `API_SERVER_*` settings can stay enabled if you still want the API endpoint exposed).
+
+### macOS
+
+```bash
+# 1. Stop and remove the launchd agent
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/ai.openwebui.hermes.plist 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/ai.openwebui.hermes.plist
+
+# 2. Remove the launcher, venv, and data directory
+rm -f ~/.local/bin/start-open-webui-hermes.sh
+rm -rf ~/.local/open-webui-venv
+rm -rf ~/.local/share/open-webui/data    # ⚠ deletes accounts, chat history, saved connections
+```
+
+### Linux (`systemd --user`)
+
+```bash
+# 1. Stop and disable the user service
+systemctl --user disable --now openwebui-hermes.service 2>/dev/null || true
+rm -f ~/.config/systemd/user/openwebui-hermes.service
+systemctl --user daemon-reload
+
+# 2. Remove the launcher, venv, and data directory
+rm -f ~/.local/bin/start-open-webui-hermes.sh
+rm -rf ~/.local/open-webui-venv
+rm -rf ~/.local/share/open-webui/data    # ⚠ deletes accounts, chat history, saved connections
+```
+
+### Optional: disable the Hermes API server
+
+If you also want Hermes to stop listening on `:8642`, turn the API server off and restart the gateway. This does not delete the saved `API_SERVER_KEY`, so you can re-enable later without regenerating it:
+
+```bash
+hermes config set API_SERVER_ENABLED false
+hermes gateway restart
+```
+
+The Hermes gateway, profiles, memory, skills, and platform integrations are untouched by any of the steps above.

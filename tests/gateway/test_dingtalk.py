@@ -259,14 +259,14 @@ class TestSend:
         assert result.error and "do not support local image uploads" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_missing_file_returns_file_not_found(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "File not found" in result.error
 
 
 # ---------------------------------------------------------------------------

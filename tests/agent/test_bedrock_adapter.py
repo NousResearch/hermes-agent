@@ -18,6 +18,17 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
+def _fake_botocore_modules(*, session: MagicMock | None = None, side_effect: Exception | None = None):
+    fake_session_module = MagicMock()
+    if side_effect is not None:
+        fake_session_module.get_session = MagicMock(side_effect=side_effect)
+    else:
+        fake_session_module.get_session = MagicMock(return_value=session)
+    fake_botocore = MagicMock()
+    fake_botocore.session = fake_session_module
+    return {"botocore": fake_botocore, "botocore.session": fake_session_module}
+
+
 # ---------------------------------------------------------------------------
 # AWS credential detection
 # ---------------------------------------------------------------------------
@@ -117,24 +128,24 @@ class TestResolveBedrocRegion:
 
     def test_defaults_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch.dict("sys.modules", _fake_botocore_modules(session=mock_session)):
             assert resolve_bedrock_region({}) == "us-east-1"
 
     def test_falls_back_to_botocore_profile_region(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch.dict("sys.modules", _fake_botocore_modules(session=mock_session)):
             assert resolve_bedrock_region({}) == "eu-central-1"
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch
-        with patch("botocore.session.get_session", side_effect=Exception("no botocore")):
+        with patch.dict(
+            "sys.modules",
+            _fake_botocore_modules(side_effect=Exception("no botocore")),
+        ):
             assert resolve_bedrock_region({}) == "us-east-1"
 
 

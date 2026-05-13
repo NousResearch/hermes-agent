@@ -116,12 +116,57 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    GetApplicationRequest = None  # type: ignore[assignment]
+    CreateFileRequest = None  # type: ignore[assignment]
+    CreateFileRequestBody = None  # type: ignore[assignment]
+    CreateImageRequest = None  # type: ignore[assignment]
+    CreateImageRequestBody = None  # type: ignore[assignment]
+    CreateMessageRequest = None  # type: ignore[assignment]
+    CreateMessageRequestBody = None  # type: ignore[assignment]
+    GetChatRequest = None  # type: ignore[assignment]
+    GetMessageRequest = None  # type: ignore[assignment]
+    GetMessageResourceRequest = None  # type: ignore[assignment]
+    P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+    ReplyMessageRequest = None  # type: ignore[assignment]
+    ReplyMessageRequestBody = None  # type: ignore[assignment]
+    UpdateMessageRequest = None  # type: ignore[assignment]
+    UpdateMessageRequestBody = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
+
+    class AccessTokenType:  # type: ignore[no-redef]
+        TENANT = "tenant"
+
+    class HttpMethod:  # type: ignore[no-redef]
+        GET = "GET"
+
+    class _FallbackBaseRequestBuilder:
+        def __init__(self) -> None:
+            self._values: Dict[str, Any] = {}
+
+        def http_method(self, value: Any) -> "_FallbackBaseRequestBuilder":
+            self._values["http_method"] = value
+            return self
+
+        def uri(self, value: str) -> "_FallbackBaseRequestBuilder":
+            self._values["uri"] = value
+            return self
+
+        def token_types(self, value: Any) -> "_FallbackBaseRequestBuilder":
+            self._values["token_types"] = value
+            return self
+
+        def build(self) -> SimpleNamespace:
+            return SimpleNamespace(**self._values)
+
+    class BaseRequest:  # type: ignore[no-redef]
+        @classmethod
+        def builder(cls) -> _FallbackBaseRequestBuilder:
+            return _FallbackBaseRequestBuilder()
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None

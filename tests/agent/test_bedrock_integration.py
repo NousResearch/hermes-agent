@@ -256,17 +256,21 @@ class TestPackaging:
     """Verify bedrock optional dependency is declared."""
 
     def test_bedrock_extra_exists(self):
-        import configparser
         from pathlib import Path
         # Read pyproject.toml to verify [bedrock] extra
         toml_path = Path(__file__).parent.parent.parent / "pyproject.toml"
         content = toml_path.read_text()
         assert 'bedrock = ["boto3' in content
 
-    def test_bedrock_in_all_extra(self):
+    def test_bedrock_lazy_extra_excluded_from_all(self):
+        import tomllib
         from pathlib import Path
-        content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
-        assert '"hermes-agent[bedrock]"' in content
+
+        data = tomllib.loads(
+            (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
+        )
+        all_extra = data["project"]["optional-dependencies"]["all"]
+        assert "hermes-agent[bedrock]" not in all_extra
 
 
 # ---------------------------------------------------------------------------

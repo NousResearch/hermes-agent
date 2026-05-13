@@ -22,6 +22,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _fake_botocore_modules(*, session: MagicMock | None = None):
+    fake_session_module = MagicMock()
+    fake_session_module.get_session = MagicMock(return_value=session)
+    fake_botocore = MagicMock()
+    fake_botocore.session = fake_session_module
+    return {"botocore": fake_botocore, "botocore.session": fake_session_module}
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -276,7 +284,7 @@ class TestBedrockRegionRouting:
 
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
              patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("botocore.session.get_session", return_value=mock_session):
+             patch.dict("sys.modules", _fake_botocore_modules(session=mock_session)):
             providers = list_authenticated_providers(current_provider="bedrock")
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
@@ -310,7 +318,7 @@ class TestBedrockRegionRouting:
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
 
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch.dict("sys.modules", _fake_botocore_modules(session=mock_session)):
             region = resolve_bedrock_region()
 
         assert region == "us-west-2", "env var should override botocore profile"

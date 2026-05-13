@@ -40,6 +40,7 @@ import uuid
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Set, cast
 
@@ -123,6 +124,19 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+
+
+def _sdk_model(models: Any, class_name: str, **kwargs: Any) -> Any:
+    cls = getattr(models, class_name, None) if models is not None else None
+    if cls is None:
+        return SimpleNamespace(**kwargs)
+    return cls(**kwargs)
+
+
+def _sdk_runtime_options() -> Any:
+    cls = getattr(tea_util_models, "RuntimeOptions", None) if tea_util_models is not None else None
+    return cls() if cls is not None else SimpleNamespace()
+
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
@@ -924,18 +938,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            if resp.status_code < 300:
+            status_code = getattr(resp, "status_code", None)
+            if isinstance(status_code, int) and status_code < 300:
                 # Webhook path: fire Done only for final replies, same as
                 # the card path.
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = resp.text
+            body = str(getattr(resp, "text", ""))
             logger.warning(
-                "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
+                "[%s] Send failed HTTP %s: %s", self.name, status_code, body[:200]
             )
             return SendResult(
-                success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
+                success=False, error=f"HTTP {status_code}: {body[:200]}"
             )
         except httpx.TimeoutException:
             return SendResult(
@@ -977,15 +992,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._conv_file_sdk:
             raise RuntimeError("DingTalk conv_file SDK is unavailable")
         conv_file_models = cast(Any, dingtalk_conv_file_models)
-        tea_models = cast(Any, tea_util_models)
-        request = conv_file_models.GetSpaceRequest(
+        request = _sdk_model(
+            conv_file_models,
+            "GetSpaceRequest",
             open_conversation_id=chat_id,
             union_id=union_id,
         )
-        headers = conv_file_models.GetSpaceHeaders(
+        headers = _sdk_model(
+            conv_file_models,
+            "GetSpaceHeaders",
             x_acs_dingtalk_access_token=token,
         )
-        runtime = tea_models.RuntimeOptions()
+        runtime = _sdk_runtime_options()
         response = await self._conv_file_sdk.get_space_with_options_async(
             request, headers, runtime
         )
@@ -1007,32 +1025,39 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._storage_sdk or not self._http_client:
             raise RuntimeError("DingTalk storage SDK/http client is unavailable")
         storage_models = cast(Any, dingtalk_storage_models)
-        tea_models = cast(Any, tea_util_models)
 
         path = Path(file_path).expanduser()
         data = path.read_bytes()
         size = len(data)
         md5 = hashlib.md5(data).hexdigest()
-        precheck = storage_models.GetFileUploadInfoRequestOptionPreCheckParam(
+        precheck = _sdk_model(
+            storage_models,
+            "GetFileUploadInfoRequestOptionPreCheckParam",
             md_5=md5,
             name=file_name,
             parent_id=parent_id,
             size=size,
         )
-        upload_request = storage_models.GetFileUploadInfoRequest(
+        upload_request = _sdk_model(
+            storage_models,
+            "GetFileUploadInfoRequest",
             multipart=False,
             protocol="HEADER_SIGNATURE",
             union_id=union_id,
-            option=storage_models.GetFileUploadInfoRequestOption(
+            option=_sdk_model(
+                storage_models,
+                "GetFileUploadInfoRequestOption",
                 pre_check_param=precheck,
                 prefer_intranet=False,
                 storage_driver="DINGTALK",
             ),
         )
-        upload_headers = storage_models.GetFileUploadInfoHeaders(
+        upload_headers = _sdk_model(
+            storage_models,
+            "GetFileUploadInfoHeaders",
             x_acs_dingtalk_access_token=token,
         )
-        runtime = tea_models.RuntimeOptions()
+        runtime = _sdk_runtime_options()
         upload_response = await self._storage_sdk.get_file_upload_info_with_options_async(
             space_id,
             upload_request,
@@ -1056,13 +1081,17 @@ class DingTalkAdapter(BasePlatformAdapter):
         )
         put_response.raise_for_status()
 
-        commit_request = storage_models.CommitFileRequest(
+        commit_request = _sdk_model(
+            storage_models,
+            "CommitFileRequest",
             name=file_name,
             parent_id=parent_id,
             upload_key=upload_key,
             union_id=union_id,
         )
-        commit_headers = storage_models.CommitFileHeaders(
+        commit_headers = _sdk_model(
+            storage_models,
+            "CommitFileHeaders",
             x_acs_dingtalk_access_token=token,
         )
         commit_response = await self._storage_sdk.commit_file_with_options_async(
@@ -1094,7 +1123,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._conv_file_sdk or not self._storage_sdk:
             return SendResult(success=False, error="DingTalk file SDK is not initialized")
         conv_file_models = cast(Any, dingtalk_conv_file_models)
-        tea_models = cast(Any, tea_util_models)
 
         token = await self._get_access_token()
         if not token:
@@ -1113,16 +1141,20 @@ class DingTalkAdapter(BasePlatformAdapter):
                     file_path=str(path),
                     file_name=name,
                 )
-                request = conv_file_models.SendRequest(
+                request = _sdk_model(
+                    conv_file_models,
+                    "SendRequest",
                     dentry_id=dentry_id,
                     open_conversation_id=chat_id,
                     space_id=space_id,
                     union_id=union_id,
                 )
-                headers = conv_file_models.SendHeaders(
+                headers = _sdk_model(
+                    conv_file_models,
+                    "SendHeaders",
                     x_acs_dingtalk_access_token=token,
                 )
-                runtime = tea_models.RuntimeOptions()
+                runtime = _sdk_runtime_options()
                 response = await self._conv_file_sdk.send_with_options_async(
                     request, headers, runtime
                 )
@@ -1187,25 +1219,6 @@ class DingTalkAdapter(BasePlatformAdapter):
             ),
         )
 
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
-            ),
-        )
-
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {
@@ -1257,29 +1270,39 @@ class DingTalkAdapter(BasePlatformAdapter):
             is_group = str(conversation_type) == "2"
             sender_staff_id = getattr(message, "sender_staff_id", "") or ""
 
-            runtime = tea_util_models.RuntimeOptions()
+            runtime = _sdk_runtime_options()
 
             # Step 1: Create card with STREAM callback type
-            create_request = dingtalk_card_models.CreateCardRequest(
+            create_request = _sdk_model(
+                dingtalk_card_models,
+                "CreateCardRequest",
                 card_template_id=self._card_template_id,
                 out_track_id=out_track_id,
-                card_data=dingtalk_card_models.CreateCardRequestCardData(
+                card_data=_sdk_model(
+                    dingtalk_card_models,
+                    "CreateCardRequestCardData",
                     card_param_map={"content": ""},
                 ),
                 callback_type="STREAM",
                 im_group_open_space_model=(
-                    dingtalk_card_models.CreateCardRequestImGroupOpenSpaceModel(
+                    _sdk_model(
+                        dingtalk_card_models,
+                        "CreateCardRequestImGroupOpenSpaceModel",
                         support_forward=True,
                     )
                 ),
                 im_robot_open_space_model=(
-                    dingtalk_card_models.CreateCardRequestImRobotOpenSpaceModel(
+                    _sdk_model(
+                        dingtalk_card_models,
+                        "CreateCardRequestImRobotOpenSpaceModel",
                         support_forward=True,
                     )
                 ),
             )
 
-            create_headers = dingtalk_card_models.CreateCardHeaders(
+            create_headers = _sdk_model(
+                dingtalk_card_models,
+                "CreateCardHeaders",
                 x_acs_dingtalk_access_token=token,
             )
 
@@ -1290,12 +1313,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             # Step 2: Deliver card to the conversation
             if is_group:
                 open_space_id = f"dtv1.card//IM_GROUP.{conversation_id}"
-                deliver_request = dingtalk_card_models.DeliverCardRequest(
+                deliver_request = _sdk_model(
+                    dingtalk_card_models,
+                    "DeliverCardRequest",
                     out_track_id=out_track_id,
                     user_id_type=1,
                     open_space_id=open_space_id,
                     im_group_open_deliver_model=(
-                        dingtalk_card_models.DeliverCardRequestImGroupOpenDeliverModel(
+                        _sdk_model(
+                            dingtalk_card_models,
+                            "DeliverCardRequestImGroupOpenDeliverModel",
                             robot_code=self._robot_code,
                         )
                     ),
@@ -1308,18 +1335,24 @@ class DingTalkAdapter(BasePlatformAdapter):
                     )
                     return None
                 open_space_id = f"dtv1.card//IM_ROBOT.{sender_staff_id}"
-                deliver_request = dingtalk_card_models.DeliverCardRequest(
+                deliver_request = _sdk_model(
+                    dingtalk_card_models,
+                    "DeliverCardRequest",
                     out_track_id=out_track_id,
                     user_id_type=1,
                     open_space_id=open_space_id,
                     im_robot_open_deliver_model=(
-                        dingtalk_card_models.DeliverCardRequestImRobotOpenDeliverModel(
+                        _sdk_model(
+                            dingtalk_card_models,
+                            "DeliverCardRequestImRobotOpenDeliverModel",
                             space_type="IM_ROBOT",
                         )
                     ),
                 )
 
-            deliver_headers = dingtalk_card_models.DeliverCardHeaders(
+            deliver_headers = _sdk_model(
+                dingtalk_card_models,
+                "DeliverCardHeaders",
                 x_acs_dingtalk_access_token=token,
             )
 
@@ -1404,7 +1437,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> None:
         """Stream content to an existing AI Card."""
-        stream_request = dingtalk_card_models.StreamingUpdateRequest(
+        stream_request = _sdk_model(
+            dingtalk_card_models,
+            "StreamingUpdateRequest",
             out_track_id=out_track_id,
             guid=str(uuid.uuid4()),
             key="content",
@@ -1414,11 +1449,13 @@ class DingTalkAdapter(BasePlatformAdapter):
             is_error=False,
         )
 
-        stream_headers = dingtalk_card_models.StreamingUpdateHeaders(
+        stream_headers = _sdk_model(
+            dingtalk_card_models,
+            "StreamingUpdateHeaders",
             x_acs_dingtalk_access_token=token,
         )
 
-        runtime = tea_util_models.RuntimeOptions()
+        runtime = _sdk_runtime_options()
         await self._card_sdk.streaming_update_with_options_async(
             stream_request, stream_headers, runtime
         )
@@ -1840,6 +1877,53 @@ class _IncomingHandler(
         self._adapter = adapter
         self._loop = loop
 
+    @staticmethod
+    def _chatbot_message_from_raw(data: Any) -> Any:
+        if not isinstance(data, dict):
+            return SimpleNamespace(raw_payload=data)
+
+        msg_type = data.get("msgtype") or data.get("messageType") or ""
+        content = data.get("content")
+        text = data.get("text")
+        if text is None and msg_type == "text" and isinstance(content, dict):
+            text = content
+
+        rich_list = None
+        if isinstance(content, dict):
+            rich_list = content.get("richText") or content.get("rich_text")
+        rich_text_content = (
+            SimpleNamespace(rich_text_list=rich_list)
+            if isinstance(rich_list, list)
+            else None
+        )
+
+        msg = SimpleNamespace(
+            message_type=msg_type,
+            text=text,
+            rich_text=rich_list,
+            rich_text_content=rich_text_content,
+            sender_id=data.get("senderId") or data.get("sender_id") or "",
+            sender_staff_id=data.get("senderStaffId") or data.get("sender_staff_id") or "",
+            sender_nick=data.get("senderNick") or data.get("sender_nick") or "",
+            conversation_id=data.get("conversationId") or data.get("conversation_id") or "",
+            conversation_type=data.get("conversationType") or data.get("conversation_type") or "1",
+            message_id=data.get("msgId") or data.get("messageId") or data.get("message_id") or "",
+            session_webhook=data.get("sessionWebhook") or data.get("session_webhook") or "",
+            session_webhook_expired_time=(
+                data.get("sessionWebhookExpiredTime")
+                or data.get("session_webhook_expired_time")
+                or 0
+            ),
+            create_at=data.get("createAt") or data.get("create_at") or 0,
+            at_users=data.get("atUsers") or data.get("at_users") or [],
+            is_in_at_list=bool(data.get("isInAtList") or data.get("is_in_at_list")),
+            raw_payload=data,
+        )
+        if msg_type == "file" and isinstance(content, dict):
+            msg.file_content = content
+        if msg_type == "picture" and isinstance(content, dict):
+            msg.picture_url = content.get("pictureUrl")
+        return msg
 
     @staticmethod
     def _diag_value(value: Any) -> Any:
@@ -1975,8 +2059,13 @@ class _IncomingHandler(
                         self._adapter.name,
                     )
 
-            # Parse dict into ChatbotMessage using SDK's from_dict
-            chatbot_msg = ChatbotMessage.from_dict(data)
+            # Parse dict into ChatbotMessage using SDK's from_dict when the
+            # optional dingtalk-stream package is installed; otherwise build a
+            # small message object with the fields the adapter uses.
+            if ChatbotMessage is not None and hasattr(ChatbotMessage, "from_dict"):
+                chatbot_msg = ChatbotMessage.from_dict(data)
+            else:
+                chatbot_msg = self._chatbot_message_from_raw(data)
             if isinstance(data, dict):
                 chatbot_msg.raw_payload = data
 

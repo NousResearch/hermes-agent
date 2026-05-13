@@ -2227,6 +2227,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
+                api_mode=self.api_mode,
             )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
@@ -2395,6 +2396,7 @@ class AIAgent:
             "compressor_base_url": getattr(_cc, "base_url", self.base_url),
             "compressor_api_key": getattr(_cc, "api_key", ""),
             "compressor_provider": getattr(_cc, "provider", self.provider),
+            "compressor_api_mode": getattr(_cc, "api_mode", self.api_mode),
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
         }
@@ -2670,6 +2672,7 @@ class AIAgent:
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
             "compressor_provider": getattr(_cc, "provider", self.provider) if _cc else self.provider,
+            "compressor_api_mode": getattr(_cc, "api_mode", self.api_mode) if _cc else self.api_mode,
             "compressor_context_length": _cc.context_length if _cc else 0,
             "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
         }
@@ -4520,6 +4523,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    codex_compaction_items=msg.get("codex_compaction_items") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -8584,6 +8588,7 @@ class AIAgent:
                     base_url=self.base_url,
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
+                    api_mode=self.api_mode,
                 )
 
             self._emit_status(
@@ -8663,6 +8668,7 @@ class AIAgent:
                 base_url=rt["compressor_base_url"],
                 api_key=rt["compressor_api_key"],
                 provider=rt["compressor_provider"],
+                api_mode=rt.get("compressor_api_mode", rt.get("api_mode", "")),
             )
 
             # ── Reset fallback chain for the new turn ──

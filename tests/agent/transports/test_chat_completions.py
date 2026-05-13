@@ -46,6 +46,27 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def test_convert_messages_drops_compaction_only_assistant_for_chat_providers(self, transport):
+        msgs = [
+            {"role": "user", "content": "before"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_compaction_items": [
+                    {"type": "compaction", "encrypted_content": "enc_blob"}
+                ],
+            },
+            {"role": "user", "content": "after"},
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result == [
+            {"role": "user", "content": "before"},
+            {"role": "user", "content": "after"},
+        ]
+        assert msgs[1]["codex_compaction_items"]
+
 
 class TestChatCompletionsBuildKwargs:
 

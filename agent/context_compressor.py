@@ -22,6 +22,9 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+import httpx
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
@@ -74,6 +77,8 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_CODEX_NATIVE_HOST = "chatgpt.com"
+_CODEX_NATIVE_PATH = "/backend-api/codex"
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -790,6 +795,118 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
+    def _is_codex_native_compaction_available(self, focus_topic: str = None) -> bool:
+        """Return True when we can use OpenAI Codex remote compaction.
+
+        Native compaction is only safe for the first-party Codex Responses
+        backend. Manual focused compaction (``/compress <topic>``) still uses
+        the textual summarizer because Codex remote compaction has no focus
+        instruction channel.
+        """
+        if focus_topic:
+            return False
+        provider = (self.provider or "").strip().lower()
+        api_mode = (self.api_mode or "").strip().lower()
+        base_url = (self.base_url or "").strip().rstrip("/")
+        parsed = urlparse(base_url)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path = parsed.path.rstrip("/")
+        return (
+            provider == "openai-codex"
+            and api_mode == "codex_responses"
+            and scheme == "https"
+            and host == _CODEX_NATIVE_HOST
+            and path == _CODEX_NATIVE_PATH
+            and bool((self.api_key or "").strip())
+        )
+
+    @staticmethod
+    def _as_plain_data(value: Any) -> Any:
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        if hasattr(value, "__dict__"):
+            return value.__dict__
+        return value
+
+    @classmethod
+    def _extract_single_codex_compaction_item(cls, payload: Any) -> Optional[Dict[str, str]]:
+        data = cls._as_plain_data(payload)
+        if not isinstance(data, dict):
+            return None
+        raw_items = data.get("output") or data.get("items") or data.get("data")
+        if not isinstance(raw_items, list):
+            return None
+        compaction_items: List[Dict[str, str]] = []
+        for raw in raw_items:
+            item = cls._as_plain_data(raw)
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") not in {"compaction", "compaction_summary"}:
+                continue
+            encrypted = item.get("encrypted_content")
+            if isinstance(encrypted, str) and encrypted:
+                compaction_items.append({"type": item.get("type"), "encrypted_content": encrypted})
+        if len(compaction_items) != 1:
+            return None
+        return compaction_items[0]
+
+    def _codex_compaction_instructions(self, all_messages: List[Dict[str, Any]]) -> str:
+        for msg in all_messages or []:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                text = _content_text_for_contains(content).strip()
+                if text:
+                    return text
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+        return DEFAULT_AGENT_IDENTITY
+
+    def _generate_codex_native_compaction(
+        self,
+        turns_to_compact: List[Dict[str, Any]],
+        all_messages: List[Dict[str, Any]],
+    ) -> Optional[List[Dict[str, str]]]:
+        """Call ``/responses/compact`` and return replayable compaction item(s).
+
+        Returns ``None`` on any failure so callers fall back to the existing
+        textual summarizer.
+        """
+        if not turns_to_compact:
+            return None
+        try:
+            from agent.auxiliary_client import _codex_cloudflare_headers
+            from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+            base_url = (self.base_url or "").strip().rstrip("/")
+            headers = {
+                **_codex_cloudflare_headers(self.api_key),
+                "Authorization": f"Bearer {self.api_key}",
+                "x-codex-beta-features": "remote_compaction_v2",
+            }
+            payload = {
+                "model": self.model,
+                "instructions": self._codex_compaction_instructions(all_messages),
+                "input": _chat_messages_to_responses_input(turns_to_compact),
+                "tools": [],
+            }
+            response = httpx.post(
+                f"{base_url}/responses/compact",
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            item = self._extract_single_codex_compaction_item(response.json())
+            if not item:
+                logger.warning("Codex native compaction returned no unique compaction item; falling back to textual summary")
+                return None
+            return [item]
+        except Exception as exc:
+            logger.warning("Codex native compaction failed; falling back to textual summary: %s", exc)
+            return None
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -1419,6 +1536,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[summary_idx + 1:compress_end]
+        native_turns_to_compact = turns_to_summarize
+        if summary_idx is not None:
+            # Native Codex compaction is a replacement checkpoint, not an
+            # iterative textual summary. Include the prior text handoff itself
+            # so migrating from a text summary to an encrypted Codex compaction
+            # does not silently drop older context.
+            native_turns_to_compact = messages[summary_idx:compress_end]
 
         if not self.quiet_mode:
             logger.info(
@@ -1442,8 +1566,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        # Phase 3: Generate a compaction checkpoint. For first-party Codex
+        # Responses, prefer the native encrypted compaction endpoint; otherwise
+        # use the existing textual summarizer. Endpoint failures fall through to
+        # the textual path.
+        native_compaction_items = None
+        if self._is_codex_native_compaction_available(focus_topic=focus_topic):
+            native_compaction_items = self._generate_codex_native_compaction(
+                native_turns_to_compact,
+                messages,
+            )
+        summary = None
+        if not native_compaction_items:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # Phase 4: Assemble compressed message list
         compressed = []
@@ -1458,6 +1593,48 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
                     )
             compressed.append(msg)
+
+        # If native Codex compaction succeeded, store the encrypted blob as
+        # assistant replay metadata. The Responses adapter will resend it as a
+        # ``{type: "compaction", encrypted_content: ...}`` input item on future
+        # calls.
+        if native_compaction_items:
+            compressed.append({
+                "role": "assistant",
+                "content": "",
+                "codex_compaction_items": native_compaction_items,
+            })
+            for i in range(compress_end, n_messages):
+                compressed.append(messages[i].copy())
+
+            self.compression_count += 1
+            compressed = self._sanitize_tool_pairs(compressed)
+            new_estimate = estimate_messages_tokens_rough(compressed)
+            saved_estimate = display_tokens - new_estimate
+            savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+            self._last_compression_savings_pct = savings_pct
+            if savings_pct < 10:
+                self._ineffective_compression_count += 1
+            else:
+                self._ineffective_compression_count = 0
+            if not self.quiet_mode:
+                logger.info(
+                    "Compressed with Codex native compaction: %d -> %d messages (~%d tokens saved, %.0f%%)",
+                    n_messages,
+                    len(compressed),
+                    saved_estimate,
+                    savings_pct,
+                )
+            return compressed
+
+        # A previous native Codex checkpoint may live inside the region that is
+        # now being text-summarized (for example when a later native compaction
+        # attempt fails and falls back). Preserve those opaque encrypted blobs
+        # as replay metadata; otherwise a transient /responses/compact failure
+        # would silently downgrade all prior native context to text only.
+        for i in range(compress_start, compress_end):
+            if messages[i].get("codex_compaction_items"):
+                compressed.append(messages[i].copy())
 
         # If LLM summary failed, insert a static fallback so the model
         # knows context was lost rather than silently dropping everything.
@@ -1476,7 +1653,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.

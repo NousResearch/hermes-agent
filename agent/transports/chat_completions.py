@@ -122,7 +122,11 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg or "codex_message_items" in msg:
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "codex_compaction_items" in msg
+            ):
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -140,18 +144,30 @@ class ChatCompletionsTransport(ProviderTransport):
             return messages
 
         sanitized = copy.deepcopy(messages)
+        result: list[dict[str, Any]] = []
         for msg in sanitized:
             if not isinstance(msg, dict):
+                result.append(msg)
                 continue
+            had_compaction_only_metadata = "codex_compaction_items" in msg
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            msg.pop("codex_compaction_items", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
-        return sanitized
+            if (
+                had_compaction_only_metadata
+                and msg.get("role") == "assistant"
+                and not msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                continue
+            result.append(msg)
+        return result
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""

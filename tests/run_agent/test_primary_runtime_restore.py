@@ -32,7 +32,12 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    api_mode=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
@@ -43,6 +48,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             api_key="test-key-12345678",
             base_url=base_url,
             provider=provider,
+            api_mode=api_mode,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -84,6 +90,15 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["compressor_provider"] == cc.provider
         assert rt["compressor_context_length"] == cc.context_length
         assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
+
+    def test_snapshot_preserves_compressor_api_mode_for_codex(self):
+        agent = _make_agent(
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+        )
+        assert agent.context_compressor.api_mode == "codex_responses"
+        assert agent._primary_runtime["compressor_api_mode"] == "codex_responses"
 
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
@@ -189,6 +204,25 @@ class TestRestorePrimaryRuntime:
 
         assert agent.context_compressor.context_length == original_ctx_len
         assert agent.context_compressor.threshold_tokens == original_threshold
+
+    def test_restores_compressor_api_mode_for_codex_after_fallback(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent.context_compressor.api_mode != "codex_responses"
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.context_compressor.api_mode == "codex_responses"
+        assert agent.context_compressor._is_codex_native_compaction_available() is True
 
     def test_restores_prompt_caching_flag(self):
         agent = _make_agent()

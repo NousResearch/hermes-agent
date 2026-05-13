@@ -269,6 +269,20 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
+                # Replay encrypted native compaction items from previous
+                # Codex /responses/compact calls. These are opaque checkpoint
+                # blobs and must be sent back as top-level Responses input
+                # items before the subsequent conversation turn.
+                codex_compaction = msg.get("codex_compaction_items")
+                if isinstance(codex_compaction, list):
+                    for ci in codex_compaction:
+                        if isinstance(ci, dict) and ci.get("encrypted_content"):
+                            item_type = ci.get("type") if ci.get("type") in {"compaction", "compaction_summary"} else "compaction_summary"
+                            items.append({
+                                "type": item_type,
+                                "encrypted_content": ci["encrypted_content"],
+                            })
+
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
                 codex_reasoning = msg.get("codex_reasoning_items")
@@ -527,6 +541,12 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     "output": output,
                 }
             )
+            continue
+
+        if item_type in {"compaction", "compaction_summary"}:
+            encrypted = item.get("encrypted_content")
+            if isinstance(encrypted, str) and encrypted:
+                normalized.append({"type": item_type, "encrypted_content": encrypted})
             continue
 
         if item_type == "reasoning":

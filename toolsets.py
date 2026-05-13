@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Agent registry (named agent discovery and delegation)
+    "agents_list", "agent_view", "assign_agent",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -215,12 +217,19 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "tools": ["delegate_task", "assign_agent"],
         "includes": []
     },
 
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
+
+    "agents": {
+        "description": "Native agent registry — discover and inspect named agents (read-only). "
+                       "Use assign_agent to delegate tasks to a named agent.",
+        "tools": ["agents_list", "agent_view"],
+        "includes": [],
+    },
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
@@ -332,6 +341,7 @@ TOOLSETS = {
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
+            "agents_list", "agent_view", "assign_agent",
         ],
         "includes": []
     },
@@ -360,6 +370,7 @@ TOOLSETS = {
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
+            "agents_list", "agent_view", "assign_agent",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

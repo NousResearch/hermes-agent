@@ -61,6 +61,15 @@ async function getSessionToken(): Promise<string> {
   throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) qs.set(key, String(value));
+  }
+  const encoded = qs.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSessions: (limit = 20, offset = 0) =>
@@ -90,6 +99,26 @@ export const api = {
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getWorkflows: (params: { board?: string; status?: string; limit?: number } = {}) =>
+    fetchJSON<WorkflowReadResponse<WorkflowListFacts>>(
+      `/api/workflows${buildQuery(params)}`,
+    ),
+  getWorkflowDag: (workflowId: string) =>
+    fetchJSON<WorkflowReadResponse<WorkflowDagFacts>>(
+      `/api/workflows/${encodeURIComponent(workflowId)}/dag`,
+    ),
+  getWorkflowNode: (workflowId: string, nodeId: string) =>
+    fetchJSON<WorkflowReadResponse<WorkflowNodeFacts>>(
+      `/api/workflows/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}`,
+    ),
+  getWorkflowEvents: (workflowId: string, limit?: number) =>
+    fetchJSON<WorkflowReadResponse<WorkflowEventsFacts>>(
+      `/api/workflows/${encodeURIComponent(workflowId)}/events${buildQuery({ limit })}`,
+    ),
+  getWorkflowArtifacts: (workflowId: string, params: { kind?: string; limit?: number } = {}) =>
+    fetchJSON<WorkflowReadResponse<WorkflowArtifactsFacts>>(
+      `/api/workflows/${encodeURIComponent(workflowId)}/artifacts${buildQuery(params)}`,
+    ),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
@@ -549,6 +578,153 @@ export interface ModelsAnalyticsResponse {
     total_api_calls: number;
   };
   period_days: number;
+}
+
+// ── Workflow read-model types ──────────────────────────────────────────
+
+export interface WorkflowReadResponse<TFacts> {
+  facts: TFacts;
+  insights: unknown | null;
+}
+
+export interface WorkflowSummary {
+  id: string;
+  title: string;
+  description: string;
+  workspacePath: string | null;
+  board: string;
+  scale: string;
+  status: string;
+  currentGate: string | null;
+  policyPath: string | null;
+  policySnapshot: Record<string, unknown>;
+  createdAt: string | number | null;
+  updatedAt: string | number | null;
+  createdBy: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface WorkflowDefinitionNode {
+  id: string;
+  title?: string;
+  role?: string;
+  profile?: string;
+  depends_on?: string[];
+  gate_level?: string;
+  gate_type?: string;
+  definition_of_done?: string;
+  scope?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export type WorkflowRecord = WorkflowSummary;
+
+export interface WorkflowWorkspace {
+  kind?: string;
+  branch?: string | null;
+  worktreePath?: string | null;
+  baseRef?: string | null;
+  [key: string]: unknown;
+}
+
+export interface WorkflowNode {
+  id: string;
+  title: string;
+  role: string | null;
+  profile: string | null;
+  status: string;
+  parents: string[];
+  children: string[];
+  gateLevel: string | null;
+  gateType: string | null;
+  kanbanTaskId: string | null;
+  workspace: WorkflowWorkspace | null;
+  definitionOfDone: unknown;
+  scope: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  createdAt: string | number | null;
+  updatedAt: string | number | null;
+}
+
+export interface WorkflowEdge {
+  source: string;
+  target: string;
+  kind: string;
+}
+
+export interface WorkflowGate {
+  id: string;
+  workflowId?: string;
+  nodeId?: string | null;
+  gateType?: string;
+  level: number | string;
+  status: string;
+  verdict?: string | null;
+  requiredActor?: string;
+  resolvedBy?: string | null;
+  resolvedAt?: string | number | null;
+  artifactId?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt?: string | number | null;
+}
+
+export interface WorkflowArtifact {
+  id: string;
+  workflowId?: string;
+  kind: string;
+  path?: string | null;
+  sha256?: string | null;
+  mimeType?: string | null;
+  schemaVersion?: number;
+  status?: string;
+  createdAt?: string | number | null;
+  createdBy?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkflowEvent {
+  id: string;
+  workflowId: string;
+  nodeId: string | null;
+  eventType: string;
+  actorType: string;
+  actorId: string | null;
+  message: string;
+  data: Record<string, unknown>;
+  createdAt: string | number | null;
+}
+
+export interface WorkflowListFacts {
+  workflows: WorkflowSummary[];
+  count: number;
+}
+
+export interface WorkflowDagFacts {
+  workflow: WorkflowRecord;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  gates: WorkflowGate[];
+  artifacts: WorkflowArtifact[];
+}
+
+export interface WorkflowNodeFacts {
+  workflowId: string;
+  node: WorkflowNode;
+  gates: WorkflowGate[];
+  events: WorkflowEvent[];
+  artifacts: WorkflowArtifact[];
+}
+
+export interface WorkflowEventsFacts {
+  workflowId: string;
+  events: WorkflowEvent[];
+}
+
+export interface WorkflowArtifactsFacts {
+  workflowId: string;
+  artifacts: WorkflowArtifact[];
 }
 
 export interface CronJob {

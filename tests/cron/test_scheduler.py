@@ -775,6 +775,102 @@ class TestDeliverResultWrapping:
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
 
+class TestSlackThreadedDelivery:
+    """Verify cron deliveries can create a Slack thread per run."""
+
+    def test_standalone_slack_threaded_delivery_sends_anchor_then_body(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        async def fake_send(_platform, _pconfig, chat_id, content, **kwargs):
+            if kwargs.get("thread_id") is None:
+                return {"success": True, "message_id": "1700000000.000001"}
+            return {"success": True}
+
+        job = {
+            "id": "abc123",
+            "name": "repo-self-improvement",
+            "deliver": "origin",
+            "delivery_mode": "slack_thread",
+            "thread_title_template": "{name} (job_id: {job_id})",
+            "origin": {"platform": "slack", "chat_id": "C123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(side_effect=fake_send)) as send_mock:
+            result = _deliver_result(job, "Daily report body")
+
+        assert result is None
+        assert send_mock.await_count == 2
+        anchor_call, body_call = send_mock.await_args_list
+        assert anchor_call.args[2] == "C123"
+        assert anchor_call.args[3] == "repo-self-improvement (job_id: abc123)"
+        assert anchor_call.kwargs["thread_id"] is None
+        assert body_call.args[2] == "C123"
+        assert body_call.args[3] == "Daily report body"
+        assert body_call.kwargs["thread_id"] == "1700000000.000001"
+
+    def test_live_adapter_slack_threaded_delivery_uses_anchor_ts(self):
+        from concurrent.futures import Future
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        adapter = AsyncMock()
+        adapter.send.side_effect = [
+            SendResult(success=True, message_id="1700000000.000002"),
+            SendResult(success=True, message_id="1700000000.000003"),
+        ]
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                coro.send(None)
+            except StopIteration as exc:
+                future.set_result(exc.value)
+            else:
+                raise AssertionError("expected adapter.send coroutine to complete immediately")
+            return future
+
+        job = {
+            "id": "abc123",
+            "name": "repo-self-improvement",
+            "deliver": "origin",
+            "delivery_mode": "slack_thread",
+            "origin": {"platform": "slack", "chat_id": "C123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Daily report body",
+                adapters={Platform.SLACK: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        assert adapter.send.await_count == 2
+        anchor_call, body_call = adapter.send.await_args_list
+        assert anchor_call.args == ("C123", "repo-self-improvement (job_id: abc123)")
+        assert anchor_call.kwargs == {}
+        assert body_call.args == ("C123", "Daily report body")
+        assert body_call.kwargs["metadata"] == {"thread_id": "1700000000.000002"}
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 

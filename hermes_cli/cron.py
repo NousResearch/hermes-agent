@@ -88,6 +88,12 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        delivery_mode = job.get("delivery_mode")
+        if delivery_mode:
+            print(f"    Delivery:  {delivery_mode}")
+        thread_title_template = job.get("thread_title_template")
+        if thread_title_template:
+            print(f"    Thread title: {thread_title_template}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -175,6 +181,8 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        delivery_mode=getattr(args, "delivery_mode", None),
+        thread_title_template=getattr(args, "thread_title_template", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -231,6 +239,8 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        delivery_mode=getattr(args, "delivery_mode", None),
+        thread_title_template=getattr(args, "thread_title_template", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))

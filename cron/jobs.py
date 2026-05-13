@@ -79,6 +79,12 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def _normalize_optional_job_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -496,6 +502,8 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    delivery_mode: Optional[str] = None,
+    thread_title_template: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -540,6 +548,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        delivery_mode: Optional delivery formatter mode. ``slack_thread`` creates
+                a new Slack thread per cron run and posts the response inside it.
+        thread_title_template: Optional Python format string used for Slack
+                thread anchors. Supports job fields plus ``job_id`` and ``name``.
 
     Returns:
         The created job dict
@@ -574,6 +586,8 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_delivery_mode = _normalize_optional_job_text(delivery_mode)
+    normalized_thread_title_template = _normalize_optional_job_text(thread_title_template)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -627,6 +641,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "delivery_mode": normalized_delivery_mode,
+        "thread_title_template": normalized_thread_title_template,
     }
 
     jobs = load_jobs()
@@ -668,6 +684,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        for key in ("delivery_mode", "thread_title_template"):
+            if key in updates:
+                updates[key] = _normalize_optional_job_text(updates[key])
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

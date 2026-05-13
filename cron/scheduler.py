@@ -426,6 +426,44 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _cron_delivery_mode(job: dict) -> str:
+    mode = str(job.get("delivery_mode") or "").strip().lower()
+    if mode == "threaded":
+        return "slack_thread"
+    return mode
+
+
+def _render_thread_title(job: dict) -> str:
+    job_id = str(job.get("id", ""))
+    name = str(job.get("name") or job_id)
+    template = str(job.get("thread_title_template") or "{name} (job_id: {job_id})")
+    values = dict(job)
+    values["id"] = job_id
+    values["job_id"] = job_id
+    values["name"] = name
+    try:
+        rendered = template.format(**values)
+    except Exception:
+        rendered = "{name} (job_id: {job_id})".format(name=name, job_id=job_id)
+    return rendered.strip() or "{name} (job_id: {job_id})".format(name=name, job_id=job_id)
+
+
+def _threaded_body_content(job: dict, content: str, wrap_response: bool) -> str:
+    if not wrap_response:
+        return content
+    task_name = job.get("name", job["id"])
+    return (
+        f"{content}\n\n"
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
+
+
+def _message_id_from_send_result(result) -> Optional[str]:
+    if isinstance(result, dict):
+        return result.get("message_id") or result.get("ts")
+    return getattr(result, "message_id", None) or getattr(result, "ts", None)
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -524,9 +562,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
     try:
         config = load_gateway_config()
@@ -541,6 +577,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        threaded_mode = (
+            _cron_delivery_mode(job) == "slack_thread"
+            and platform_name.lower() == "slack"
+        )
+        target_content = (
+            _threaded_body_content(job, content, wrap_response)
+            if threaded_mode
+            else delivery_content
+        )
+        # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(target_content)
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -578,13 +625,43 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        threaded_anchor_id = None
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = None if threaded_mode else ({"thread_id": thread_id} if thread_id else None)
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
-                if text_to_send:
+                if threaded_mode:
+                    future = asyncio.run_coroutine_threadsafe(
+                        runtime_adapter.send(chat_id, _render_thread_title(job)),
+                        loop,
+                    )
+                    try:
+                        anchor_result = future.result(timeout=60)
+                    except TimeoutError:
+                        future.cancel()
+                        raise
+                    if anchor_result and not getattr(anchor_result, "success", True):
+                        err = getattr(anchor_result, "error", "unknown")
+                        logger.warning(
+                            "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                            job["id"], platform_name, chat_id, err,
+                        )
+                        adapter_ok = False
+                    else:
+                        anchor_id = _message_id_from_send_result(anchor_result)
+                        if not anchor_id:
+                            logger.warning(
+                                "Job '%s': live adapter Slack thread anchor did not return a message id, falling back to standalone",
+                                job["id"],
+                            )
+                            adapter_ok = False
+                        else:
+                            threaded_anchor_id = anchor_id
+                            send_metadata = {"thread_id": threaded_anchor_id}
+
+                if adapter_ok and text_to_send:
                     future = asyncio.run_coroutine_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
@@ -625,18 +702,65 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            def run_standalone_send(message, send_thread_id=None, send_media_files=None):
+                coro = _send_to_platform(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    message,
+                    thread_id=send_thread_id,
+                    media_files=send_media_files or [],
+                )
+                try:
+                    return asyncio.run(coro)
+                except RuntimeError:
+                    # asyncio.run() checks for a running loop before awaiting the coroutine;
+                    # when it raises, the original coro was never started — close it to
+                    # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
+                    # fresh thread that has no running loop.
+                    coro.close()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                message,
+                                thread_id=send_thread_id,
+                                media_files=send_media_files or [],
+                            ),
+                        )
+                        return future.result(timeout=30)
+
             try:
-                result = asyncio.run(coro)
-            except RuntimeError:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
-                coro.close()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
+                if threaded_mode:
+                    if not threaded_anchor_id:
+                        anchor_result = run_standalone_send(_render_thread_title(job), send_thread_id=None)
+                        if anchor_result and anchor_result.get("error"):
+                            result = anchor_result
+                        else:
+                            threaded_anchor_id = _message_id_from_send_result(anchor_result)
+                            if not threaded_anchor_id:
+                                result = {"error": "Slack thread anchor did not return message_id"}
+                            else:
+                                result = run_standalone_send(
+                                    cleaned_delivery_content,
+                                    send_thread_id=threaded_anchor_id,
+                                    send_media_files=media_files,
+                                )
+                    else:
+                        result = run_standalone_send(
+                            cleaned_delivery_content,
+                            send_thread_id=threaded_anchor_id,
+                            send_media_files=media_files,
+                        )
+                else:
+                    result = run_standalone_send(
+                        cleaned_delivery_content,
+                        send_thread_id=thread_id,
+                        send_media_files=media_files,
+                    )
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)

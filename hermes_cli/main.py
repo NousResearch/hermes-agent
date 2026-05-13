@@ -2590,6 +2590,7 @@ def _model_flow_nous(config, current_model="", args=None):
         check_nous_free_tier,
         partition_nous_models_by_tier,
         union_with_portal_free_recommendations,
+        union_with_portal_paid_recommendations,
     )
 
     model_ids = get_curated_nous_model_ids()
@@ -2645,6 +2646,10 @@ def _model_flow_nous(config, current_model="", args=None):
     # with the Portal's freeRecommendedModels list so newly-launched free
     # models show up even if this CLI build's hardcoded curated list and
     # docs-hosted manifest haven't caught up yet.
+    #
+    # For paid users: mirror the same idea with paidRecommendedModels so
+    # newly-launched paid models surface in the picker too — independent
+    # of CLI release cadence.
     unavailable_models: list[str] = []
     if free_tier:
         model_ids, pricing = union_with_portal_free_recommendations(
@@ -2652,6 +2657,10 @@ def _model_flow_nous(config, current_model="", args=None):
         )
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
+        )
+    else:
+        model_ids, pricing = union_with_portal_paid_recommendations(
+            model_ids, pricing, _nous_portal_url,
         )
 
     if not model_ids and not unavailable_models:
@@ -9456,7 +9465,7 @@ def main():
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp)",
+        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)",
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
@@ -9598,6 +9607,17 @@ def main():
     )
 
     gateway_parser.set_defaults(func=cmd_gateway)
+
+    # =========================================================================
+    # lsp command
+    # =========================================================================
+    try:
+        from agent.lsp.cli import register_subparser as _lsp_register
+        _lsp_register(subparsers)
+    except Exception as _lsp_err:  # noqa: BLE001
+        # LSP is optional infrastructure — never let a registration
+        # failure break the CLI overall.
+        logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     # =========================================================================
     # setup command

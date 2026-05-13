@@ -2,7 +2,7 @@
 Gateway configuration management.
 
 Handles loading and validating configuration for:
-- Connected platforms (Telegram, Discord, WhatsApp)
+- Connected platforms (Telegram, Discord, WhatsApp, Weixin, and more)
 - Home channels for each platform
 - Session reset policies
 - Delivery preferences

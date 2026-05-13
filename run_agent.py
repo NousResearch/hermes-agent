@@ -347,6 +347,10 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+# Tools that mutate files on disk.  Used by the per-turn verifier that
+# surfaces silently-failed file edits so the model can't over-claim success.
+_FILE_MUTATING_TOOLS = frozenset({"write_file", "patch"})
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -522,6 +526,68 @@ def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
         value["content"] = parts
     if isinstance(value.get("text_summary"), str):
         value["text_summary"] = value["text_summary"] + hint
+
+
+def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
+    """Return the file paths a ``write_file`` or ``patch`` call is targeting.
+
+    For ``write_file`` and ``patch`` in replace mode this is just ``args["path"]``.
+    For ``patch`` in V4A patch mode we parse the patch content for
+    ``*** Update File:`` / ``*** Add File:`` / ``*** Delete File:`` headers so
+    the verifier can track each file in a multi-file patch separately.
+    """
+    if tool_name not in _FILE_MUTATING_TOOLS:
+        return []
+    if tool_name == "write_file":
+        p = args.get("path")
+        return [str(p)] if p else []
+    # tool_name == "patch"
+    mode = args.get("mode") or "replace"
+    if mode == "replace":
+        p = args.get("path")
+        return [str(p)] if p else []
+    if mode == "patch":
+        body = args.get("patch") or ""
+        if not isinstance(body, str) or not body:
+            return []
+        import re as _re
+        paths: List[str] = []
+        for _m in _re.finditer(
+            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+            body,
+            _re.MULTILINE,
+        ):
+            p = _m.group(1).strip()
+            if p:
+                paths.append(p)
+        return paths
+    return []
+
+
+def _extract_error_preview(result: Any, max_len: int = 180) -> str:
+    """Pull a one-line error summary out of a tool result for footer display."""
+    text = _multimodal_text_summary(result) if result is not None else ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return ""
+    # Try to parse JSON and pull the ``error`` field — tool handlers return
+    # ``{"success": false, "error": "..."}``; raw string wins if parse fails.
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            import json as _json
+            data = _json.loads(stripped)
+            if isinstance(data, dict) and isinstance(data.get("error"), str):
+                text = data["error"]
+        except Exception:
+            pass
+    # Collapse whitespace, trim to max_len.
+    text = " ".join(text.split())
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
 
 
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -1388,15 +1454,6 @@ class AIAgent:
         # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
         # sessions with >5-minute pauses between turns (#14971).
         self._cache_ttl = "5m"
-        # Long-lived prefix caching: when enabled and supported by the
-        # current provider, splits the system prompt into a stable prefix
-        # (cached cross-session at 1h TTL) and a volatile suffix
-        # (memory/timestamp — never cached), and attaches a 1h cache_control
-        # marker to the last tool in the schema array.  Restricted to
-        # Claude on Anthropic / OpenRouter / Nous Portal; see
-        # ``_supports_long_lived_anthropic_cache``.
-        self._use_long_lived_prefix_cache = False
-        self._long_lived_cache_ttl = "1h"
         try:
             from hermes_cli.config import load_config as _load_pc_cfg
 
@@ -1404,12 +1461,6 @@ class AIAgent:
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in {"5m", "1h"}:
                 self._cache_ttl = _ttl
-            _ll_enabled = _pc_cfg.get("long_lived_prefix", True)
-            _ll_ttl = _pc_cfg.get("long_lived_ttl", "1h")
-            if _ll_ttl in ("5m", "1h"):
-                self._long_lived_cache_ttl = _ll_ttl
-            if _ll_enabled and self._use_prompt_caching and self._supports_long_lived_anthropic_cache():
-                self._use_long_lived_prefix_cache = True
         except Exception:
             pass
 
@@ -2414,7 +2465,6 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
-            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2581,6 +2631,11 @@ class AIAgent:
         old_model = self.model
         old_provider = self.provider
 
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        self._config_context_length = None
+
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
@@ -2645,15 +2700,6 @@ class AIAgent:
                 model=new_model,
             )
         )
-        self._use_long_lived_prefix_cache = bool(
-            self._use_prompt_caching
-            and self._supports_long_lived_anthropic_cache(
-                provider=new_provider,
-                base_url=self.base_url,
-                api_mode=api_mode,
-                model=new_model,
-            )
-        )
 
         # ── LM Studio: preload before probing context length ──
         self._ensure_lmstudio_runtime_loaded()
@@ -2702,7 +2748,6 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
-            "use_long_lived_prefix_cache": self._use_long_lived_prefix_cache,
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3512,73 +3557,6 @@ class AIAgent:
             return True, False
 
         return False, False
-
-    def _supports_long_lived_anthropic_cache(
-        self,
-        *,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_mode: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> bool:
-        """Decide whether the long-lived (1h cross-session) cache layout applies.
-
-        Narrower than ``_anthropic_prompt_cache_policy`` — only enabled
-        for Claude models on the four endpoints whose cross-session
-        cache_control behavior we have explicitly validated:
-
-          * Native Anthropic API (``api_mode == 'anthropic_messages'`` +
-            host ``api.anthropic.com``)
-          * Anthropic OAuth subscription (same transport as native API)
-          * OpenRouter (``base_url`` contains ``openrouter.ai``)
-          * Nous Portal (``base_url`` contains ``nousresearch`` — proxies
-            to OpenRouter, so identical wire-format)
-
-        All four honour ``cache_control`` on both the tools array and the
-        first system content block, and bill cross-session cache reads at
-        the documented 0.1× rate.
-
-        Other endpoints covered by the standard ``system_and_3`` policy
-        (third-party Anthropic gateways, MiniMax, opencode-go Qwen, etc.)
-        keep that layout — they support cache_control but their behavior
-        with mixed-TTL multi-block system content has not been validated
-        against this codebase.
-        """
-        eff_provider = (provider if provider is not None else self.provider) or ""
-        eff_base_url = base_url if base_url is not None else (self.base_url or "")
-        eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
-        eff_model = (model if model is not None else self.model) or ""
-
-        model_lower = eff_model.lower()
-        is_claude = "claude" in model_lower
-        is_nous_portal = "nousresearch" in eff_base_url.lower()
-
-        # Nous Portal: Claude AND Qwen both get long-lived caching.
-        # Portal proxies to OpenRouter with identical cache_control
-        # semantics; any model on Portal that accepts envelope-layout
-        # markers via _anthropic_prompt_cache_policy also benefits from
-        # the documented 1h cross-session TTL.
-        if is_nous_portal and (is_claude or "qwen" in model_lower):
-            return True
-
-        if not is_claude:
-            return False
-
-        # Native Anthropic + Anthropic OAuth subscription
-        if eff_api_mode == "anthropic_messages":
-            if eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com":
-                return True
-
-        # OpenRouter
-        if base_url_host_matches(eff_base_url, "openrouter.ai"):
-            return True
-
-        # Nous Portal — front-ends OpenRouter behind the scenes; identical
-        # wire format and cache_control semantics.
-        if is_nous_portal:
-            return True
-
-        return False
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -5351,6 +5329,103 @@ class AIAgent:
             self._pending_steer = None
         return text
 
+    def _record_file_mutation_result(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        is_error: bool,
+    ) -> None:
+        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
+
+        On failure, store ``{path: {error_preview, tool}}`` entries.  On
+        success, remove any prior failure entries for the same paths (the
+        model recovered within the turn).  Silently no-ops if the per-turn
+        state dict hasn't been initialised yet (e.g. a tool dispatched
+        outside ``run_conversation``).
+        """
+        if tool_name not in _FILE_MUTATING_TOOLS:
+            return
+        state = getattr(self, "_turn_failed_file_mutations", None)
+        if state is None:
+            return
+        targets = _extract_file_mutation_targets(tool_name, args)
+        if not targets:
+            return
+        if is_error:
+            preview = _extract_error_preview(result)
+            for path in targets:
+                # Keep the FIRST error we saw for a given path unless we
+                # later see success.  A repeated failure with a different
+                # message shouldn't silently overwrite the original.
+                if path not in state:
+                    state[path] = {
+                        "tool": tool_name,
+                        "error_preview": preview,
+                    }
+        else:
+            for path in targets:
+                state.pop(path, None)
+
+    def _file_mutation_verifier_enabled(self) -> bool:
+        """Check whether the per-turn file-mutation verifier footer is on.
+
+        Config path: ``display.file_mutation_verifier`` (bool, default True).
+        ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
+        as a method so tests can patch a single seam without reaching into
+        the private ``_turn_failed_file_mutations`` state dict.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
+            if env is not None:
+                return env.strip().lower() not in ("0", "false", "no", "off")
+            # Read from the persisted config.yaml so gateway and CLI share
+            # the same setting.  Import lazily to avoid a startup-time cycle.
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "file_mutation_verifier" in _display:
+                return bool(_display.get("file_mutation_verifier"))
+        except Exception:
+            pass
+        return True  # safe default: verifier on
+
+    @staticmethod
+    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+        """Render the per-turn failed-mutation dict as a user-facing footer.
+
+        Displays up to 10 paths with their first error preview, then a
+        count of any additional failures.  Returns an empty string when
+        the dict is empty so callers can concatenate unconditionally.
+        """
+        if not failed:
+            return ""
+        lines = [
+            "⚠️ File-mutation verifier: "
+            f"{len(failed)} file(s) were NOT modified this turn despite any "
+            "wording above that may suggest otherwise. Run `git status` or "
+            "`read_file` to confirm."
+        ]
+        shown = 0
+        for path, info in failed.items():
+            if shown >= 10:
+                break
+            preview = (info.get("error_preview") or "").strip()
+            tool = info.get("tool") or "patch"
+            if preview:
+                lines.append(f"  • {path} — [{tool}] {preview}")
+            else:
+                lines.append(f"  • {path} — [{tool}] failed")
+            shown += 1
+        remaining = len(failed) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
+        return "\n".join(lines)
+
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Append any pending /steer text to the last tool result in this turn.
 
@@ -5736,26 +5811,19 @@ class AIAgent:
         """Assemble the system prompt as three ordered parts.
 
         Returns a dict with three keys:
-          * ``stable``  — content that is byte-stable across sessions for a
-            given user config: identity, tool guidance, skills prompt,
+          * ``stable``   — identity, tool guidance, skills prompt,
             environment hints, platform hints, model-family operational
-            guidance.  Eligible for cross-session 1h prompt caching when
-            placed as a separate Anthropic content block (see
-            ``apply_anthropic_cache_control_long_lived``).
-          * ``context`` — context files (AGENTS.md, .cursorrules, etc.) and
-            caller-supplied system_message.  Stable within a session but may
-            change between sessions when files are edited or the cwd
-            differs.  Cached within-session via the rolling messages
-            breakpoint (5m TTL); not promoted to the long-lived tier so
-            edits don't poison the cross-session cache.
-          * ``volatile`` — content that changes on most turns/sessions:
-            memory snapshot, user profile, external memory provider block,
-            timestamp line.  Never marked for caching.
+            guidance.
+          * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
+            and caller-supplied system_message.
+          * ``volatile`` — memory snapshot, user profile, external
+            memory provider block, timestamp line.
 
-        Joined ``stable\\n\\ncontext\\n\\nvolatile`` produces the same
-        logical content the old single-string builder produced, with the
-        guarantee that volatile content is at the end (cache-friendly
-        ordering for any provider that does prefix caching).
+        Joined into a single string by ``_build_system_prompt`` and
+        cached on ``_cached_system_prompt`` for the lifetime of the
+        AIAgent.  Hermes never re-renders parts of this string mid-
+        session — that's the only way to keep upstream prompt caches
+        warm across turns.
         """
         # ── Stable tier ────────────────────────────────────────────────
         stable_parts: List[str] = []
@@ -5957,9 +6025,10 @@ class AIAgent:
 
         Layers are ordered cache-friendly: stable identity/guidance first,
         then session-stable context files, then per-call volatile content
-        (memory, USER profile, timestamp). The split is exposed via
-        ``_build_system_prompt_parts`` for the long-lived prompt-caching
-        path (Claude on Anthropic / OpenRouter / Nous Portal).
+        (memory, USER profile, timestamp).  The whole string is treated as
+        one cached block — Hermes never rebuilds or reinjects parts of it
+        mid-session, which is the only way to keep upstream prompt caches
+        warm across turns.
         """
         parts = self._build_system_prompt_parts(system_message=system_message)
         joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
@@ -8659,6 +8728,11 @@ class AIAgent:
                 fb_api_mode = "bedrock_converse"
 
             old_model = self.model
+
+            # Clear the per-config context_length override so the fallback
+            # model's actual context window is resolved instead of inheriting
+            # the stale value from the previous model.  See #22387.
+            self._config_context_length = None
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
@@ -8715,15 +8789,6 @@ class AIAgent:
             # Re-evaluate prompt caching for the new provider/model
             self._use_prompt_caching, self._use_native_cache_layout = (
                 self._anthropic_prompt_cache_policy(
-                    provider=fb_provider,
-                    base_url=fb_base_url,
-                    api_mode=fb_api_mode,
-                    model=fb_model,
-                )
-            )
-            self._use_long_lived_prefix_cache = bool(
-                self._use_prompt_caching
-                and self._supports_long_lived_anthropic_cache(
                     provider=fb_provider,
                     base_url=fb_base_url,
                     api_mode=fb_api_mode,
@@ -8805,16 +8870,6 @@ class AIAgent:
             self._use_native_cache_layout = rt.get(
                 "use_native_cache_layout",
                 self.api_mode == "anthropic_messages" and self.provider == "anthropic",
-            )
-            # Long-lived prefix flag was added later — restore False on
-            # snapshots predating the new field, then re-evaluate against
-            # the restored provider/model in case the user had it enabled.
-            self._use_long_lived_prefix_cache = rt.get(
-                "use_long_lived_prefix_cache",
-                bool(
-                    self._use_prompt_caching
-                    and self._supports_long_lived_anthropic_cache()
-                ),
             )
 
             # ── Rebuild client for the primary provider ──
@@ -9393,19 +9448,7 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
-        # Resolve the tools array exactly once. When the long-lived
-        # prefix-cache layout is active (Claude on Anthropic / OpenRouter
-        # / Nous Portal), attach a 1h cache_control marker to the last
-        # tool — this caches the entire tools array cross-session via
-        # Anthropic's tools→system→messages prefix order. The function
-        # returns a deep copy, so self.tools is never mutated.
-        if self._use_long_lived_prefix_cache and self.tools:
-            from agent.prompt_caching import mark_tools_for_long_lived_cache
-            tools_for_api = mark_tools_for_long_lived_cache(
-                self.tools, long_lived_ttl=self._long_lived_cache_ttl,
-            )
-        else:
-            tools_for_api = self.tools
+        tools_for_api = self.tools
 
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
@@ -10877,6 +10920,17 @@ class AIAgent:
                     result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+                # Track file-mutation outcome for the turn-end verifier.
+                # `blocked` calls never actually ran — don't let a guardrail
+                # block count as either a failure or a success.
+                if not blocked:
+                    try:
+                        self._record_file_mutation_result(
+                            function_name, function_args, function_result, is_error,
+                        )
+                    except Exception as _ver_err:
+                        logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
                 if not blocked and self.tool_progress_callback:
                     try:
                         self.tool_progress_callback(
@@ -11303,6 +11357,18 @@ class AIAgent:
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 
+            # Track file-mutation outcome for the turn-end verifier.  See
+            # the concurrent path for the rationale; both paths must feed
+            # the same state so the footer reflects every tool call in the
+            # turn, not just the parallel ones.
+            if not _execution_blocked:
+                try:
+                    self._record_file_mutation_result(
+                        function_name, function_args, function_result, _is_error_result,
+                    )
+                except Exception as _ver_err:
+                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
             if not _execution_blocked and self.tool_progress_callback:
                 try:
                     self.tool_progress_callback(
@@ -11481,7 +11547,8 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=hermes-agent"]
+                from agent.portal_tags import nous_portal_tags as _portal_tags
+                summary_extra_body["tags"] = _portal_tags()
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
@@ -12000,6 +12067,14 @@ class AIAgent:
         truncated_response_prefix = ""
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+        # Per-turn file-mutation verifier state.  Keyed by resolved path;
+        # each failed ``write_file`` / ``patch`` call records the error
+        # preview.  Later successful writes to the same path remove the
+        # entry (the model recovered).  At end-of-turn, any entries still
+        # present are surfaced in an advisory footer so the model cannot
+        # over-claim success while the file is actually unchanged on disk.
+        self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -12234,36 +12309,21 @@ class AIAgent:
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
             #
-            # When the long-lived prefix-cache layout is active (Claude on
-            # Anthropic / OpenRouter / Nous Portal), we build the system
-            # message as a *list of content blocks*: [stable, context,
-            # volatile, ephemeral?].  Block 0 (stable) gets the 1h
-            # cache_control marker further down via
-            # apply_anthropic_cache_control_long_lived; blocks 1-3 are
-            # cached only via the rolling messages window at 5m.
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
             # cache prefix.  The system prompt is reserved for Hermes internals.
-            if self._use_long_lived_prefix_cache:
-                _sys_parts = self._build_system_prompt_parts(system_message=system_message)
-                _sys_blocks: list = []
-                if _sys_parts.get("stable"):
-                    _sys_blocks.append({"type": "text", "text": _sys_parts["stable"]})
-                if _sys_parts.get("context"):
-                    _sys_blocks.append({"type": "text", "text": _sys_parts["context"]})
-                if _sys_parts.get("volatile"):
-                    _sys_blocks.append({"type": "text", "text": _sys_parts["volatile"]})
-                if self.ephemeral_system_prompt:
-                    _sys_blocks.append({"type": "text", "text": self.ephemeral_system_prompt})
-                if _sys_blocks:
-                    api_messages = [{"role": "system", "content": _sys_blocks}] + api_messages
-            else:
-                effective_system = active_system_prompt or ""
-                if self.ephemeral_system_prompt:
-                    effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-                if effective_system:
-                    api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            #
+            # Hermes invariant: the system prompt is built ONCE per session
+            # (cached on ``_cached_system_prompt``) and replayed verbatim on
+            # every turn.  We send it as a single content string so the
+            # bytes are byte-stable across turns and upstream prompt caches
+            # stay warm.
+            effective_system = active_system_prompt or ""
+            if self.ephemeral_system_prompt:
+                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if effective_system:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
@@ -12277,29 +12337,13 @@ class AIAgent:
             # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
             # inject cache_control breakpoints (system + last 3 messages)
             # to reduce input token costs by ~75% on multi-turn
-            # conversations. Layout is chosen per endpoint by
-            # ``_anthropic_prompt_cache_policy``.
-            #
-            # Long-lived prefix layout (prefix_and_2): stable system block
-            # gets 1h marker + last 2 messages get 5m markers. Tools
-            # array's last entry is marked separately at API-call kwargs
-            # build time (see ``_build_api_kwargs`` and
-            # ``mark_tools_for_long_lived_cache``).
+            # conversations.
             if self._use_prompt_caching:
-                if self._use_long_lived_prefix_cache:
-                    from agent.prompt_caching import apply_anthropic_cache_control_long_lived
-                    api_messages = apply_anthropic_cache_control_long_lived(
-                        api_messages,
-                        long_lived_ttl=self._long_lived_cache_ttl,
-                        rolling_ttl=self._cache_ttl,
-                        native_anthropic=self._use_native_cache_layout,
-                    )
-                else:
-                    api_messages = apply_anthropic_cache_control(
-                        api_messages,
-                        cache_ttl=self._cache_ttl,
-                        native_anthropic=self._use_native_cache_layout,
-                    )
+                api_messages = apply_anthropic_cache_control(
+                    api_messages,
+                    cache_ttl=self._cache_ttl,
+                    native_anthropic=self._use_native_cache_layout,
+                )
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not
@@ -14253,7 +14297,7 @@ class AIAgent:
                             _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                             if _ra_raw:
                                 try:
-                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                    _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
@@ -15314,6 +15358,31 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        # File-mutation verifier footer.
+        # If one or more ``write_file`` / ``patch`` calls failed during this
+        # turn and were never superseded by a successful write to the same
+        # path, append an advisory footer to the assistant response.  This
+        # catches the specific case — reported by Ben Eng (#15524-adjacent)
+        # — where a model issues a batch of parallel patches, half of them
+        # fail with "Could not find old_string", and the model summarises
+        # the turn claiming every file was edited.  The user then has to
+        # manually run ``git status`` to catch the lie.  With this footer
+        # the truth is surfaced on every turn, so over-claiming is
+        # structurally impossible past the model.
+        #
+        # Gate: only applied when a real text response exists for this
+        # turn and the user didn't interrupt.  Empty/interrupted turns
+        # already have other surface text that shouldn't be augmented.
+        if final_response and not interrupted:
+            try:
+                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+                if _failed and self._file_mutation_verifier_enabled():
+                    footer = self._format_file_mutation_failure_footer(_failed)
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
+            except Exception as _ver_err:
+                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
         # Plugin hook: transform_llm_output
         # Fired once per turn after the tool-calling loop completes.

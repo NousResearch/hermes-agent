@@ -372,29 +372,36 @@ class TestSupportsLongLivedAnthropicCache:
         )
         assert agent._supports_long_lived_anthropic_cache() is True
 
-    def test_nous_portal_qwen_supported(self):
-        # Portal Qwen rides the same OpenRouter-equivalent transport as
-        # Portal Claude; long-lived (1h cross-session) cache_control
-        # markers apply identically.
+    def test_nous_portal_qwen_NOT_long_lived(self):
+        # Portal Qwen still gets cache_control markers via the standard
+        # system_and_3 5m layout (see _anthropic_prompt_cache_policy
+        # tests above), but it must NOT ride the prefix_and_2 1h layout.
+        # Alibaba DashScope (the upstream for every Qwen route, incl.
+        # Portal -> OpenRouter -> Alibaba) only supports a single
+        # ``ephemeral`` TTL of 5 minutes; ttl="1h" markers are silently
+        # ignored, so the high-value tools[-1] + system-prefix
+        # breakpoints don't land. Stay on system_and_3 instead.
         agent = _make_agent(
             provider="nous",
             base_url="https://inference-api.nousresearch.com/v1",
             api_mode="chat_completions",
             model="qwen3.6-plus",
         )
-        assert agent._supports_long_lived_anthropic_cache() is True
+        assert agent._supports_long_lived_anthropic_cache() is False
 
-    def test_nous_portal_qwen_vendored_slug_supported(self):
+    def test_nous_portal_qwen_vendored_slug_NOT_long_lived(self):
         agent = _make_agent(
             provider="nous",
             base_url="https://inference-api.nousresearch.com/v1",
             api_mode="chat_completions",
             model="qwen/qwen3.6-plus",
         )
-        assert agent._supports_long_lived_anthropic_cache() is True
+        assert agent._supports_long_lived_anthropic_cache() is False
 
-    def test_nous_portal_non_claude_non_qwen_rejected(self):
-        # Portal long-lived cache scope mirrors policy: Claude or Qwen only.
+    def test_nous_portal_non_claude_rejected(self):
+        # Portal long-lived cache scope is now Claude-only. Qwen
+        # rejection is covered by the dedicated tests above; this
+        # covers everything else (gpt, etc.).
         agent = _make_agent(
             provider="nous",
             base_url="https://inference-api.nousresearch.com/v1",

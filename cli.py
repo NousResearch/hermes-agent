@@ -9138,26 +9138,34 @@ class HermesCLI:
             )
 
     def _handle_toolsearch_command(self, cmd: str):
-        """Handle /toolsearch — toggle Anthropic server-side tool_search.
+        """Handle /toolsearch — toggle lazy MCP tool loading.
 
-        When enabled, hermes prepends the tool_search server-side tool to
-        every Anthropic request and marks MCP tools with defer_loading=true
-        so their schemas are loaded on-demand by the model rather than
-        shipped in the system prompt prefix. Big context win when many MCP
-        servers are connected.
+        Two modes available:
+          client_side (default) — Hermes-side hermes_load_tools tool.
+            Each discovery is one normal API round-trip, billed once.
+            No prompt-token multiplier.
+          server_side — Anthropic's tool_search_tool_<variant>_20251119
+            server tool. Each server-tool iteration re-bills the full
+            prompt within one API call; observed multipliers of 2x-4x.
+            Useful only for OAuth/Claude-subscription users whose
+            billing classifier scores wire bytes.
 
-        Reads/writes ``tool_search.enabled`` in config.yaml. The agent
-        reads this fresh on every API call, so toggles take effect on the
-        very next turn — no restart, no agent rebuild required.
+        Reads/writes ``tool_search.enabled`` and ``tool_search.mode`` in
+        config.yaml. The agent reads this fresh on every API call, so
+        toggles take effect on the very next turn — no restart needed.
 
         Usage:
-            /toolsearch              Alias for /toolsearch status
-            /toolsearch status       Show current state and rough impact
-            /toolsearch on           Enable (saves to config)
-            /toolsearch off          Disable (saves to config)
+            /toolsearch                       Alias for /toolsearch status
+            /toolsearch status                Show current state
+            /toolsearch on                    Enable (uses current mode)
+            /toolsearch off                   Disable
+            /toolsearch client_side           Enable + set mode=client_side
+            /toolsearch server_side           Enable + set mode=server_side
+            /toolsearch mode client_side      Set mode without changing enabled
         """
-        parts = cmd.strip().split(maxsplit=1)
-        arg = parts[1].strip().lower() if len(parts) >= 2 else "status"
+        parts = cmd.strip().split()
+        # Drop the "/toolsearch" token; remainder is the sub-command.
+        argv = parts[1:] if parts else []
 
         try:
             from hermes_cli.config import load_config as _load_cfg
@@ -9167,32 +9175,78 @@ class HermesCLI:
         ts_cfg = cfg.get("tool_search") if isinstance(cfg, dict) else {}
         ts_cfg = ts_cfg if isinstance(ts_cfg, dict) else {}
 
-        if arg in ("status", "show", ""):
+        def _show_status():
             enabled = bool(ts_cfg.get("enabled"))
+            mode = (ts_cfg.get("mode") or "client_side").strip().lower()
             variant = ts_cfg.get("variant", "regex")
             defer_mcp = bool(ts_cfg.get("defer_mcp_tools", True))
             state = "ON" if enabled else "OFF"
-            _cprint(f"  {_ACCENT}Tool search: {state}{_RST}")
+            _cprint(f"  {_ACCENT}Tool search: {state} (mode={mode}){_RST}")
             _cprint(f"  {_DIM}variant={variant}, defer_mcp_tools={defer_mcp}{_RST}")
+            if mode == "client_side":
+                _cprint(
+                    f"  {_DIM}Discovery via Hermes-side hermes_load_tools tool. "
+                    f"Each schema-load is one normal round-trip; no multiplier.{_RST}"
+                )
+            else:
+                _cprint(
+                    f"  {_DIM}Discovery via Anthropic tool_search_tool_{variant}"
+                    f"_20251119. Re-bills full prompt per server-tool iteration "
+                    f"(2x-4x multipliers observed).{_RST}"
+                )
             _cprint(
-                f"  {_DIM}Lazy-loads MCP tool schemas via Anthropic's "
-                f"tool_search_tool_{variant}_20251119 server tool.{_RST}"
+                f"  {_DIM}Usage: /toolsearch [on|off|client_side|server_side|status|mode <m>]{_RST}"
             )
-            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|status]{_RST}")
+
+        if not argv or argv[0].lower() in ("status", "show"):
+            _show_status()
             return
 
-        if arg in ("on", "true", "enable", "enabled", "yes", "1"):
+        first = argv[0].lower()
+
+        # /toolsearch mode <client_side|server_side>
+        if first == "mode":
+            if len(argv) < 2:
+                _cprint(f"  {_DIM}Usage: /toolsearch mode [client_side|server_side]{_RST}")
+                return
+            new_mode = argv[1].lower()
+            if new_mode not in ("client_side", "server_side"):
+                _cprint(f"  {_DIM}(._.) Unknown mode: {new_mode}{_RST}")
+                return
+            if save_config_value("tool_search.mode", new_mode):
+                _cprint(f"  {_ACCENT}✓ tool_search.mode = {new_mode} (saved){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ tool_search.mode = {new_mode} (session only){_RST}")
+            return
+
+        # Shorthand: /toolsearch client_side  → enable + set mode
+        if first in ("client_side", "client-side"):
+            save_config_value("tool_search.enabled", True)
+            save_config_value("tool_search.mode", "client_side")
+            _cprint(f"  {_ACCENT}✓ Tool search: ON, mode=client_side (saved){_RST}")
+            _cprint(f"  {_DIM}Takes effect on the next message — no restart needed.{_RST}")
+            return
+        if first in ("server_side", "server-side"):
+            save_config_value("tool_search.enabled", True)
+            save_config_value("tool_search.mode", "server_side")
+            _cprint(f"  {_ACCENT}✓ Tool search: ON, mode=server_side (saved){_RST}")
+            _cprint(f"  {_DIM}WARNING: server_side has known 2x-4x prompt multipliers on stacked tool_search calls.{_RST}")
+            return
+
+        if first in ("on", "true", "enable", "enabled", "yes", "1"):
             new_value = True
-        elif arg in ("off", "false", "disable", "disabled", "no", "0"):
+        elif first in ("off", "false", "disable", "disabled", "no", "0"):
             new_value = False
         else:
-            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|status]{_RST}")
+            _cprint(f"  {_DIM}(._.) Unknown argument: {first}{_RST}")
+            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|client_side|server_side|status|mode <m>]{_RST}")
             return
 
         if save_config_value("tool_search.enabled", new_value):
+            mode = (ts_cfg.get("mode") or "client_side").strip().lower()
             _cprint(
-                f"  {_ACCENT}✓ Tool search: {'ON' if new_value else 'OFF'} (saved){_RST}"
+                f"  {_ACCENT}✓ Tool search: {'ON' if new_value else 'OFF'} "
+                f"(mode={mode}, saved){_RST}"
             )
             _cprint(
                 f"  {_DIM}Takes effect on the next message — no restart needed.{_RST}"

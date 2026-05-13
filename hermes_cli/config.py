@@ -759,25 +759,40 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
-    # Anthropic server-side tool search. When enabled, hermes prepends
-    # ``tool_search_tool_<variant>_20251119`` to the tools list and marks
-    # MCP tools (and anything matching defer_patterns) with
-    # ``defer_loading: true``. The model then searches for tools on demand
-    # instead of loading every MCP tool's schema upfront. Big context win
-    # when you have many MCP servers connected — Slack/Notion/PagerDuty/etc.
-    # can easily account for ~80K tokens of tool definitions.
+    # Lazy MCP tool loading. When enabled, hermes ships name-only stubs
+    # for MCP-prefixed tools (slack_*, salesforce_*, tanium_gateway_*, etc.)
+    # in the tools array. The model discovers the full schema on demand
+    # via either:
+    #
+    #   mode = "client_side" (default, recommended)
+    #     Discovery is a normal client-side tool (``hermes_load_tools``).
+    #     One API round-trip per discovery, billed once at normal rates.
+    #     This is the default for any new install.
+    #
+    #   mode = "server_side"
+    #     Discovery uses Anthropic's ``tool_search_tool_<variant>_20251119``
+    #     server tool. Each server-tool iteration re-bills the FULL prompt
+    #     context within a single API call — observed multipliers of 2x,
+    #     3x, 4x in the wild (see _build_tool_search_config docstring for
+    #     the 2026-05-13 case 00271597 evidence). Only valuable to OAuth
+    #     / Claude-subscription users whose billing classifier scores
+    #     wire bytes. API-key users SHOULD use client_side.
+    #
+    # Big context win when you have many MCP servers connected —
+    # Slack/Notion/PagerDuty/etc. can easily account for ~80K tokens of
+    # tool definitions.
     #
     # Mirrors Claude Code's tool_search approach. Available on Sonnet 4+,
     # Opus 4+, Haiku 4.5+. anthropic_messages api_mode only — Bedrock
     # converse API doesn't support it.
     #
-    # variant: "regex" (default) lets the model construct Python regex
-    # patterns; "bm25" uses natural-language queries.
+    # variant: "regex" (default, server_side only) / "bm25" (server_side only).
     # defer_mcp_tools: when True, all tools whose name starts with a
-    # configured MCP server name get defer_loading: true.
+    # configured MCP server name get deferred.
     # additional_eager / additional_deferred: per-tool overrides (by name).
     "tool_search": {
         "enabled": False,
+        "mode": "client_side",
         "variant": "regex",
         "defer_mcp_tools": True,
         "additional_eager": [],

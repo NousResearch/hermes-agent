@@ -3207,41 +3207,58 @@ def _apply_tool_search(
     anthropic_tools: List[Dict[str, Any]],
     tool_search_config: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Apply Anthropic server-side tool_search to the converted tools array.
+    """Apply the tool_search deferral policy to the converted tools array.
 
-    When ``tool_search_config["enabled"]`` is True:
-      * Tools whose ``name`` matches the deferral policy are tagged with
-        ``defer_loading: True`` so Anthropic doesn't ship their full schemas
-        in the system-prompt prefix; the model discovers them on demand via
-        the tool_search server tool.
-      * The tool_search tool itself (regex or bm25 variant) is prepended to
-        the array. It MUST NOT carry ``defer_loading``.
+    Two modes — selected by ``tool_search_config["mode"]`` (default
+    ``"client_side"``):
 
-    Deferral policy (additive, evaluated in order):
+    ``"server_side"`` (legacy)
+        Stubs carry ``defer_loading: True``, the Anthropic
+        ``tool_search_tool_<variant>_20251119`` server tool is prepended to
+        the array, and the model discovers tools via that server tool.
+        Anthropic re-bills the FULL prompt context for each server-tool
+        iteration within an API call.  See agent.log forensics from the
+        2026-05-13 case 00271597 session for 2x/3x/4x prompt-token
+        multiplier evidence.
+
+    ``"client_side"``
+        Stubs are regular tools (no ``defer_loading`` flag), no server tool
+        is prepended, and the model discovers tools via the client-side
+        ``hermes_load_tools`` tool registered in ``tools/hermes_load_tools.py``
+        and dispatched out of the agent loop in ``run_agent.py``.  Each
+        load step is a normal client-side round-trip — billed once per
+        call, no multiplier.  Names in ``promoted_tools`` skip the stub
+        and ship their full schema.
+
+    Deferral policy (additive, evaluated in order, identical across modes):
       1. ``additional_deferred`` — exact tool names always deferred.
       2. ``additional_eager`` — exact tool names always eager (overrides 1).
       3. ``defer_mcp_tools`` — when True, any tool whose name starts with
-         a known MCP server prefix is deferred. The server prefixes are
-         passed in via ``tool_search_config["mcp_server_prefixes"]`` (a list
-         of strings produced by the caller from its mcp_servers config).
+         a known MCP server prefix is deferred.  Server prefixes are
+         passed via ``tool_search_config["mcp_server_prefixes"]``.
 
-    Returns the transformed list. Returns the input unchanged when
-    tool_search is disabled, when there are no tools, or when fewer than
-    one tool would be deferred (Anthropic 400s on "all tools deferred").
+    Returns the transformed list.  Returns the input unchanged when
+    tool_search is disabled, when there are no tools, or when all/none of
+    the tools would be deferred (server_side: Anthropic 400s on "all
+    deferred"; both modes: a stub array with no full tools is unhelpful).
     """
     if not tool_search_config or not tool_search_config.get("enabled"):
         return anthropic_tools
     if not anthropic_tools:
         return anthropic_tools
 
-    variant = (tool_search_config.get("variant") or "regex").lower()
-    ts_type = _TOOL_SEARCH_TOOL_TYPES.get(variant, _TOOL_SEARCH_TOOL_TYPES["regex"])
-    ts_name = "tool_search_tool_bm25" if variant == "bm25" else "tool_search_tool_regex"
+    mode = (tool_search_config.get("mode") or "client_side").strip().lower()
+    if mode not in {"server_side", "client_side"}:
+        mode = "client_side"
 
     eager_names = set(tool_search_config.get("additional_eager") or [])
     deferred_names = set(tool_search_config.get("additional_deferred") or [])
     mcp_prefixes = tuple(tool_search_config.get("mcp_server_prefixes") or [])
     defer_mcp = bool(tool_search_config.get("defer_mcp_tools", True))
+    # client_side mode only — names the model has already loaded this
+    # session.  Promoted names skip the stub branch and ship their full
+    # schema even when the policy would otherwise defer them.
+    promoted_tools = set(tool_search_config.get("promoted_tools") or ())
 
     def _should_defer(name: str) -> bool:
         if name in eager_names:
@@ -3252,69 +3269,69 @@ def _apply_tool_search(
             return True
         return False
 
+    # Build the stub used for deferred entries.  Anthropic's validator
+    # requires ``description`` and ``input_schema`` to exist even on
+    # name-only entries, so we send minimal placeholders (empty
+    # description, ``{"type":"object"}``).  Each stub stays under ~120
+    # bytes on the wire vs 1-5KB for a real schema.
+    #
+    # The ``defer_loading: True`` flag is server_side-specific — it tells
+    # Anthropic's tool_search machinery the entry is a stub that should be
+    # hydrated server-side on tool_search hits.  In client_side mode the
+    # flag is omitted; the entry is just a tool with a terse description
+    # whose schema gets filled in on the next request when the model
+    # promotes it via hermes_load_tools.
+    def _make_stub(name: str, original: Dict[str, Any]) -> Dict[str, Any]:
+        stub: Dict[str, Any] = {
+            "name": name,
+            "description": (
+                ""
+                if mode == "server_side"
+                else (
+                    "Stubbed MCP tool — call hermes_load_tools with this "
+                    "name to load the full schema."
+                )
+            ),
+            "input_schema": {"type": "object"},
+        }
+        if mode == "server_side":
+            stub["defer_loading"] = True
+        # Preserve cache_control if the caller had set it; it affects
+        # prompt-caching boundary placement and is cheap.
+        if "cache_control" in original:
+            stub["cache_control"] = original["cache_control"]
+        return stub
+
     transformed: List[Dict[str, Any]] = []
     deferred_count = 0
     eager_count = 0
     for tool in anthropic_tools:
         name = tool.get("name", "")
-        if _should_defer(name):
-            # Strip ``description`` + ``input_schema`` from deferred
-            # entries so we send a name-only stub to Anthropic. The
-            # original implementation copied the full tool dict and
-            # only added ``defer_loading: true`` — that flag tells the
-            # MODEL not to surface the tool in its context, but the
-            # full schema bytes still ride on the HTTPS body, which
-            # means deferral saves model-context tokens but does
-            # nothing for wire payload size. On the OAuth path (where
-            # Anthropic's billing classifier scores wire bytes) that
-            # difference matters — full schemas keep the request
-            # over the classifier's threshold even when defer_loading
-            # is on, producing the misleading "out of extra usage"
-            # 400 even though no extra usage is actually billed.
-            #
-            # Stripping the schema sends ~50 bytes per deferred tool
-            # instead of 1-5K. The model still sees the tool name in
-            # the available-tools list (so it knows it can summon it
-            # via the tool_search server tool), and Anthropic's server
-            # hydrates the full schema from its registry when
-            # tool_search returns the entry.
-            # Anthropic's API requires ``description`` and
-            # ``input_schema`` even on deferred entries (the validator
-            # 400s with "Field required" if either is missing). Send
-            # minimal placeholders so the wire entry stays small but
-            # passes schema validation. Empty string description (1
-            # byte) and ``{"type":"object"}`` schema (~17 bytes) keep
-            # each stub under ~120 bytes vs the original 1-5K.
-            #
-            # The model still sees the tool name in its available-
-            # tools list and can summon the full description + input
-            # schema via the tool_search server tool when it actually
-            # wants to use the tool. Anthropic hydrates the canonical
-            # schema from its own registry on the tool_search hit.
-            stub: Dict[str, Any] = {
-                "name": name,
-                "description": "",
-                "input_schema": {"type": "object"},
-                "defer_loading": True,
-            }
-            # Preserve cache_control if the caller had set it; it
-            # affects prompt-caching boundary placement and is cheap.
-            if "cache_control" in tool:
-                stub["cache_control"] = tool["cache_control"]
-            transformed.append(stub)
+        if _should_defer(name) and name not in promoted_tools:
+            transformed.append(_make_stub(name, tool))
             deferred_count += 1
         else:
             transformed.append(tool)
             eager_count += 1
 
-    # Anthropic returns 400 when every tool is deferred. Skip injection in
-    # that case — caller pays the full token cost but the request goes
-    # through. Also skip when nothing is deferred (no benefit, just adds
-    # one extra tool entry).
+    # Anthropic returns 400 when every tool is deferred (no eager tool to
+    # ground the deferral). Skip injection in that case.  Also skip when
+    # nothing is deferred (no benefit, just adds one extra entry in
+    # server_side mode and a no-op in client_side mode).
     if deferred_count == 0 or eager_count == 0:
         return anthropic_tools
 
+    if mode == "client_side":
+        # No server tool to prepend — hermes_load_tools is a regular
+        # client-side tool already registered in the tools array.
+        return transformed
+
+    # server_side mode — prepend the Anthropic server tool.
+    variant = (tool_search_config.get("variant") or "regex").lower()
+    ts_type = _TOOL_SEARCH_TOOL_TYPES.get(variant, _TOOL_SEARCH_TOOL_TYPES["regex"])
+    ts_name = "tool_search_tool_bm25" if variant == "bm25" else "tool_search_tool_regex"
     return [{"type": ts_type, "name": ts_name}] + transformed
+
 
 
 def build_anthropic_kwargs(

@@ -51,7 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Set, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -1973,6 +1973,14 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+
+        # Client-side lazy tool loading — names promoted via hermes_load_tools.
+        # When tool_search.mode == "client_side", the anthropic adapter ships
+        # name-only stubs for deferred MCP tools and inflates them to full
+        # schemas only for names present in this set. The set survives for
+        # the lifetime of the agent (one session) so the model doesn't have
+        # to re-discover the same tools every turn.
+        self._promoted_tools: set[str] = set()
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -10157,6 +10165,25 @@ class AIAgent:
         if not isinstance(ts_cfg, dict) or not ts_cfg.get("enabled"):
             return None
 
+        # Mode selects how lazy loading is performed.
+        #   "server_side" — Anthropic's tool_search_tool_* server tool (legacy).
+        #     Inlines schemas server-side, which charges the full prompt PER
+        #     server iteration within one API call. Two stacked tool_search
+        #     calls = 3x prompt billing. See agent.log forensics from
+        #     2026-05-13 (case 00271597 session).
+        #   "client_side" — Hermes-side hermes_load_tools tool. Each schema-
+        #     load is one normal round-trip; no multiplier. Default for new
+        #     installs.
+        # Back-compat: an existing config with `enabled: true` and no `mode`
+        # key gets "client_side" automatically — the better behavior for any
+        # API-key user. The OAuth wire-bytes argument that motivated the
+        # original server_side default (per _apply_tool_search comments) only
+        # benefits OAuth/Claude-subscription users; regular API users always
+        # paid the multiplier cost without getting that benefit.
+        mode = (ts_cfg.get("mode") or "client_side").strip().lower()
+        if mode not in {"client_side", "server_side"}:
+            mode = "client_side"
+
         # Build MCP server prefixes from the configured mcp_servers map.
         # Each prefix matches the sanitized server name + "_" — matching the
         # registration form in tools/mcp_tool.py::_convert_mcp_schema
@@ -10176,12 +10203,51 @@ class AIAgent:
 
         return {
             "enabled": True,
+            "mode": mode,
             "variant": ts_cfg.get("variant", "regex"),
             "defer_mcp_tools": ts_cfg.get("defer_mcp_tools", True),
             "additional_eager": list(ts_cfg.get("additional_eager") or []),
             "additional_deferred": list(ts_cfg.get("additional_deferred") or []),
             "mcp_server_prefixes": prefixes,
+            # Snapshot of the agent's promoted-tools set. Consumed by the
+            # anthropic adapter in client_side mode to inflate stubs back to
+            # full schemas for names the model has already discovered.
+            # Empty set when not in client_side mode (harmless).
+            "promoted_tools": set(getattr(self, "_promoted_tools", set()) or ()),
         }
+
+    def _currently_deferred_names(self) -> Optional[Set[str]]:
+        """Return the set of tool names currently shown to the model as stubs.
+
+        Used by ``hermes_load_tools`` to classify requested names into
+        ``loaded`` vs ``already_eager`` vs ``unknown``.  Mirrors the deferral
+        policy in ``agent.anthropic_adapter._apply_tool_search`` (kept in
+        sync by hand — if you change one, change the other).
+
+        Returns None when tool_search is off (no concept of "deferred"
+        applies; hermes_load_tools then just classifies everything as
+        ``already_eager`` rather than discriminating).
+        """
+        ts = self._build_tool_search_config()
+        if not ts:
+            return None
+        eager_names = set(ts.get("additional_eager") or ())
+        deferred_names = set(ts.get("additional_deferred") or ())
+        mcp_prefixes = tuple(ts.get("mcp_server_prefixes") or ())
+        defer_mcp = bool(ts.get("defer_mcp_tools", True))
+        promoted = set(ts.get("promoted_tools") or ())
+        out: Set[str] = set()
+        for name in self.valid_tool_names or ():
+            if name in promoted:
+                continue
+            if name in eager_names:
+                continue
+            if name in deferred_names:
+                out.add(name)
+                continue
+            if defer_mcp and mcp_prefixes and name.startswith(mcp_prefixes):
+                out.add(name)
+        return out
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
@@ -11378,6 +11444,17 @@ class AIAgent:
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+        elif function_name == "hermes_load_tools":
+            # Client-side lazy tool loading.  Mutates self._promoted_tools;
+            # the schema for promoted names will ship on the NEXT API call
+            # (handled by _apply_tool_search in client_side mode).
+            from tools.hermes_load_tools import load_tools as _load_tools
+            return _load_tools(
+                names=function_args.get("names") or [],
+                promoted=self._promoted_tools,
+                available_names=set(self.valid_tool_names or ()),
+                deferred_names=self._currently_deferred_names(),
+            )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         elif function_name == "swarm_run":
@@ -12039,6 +12116,17 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+            elif function_name == "hermes_load_tools":
+                from tools.hermes_load_tools import load_tools as _load_tools
+                function_result = _load_tools(
+                    names=function_args.get("names") or [],
+                    promoted=self._promoted_tools,
+                    available_names=set(self.valid_tool_names or ()),
+                    deferred_names=self._currently_deferred_names(),
+                )
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('hermes_load_tools', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 tasks_arg = function_args.get("tasks")
                 if tasks_arg and isinstance(tasks_arg, list):

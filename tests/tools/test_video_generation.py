@@ -124,10 +124,10 @@ class TestModelResolution:
     def test_custom_model_from_config(self, mock_load_config):
         """Test custom model from config.yaml."""
         mock_load_config.return_value = {
-            "video_gen": {"model": "kling-video/v3/4k/text-to-video"}
+            "video_gen": {"model": "kling-video/v3/pro/text-to-video}
         }
         model_id, meta = vgt._resolve_fal_video_model()
-        assert model_id == "kling-video/v3/4k/text-to-video"
+        assert model_id == "kling-video/v3/pro/text-to-video"
         assert "Kling" in meta["display"]
 
     @patch('hermes_cli.config.load_config')
@@ -158,7 +158,7 @@ class TestPayloadBuilder:
     def test_payload_filters_unsupported_keys(self):
         """Test that unsupported keys are filtered out."""
         payload = vgt._build_fal_video_payload(
-            "kling-video/v3/4k/text-to-video",
+            "kling-video/v3/pro/text-to-video"
             prompt="test",
             duration=5,
             negative_prompt="blurry"  # Kling doesn't support negative_prompt

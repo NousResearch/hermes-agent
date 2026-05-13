@@ -228,6 +228,7 @@ fun AuthScreen(
                             ) {
                                 if (option.supportsBrowserSignIn) {
                                     Button(
+                                        modifier = Modifier.testTag("AuthSignIn-${option.id}"),
                                         onClick = { viewModel.startAuth(option.id) },
                                         enabled = option.browserSignInEnabled,
                                     ) {

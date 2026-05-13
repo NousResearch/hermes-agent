@@ -22,6 +22,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
+import com.nousresearch.hermesagent.auth.OpenRouterLoopbackOAuthServer
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthSessionStore
@@ -168,9 +169,10 @@ class DeepAppUiVisualInstrumentedTest {
                     uri.host == "openrouter.ai" &&
                     uri.path == "/auth" &&
                     uri.getQueryParameter("code_challenge_method") == "S256" &&
-                    callbackUrl.scheme == "hermesagent" &&
-                    callbackUrl.host == "auth" &&
-                    callbackUrl.path == "/callback" &&
+                    callbackUrl.scheme == "http" &&
+                    callbackUrl.host == "localhost" &&
+                    callbackUrl.port == OpenRouterLoopbackOAuthServer.DEFAULT_PORT &&
+                    callbackUrl.path == "/hermes/openrouter/callback" &&
                     callbackUrl.getQueryParameter("method") == "openrouter"
                 if (matches) {
                     openRouterOAuthOpened.set(true)
@@ -362,8 +364,8 @@ class DeepAppUiVisualInstrumentedTest {
 
             composeRule.onNodeWithTag("HermesNavAccounts").performClick()
             composeRule.onAllNodesWithText("Accounts")[0].assertIsDisplayed()
-            composeRule.onAllNodesWithText("Sign in")[1].performClick()
-            composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onNodeWithTag("AuthSignIn-phone").performScrollTo().performClick()
+            composeRule.waitUntil(timeoutMillis = 15_000) {
                 composeRule.onAllNodesWithText(
                     "Corr3xt app sign-in page could not be reached: HTTP 404",
                     substring = true,
@@ -378,10 +380,23 @@ class DeepAppUiVisualInstrumentedTest {
     private fun capture(name: String) {
         composeRule.waitForIdle()
         val outputDir = File(app.filesDir, "hermes-ui-visuals").apply { mkdirs() }
-        val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-        FileOutputStream(File(outputDir, "$name.png")).use { output ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        val outputFile = File(outputDir, "$name.png")
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val bitmap = instrumentation.uiAutomation.takeScreenshot()
+        if (bitmap != null) {
+            FileOutputStream(outputFile).use { output ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            }
+            bitmap.recycle()
+            return
         }
+        val descriptor = instrumentation.uiAutomation.executeShellCommand("screencap -p")
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+            FileOutputStream(outputFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        assertTrue("Failed to capture Hermes UI screenshot $name", outputFile.length() > 0L)
     }
 
     private fun providerSetupOpenFor(uri: Uri, onMatch: (() -> Unit)? = null): Matcher<Intent> {

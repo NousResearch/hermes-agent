@@ -83,6 +83,13 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "mattermost":
+        # Mattermost requires root_id to be a *root* post id (one with empty
+        # root_id of its own), not the id of any reply in the thread. When the
+        # triggering post is already inside a thread, source.thread_id holds
+        # the thread root — use it. Otherwise the triggering post IS the root
+        # and message_id is correct.
+        return thread_id or getattr(event, "message_id", None)
     return getattr(event, "message_id", None)
 
 

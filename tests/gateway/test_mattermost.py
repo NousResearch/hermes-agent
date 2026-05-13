@@ -243,6 +243,104 @@ class TestMattermostSend:
 
 
 # ---------------------------------------------------------------------------
+# Reply anchor (thread root_id resolution)
+# ---------------------------------------------------------------------------
+
+class TestMattermostReplyAnchor:
+    """Mattermost rejects POST /posts when root_id points at a non-root post.
+
+    When the triggering post is itself a reply inside a thread, source.thread_id
+    holds the actual thread root id — that's what root_id must be.
+    """
+
+    def test_anchor_first_message_returns_message_id(self):
+        """First message in channel: no thread_id → message_id is the root."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="root_A",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id=None,
+            ),
+        )
+        assert _reply_anchor_for_event(event) == "root_A"
+
+    def test_anchor_reply_in_thread_returns_thread_root(self):
+        """Follow-up in a thread: anchor must be the root, not the child post id."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="child_C",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id="root_A",
+            ),
+        )
+        # Returns the thread root, NOT the triggering child post id.
+        assert _reply_anchor_for_event(event) == "root_A"
+
+    def test_anchor_other_platform_unchanged(self):
+        """Mattermost branch must not leak into other platforms."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="msg_Y",
+            source=SimpleNamespace(
+                platform=Platform.DISCORD,
+                chat_type="channel",
+                thread_id="thread_X",
+            ),
+        )
+        # Discord still uses message_id (no special branch for it).
+        assert _reply_anchor_for_event(event) == "msg_Y"
+
+    @pytest.mark.asyncio
+    async def test_send_in_thread_uses_thread_root_as_root_id(self):
+        """End-to-end: a thread follow-up sends root_id=<root>, not <child>."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        adapter = _make_adapter()
+        adapter._reply_mode = "thread"
+
+        # Simulate the inbound event for a user follow-up in an existing thread.
+        event = SimpleNamespace(
+            message_id="child_C",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id="root_A",
+            ),
+        )
+        anchor = _reply_anchor_for_event(event)
+        assert anchor == "root_A"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "bot_reply_id"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        adapter._session = MagicMock()
+        adapter._session.post = MagicMock(return_value=mock_resp)
+        adapter._base_url = "https://mm.example.com"
+        adapter._token = "test-token"
+
+        result = await adapter.send("channel_1", "Follow-up reply!", reply_to=anchor)
+        assert result.success is True
+        payload = adapter._session.post.call_args[1]["json"]
+        # Critical: root_id is the thread root, not the triggering child post.
+        assert payload["root_id"] == "root_A"
+        assert payload["root_id"] != "child_C"
+
+
+# ---------------------------------------------------------------------------
 # WebSocket event parsing
 # ---------------------------------------------------------------------------
 

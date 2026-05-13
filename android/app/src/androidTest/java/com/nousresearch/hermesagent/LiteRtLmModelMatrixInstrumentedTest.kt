@@ -1,6 +1,9 @@
 package com.nousresearch.hermesagent
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.util.Base64
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -19,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -179,7 +183,7 @@ class LiteRtLmModelMatrixInstrumentedTest {
                             .put(
                                 JSONObject()
                                     .put("type", "image_url")
-                                    .put("image_url", JSONObject().put("url", BLUE_PIXEL_DATA_URL)),
+                                    .put("image_url", JSONObject().put("url", bluePixelDataUrl())),
                             ),
                     )
             )
@@ -196,14 +200,26 @@ class LiteRtLmModelMatrixInstrumentedTest {
         }
     }
 
+    private fun bluePixelDataUrl(): String {
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.BLUE)
+        }
+        return try {
+            ByteArrayOutputStream().use { output ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 95, output))
+                "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            }
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private companion object {
         private const val DEFAULT_MODEL_ID = "gemma-4-E2B-it"
         private const val DEFAULT_MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
         private const val DEFAULT_VISION_MODEL_ID = "gemma-3n-E2B-it-int4"
         private const val DEFAULT_VISION_MODEL_FILE_NAME = "gemma-3n-E2B-it-int4.litertlm"
         private const val DEFAULT_MODEL_BYTES = 2_583_085_056L
-        private const val BLUE_PIXEL_DATA_URL =
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNgYPgPAAEDAQD1KpcPAAAAAElFTkSuQmCC"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -2,6 +2,8 @@ package com.nousresearch.hermesagent.backend
 
 import android.app.ActivityManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.util.Base64
 import com.google.ai.edge.litertlm.Backend
@@ -21,6 +23,7 @@ import com.google.ai.edge.litertlm.tool
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -71,6 +74,8 @@ object LiteRtLmOpenAiProxy {
     private const val DEFAULT_GENERATION_TIMEOUT_MS = 300_000L
     private const val MIN_GENERATION_TIMEOUT_MS = 5_000L
     private const val MAX_GENERATION_TIMEOUT_MS = 300_000L
+    private const val MAX_DATA_URI_IMAGE_BYTES = 12 * 1024 * 1024
+    private const val MAX_NORMALIZED_IMAGE_EDGE = 1024
 
     @Synchronized
     fun ensureRunning(
@@ -592,7 +597,14 @@ object LiteRtLmOpenAiProxy {
             }
 
             val systemInstruction = buildSystemInstruction(requestMessages)
-            val mappedMessages = mapMessages(requestMessages)
+            val mappedMessages = try {
+                mapMessages(requestMessages)
+            } catch (badRequest: IllegalArgumentException) {
+                return jsonResponse(
+                    JSONObject().put("error", badRequest.message ?: "invalid chat completion request"),
+                    status = Response.Status.BAD_REQUEST,
+                )
+            }
             val promptMessage = mappedMessages.lastOrNull()
                 ?: return jsonResponse(
                     JSONObject().put("error", "no prompt message could be constructed"),
@@ -929,7 +941,14 @@ object LiteRtLmOpenAiProxy {
             if (url.startsWith("data:", ignoreCase = true)) {
                 val base64Payload = url.substringAfter("base64,", missingDelimiterValue = "")
                 require(base64Payload.isNotBlank()) { "image_url data URI must include base64 data" }
-                return Content.ImageBytes(Base64.decode(base64Payload, Base64.DEFAULT))
+                require(base64Payload.length <= maxBase64ImagePayloadChars()) {
+                    "image_url data URI is too large for local mobile inference"
+                }
+                val decoded = Base64.decode(base64Payload, Base64.DEFAULT)
+                require(decoded.size <= MAX_DATA_URI_IMAGE_BYTES) {
+                    "image_url data URI is too large for local mobile inference"
+                }
+                return Content.ImageBytes(normalizeImageBytesForLiteRtLm(decoded))
             }
             if (url.startsWith("file://", ignoreCase = true)) {
                 return Content.ImageFile(url.removePrefix("file://"))
@@ -938,6 +957,44 @@ object LiteRtLmOpenAiProxy {
                 return Content.ImageFile(url)
             }
             throw IllegalArgumentException("LiteRT-LM local vision only supports data: image URLs or app-local file paths")
+        }
+
+        private fun normalizeImageBytesForLiteRtLm(bytes: ByteArray): ByteArray {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            require(bounds.outWidth > 0 && bounds.outHeight > 0) {
+                "image_url data URI could not be decoded into a bitmap"
+            }
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = imageSampleSize(bounds.outWidth, bounds.outHeight)
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+                ?: throw IllegalArgumentException("image_url data URI could not be decoded into a bitmap")
+            return try {
+                ByteArrayOutputStream().use { output ->
+                    require(bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                        "image_url data URI could not be normalized for LiteRT-LM"
+                    }
+                    output.toByteArray()
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }
+
+        private fun imageSampleSize(width: Int, height: Int): Int {
+            var sampleSize = 1
+            while (
+                width / sampleSize > MAX_NORMALIZED_IMAGE_EDGE ||
+                height / sampleSize > MAX_NORMALIZED_IMAGE_EDGE
+            ) {
+                sampleSize *= 2
+            }
+            return sampleSize
+        }
+
+        private fun maxBase64ImagePayloadChars(): Int {
+            return ((MAX_DATA_URI_IMAGE_BYTES + 2) / 3) * 4 + 128
         }
 
         private fun requestContainsImage(messages: JSONArray): Boolean {

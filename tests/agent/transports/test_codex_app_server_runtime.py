@@ -142,3 +142,102 @@ class TestCodexAppServerModule:
         assert isinstance(err, RuntimeError)
         assert "boom" in str(err)
         assert "-32600" in str(err)
+
+
+class TestSpawnEnvIsolation:
+    """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
+    subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their
+    config in the real user $HOME. CODEX_HOME isolates codex's own state,
+    HOME stays unchanged.
+
+    OpenClaw hit this footgun (openclaw/openclaw#81562) — they were
+    rewriting HOME to a synthetic per-agent dir alongside CODEX_HOME,
+    and then `gh auth status` / git config / etc. all broke inside codex
+    shell calls. We avoid the same bug by only overlaying CODEX_HOME and
+    RUST_LOG on top of os.environ.copy().
+    """
+
+    def test_spawn_env_preserves_HOME(self, monkeypatch):
+        """The spawn env must contain the parent process's HOME unchanged.
+        Verifies via a subprocess-monkey-patch."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                # Provide minimal Popen surface so __init__ doesn't crash
+                # on attribute access during construction.
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True  # so close() is a no-op
+
+        # The spawn env must have HOME=/users/alice unchanged
+        assert captured["env"].get("HOME") == "/users/alice", (
+            f"HOME got rewritten in codex spawn env: "
+            f"{captured['env'].get('HOME')!r}. Codex's shell tool's "
+            "subprocesses (gh, git, aws, npm) need the user's real HOME."
+        )
+
+    def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
+        """CODEX_HOME isolation must still work — that's the whole point
+        of the codex_home arg."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+
+        client = cas.CodexAppServerClient(
+            codex_bin="codex", codex_home="/tmp/profile/codex"
+        )
+        client._closed = True
+
+        assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
+        # And HOME still passes through unchanged
+        assert captured["env"].get("HOME") == "/users/alice"

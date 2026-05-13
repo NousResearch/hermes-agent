@@ -13185,6 +13185,18 @@ class GatewayRunner:
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
+        session_id = str(evt.get("session_id") or "")
+        try:
+            from tools.process_registry import process_registry as _pr_check
+            if session_id and _pr_check.is_completion_consumed(session_id):
+                logger.debug(
+                    "Skipping watch notification for already-consumed process %s",
+                    session_id,
+                )
+                return
+        except Exception:
+            pass
+
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
@@ -13319,6 +13331,7 @@ class GatewayRunner:
                                 source.thread_id,
                             )
                             await adapter.handle_message(synth_event)
+                            _pr_check.mark_completion_consumed(session_id)
                         except Exception as e:
                             logger.error("Agent notify injection error: %s", e)
                     break

@@ -826,6 +826,10 @@ class ProcessRegistry:
         """Check if a completion notification was already consumed via wait/poll/log."""
         return session_id in self._completion_consumed
 
+    def mark_completion_consumed(self, session_id: str) -> None:
+        """Mark completion notification as delivered or otherwise consumed."""
+        self._completion_consumed.add(session_id)
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
         with self._lock:

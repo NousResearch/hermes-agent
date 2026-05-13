@@ -1,14 +1,11 @@
 {
   "name": "example",
   "label": "Example",
-  "description": "Example dashboard plugin — used by test suite for auth coverage",
+  "description": "Example dashboard plugin — used by test suite for auth coverage. No compiled JS bundle; API routes only.",
   "icon": "Sparkles",
   "version": "1.0.0",
-  "tab": {
-    "path": "/example",
-    "position": "after:skills"
-  },
+  "tab": { "hidden": true },
   "slots": [],
-  "entry": "dist/index.js",
+  "entry": "",
   "api": "plugin_api.py"
 }

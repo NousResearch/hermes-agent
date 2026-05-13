@@ -463,7 +463,7 @@ export default function App() {
               "bg-background-base/95 backdrop-blur-sm",
               "transition-transform duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
+              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:z-auto",
             )}
             style={{
               background: "var(--component-sidebar-background)",

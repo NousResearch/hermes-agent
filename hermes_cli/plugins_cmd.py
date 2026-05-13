@@ -704,6 +704,21 @@ def _plugin_exists(name: str) -> bool:
             or (candidate / "plugin.yml").exists()
         ):
             return True
+    # Entry-point plugins (pip-installed, no on-disk manifest directory).
+    try:
+        import importlib.metadata
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        if any(ep.name == name for ep in group_eps):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -757,6 +772,24 @@ def _discover_all_plugins() -> list:
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
             seen[name] = (name, version, description, src_label, d)
+
+    # Entry-point plugins (pip-installed). Bundled/user take precedence.
+    try:
+        import importlib.metadata
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        for ep in group_eps:
+            if ep.name not in seen:
+                seen[ep.name] = (ep.name, "", "", "entrypoint", None)
+    except Exception:
+        pass
+
     return list(seen.values())
 
 

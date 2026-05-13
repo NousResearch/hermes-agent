@@ -662,6 +662,77 @@ class TestProviderDiscovery:
 # ── Auto-activation fix ──────────────────────────────────────────────────
 
 
+class TestEntrypointPluginVisibility:
+    """Entry-point plugins must appear in _discover_all_plugins and _plugin_exists."""
+
+    def _make_fake_ep(self, name: str, value: str = "fake_pkg.plugin:register"):
+        ep = MagicMock()
+        ep.name = name
+        ep.value = value
+        ep.group = "hermes_agent.plugins"
+        return ep
+
+    def test_discover_includes_entrypoint_plugin(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        fake_ep = self._make_fake_ep("my-ep-plugin")
+        fake_eps = MagicMock()
+        fake_eps.select = MagicMock(return_value=[fake_ep])
+
+        with patch("importlib.metadata.entry_points", return_value=fake_eps):
+            results = pc._discover_all_plugins()
+
+        names = [r[0] for r in results]
+        assert "my-ep-plugin" in names
+        ep_entry = next(r for r in results if r[0] == "my-ep-plugin")
+        assert ep_entry[3] == "entrypoint"
+        assert ep_entry[4] is None  # no on-disk path
+
+    def test_discover_entrypoint_does_not_override_bundled(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        plugin_dir = bundled / "shared-plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text("name: shared-plugin\nversion: 1.0\n")
+
+        fake_ep = self._make_fake_ep("shared-plugin")
+        fake_eps = MagicMock()
+        fake_eps.select = MagicMock(return_value=[fake_ep])
+
+        with patch("hermes_cli.plugins.get_bundled_plugins_dir", return_value=bundled):
+            with patch("importlib.metadata.entry_points", return_value=fake_eps):
+                results = pc._discover_all_plugins()
+
+        entries = {r[0]: r for r in results}
+        assert entries["shared-plugin"][3] == "bundled"
+
+    def test_plugin_exists_true_for_entrypoint(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        fake_ep = self._make_fake_ep("my-ep-plugin")
+        fake_eps = MagicMock()
+        fake_eps.select = MagicMock(return_value=[fake_ep])
+
+        with patch("importlib.metadata.entry_points", return_value=fake_eps):
+            assert pc._plugin_exists("my-ep-plugin") is True
+
+    def test_plugin_exists_false_for_unknown_entrypoint(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+        fake_ep = self._make_fake_ep("other-plugin")
+        fake_eps = MagicMock()
+        fake_eps.select = MagicMock(return_value=[fake_ep])
+
+        with patch("importlib.metadata.entry_points", return_value=fake_eps):
+            assert pc._plugin_exists("nonexistent-plugin") is False
+
+
 class TestNoAutoActivation:
     """Verify that plugin engines don't auto-activate when config says 'compressor'."""
 

@@ -12118,11 +12118,27 @@ class AIAgent:
         # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
+        #
+        # Skip prefetch on trivial prompts (greetings, acknowledgements) to
+        # prevent memory-context injection on turns that carry no semantic signal.
+        _TRIVIAL_QUERY_RE = re.compile(
+            r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+            r'hi|hey|hello|yo|sup|'
+            r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
+            re.IGNORECASE,
+        )
+
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _is_trivial = (
+                    not _query
+                    or _query.strip().startswith("/")
+                    or re.match(_TRIVIAL_QUERY_RE, _query.strip())
+                )
+                if not _is_trivial:
+                    _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
 

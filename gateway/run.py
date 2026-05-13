@@ -7332,21 +7332,10 @@ class GatewayRunner:
                         f"{_hyg_context_length:,}",
                         f"{_compress_token_threshold:,}",
                     )
-                    _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    _hyg_notice = (
-                        "↪ 자동 압축을 보류했습니다. 이 세션이 커져 품질 저하 위험이 있습니다. "
-                        "필요하면 `/handoff`로 이동 준비 인계문을 만든 뒤 새 세션에서 이어가세요. "
-                        "명시적인 `/compress` 또는 긴급 context-overflow 복구가 아니라면 Hermes는 세션을 숨겨서 압축하지 않습니다."
-                    )
-                    try:
-                        _adapter = self.adapters.get(source.platform)
-                        if _adapter and source.chat_id:
-                            await _adapter.send(source.chat_id, _hyg_notice, metadata=_hyg_meta)
-                    except Exception as _werr:
-                        logger.warning(
-                            "Failed to deliver compression-deferred notice to user: %s",
-                            _werr,
-                        )
+                    # Do not send a separate mid-processing notice here. The
+                    # agent loop appends context-management guidance to the
+                    # final answer footer when action is needed, which keeps
+                    # long-running turns quiet while still surfacing the risk.
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():

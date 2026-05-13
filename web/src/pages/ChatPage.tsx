@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, FileText, PanelRight, X } from "lucide-react";
+import { ChevronDown, Copy, FileText, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -121,6 +121,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [handoffMenuOpen, setHandoffMenuOpen] = useState(false);
+  const handoffMenuRef = useRef<HTMLDivElement | null>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
@@ -205,6 +207,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [mobilePanelOpen, closeMobilePanel]);
 
   useEffect(() => {
+    if (!handoffMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (handoffMenuRef.current?.contains(e.target as Node)) return;
+      setHandoffMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHandoffMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [handoffMenuOpen]);
+
+  useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
       if (e.matches) setMobilePanelOpenRaw(false);
@@ -264,19 +283,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
-  const handleHandoff = () => {
+  const sendSlashCommand = useCallback((command: string) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Route through the same PTY command path as a typed `/handoff`, so the
-    // generated packet appears in the terminal and stays aligned with CLI
-    // command behavior.
-    ws.send("/handoff");
+    ws.send(command);
     setTimeout(() => {
       const s = wsRef.current;
       if (s && s.readyState === WebSocket.OPEN) s.send("\r");
     }, 100);
     termRef.current?.focus();
+  }, []);
+
+  const handleCompress = () => sendSlashCommand("/compress");
+  const handleHandoff = () => {
+    setHandoffMenuOpen(false);
+    sendSlashCommand("/handoff");
   };
+  const handleTerminalHandoff = () => {
+    setHandoffMenuOpen(false);
+    sendSlashCommand(
+      "/handoff 새 Hermes CLI/터미널 세션에 붙여넣고 이어가기. 원본 WebUI 세션을 직접 수정한다고 가정하지 말 것.",
+    );
+  };
+  const handleMove = () => sendSlashCommand("/move");
 
   useEffect(() => {
     const host = hostRef.current;
@@ -838,9 +867,90 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
           <Button
             ghost
-            onClick={handleHandoff}
-            title="새 세션 이어가기 안내 만들기"
-            aria-label="새 세션 이어가기 안내 만들기"
+            onClick={handleCompress}
+            title="현재 세션 압축 (/compress, /c)"
+            aria-label="세션 압축"
+            className={cn(
+              "absolute z-10",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-60 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
+              "bottom-[8rem] right-2 px-2 py-1 text-[0.65rem] sm:bottom-[8.75rem] sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-[9.5rem] lg:right-4",
+            )}
+            style={{ color: TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                세션 압축
+              </span>
+            </span>
+          </Button>
+
+          <div
+            ref={handoffMenuRef}
+            className="absolute bottom-[5.5rem] right-2 z-10 sm:bottom-[6.25rem] sm:right-3 lg:bottom-[7rem] lg:right-4"
+          >
+            {handoffMenuOpen && (
+              <div
+                role="menu"
+                aria-label="이동 준비 메뉴"
+                className={cn(
+                  "absolute bottom-[calc(100%+0.5rem)] right-0 min-w-36 overflow-hidden rounded border border-current/25",
+                  "bg-black/80 text-[0.7rem] shadow-xl backdrop-blur-sm",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={handleHandoff}
+                  className="block w-full px-3 py-2 text-left normal-case hover:bg-white/10"
+                >
+                  인계문 복사
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={handleTerminalHandoff}
+                  className="block w-full px-3 py-2 text-left normal-case hover:bg-white/10"
+                >
+                  터미널용 복사
+                </button>
+              </div>
+            )}
+            <Button
+              ghost
+              onClick={() => setHandoffMenuOpen(open => !open)}
+              title="새 세션 이어가기 안내 만들기"
+              aria-label="이동 준비"
+              aria-expanded={handoffMenuOpen}
+              className={cn(
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-60 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
+              )}
+              style={{ color: TERMINAL_THEME.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <FileText className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  이동 준비
+                </span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </span>
+            </Button>
+          </div>
+
+          <Button
+            ghost
+            onClick={handleMove}
+            title="새 세션을 만들고 인계문 전달 (/move, /m)"
+            aria-label="세션 이동"
             className={cn(
               "absolute z-10",
               "rounded border border-current/30",
@@ -855,7 +965,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <FileText className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                이동 준비
+                세션 이동
               </span>
             </span>
           </Button>

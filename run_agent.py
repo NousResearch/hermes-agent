@@ -11782,6 +11782,7 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._turn_context_footer_advisories = []
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
         # True until the server rejects an image_url content part with an error
@@ -11995,7 +11996,9 @@ class AIAgent:
                     _gate.reason,
                 )
                 if _gate.defer:
-                    self._emit_status(f"↪ {_gate.reason}")
+                    _advisories = getattr(self, "_turn_context_footer_advisories", None)
+                    if isinstance(_advisories, list) and _gate.reason not in _advisories:
+                        _advisories.append(_gate.reason)
                 else:
                     self._emit_status(
                         f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
@@ -14873,7 +14876,9 @@ class AIAgent:
                             )
                         )
                         if _gate.defer:
-                            self._emit_status(f"↪ {_gate.reason}")
+                            _advisories = getattr(self, "_turn_context_footer_advisories", None)
+                            if isinstance(_advisories, list) and _gate.reason not in _advisories:
+                                _advisories.append(_gate.reason)
                         else:
                             self._safe_print("  ⟳ compacting context…")
                             messages, active_system_prompt = self._compress_context(
@@ -15389,6 +15394,19 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        if final_response and not interrupted:
+            try:
+                _context_advisories = getattr(self, "_turn_context_footer_advisories", None) or []
+                if _context_advisories:
+                    _context_footer = "\n".join(f"- {item}" for item in _context_advisories)
+                    final_response = (
+                        final_response.rstrip()
+                        + "\n\n---\n컨텍스트 관리:\n"
+                        + _context_footer
+                    )
+            except Exception as _ctx_footer_err:
+                logger.debug("context-management footer failed: %s", _ctx_footer_err)
 
         # File-mutation verifier footer.
         # If one or more ``write_file`` / ``patch`` calls failed during this

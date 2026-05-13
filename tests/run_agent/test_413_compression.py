@@ -453,9 +453,11 @@ class TestPreflightCompression:
 
         mock_compress.assert_not_called()
         assert result["completed"] is True
-        assert result["final_response"] == "After preflight"
-        assert any(
-            ev == "lifecycle" and "자동 압축을 보류" in msg
+        assert result["final_response"].startswith("After preflight")
+        assert "컨텍스트 관리:" in result["final_response"]
+        assert "/m" in result["final_response"]
+        assert not any(
+            ev == "lifecycle" and ("자동 압축" in msg or "컨텍스트 관리" in msg)
             for ev, msg in status_messages
         )
 
@@ -550,7 +552,9 @@ class TestToolResultPreflightCompression:
 
         mock_compress.assert_not_called()
         assert result["completed"] is True
-        assert result["final_response"] == "Done after compression"
+        assert result["final_response"].startswith("Done after compression")
+        assert "컨텍스트 관리:" in result["final_response"]
+        assert "/m" in result["final_response"]
 
     def test_anthropic_prompt_too_long_safety_net(self, agent):
         """Anthropic 'prompt is too long' error triggers compression as safety net."""

@@ -202,6 +202,19 @@ export interface SessionBranchResponse {
   title?: string
 }
 
+export interface SessionHandoffResponse {
+  message?: string
+  session_id?: string
+}
+
+export interface SessionMoveResponse {
+  message?: string
+  session_id?: string
+  source_session_id?: string
+  target_session_id?: string
+  title?: string
+}
+
 export interface SessionCloseResponse {
   ok?: boolean
 }

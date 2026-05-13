@@ -28,18 +28,17 @@ def test_handoff_packet_is_structured_for_new_session_resume():
 
     assert packet.startswith("[이동 준비: 새 세션 이어가기 안내]")
     for heading in [
-        "## 목표",
+        "## 운영 상태 체크리스트",
         "## 현재 상태",
-        "## 완료한 것",
-        "## 중요 결정",
-        "## 변경/검증 상태",
-        "## 다음 작업",
-        "## 완료 기준",
+        "## 계승된 운영 요약",
+        "## 이번 세션 visible 메시지 outline",
+        "## 이어가기 지시",
     ]:
         assert heading in packet
     assert "원본 세션: sess-123" in packet
     assert "source_session_id: sess-123" in packet
-    assert "packet_scope: full_session" in packet
+    assert "packet_scope: operational_summary_plus_bounded_visible_outline" in packet
+    assert "packet_limit_note: not_full_raw_transcript" in packet
     assert "message_count: 4" in packet
     assert "created_at: 2026-05-13T16:30:00Z" in packet
     hash_line = next(line for line in packet.splitlines() if line.startswith("packet_hash: "))
@@ -59,11 +58,13 @@ def test_handoff_packet_is_concise_and_does_not_claim_automatic_move():
 
     packet = build_handoff_packet(messages, session_id="sess-source")
 
-    assert len(packet.splitlines()) <= 42
+    assert len(packet.splitlines()) <= 50
     assert "대상 세션" not in packet
     assert "전달 완료" not in packet
     assert "자동 생성" not in packet
     assert "target_session_id" not in packet
+    assert "packet_scope: operational_summary_plus_bounded_visible_outline" in packet
+    assert "전체 원문" in packet
     assert "message_count: 2" in packet
 
 
@@ -95,7 +96,9 @@ def test_automatic_compression_is_deferred_for_continuity_handoff_policy():
 
     assert decision.defer is True
     assert decision.recommended_action == "handoff"
-    assert "/handoff" in decision.reason
+    assert "/m" in decision.reason
+    assert "/h" in decision.reason
+    assert "자동 압축" not in decision.reason
 
 
 def test_automatic_compression_is_deferred_even_before_handoff_threshold():
@@ -108,7 +111,8 @@ def test_automatic_compression_is_deferred_even_before_handoff_threshold():
 
     assert decision.defer is True
     assert decision.recommended_action == "continue"
-    assert "자동 압축" in decision.reason
+    assert "자동 압축" not in decision.reason
+    assert "/m" in decision.reason
 
 
 def test_handoff_command_registered():

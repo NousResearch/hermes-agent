@@ -1196,6 +1196,33 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
+def _build_session_handoff_packet(session: dict, current_step: str | None = None) -> str:
+    """Build the same full-session continuation packet for TUI /handoff and /move."""
+    agent = session.get("agent")
+    compressor = getattr(agent, "context_compressor", None) if agent else None
+    context_tokens = getattr(compressor, "last_prompt_tokens", None) if compressor else None
+    context_length = getattr(compressor, "context_length", None) if compressor else None
+    title = None
+    db = _get_db()
+    if db is not None:
+        try:
+            title = db.get_session_title(session.get("session_key", ""))
+        except Exception:
+            title = None
+    with session["history_lock"]:
+        history = [dict(msg) for msg in session.get("history", [])]
+    from agent.context_continuity import build_handoff_packet
+
+    return build_handoff_packet(
+        history,
+        session_id=session.get("session_key", ""),
+        context_tokens=context_tokens,
+        context_length=context_length,
+        current_step=(current_step or "").strip() or None,
+        title=title,
+    )
+
+
 def _sync_session_key_after_compress(
     sid: str,
     session: dict,
@@ -2655,6 +2682,85 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, {"closed": True})
+
+
+@method("session.handoff")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /handoff")
+    with session["history_lock"]:
+        history = [dict(msg) for msg in session.get("history", [])]
+    if not history:
+        return _err(rid, 4008, "nothing to hand off — send a message first")
+    try:
+        packet = _build_session_handoff_packet(session, params.get("current_step", ""))
+    except Exception as e:
+        return _err(rid, 5008, f"handoff failed: {e}")
+    return _ok(
+        rid,
+        {
+            "session_id": session.get("session_key", ""),
+            "message": packet,
+        },
+    )
+
+
+@method("session.move")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /move")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    old_key = session["session_key"]
+    with session["history_lock"]:
+        history = [dict(msg) for msg in session.get("history", [])]
+    if not history:
+        return _err(rid, 4008, "nothing to move — send a message first")
+    try:
+        packet = _build_session_handoff_packet(session, params.get("current_step", ""))
+        seed_message = (
+            "[세션 이동: 이전 세션 인계문]\n"
+            f"source_session_id: {old_key}\n"
+            "delivery: tui_move_seed\n\n"
+            f"{packet}\n\n"
+            "위 인계문 기준으로 이어서 진행해. 오래된 요청을 재실행하지 말고 최신 사용자 의도부터 확인해."
+        )
+        new_key = _new_session_key()
+        title_base = db.get_session_title(old_key) or "moved session"
+        title = db.get_next_title_in_lineage(title_base)
+        db.end_session(old_key, "moved")
+        db.create_session(new_key, source="tui", model=_resolve_model(), parent_session_id=old_key)
+        db.append_message(new_key, "user", seed_message)
+        db.set_session_title(new_key, title)
+    except Exception as e:
+        return _err(rid, 5008, f"move failed: {e}")
+    new_sid = uuid.uuid4().hex[:8]
+    try:
+        tokens = _set_session_context(new_key)
+        try:
+            agent = _make_agent(new_sid, new_key, session_id=new_key)
+        finally:
+            _clear_session_context(tokens)
+        _init_session(new_sid, new_key, agent, [{"role": "user", "content": seed_message}], cols=session.get("cols", 80))
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on move: {e}")
+    return _ok(
+        rid,
+        {
+            "session_id": new_sid,
+            "source_session_id": old_key,
+            "target_session_id": new_key,
+            "title": title,
+            "message": seed_message,
+        },
+    )
 
 
 @method("session.branch")

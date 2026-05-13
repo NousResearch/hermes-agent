@@ -90,7 +90,7 @@ def recommend_continuity_action(
             level="strong_handoff",
             recommended_action="handoff",
             usage_percent=pct,
-            reason="다음 단계는 자동 압축보다 새 세션으로 넘기는 편이 안전합니다.",
+            reason="다음 단계는 현재 세션을 줄이기보다 새 세션으로 넘기는 편이 안전합니다.",
         )
     if pct >= 75 or risk >= 75:
         return ContextContinuityRecommendation(
@@ -128,18 +128,19 @@ def should_defer_automatic_compression(
     recommendation = recommend_continuity_action(status)
     if recommendation.recommended_action in {"handoff", "handoff_required"}:
         reason = (
-            f"자동 압축을 보류합니다. {recommendation.reason} "
-            "필요하면 /handoff로 이동 준비 인계문을 만드세요."
+            f"{recommendation.reason} "
+            "권장: /m으로 새 세션을 만들거나 /h로 이동 준비 인계문을 만드세요. "
+            "같은 세션 유지가 꼭 필요할 때만 /c를 사용하세요."
         )
     elif recommendation.recommended_action == "checkpoint":
         reason = (
-            f"자동 압축을 보류합니다. {recommendation.reason} "
-            "다음 큰 단계 전에 /handoff를 준비하세요."
+            f"{recommendation.reason} "
+            "다음 큰 단계 전에 /h 또는 /m으로 이어가기 지점을 준비하세요."
         )
     else:
         reason = (
-            "자동 압축을 보류합니다. 명시적인 /compress 또는 긴급 context-overflow "
-            "복구가 아니라면 현재 세션을 손실 압축하지 않습니다."
+            "현재 세션은 계속 사용할 수 있습니다. 단, 긴 작업에서는 /m 세션 이동이 "
+            "손실 압축보다 품질 보존에 유리합니다."
         )
     return AutomaticCompressionGate(
         defer=True,
@@ -192,6 +193,34 @@ def _truncate(text: str, limit: int = 700) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+
+def _outline_messages(messages: list[Mapping[str, Any]], *, start_index: int = 0, limit: int = 24) -> str:
+    visible = [m for m in messages if m.get("role") in {"user", "assistant"} and _message_text(m)]
+    if not visible:
+        return "표시 가능한 user/assistant 메시지가 없습니다."
+    rows: list[str] = []
+    for idx, msg in enumerate(visible[-limit:], start=max(start_index + 1, len(visible) - limit + 1)):
+        role = "User" if msg.get("role") == "user" else "Hermes"
+        rows.append(f"{idx:03d}. {role}: {_truncate(_message_text(msg), 320)}")
+    if len(visible) > limit:
+        rows.insert(0, f"[앞부분 {len(visible) - limit}개 메시지는 길이 보호로 생략]")
+    return "\n".join(rows)
+
+
+def _matching_evidence(messages: list[Mapping[str, Any]], needles: tuple[str, ...], *, limit: int = 3) -> str:
+    rows: list[str] = []
+    for msg in reversed(messages):
+        text = _message_text(msg)
+        if not text:
+            continue
+        hay = text.lower()
+        if any(n.lower() in hay for n in needles):
+            role = "User" if msg.get("role") == "user" else "Hermes" if msg.get("role") == "assistant" else str(msg.get("role") or "message")
+            rows.append(f"- {role}: {_truncate(text, 220)}")
+            if len(rows) >= limit:
+                break
+    return "\n".join(reversed(rows))
+
 def build_handoff_packet(
     messages: list[Mapping[str, Any]],
     *,
@@ -202,11 +231,11 @@ def build_handoff_packet(
     title: str | None = None,
     created_at: str | None = None,
 ) -> str:
-    """Build a copy/paste packet for resuming the task in a new session.
+    """Build an efficient operational handoff packet for resuming in a new session.
 
-    The packet is deterministic and conservative.  It does not pretend to be a
-    perfect semantic summary; it tells the next session what to verify and where
-    to restart, while preserving the latest user/assistant anchors.
+    This is intentionally not a raw transcript transfer. It preserves the
+    operational state needed to continue safely: goal/current state, verification
+    anchors, next step, cautions, and a bounded user/assistant outline.
     """
 
     messages = list(messages or [])
@@ -225,36 +254,37 @@ def build_handoff_packet(
         usage = f"{pct}% 사용 중 ({context_tokens:,}/{context_length:,} 토큰)"
 
     next_step = current_step or "Read this packet, inspect the current files/state, then continue from the latest user request."
-    title_line = f"- Title: {title}" if title else "- Title: unknown"
+    title_line = f"- 제목: {title}" if title else "- 제목: unknown"
+    verification = _matching_evidence(
+        messages,
+        ("pass", "검증", "확인", "console", "served", "active", "running", "오류 없음", "js errors"),
+    )
 
     packet_body = "\n".join(
         [
-            "## 목표",
-            f"- {_truncate(goal, 360)}",
+            "## 운영 상태 체크리스트",
+            f"- 현재 목표: {_truncate(goal, 360)}",
+            f"- 완료/변경: {_truncate(latest_assistant, 520)}",
+            f"- 검증 결과: {verification or '확인 필요 — 새 세션에서 관련 파일/상태/테스트를 재검증할 것.'}",
+            f"- 남은 작업: {_truncate(next_step, 420)}",
+            "- 주의/금지: 전체 원문 이동이 아니라 운영 요약 + bounded outline입니다. 오래된 요청을 재실행하지 마세요.",
+            f"- 참조: source_session_id={session_id or 'unknown'}; message_count={message_count}; user={user_count}; assistant={assistant_count}; tool={tool_count}",
             "",
             "## 현재 상태",
-            title_line.replace("Title", "제목"),
+            title_line,
             f"- 대화 용량: {usage}",
-            f"- 메시지: 사용자 {user_count} / Hermes {assistant_count} / 도구 {tool_count}",
             f"- 마지막 사용자 요청: {_truncate(latest_user, 360)}",
             "",
-            "## 완료한 것",
-            f"- {_truncate(latest_assistant, 420)}",
+            "## 계승된 운영 요약",
+            f"- {_truncate(latest_assistant, 900)}",
             "",
-            "## 중요 결정",
-            "- 컨텍스트가 무거워지면 숨은 손실 압축보다 이동 준비 인계문을 우선합니다.",
-            "- 이 인계문은 작업 재개 기준점이며, 증명은 아닙니다.",
+            "## 이번 세션 visible 메시지 outline",
+            _outline_messages(messages),
             "",
-            "## 변경/검증 상태",
-            "- 먼저 실제 파일/상태를 확인하고, 완료 전 가장 작은 관련 테스트를 다시 실행하세요.",
-            "- 파일 변경, git 상태, 외부 서비스 상태는 이 인계문만 믿지 말고 재조회하세요.",
-            "",
-            "## 다음 작업",
+            "## 이어가기 지시",
             f"- {_truncate(next_step, 420)}",
-            "- 이전 완료 작업을 반복하지 말고 위 상태 확인 후 바로 이어가세요.",
-            "",
-            "## 완료 기준",
-            "- 새 세션이 목표, 현재 상태, 변경/검증 상태, 다음 작업을 숨은 이전 문맥 없이 설명할 수 있어야 합니다.",
+            "- 먼저 실제 파일/상태를 확인하고, 완료 전 가장 작은 관련 테스트를 다시 실행하세요.",
+            "- 이 인계문은 작업 재개 기준점이며 증명이나 전체 원문 보존이 아닙니다.",
         ]
     )
     packet_hash = hashlib.sha256(packet_body.encode("utf-8")).hexdigest()
@@ -263,13 +293,14 @@ def build_handoff_packet(
         [
             "[이동 준비: 새 세션 이어가기 안내]",
             f"원본 세션: {session_id or 'unknown'}",
-            "범위: 현재 세션 전체",
+            "범위: 운영 요약 + bounded visible outline",
             f"source_session_id: {session_id or 'unknown'}",
-            "packet_scope: full_session",
+            "packet_scope: operational_summary_plus_bounded_visible_outline",
+            "packet_limit_note: not_full_raw_transcript; verify live files/state before finalizing",
             f"message_count: {message_count}",
             f"created_at: {created_at}",
             f"packet_hash: sha256:{packet_hash}",
-            "목적: 새 세션에서 같은 작업을 이어가기 위한 준비 인계문입니다.",
+            "목적: 새 세션에서 같은 작업을 효율적으로 이어가기 위한 준비 인계문입니다.",
             "",
             packet_body,
         ]

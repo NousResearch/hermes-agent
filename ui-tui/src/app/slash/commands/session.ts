@@ -7,6 +7,8 @@ import type {
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
+  SessionHandoffResponse,
+  SessionMoveResponse,
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
@@ -143,6 +145,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['c'],
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
@@ -193,6 +196,48 @@ export const sessionCommands: SlashCommand[] = [
           })
         )
         .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['h'],
+    help: 'generate a new-session handoff packet',
+    name: 'handoff',
+    run: (arg, ctx) => {
+      ctx.gateway.rpc<SessionHandoffResponse>('session.handoff', { current_step: arg, session_id: ctx.sid }).then(
+        ctx.guarded<SessionHandoffResponse>(r => {
+          if (!r.message) {
+            return ctx.transcript.sys('nothing to hand off')
+          }
+          ctx.transcript.page(r.message, '이동 준비')
+        })
+      ).catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['m'],
+    help: 'move to a fresh session with the same handoff packet',
+    name: 'move',
+    run: (arg, ctx) => {
+      if (ctx.session.guardBusySessionSwitch('move sessions')) {
+        return
+      }
+      const prevSid = ctx.sid
+      ctx.gateway.rpc<SessionMoveResponse>('session.move', { current_step: arg, session_id: ctx.sid }).then(
+        ctx.guarded<SessionMoveResponse>(r => {
+          if (!r.session_id) {
+            return
+          }
+          void ctx.session.closeSession(prevSid)
+          patchUiState({ sid: r.session_id })
+          ctx.session.setSessionStartedAt(Date.now())
+          ctx.transcript.setHistoryItems([])
+          ctx.transcript.sys(
+            `세션 이동 완료: ${r.source_session_id ?? ''} → ${r.target_session_id ?? r.session_id}`
+          )
+        })
+      ).catch(ctx.guardedErr)
     }
   },
 

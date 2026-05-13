@@ -193,10 +193,34 @@ class TestHandoffCommandRegistration:
         assert cmd.name == "handoff"
         assert cmd.category == "Session"
 
-    def test_command_is_cli_only(self):
-        """`/handoff` is initiated from the CLI; gateway shouldn't expose it."""
+    def test_short_context_aliases_registered(self):
+        from hermes_cli.commands import resolve_command
+
+        assert resolve_command("c").name == "compress"
+        assert resolve_command("h").name == "handoff"
+        assert resolve_command("m").name == "move"
+
+    def test_handoff_and_move_are_session_commands(self):
         from hermes_cli.commands import resolve_command, GATEWAY_KNOWN_COMMANDS
-        cmd = resolve_command("handoff")
-        assert cmd is not None
-        assert cmd.cli_only is True
-        assert "handoff" not in GATEWAY_KNOWN_COMMANDS
+
+        handoff = resolve_command("handoff")
+        move = resolve_command("move")
+        assert handoff is not None
+        assert move is not None
+        assert handoff.category == "Session"
+        assert move.category == "Session"
+        assert "handoff" in GATEWAY_KNOWN_COMMANDS
+        assert "move" in GATEWAY_KNOWN_COMMANDS
+
+    def test_ink_tui_exposes_handoff_alias_and_rpc(self):
+        """Ink TUI must expose the same /h handoff surface as CLI/WebUI."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        session_ts = (root / "ui-tui" / "src" / "app" / "slash" / "commands" / "session.ts").read_text(encoding="utf-8")
+        gateway_py = (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
+
+        assert "name: 'handoff'" in session_ts
+        assert "aliases: ['h']" in session_ts
+        assert "session.handoff" in session_ts
+        assert '@method("session.handoff")' in gateway_py

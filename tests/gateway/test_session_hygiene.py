@@ -388,12 +388,8 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
-    assert len(notices) == 1, adapter.sent
-    assert notices[0]["chat_id"] == "-1001"
-    assert notices[0]["metadata"] == {"thread_id": "17585"}
-    assert "/handoff" in notices[0]["content"]
-    assert "/compress" in notices[0]["content"]
+    notices = [s for s in adapter.sent if "자동 압축" in s["content"] or "컨텍스트 관리" in s["content"]]
+    assert len(notices) == 0, adapter.sent
     assert FakeCompressAgent.last_instance is None
     runner.session_store.rewrite_transcript.assert_not_called()
 
@@ -500,11 +496,8 @@ async def test_session_hygiene_defers_before_summary_generation(monkeypatch, tmp
     assert result == "ok"
     warning_messages = [s for s in adapter.sent if "Context compression summary failed" in s["content"]]
     assert len(warning_messages) == 0, adapter.sent
-    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
-    assert len(notices) == 1, adapter.sent
-    notice = notices[0]
-    assert notice["chat_id"] == "-1001"
-    assert notice["metadata"] == {"thread_id": "17585"}
+    notices = [s for s in adapter.sent if "자동 압축" in s["content"] or "컨텍스트 관리" in s["content"]]
+    assert len(notices) == 0, adapter.sent
     assert FakeCompressAgentWithSummaryFailure.last_instance is None
     runner.session_store.rewrite_transcript.assert_not_called()
 
@@ -615,12 +608,8 @@ async def test_session_hygiene_does_not_call_aux_model_proactively(monkeypatch, 
     assert len(hard_warnings) == 0, adapter.sent
     aux_notes = [s for s in adapter.sent if "Configured compression model" in s["content"]]
     assert len(aux_notes) == 0, adapter.sent
-    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
-    assert len(notices) == 1, adapter.sent
-    note = notices[0]
-    assert "/handoff" in note["content"]
-    assert note["chat_id"] == "-1001"
-    assert note["metadata"] == {"thread_id": "17585"}
+    notices = [s for s in adapter.sent if "자동 압축" in s["content"] or "컨텍스트 관리" in s["content"]]
+    assert len(notices) == 0, adapter.sent
     assert FakeCompressAgentWithAuxRecovery.last_instance is None
     runner.session_store.rewrite_transcript.assert_not_called()
 
@@ -734,8 +723,8 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
-    assert len(notices) == 1, adapter.sent
+    notices = [s for s in adapter.sent if "자동 압축" in s["content"] or "컨텍스트 관리" in s["content"]]
+    assert len(notices) == 0, adapter.sent
     assert FakeCompressAgent.last_instance is None
     runner.session_store.rewrite_transcript.assert_not_called()
 

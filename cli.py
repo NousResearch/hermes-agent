@@ -7449,9 +7449,8 @@ class HermesCLI:
             else:
                 from hermes_state import format_session_db_unavailable
                 _cprint(f"  {format_session_db_unavailable()}")
-        elif canonical == "handoff":
-            if not self._handle_handoff_command(cmd_original):
-                return False
+        elif canonical == "move":
+            self._handle_move_command(cmd_original)
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None
@@ -8693,12 +8692,8 @@ class HermesCLI:
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
 
-    def _handle_handoff_command(self, cmd_original: str = ""):
-        """Generate a copy/paste continuation packet for a fresh session."""
-        if not self.conversation_history:
-            print("(._.) No conversation to hand off — send a message first.")
-            return
-
+    def _build_session_handoff_packet(self, cmd_original: str = "") -> str:
+        """Build the same continuation packet used by /handoff and /move."""
         current_step = ""
         if cmd_original:
             parts = cmd_original.strip().split(None, 1)
@@ -8722,7 +8717,7 @@ class HermesCLI:
 
         from agent.context_continuity import build_handoff_packet
 
-        packet = build_handoff_packet(
+        return build_handoff_packet(
             self.conversation_history,
             session_id=self.session_id,
             context_tokens=context_tokens,
@@ -8730,7 +8725,62 @@ class HermesCLI:
             current_step=current_step or None,
             title=title,
         )
-        print(packet)
+
+    def _handle_handoff_command(self, cmd_original: str = ""):
+        """Generate a copy/paste continuation packet for a fresh session."""
+        if not self.conversation_history:
+            print("(._.) No conversation to hand off — send a message first.")
+            return
+        print(self._build_session_handoff_packet(cmd_original))
+
+    def _handle_move_command(self, cmd_original: str = ""):
+        """Create a fresh session and seed it with the /handoff packet."""
+        if not self.conversation_history:
+            print("(._.) No conversation to move — send a message first.")
+            return
+        if getattr(self, "_agent_running", False):
+            print("  Agent is busy. Wait for the current turn to finish, then retry /move.")
+            return
+
+        source_session_id = self.session_id
+        packet = self._build_session_handoff_packet(cmd_original)
+        seed_message = (
+            "[세션 이동: 이전 세션 인계문]\n"
+            f"source_session_id: {source_session_id}\n"
+            "delivery: cli_move_seed\n\n"
+            f"{packet}\n\n"
+            "위 인계문 기준으로 이어서 진행해. 오래된 요청을 재실행하지 말고 최신 사용자 의도부터 확인해."
+        )
+        self.new_session(silent=True)
+        target_session_id = self.session_id
+        self.conversation_history = [{"role": "user", "content": seed_message}]
+        if self._session_db:
+            try:
+                # Ensure the target is visible to WebUI session lists immediately.
+                if not self._session_db.get_session(target_session_id):
+                    self._session_db.create_session(
+                        session_id=target_session_id,
+                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        model=self.model,
+                        model_config={
+                            "max_iterations": self.max_turns,
+                            "reasoning_config": self.reasoning_config,
+                        },
+                        parent_session_id=source_session_id,
+                    )
+                self._session_db.append_message(
+                    session_id=target_session_id,
+                    role="user",
+                    content=seed_message,
+                )
+                if hasattr(self.agent, "_last_flushed_db_idx"):
+                    self.agent._last_flushed_db_idx = len(self.conversation_history)
+            except Exception as e:
+                print(f"  Warning: moved session seed was not fully persisted: {e}")
+        print("(^_^)v 세션 이동 완료")
+        print(f"  Source session: {source_session_id}")
+        print(f"  Target session: {target_session_id}")
+        print("  WebUI Sessions에서 target 세션을 이어 열 수 있습니다.")
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""

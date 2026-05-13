@@ -1892,8 +1892,8 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
+                browser_env["AGENT_BROWSER_ARGS"] = (
+                    "--no-sandbox,--disable-dev-shm-usage"
                 )
 
         # Use temp files for stdout/stderr instead of pipes.

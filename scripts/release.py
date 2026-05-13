@@ -45,6 +45,7 @@ AUTHOR_MAP = {
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
     "32201324+simpolism@users.noreply.github.com": "simpolism",
     "simpolism@gmail.com": "simpolism",
+    "jake@nousresearch.com": "simpolism",
     "mgongzai@gmail.com": "vKongv",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",

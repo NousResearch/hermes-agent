@@ -95,8 +95,19 @@ After creation, the topic's detail page has a **Subscriptions** tab. Create one:
 
 On the **topic** (not the subscription), add an IAM principal:
 
-- Principal: `chat-api-push@system.gserviceaccount.com`
+- Principal: `service-<PROJECT_NUMBER>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`
 - Role: `Pub/Sub Publisher`
+
+Replace `<PROJECT_NUMBER>` with your GCP project number (not the project ID).
+Find it in **GCP Console → Home** or **IAM** — it's a numeric ID like `123456789012`.
+
+:::tip Where does this email come from?
+This is the Google-managed service account that Google Chat uses to publish
+events to your Pub/Sub topic. You can also see this same email when you
+configure the Chat app in **Step 7** — if you'd rather configure the app
+first and copy the email from there, that works too. Just make sure you
+apply the IAM binding before installing the bot in a test space.
+:::
 
 Without this, Google Chat cannot publish events to your topic and your bot will
 never receive anything.
@@ -294,7 +305,7 @@ evicts only that user's cache. Users don't disrupt each other.
    and that the SA is listed as `Pub/Sub Subscriber` on the subscription.
 2. If the subscription has zero messages, Google Chat isn't publishing.
    Double-check the IAM binding on the **topic**:
-   `chat-api-push@system.gserviceaccount.com` must have `Pub/Sub Publisher`.
+   `service-<PROJECT_NUMBER>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com` must have `Pub/Sub Publisher` (see Step 5 for instructions on finding your project number).
 3. Check `hermes gateway` logs for `[GoogleChat] Connected`. If you see
    `[GoogleChat] Config validation failed`, the error message tells you which
    env var to fix.

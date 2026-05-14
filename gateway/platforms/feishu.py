@@ -2052,14 +2052,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        # If there's an active streaming card for this chat, skip —
-        # the card is already displaying the content.
-        if self._active_cards.get(chat_id):
-            state = self._active_cards[chat_id]
-            return SendResult(success=True, message_id=state.message_id)
-
         # If a streaming card was recently finalized for this chat, skip —
-        # the final content is already displayed in the card.
+        # the final content is already displayed in the card.  This prevents
+        # the gateway's final-response send() from creating a duplicate.
+        # Tool progress messages and other non-streaming sends are unaffected
+        # because they arrive while the card is still active (before finalize),
+        # not after it.
         if chat_id in self._finalized_card_ids:
             if time.monotonic() - self._finalized_card_ids[chat_id] < 30:
                 self._finalized_card_ids.pop(chat_id, None)
@@ -2124,9 +2122,17 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        # CardKit v2 streaming card path — only update existing cards
+        # CardKit v2 streaming card path — only route to CardKit when the
+        # edit targets the streaming card's own message.  Tool progress
+        # edits target a different message_id and must go through the
+        # regular im.v1.message.update path.
         active_card = self._active_cards.get(chat_id)
-        if active_card and active_card.is_cardkit and active_card.card_id:
+        if (
+            active_card
+            and active_card.is_cardkit
+            and active_card.card_id
+            and message_id == active_card.message_id
+        ):
             if finalize:
                 return await self._finalize_streaming_card(chat_id, self.format_message(content))
             else:

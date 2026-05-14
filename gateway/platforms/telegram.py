@@ -2070,7 +2070,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             default_hint = f" (default: {default})" if default else ""
-            text = f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}"
+            text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
@@ -2082,7 +2082,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -2334,11 +2334,13 @@ class TelegramAdapter(BasePlatformAdapter):
             keyboard = InlineKeyboardMarkup(rows)
 
             provider_label = get_label(current_provider)
-            text = (
-                f"⚙ *Model Configuration*\n\n"
-                f"Current model: `{current_model or 'unknown'}`\n"
-                f"Provider: {provider_label}\n\n"
-                f"Select a provider:"
+            text = self.format_message(
+                (
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Current model: `{current_model or 'unknown'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider:"
+                )
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
@@ -2346,7 +2348,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -2456,12 +2458,14 @@ class TelegramAdapter(BasePlatformAdapter):
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*{page_info}\n"
-                    f"Select a model:{extra}"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider: *{pname}*{page_info}\n"
+                        f"Select a model:{extra}"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2490,12 +2494,14 @@ class TelegramAdapter(BasePlatformAdapter):
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*{page_info}\n"
-                    f"Select a model:{extra}"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider: *{pname}*{page_info}\n"
+                        f"Select a model:{extra}"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2530,8 +2536,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Edit message to show confirmation, remove buttons
             try:
                 await query.edit_message_text(
-                    text=result_text,
-                    parse_mode=ParseMode.MARKDOWN,
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=None,
                 )
             except Exception:
@@ -2571,13 +2577,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 provider_label = state["current_provider"]
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Current model: `{state['current_model'] or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2660,8 +2668,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Edit message to show decision, remove buttons
                 try:
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -2714,8 +2722,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 try:
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -2740,8 +2748,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         prompt_message_id = getattr(query.message, "message_id", None)
                         send_kwargs: Dict[str, Any] = {
                             "chat_id": int(query.message.chat_id),
-                            "text": result_text,
-                            "parse_mode": ParseMode.MARKDOWN,
+                            "text": self.format_message(result_text),
+                            "parse_mode": ParseMode.MARKDOWN_V2,
                             **self._link_preview_kwargs(),
                         }
                         chat_type_value = getattr(chat_type, "value", chat_type)
@@ -2901,8 +2909,8 @@ class TelegramAdapter(BasePlatformAdapter):
         label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
-                text=f"⚕ Update prompt answered: *{label}*",
-                parse_mode=ParseMode.MARKDOWN,
+                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=None,
             )
         except Exception:

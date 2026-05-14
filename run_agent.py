@@ -15721,6 +15721,13 @@ class AIAgent:
             turn = self._codex_session.run_turn(user_input=user_message)
         except Exception as exc:
             logger.exception("codex app-server turn failed")
+            # Crash → unconditionally drop the session so the next turn
+            # respawns from scratch instead of reusing a dead client.
+            try:
+                self._codex_session.close()
+            except Exception:
+                pass
+            self._codex_session = None
             return {
                 "final_response": (
                     f"Codex app-server turn failed: {exc}. "
@@ -15732,6 +15739,22 @@ class AIAgent:
                 "partial": True,
                 "error": str(exc),
             }
+
+        # If the turn signalled the underlying client is wedged (deadline
+        # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
+        # exited), retire the session so the next turn respawns codex
+        # rather than riding the broken process. Mirrors openclaw beta.8's
+        # "retire timed-out app-server clients" fix.
+        if getattr(turn, "should_retire", False):
+            logger.warning(
+                "codex app-server session retired (turn error: %s)",
+                turn.error,
+            )
+            try:
+                self._codex_session.close()
+            except Exception:
+                pass
+            self._codex_session = None
 
         # Splice projected messages into the conversation. The projector emits
         # standard {role, content, tool_calls, tool_call_id} entries, which

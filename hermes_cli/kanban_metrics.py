@@ -169,7 +169,11 @@ def _infer_stage(task: dict[str, Any], parents: list[str], tasks_by_id: dict[str
         evidence.append(why)
         return stage, confidence, evidence, assumptions
 
-    if any(tok in title for tok in ["remediate", "follow-up", "fix review findings", "re-review", "re-verify"]):
+    if "re-review" in title:
+        return hit("review", "high", "title signals re-review gate")
+    if "re-verify" in title:
+        return hit("verification", "high", "title signals re-verify gate")
+    if any(tok in title for tok in ["remediate", "follow-up", "fix review findings"]):
         return hit("remediation", "high", "title signals remediation/rework")
     if any(tok in title for tok in ["live verify", "production verify", "post-deploy", "go/no-go"]):
         return hit("live_verify", "high", "title signals live verification")

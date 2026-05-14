@@ -178,9 +178,32 @@ def test_review_failure_remediation_re_review_success(tmp_path):
     conn.commit(); conn.close()
 
     metrics = compute(tmp_path)
+    tasks_by_id = {t["task_id"]: t for t in metrics["tasks"]}
     assert metrics["summaries"]["rework"]["failed_gate_count"] == 1
     assert metrics["summaries"]["rework"]["remediation_loop_count"] >= 1
+    assert tasks_by_id["t_remediate"]["stage"] == "remediation"
+    assert tasks_by_id["t_rereview"]["stage"] == "review"
     assert "remediation" in {t["stage"] for t in metrics["tasks"] if t["rework"]}
+
+
+def test_re_review_and_re_verify_count_as_waiting_gates(tmp_path):
+    db = tmp_path / "kanban.db"
+    make_db(db)
+    conn = sqlite3.connect(db)
+    add_task(conn, "t_rereview", "Re-review remediation for t_parent", "reviewer", "ready", 100)
+    add_task(conn, "t_reverify", "Re-verify remediation for t_parent", "verifier", "ready", 200)
+    conn.commit(); conn.close()
+
+    metrics = compute(tmp_path)
+    tasks_by_id = {t["task_id"]: t for t in metrics["tasks"]}
+    assert tasks_by_id["t_rereview"]["stage"] == "review"
+    assert tasks_by_id["t_reverify"]["stage"] == "verification"
+    assert {g["task_id"]: g["stage"] for g in metrics["oldest_waiting_gates"]} == {
+        "t_rereview": "review",
+        "t_reverify": "verification",
+    }
+    assert metrics["summaries"]["wip"]["counts_by_assignee_stage"]["reviewer"] == {"review": 1}
+    assert metrics["summaries"]["wip"]["counts_by_assignee_stage"]["verifier"] == {"verification": 1}
 
 
 def test_open_running_task_active_open_age(tmp_path):

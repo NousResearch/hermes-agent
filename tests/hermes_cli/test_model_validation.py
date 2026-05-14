@@ -75,6 +75,23 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "gpt-5.4"
 
+    def test_openai_codex_slash_provider_model_switches_provider(self):
+        """Human-friendly openai-codex/model should not stay on the current provider."""
+        provider, model = parse_model_input("openai-codex/gpt-5.5", "claude-api-proxy")
+        assert provider == "openai-codex"
+        assert model == "gpt-5.5"
+
+    def test_openai_codex_empty_slash_keeps_current_provider(self):
+        provider, model = parse_model_input("openai-codex/", "claude-api-proxy")
+        assert provider == "claude-api-proxy"
+        assert model == "openai-codex/"
+
+    def test_anthropic_slash_slug_still_keeps_current_provider(self):
+        """Do not globally treat provider/model as provider syntax; OpenRouter needs slugs."""
+        provider, model = parse_model_input("anthropic/claude-sonnet-4.5", "openrouter")
+        assert provider == "openrouter"
+        assert model == "anthropic/claude-sonnet-4.5"
+
     def test_nous_provider_switch(self):
         provider, model = parse_model_input("nous:hermes-3", "openrouter")
         assert provider == "nous"

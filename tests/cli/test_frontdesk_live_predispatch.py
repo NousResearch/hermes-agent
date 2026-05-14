@@ -43,22 +43,25 @@ def test_stop_never_enters_pending_queue_when_busy():
     cli.agent.interrupt.assert_called_once_with("멈춰")
 
 
-def test_worker_request_does_not_fall_through_to_main_when_frontdesk_enabled():
+def test_worker_request_starts_default_worker_when_frontdesk_enabled():
     cli = _make_cli()
     cli.frontdesk_live_enabled = True
     cli.agent = MagicMock()
     cli.agent.run_conversation.return_value = {"final_response": "model"}
 
-    response = cli.chat("워커 레인에 배당해서 이 회귀를 조사해줘")
+    with patch("agent.frontdesk_live._run_default_worker_subprocess", return_value="worker done"):
+        response = cli.chat("워커 레인에 배당해서 이 회귀를 조사해줘")
 
     cli.agent.run_conversation.assert_not_called()
-    assert "worker lane unavailable" in response
+    assert "worker started" in response
     runtime = get_orchestration_runtime(cli)
     assert runtime is not None
+    assert "main" in runtime.worker_registry.lane_names()
     tasks = runtime.task_registry.list_tasks()
     assert len(tasks) == 1
-    assert tasks[0].status == STATUS_CANCELLED
-    assert "no worker lane" in " ".join(tasks[0].notes)
+    assert tasks[0].status != STATUS_CANCELLED
+    assert tasks[0].active_worker_id
+    assert "worker started" in " ".join(tasks[0].notes)
 
 
 def test_korean_followups_steer_when_live_and_agent_accepts():

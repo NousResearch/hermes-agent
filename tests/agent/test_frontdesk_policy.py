@@ -263,6 +263,16 @@ class TestWorkerLaneRecommendation:
         assert d.recommendation is FrontdeskRecommendation.WORKER_LANE
         assert FrontdeskSignal.EXPLICIT_WORKER_REQ in d.signals
 
+    def test_artifact_anchor_ko_meeting_minutes_casual(self):
+        d = classify_request("회의록 정리하자")
+        assert d.recommendation is FrontdeskRecommendation.WORKER_LANE
+        assert FrontdeskSignal.ARTIFACT in d.signals
+
+    def test_explicit_worker_override_ko_mobile_typo(self):
+        d = classify_request("에이전트에게 워커어게 위임해")
+        assert d.recommendation is FrontdeskRecommendation.WORKER_LANE
+        assert FrontdeskSignal.EXPLICIT_WORKER_REQ in d.signals
+
     def test_explicit_main_beats_explicit_worker_in_tie_breaker(self):
         """EXPLICIT_MAIN_REQ wins over EXPLICIT_WORKER_REQ — step 9 checks MAIN first."""
         d = classify_request("직접 해줘, 백그라운드로")

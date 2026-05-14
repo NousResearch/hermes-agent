@@ -135,8 +135,8 @@ def _run_async(coro):
                         worker_loop.run_until_complete(
                             asyncio.gather(*pending, return_exceptions=True)
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("MCP async cleanup failed: %s", e)
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import uuid
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -110,6 +111,36 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_user_exclusions_extend_existing_default_exclusions(self):
+        """User patterns add paths beyond the built-in regeneratable caches."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("profiles/coder/home/.cache/huggingface/model.safetensors"))
+        assert not _should_exclude(Path("heapdumps/hermes-auto-high.heapsnapshot"))
+        assert not _should_exclude(Path("state-snapshots/20260514-005651/state.db"))
+
+        user_patterns = ["heapdumps", "state-snapshots"]
+        assert _should_exclude(Path("heapdumps/hermes-auto-high.heapsnapshot"), user_patterns)
+        assert _should_exclude(Path("state-snapshots/20260514-005651/state.db"), user_patterns)
+
+    def test_user_exclusion_matches_bare_directory_name(self):
+        """A bare user pattern excludes any matching path component."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("profiles/coder/scratch/blob.bin"), ["scratch"])
+        assert not _should_exclude(Path("profiles/coder/config.yaml"), ["scratch"])
+
+    def test_user_exclusion_matches_relative_path_prefix(self):
+        """A relative user pattern excludes the directory and all descendants."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("profiles/coder/big-cache/model.bin"), ["profiles/coder/big-cache"])
+        assert not _should_exclude(Path("profiles/other/big-cache/model.bin"), ["profiles/coder/big-cache"])
+
+    def test_user_exclusion_matches_glob_parent(self):
+        """Glob user patterns can match parent directories and exclude descendants."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("profiles/coder/home/.cache/model.bin"), ["profiles/*/home/.cache"])
+        assert not _should_exclude(Path("profiles/coder/home/data/model.bin"), ["profiles/*/home/.cache"])
+
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -185,6 +216,77 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert not _should_exclude(Path("skills/my-skill/venv-notes.md"))
         assert not _should_exclude(Path("memories/cache.json"))
+
+class TestCollectBackupExclusions:
+    def test_config_exclusion_file_relative_to_hermes_home_prefers_hermes_root(self, tmp_path, monkeypatch):
+        """Config-file relative exclusion files are resolved from HERMES_HOME first."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "backup:\n"
+            "  exclusions_file: backup-exclusions.txt\n"
+        )
+        (hermes_home / "backup-exclusions.txt").write_text("from-hermes\n")
+
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / "backup-exclusions.txt").write_text("from-cwd\n")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli.backup import _collect_backup_exclusions
+        assert _collect_backup_exclusions(hermes_root=hermes_home) == ["from-hermes"]
+
+    def test_absolute_glob_under_hermes_home_is_normalised(self, tmp_path):
+        """Absolute glob patterns under HERMES_HOME are converted to relative patterns."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        args = Namespace(output=None, exclude=[str(hermes_home / "profiles" / "*" / "scratch")], exclude_from=None)
+
+        from hermes_cli.backup import _collect_backup_exclusions, _should_exclude
+        patterns = _collect_backup_exclusions(args, hermes_home)
+
+        assert patterns == ["profiles/*/scratch"]
+        assert _should_exclude(Path("profiles/coder/scratch/blob.bin"), patterns)
+
+    def test_absolute_glob_under_symlinked_hermes_home_is_normalised(self, tmp_path):
+        """Absolute patterns under a symlinked root still resolve to archive-relative patterns."""
+        real_home = tmp_path / f"real-{uuid.uuid4().hex}"
+        link_home = tmp_path / f"link-{uuid.uuid4().hex}"
+        real_home.mkdir()
+        try:
+            link_home.symlink_to(real_home, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        args = Namespace(
+            output=None,
+            exclude=[
+                str(link_home / "profiles" / "*" / "scratch"),
+                str(real_home.resolve() / "profiles" / "*" / "cache"),
+            ],
+            exclude_from=None,
+        )
+
+        from hermes_cli.backup import _collect_backup_exclusions, _should_exclude
+        patterns = _collect_backup_exclusions(args, link_home)
+
+        assert patterns == ["profiles/*/scratch", "profiles/*/cache"]
+        assert _should_exclude(Path("profiles/demo/scratch/blob.bin"), patterns)
+        assert _should_exclude(Path("profiles/demo/cache/blob.bin"), patterns)
+
+    def test_external_absolute_pattern_stays_unmatched(self, tmp_path):
+        """Absolute paths outside HERMES_HOME should not accidentally match relative backup paths."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        args = Namespace(output=None, exclude=[str(tmp_path / "elsewhere" / "scratch")], exclude_from=None)
+
+        from hermes_cli.backup import _collect_backup_exclusions, _should_exclude
+        patterns = _collect_backup_exclusions(args, hermes_home)
+
+        assert not _should_exclude(Path("scratch/blob.bin"), patterns)
+
 
 # ---------------------------------------------------------------------------
 # Backup tests
@@ -406,6 +508,129 @@ class TestBackup:
             names = zf.namelist()
             pid_files = [n for n in names if n.endswith(".pid")]
             assert pid_files == []
+
+    def test_config_exclusions_are_applied(self, tmp_path, monkeypatch):
+        """backup.exclusions in config.yaml excludes matching paths from full backups."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "scratch").mkdir()
+        (hermes_home / "scratch" / "large.bin").write_bytes(b"x")
+        (hermes_home / "profiles" / "coder" / "build-output").mkdir()
+        (hermes_home / "profiles" / "coder" / "build-output" / "artifact.bin").write_bytes(b"x")
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n"
+            "backup:\n"
+            "  exclusions:\n"
+            "    - scratch\n"
+            "    - profiles/*/build-output\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "scratch/large.bin" not in names
+            assert "profiles/coder/build-output/artifact.bin" not in names
+            assert "skills/my-skill/SKILL.md" in names
+
+    def test_profile_mode_uses_root_backup_config_for_root_archive(self, tmp_path, monkeypatch):
+        """Profile-local config must not control a full-root backup archive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        root_excluded = f"root-excluded-{uuid.uuid4().hex}"
+        root_kept = f"root-kept-{uuid.uuid4().hex}"
+        payload_name = f"payload-{uuid.uuid4().hex}.bin"
+        (hermes_home / root_excluded).mkdir()
+        (hermes_home / root_excluded / payload_name).write_bytes(b"x")
+        (hermes_home / root_kept).mkdir()
+        (hermes_home / root_kept / payload_name).write_bytes(b"x")
+
+        profile_home = hermes_home / "profiles" / "coder"
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n"
+            "backup:\n"
+            "  exclusions:\n"
+            f"    - {root_excluded}\n"
+        )
+        (profile_home / "config.yaml").write_text(
+            "model:\n  provider: anthropic\n"
+            "backup:\n"
+            "  exclusions:\n"
+            f"    - {root_kept}\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert f"{root_excluded}/{payload_name}" not in names
+            assert f"{root_kept}/{payload_name}" in names
+            assert "profiles/coder/config.yaml" in names
+
+    def test_cli_exclude_is_applied(self, tmp_path, monkeypatch):
+        """--exclude adds per-run full-backup exclusions."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "scratch").mkdir()
+        (hermes_home / "scratch" / "large.bin").write_bytes(b"x")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip), exclude=["scratch"], exclude_from=None)
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "scratch/large.bin" not in names
+            assert "config.yaml" in names
+
+    def test_exclude_from_file_is_applied(self, tmp_path, monkeypatch):
+        """--exclude-from reads newline-delimited patterns, ignoring comments."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "scratch").mkdir()
+        (hermes_home / "scratch" / "large.bin").write_bytes(b"x")
+        (hermes_home / "tmp-output").mkdir()
+        (hermes_home / "tmp-output" / "artifact.bin").write_bytes(b"x")
+        (hermes_home / "backup-exclusions.txt").write_text("# comment\nscratch\ntmp-output\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip), exclude=None, exclude_from=["backup-exclusions.txt"])
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "scratch/large.bin" not in names
+            assert "tmp-output/artifact.bin" not in names
+            assert "backup-exclusions.txt" in names
 
     def test_default_output_path(self, tmp_path, monkeypatch):
         """When no output path given, zip goes to ~/hermes-backup-*.zip."""

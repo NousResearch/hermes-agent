@@ -804,6 +804,20 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `--exclude <pattern>` | Exclude a directory name, relative path, or glob from a full backup. Repeat for multiple patterns. |
+| `--exclude-from <file>` | Read full-backup exclusions from a text file, one pattern per line. Blank lines and `#` comments are ignored. Repeat for multiple files. |
+
+Full backups also read persistent exclusions from the root Hermes `config.yaml`:
+
+```yaml
+backup:
+  exclusions:
+    - scratch
+    - profiles/*/build-output
+  exclusions_file: backup-exclusions.txt
+```
+
+Exclusion patterns are relative to the Hermes root being archived. Bare names match any path component, relative paths match that subtree, and globs match the full path and parent prefixes. Absolute patterns are accepted only when they resolve under the Hermes root; outside paths are ignored. In profile mode, `hermes backup` archives the Hermes root, so these settings are read from the root `config.yaml`, not from a profile-local config.
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 

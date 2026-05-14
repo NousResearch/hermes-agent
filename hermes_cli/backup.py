@@ -8,6 +8,7 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import fnmatch
 import json
 import logging
 import os
@@ -207,8 +208,231 @@ def _iter_external_files(base: Path) -> List[Path]:
             files.append(fpath)
     return files
 
+_GLOB_CHARS = frozenset("*?[")
 
-def _should_exclude(rel_path: Path) -> bool:
+
+def _coerce_exclusion_list(value: Any) -> List[str]:
+    """Coerce a config/CLI value into a list of exclusion strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if item is not None]
+    return []
+
+
+def _normalise_exclusion_pattern(raw: str, hermes_root: Path) -> Optional[str]:
+    """Normalise a user exclusion entry to a relative, POSIX-style pattern.
+
+    Entries are interpreted relative to ``HERMES_HOME``.  Absolute paths under
+    ``HERMES_HOME`` are converted back to relative paths so users can paste
+    either form.  Blank lines and ``#`` comments are ignored.
+    """
+    pattern = os.path.expandvars(os.path.expanduser(str(raw))).strip()
+    if not pattern or pattern.startswith("#"):
+        return None
+
+    pattern = pattern.replace("\\", "/")
+
+    if Path(pattern).is_absolute():
+        # Absolute paths are accepted only when they point inside HERMES_HOME;
+        # otherwise ignore them so `/tmp/foo` cannot accidentally become a
+        # relative `tmp/foo` or `foo` exclusion.  Compare against both the
+        # user-facing root and its resolved path so symlinked homes/macOS path
+        # aliases (for example /var vs /private/var) still work.
+        root_candidates: List[str] = []
+        for root in (hermes_root.expanduser().absolute(), hermes_root.expanduser().resolve()):
+            root_posix = root.as_posix().rstrip("/")
+            if root_posix and root_posix not in root_candidates:
+                root_candidates.append(root_posix)
+
+        matched_root = False
+        for root_posix in sorted(root_candidates, key=len, reverse=True):
+            if pattern == root_posix:
+                return None
+            if pattern.startswith(f"{root_posix}/"):
+                pattern = pattern[len(root_posix) + 1:]
+                matched_root = True
+                break
+        if not matched_root:
+            return None
+
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    pattern = pattern.strip("/")
+    return pattern or None
+
+
+def _read_exclusion_file(
+    path_value: str,
+    hermes_root: Path,
+    *,
+    prefer_hermes_root: bool = False,
+) -> List[str]:
+    """Read newline-delimited exclusion patterns from a text file."""
+    raw_path = os.path.expandvars(os.path.expanduser(str(path_value))).strip()
+    if not raw_path:
+        return []
+
+    path = Path(raw_path)
+    candidates = [path]
+    if not path.is_absolute():
+        hermes_path = hermes_root / path
+        candidates = [hermes_path, path] if prefer_hermes_root else [path, hermes_path]
+
+    for candidate in candidates:
+        try:
+            return candidate.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Could not read backup exclusions file %s: %s", candidate, exc)
+            return []
+
+    if candidates:
+        logger.warning("Could not read backup exclusions file %s: file not found", candidates[0])
+    return []
+
+
+def _read_root_backup_config(hermes_root: Path) -> Dict[str, Any]:
+    """Read ``<hermes_root>/config.yaml`` without merging defaults.
+
+    Full backups archive the Hermes *root* returned by
+    :func:`get_default_hermes_root`, even when the active process is running
+    inside a named profile.  Backup exclusions therefore come from the root
+    config for that archive, not from a profile-local config that would
+    otherwise control exclusions for sibling profiles.
+    """
+    config_path = hermes_root / "config.yaml"
+    try:
+        from utils import fast_safe_load
+
+        with open(config_path, encoding="utf-8") as f:
+            cfg = fast_safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.debug("Could not read backup exclusions from %s: %s", config_path, exc)
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _configured_exclusions_from_config(hermes_root: Path) -> tuple[List[str], List[str]]:
+    """Return (inline_patterns, exclusion_files) from root ``config.yaml``.
+
+    Supported config:
+
+        backup:
+          exclusions:
+            - cache
+            - profiles/*/home/.cache
+          exclusions_file: ~/.hermes/backup-exclusions.txt
+
+    ``backup.exclusions_file`` may also be a list of files.  The singular
+    aliases ``exclusion_file`` and ``exclude_from`` are accepted for ergonomics.
+    """
+    cfg = _read_root_backup_config(hermes_root)
+
+    if not isinstance(cfg, dict):
+        return [], []
+
+    backup_cfg = cfg.get("backup", {})
+    if not isinstance(backup_cfg, dict):
+        return [], []
+
+    patterns: List[str] = []
+    files: List[str] = []
+
+    exclusions = backup_cfg.get("exclusions")
+    if isinstance(exclusions, dict):
+        for key in ("paths", "directories", "patterns"):
+            patterns.extend(_coerce_exclusion_list(exclusions.get(key)))
+        for key in ("file", "files", "from_file", "exclude_from", "exclusions_file"):
+            files.extend(_coerce_exclusion_list(exclusions.get(key)))
+    else:
+        patterns.extend(_coerce_exclusion_list(exclusions))
+
+    # Also support explicit sibling keys for the common text-file case.
+    for key in ("exclusions_file", "exclusion_file", "exclude_from"):
+        files.extend(_coerce_exclusion_list(backup_cfg.get(key)))
+
+    return patterns, files
+
+
+def _collect_backup_exclusions(
+    args: Optional[Any] = None,
+    hermes_root: Optional[Path] = None,
+) -> List[str]:
+    """Collect user-configured backup exclusion patterns.
+
+    Sources, in precedence order, are additive: ``backup.exclusions`` in
+    config.yaml, ``backup.exclusions_file`` text files, ``--exclude``, and
+    ``--exclude-from``.  Patterns are de-duplicated while preserving order.
+    """
+    root = hermes_root or get_default_hermes_root()
+    raw_patterns, config_exclusion_files = _configured_exclusions_from_config(root)
+
+    for exclusion_file in config_exclusion_files:
+        raw_patterns.extend(_read_exclusion_file(exclusion_file, root, prefer_hermes_root=True))
+
+    if args is not None:
+        raw_patterns.extend(_coerce_exclusion_list(getattr(args, "exclude", None)))
+        for exclusion_file in _coerce_exclusion_list(getattr(args, "exclude_from", None)):
+            raw_patterns.extend(_read_exclusion_file(exclusion_file, root, prefer_hermes_root=False))
+
+    patterns: List[str] = []
+    seen = set()
+    for raw in raw_patterns:
+        pattern = _normalise_exclusion_pattern(raw, root)
+        if pattern and pattern not in seen:
+            patterns.append(pattern)
+            seen.add(pattern)
+    return patterns
+
+
+def _path_prefixes(rel_path: Path) -> List[str]:
+    rel = rel_path.as_posix().strip("/")
+    if not rel:
+        return []
+    parts = rel.split("/")
+    return ["/".join(parts[:idx]) for idx in range(1, len(parts) + 1)]
+
+
+def _matches_user_exclusion(rel_path: Path, patterns: List[str]) -> bool:
+    """Return True when a relative path matches a user exclusion pattern."""
+    if not patterns:
+        return False
+
+    rel = rel_path.as_posix().strip("/")
+    parts = rel_path.parts
+    prefixes = _path_prefixes(rel_path)
+
+    for pattern in patterns:
+        has_glob = any(ch in pattern for ch in _GLOB_CHARS)
+
+        # Bare names are convenient for directory-name exclusions: ``cache``
+        # skips any path component called ``cache``.
+        if "/" not in pattern:
+            if has_glob:
+                if any(fnmatch.fnmatchcase(part, pattern) for part in parts):
+                    return True
+            elif pattern in parts:
+                return True
+
+        # Exact/prefix relative-path match.
+        if rel == pattern or rel.startswith(f"{pattern}/"):
+            return True
+
+        # Glob match against the full path and each parent prefix so patterns
+        # like ``profiles/*/home/.cache`` exclude all descendants too.
+        if has_glob and any(fnmatch.fnmatchcase(prefix, pattern) for prefix in prefixes):
+            return True
+
+    return False
+
+
+def _should_exclude(rel_path: Path, extra_exclusions: Optional[List[str]] = None) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
@@ -230,12 +454,20 @@ def _should_exclude(rel_path: Path) -> bool:
     if name.endswith(_EXCLUDED_SUFFIXES):
         return True
 
+    if extra_exclusions and _matches_user_exclusion(rel_path, extra_exclusions):
+        return True
+
     return False
 
 
-def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
+def _should_skip_backup_file(
+    abs_path: Path,
+    rel_path: Path,
+    out_path: Path,
+    extra_exclusions: Optional[List[str]] = None,
+) -> bool:
     """Return True when a candidate file should not be written to a backup zip."""
-    if _should_exclude(rel_path):
+    if _should_exclude(rel_path, extra_exclusions):
         return True
 
     # zipfile.write() follows file symlinks, so skip links before any archive
@@ -317,6 +549,7 @@ def run_backup(args) -> None:
 
     # Collect files
     print(f"Scanning {display_hermes_home()} ...")
+    extra_exclusions = _collect_backup_exclusions(args, hermes_root)
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
 
@@ -331,7 +564,7 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
+            if not _should_exclude(rel_dir / d, extra_exclusions)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -340,7 +573,7 @@ def run_backup(args) -> None:
             fpath = dp / fname
             rel = fpath.relative_to(hermes_root)
 
-            if _should_skip_backup_file(fpath, rel, out_path):
+            if _should_skip_backup_file(fpath, rel, out_path, extra_exclusions):
                 continue
 
             files_to_add.append((fpath, rel))
@@ -1153,11 +1386,16 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     or write error — caller should surface the outcome but not raise).
     """
     files_to_add: list[tuple[Path, Path]] = []
+    extra_exclusions = _collect_backup_exclusions(hermes_root=hermes_root)
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
+            rel_dir = dp.relative_to(hermes_root)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            dirnames[:] = [
+                d for d in dirnames
+                if not _should_exclude(rel_dir / d, extra_exclusions)
+            ]
 
             for fname in filenames:
                 fpath = dp / fname
@@ -1166,7 +1404,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 except ValueError:
                     continue
 
-                if _should_skip_backup_file(fpath, rel, out_path):
+                if _should_skip_backup_file(fpath, rel, out_path, extra_exclusions):
                     continue
 
                 files_to_add.append((fpath, rel))

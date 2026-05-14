@@ -195,6 +195,25 @@ def test_review_commit_blocks_staged_paths_outside_scope(kanban_home, tmp_path):
     assert _git(repo, "rev-list", "--count", "HEAD") == "1"
 
 
+def test_review_commit_blocks_when_scoped_paths_have_no_staged_changes(kanban_home, tmp_path):
+    repo = _init_repo(tmp_path)
+    _write(repo / "allowed.py", "allowed = True\n")
+    _git(repo, "add", "allowed.py")
+    _git(repo, "commit", "--amend", "--no-edit")
+    initial_commit_count = _git(repo, "rev-list", "--count", "HEAD")
+    coder_id = _create_completed_task("coder handoff", CODER_METADATA)
+    reviewer_id = _create_completed_task("reviewer verdict", REVIEWER_APPROVED, assignee="reviewer")
+
+    out = kc.run_slash(
+        f"review-commit {coder_id} --reviewer-task {reviewer_id} --repo {shlex.quote(str(repo))} "
+        "--scoped-path allowed.py --message 'test: blocked'"
+    )
+
+    assert initial_commit_count == "1"
+    assert "no scoped changes staged for commit" in out
+    assert _git(repo, "rev-list", "--count", "HEAD") == initial_commit_count
+
+
 def test_review_commit_blocks_unknown_scoped_path(kanban_home, tmp_path):
     repo = _init_repo(tmp_path)
     coder_id = _create_completed_task("coder handoff", CODER_METADATA)

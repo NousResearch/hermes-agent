@@ -933,6 +933,132 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
         c.print()
 
 
+def do_validate(
+    target: Optional[str] = None,
+    ruleset: str = "hermes",
+    strict: bool = False,
+    console: Optional[Console] = None,
+) -> int:
+    """Validate one or more installed skills against a ruleset.
+
+    Static lint pass complementary to the Curator (which is an LLM-driven
+    mutation pass). Operates on any skill — bundled, hub-installed, or
+    agent-authored — and never modifies them.
+
+    Returns the number of skills with BLOCKING findings (0 = all clean).
+
+    Args:
+        target: Skill name, path to a SKILL.md, or None to validate every
+                skill under ~/.hermes/skills/ (excluding .archive/).
+        ruleset: Built-in name ('hermes', 'agentskills') or path to a YAML
+                 ruleset file.
+        strict: When True, treat SUGGEST findings as BLOCKING in the exit
+                count.
+    """
+    from pathlib import Path
+
+    from tools.skills_validator import (
+        SEVERITY_BLOCKING,
+        SEVERITY_SUGGEST,
+        find_skills,
+        load_ruleset,
+        validate_skill,
+    )
+
+    c = console or _console
+
+    try:
+        rules = load_ruleset(ruleset)
+    except ValueError as e:
+        c.print(f"[bold red]Error:[/] {e}\n")
+        return 1
+    ruleset_name = ruleset
+
+    targets: List[Path] = []
+    if target is None:
+        try:
+            from hermes_constants import display_hermes_home
+            from pathlib import Path as _P
+            hermes_skills = _P(display_hermes_home()).expanduser() / "skills"
+        except Exception:
+            hermes_skills = Path.home() / ".hermes" / "skills"
+        if not hermes_skills.exists():
+            c.print(f"[dim]No skills directory at {hermes_skills}.[/]\n")
+            return 0
+        targets = find_skills(hermes_skills)
+        if not targets:
+            c.print("[dim]No installed skills found.[/]\n")
+            return 0
+    else:
+        p = Path(target).expanduser()
+        if p.exists():
+            targets = [p]
+        else:
+            # treat as skill name; look under sources
+            try:
+                from agent.skill_utils import get_all_skills_dirs
+                resolved = None
+                for root in get_all_skills_dirs():
+                    candidate = Path(root) / target
+                    if (candidate / "SKILL.md").exists():
+                        resolved = candidate
+                        break
+                if resolved is None:
+                    c.print(
+                        f"[bold red]Error:[/] '{target}' is neither a readable path "
+                        f"nor an installed skill name.\n"
+                    )
+                    return 1
+                targets = [resolved]
+            except Exception as e:
+                c.print(f"[bold red]Error:[/] cannot resolve '{target}': {e}\n")
+                return 1
+
+    blocking_skills = 0
+    suggest_skills = 0
+    clean_skills = 0
+
+    table = Table(title=f"Skill Validation — ruleset: {ruleset_name}")
+    table.add_column("Skill", style="bold cyan")
+    table.add_column("Blocking", justify="right", style="red")
+    table.add_column("Suggest", justify="right", style="yellow")
+    table.add_column("Status", style="dim")
+
+    detailed_findings: List = []
+
+    for skill_path in targets:
+        report = validate_skill(skill_path, rules, ruleset_name=ruleset_name)
+        b = len(report.blocking)
+        s = len(report.suggestions)
+        if b > 0:
+            blocking_skills += 1
+            status = "[red]BLOCKING[/]"
+        elif s > 0:
+            suggest_skills += 1
+            status = "[yellow]SUGGEST[/]"
+        else:
+            clean_skills += 1
+            status = "[green]OK[/]"
+        table.add_row(report.skill_name, str(b), str(s), status)
+        if b > 0 or (strict and s > 0):
+            detailed_findings.append(report)
+
+    c.print(table)
+
+    for report in detailed_findings:
+        c.print(f"\n[bold]{report.skill_name}[/]  [dim]{report.skill_path}[/]")
+        for f in report.findings:
+            colour = "red" if f.severity == SEVERITY_BLOCKING else "yellow"
+            c.print(f"  [{colour}]{f.severity}[/]  [bold]{f.rule}[/]  {f.message}")
+
+    c.print(
+        f"\n[dim]Summary: {clean_skills} OK, {suggest_skills} with suggestions, "
+        f"{blocking_skills} with blocking findings.[/]\n"
+    )
+
+    return blocking_skills + (suggest_skills if strict else 0)
+
+
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
@@ -1338,6 +1464,12 @@ def skills_command(args) -> None:
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None))
+    elif action == "validate":
+        do_validate(
+            target=getattr(args, "target", None),
+            ruleset=getattr(args, "ruleset", "hermes"),
+            strict=getattr(args, "strict", False),
+        )
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1365,7 +1497,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|validate|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

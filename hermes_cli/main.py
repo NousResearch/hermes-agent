@@ -10574,6 +10574,39 @@ Examples:
         "name", nargs="?", help="Specific skill to audit (default: all)"
     )
 
+    skills_validate = skills_subparsers.add_parser(
+        "validate",
+        help="Statically validate installed skills against a ruleset",
+        description=(
+            "Read-only structural lint pass complementary to the Curator. "
+            "Validates frontmatter completeness, section presence, line counts, "
+            "and metadata fields against a configurable ruleset. Operates on "
+            "any skill (bundled, hub-installed, or agent-authored) and never "
+            "modifies them."
+        ),
+    )
+    skills_validate.add_argument(
+        "target",
+        nargs="?",
+        help=(
+            "Skill name or path to a SKILL.md. Defaults to all installed "
+            "skills under ~/.hermes/skills/."
+        ),
+    )
+    skills_validate.add_argument(
+        "--ruleset",
+        default="hermes",
+        help=(
+            "Built-in ruleset name ('hermes' = lenient, 'agentskills' = strict) "
+            "or path to a custom YAML ruleset file. Default: hermes."
+        ),
+    )
+    skills_validate.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat SUGGEST findings as BLOCKING for the exit count.",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

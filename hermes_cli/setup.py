@@ -22,12 +22,9 @@ import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from hermes_cli.nous_subscription import (
-    get_nous_subscription_features,
-)
-from iteration_limits import format_iteration_limit, is_unlimited_iteration_limit, parse_iteration_limit
+from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from hermes_cli.shared_utils import base_url_hostname
+from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -1801,7 +1798,7 @@ def setup_agent_settings(config: dict):
     # config.yaml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
-    current_max = format_iteration_limit(cfg_get(config, "agent", "max_turns", default=90))
+    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
@@ -1810,16 +1807,18 @@ def setup_agent_settings(config: dict):
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
-        max_iter = parse_iteration_limit(max_iter_str, default=90)
-        if not is_unlimited_iteration_limit(max_iter) and int(max_iter) <= 0:
-            raise ValueError("max iterations must be positive")
-        stored_value = "unlimited" if is_unlimited_iteration_limit(max_iter) else int(max_iter)
-        config.setdefault("agent", {})["max_turns"] = stored_value
-        config.pop("max_turns", None)
-        remove_env_value("HERMES_MAX_ITERATIONS")
-        print_success(f"Max iterations set to {format_iteration_limit(stored_value)}")
+        max_iter = int(max_iter_str)
+        if max_iter > 0:
+            # Write to config.yaml (authoritative) only. Also clean up any
+            # stale .env entry from earlier setup runs — the gateway's
+            # bridge in gateway/run.py now unconditionally derives
+            # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
+            config.setdefault("agent", {})["max_turns"] = max_iter
+            config.pop("max_turns", None)
+            remove_env_value("HERMES_MAX_ITERATIONS")
+            print_success(f"Max iterations set to {max_iter}")
     except ValueError:
-        print_warning("Invalid value, keeping current setting")
+        print_warning("Invalid number, keeping current value")
 
     # ── Tool Progress Display ──
     print_info("")
@@ -2814,7 +2813,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 
     elif section_key == "agent":
         max_turns = cfg_get(config, "agent", "max_turns", default=90)
-        return f"max turns: {format_iteration_limit(max_turns)}"
+        return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
         from hermes_cli.gateway import _all_platforms, _platform_status

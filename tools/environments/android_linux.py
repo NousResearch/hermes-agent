@@ -145,6 +145,12 @@ class AndroidLinuxEnvironment(BaseEnvironment):
         del timeout  # spawn-per-call; enforced by BaseEnvironment
         del login
         args = [self.process_shell_path, "-c", cmd_string]
+        spawn_kwargs: dict[str, object] = {}
+        if os.name == "nt":
+            spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            spawn_kwargs["preexec_fn"] = os.setsid  # windows-footgun: ok - POSIX branch only
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -154,20 +160,34 @@ class AndroidLinuxEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=os.setsid,
+            **spawn_kwargs,
         )
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
 
     def _kill_process(self, proc):
+        if os.name == "nt":
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                pass
+            return
+
         try:
             pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok - POSIX branch only
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
+                os.killpg(  # windows-footgun: ok - POSIX branch only
+                    pgid,
+                    getattr(signal, "SIGKILL", signal.SIGTERM),
+                )
         except (ProcessLookupError, PermissionError):
             try:
                 proc.kill()

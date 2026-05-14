@@ -1,5 +1,6 @@
 .DS_Store
 /venv/
+build/
 /_pycache/
 *.pyc*
 __pycache__/

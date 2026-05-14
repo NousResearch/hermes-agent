@@ -603,14 +603,14 @@ def main(argv: list[str]) -> int:
             rel = path.relative_to(REPO_ROOT).as_posix()
             print(f"{rel}:{lineno}: [{fg.name}]")
             print(f"    {line.strip()}")
-            print(f"    — {fg.message}")
+            print(f"    - {fg.message}")
             print(f"    Fix: {fg.fix.splitlines()[0]}")
             print()
             total_matches += 1
 
     if total_matches:
         print(
-            f"\n✗ {total_matches} Windows footgun(s) found across "
+            f"\nX {total_matches} Windows footgun(s) found across "
             f"{files_scanned} file(s) scanned.",
             file=sys.stderr,
         )
@@ -623,7 +623,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(
-        f"✓ No Windows footguns found ({files_scanned} file(s) scanned)."
+        f"OK No Windows footguns found ({files_scanned} file(s) scanned)."
     )
     return 0
 

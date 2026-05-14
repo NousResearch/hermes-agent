@@ -12,8 +12,7 @@ Active selection
 The active provider is chosen by configuration with this precedence:
 
 1. ``browser.cloud_provider`` in ``config.yaml`` (explicit override).
-2. If exactly one registered provider is available, use it.
-3. Legacy preference order — ``browser-use`` → ``browserbase`` — filtered by
+2. Legacy preference order — ``browser-use`` → ``browserbase`` — filtered by
    availability. Matches the historic auto-detect order in
    :func:`tools.browser_tool._get_cloud_provider` (Browser Use checked first
    because it covers both the managed Nous gateway and direct API key path;
@@ -22,7 +21,7 @@ The active provider is chosen by configuration with this precedence:
    cloud browser when they explicitly set ``browser.cloud_provider:
    firecrawl``, matching pre-migration behaviour where Firecrawl was never
    auto-selected.
-4. Otherwise ``None`` — the dispatcher falls back to local browser mode.
+3. Otherwise ``None`` — the dispatcher falls back to local browser mode.
 
 The explicit-config branch (rule 1) intentionally ignores ``is_available()``
 so the dispatcher surfaces a typed "X_API_KEY is not set" error to the user
@@ -132,11 +131,21 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
        :meth:`is_available` returns False — the dispatcher will surface a
        precise "X_API_KEY is not set" error instead of silently routing
        somewhere else.
-    3. **Single-provider shortcut.** When only one registered provider
-       reports ``is_available() == True``, return it.
-    4. **Legacy preference walk, filtered by availability.** Walk
+    3. **Legacy preference walk, filtered by availability.** Walk
        :data:`_LEGACY_PREFERENCE` (``browser-use`` → ``browserbase``) looking
        for a provider whose ``is_available()`` is True.
+
+    There is intentionally NO "single-eligible shortcut" rule here (unlike
+    :func:`agent.web_search_registry._resolve`). Pre-migration, the
+    auto-detect branch in ``tools.browser_tool._get_cloud_provider`` only
+    considered Browser Use and Browserbase; Firecrawl was reachable only
+    via an explicit ``browser.cloud_provider: firecrawl`` config key.
+    Preserving that gate matters because Firecrawl shares its API key with
+    the *web* extract plugin (``plugins/web/firecrawl/``), so users who set
+    ``FIRECRAWL_API_KEY`` for web extract must NOT get silently routed to a
+    paid cloud browser on a fresh install. Third-party browser-provider
+    plugins added under ``~/.hermes/plugins/browser/<vendor>/`` are subject
+    to the same gate — they must be explicitly configured to take effect.
 
     Returns None when no provider is configured AND no available provider
     matches the legacy preference; the dispatcher then falls back to local
@@ -170,12 +179,10 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
             configured,
         )
 
-    # 3. + 4. Auto-detect path — filter by availability so we don't surface
-    #    a provider the user has no credentials for.
-    eligible = [p for p in snapshot.values() if _is_available_safe(p)]
-    if len(eligible) == 1:
-        return eligible[0]
-
+    # 3. Legacy preference walk — only providers in _LEGACY_PREFERENCE are
+    #    auto-eligible. Filtered by availability so we don't surface a
+    #    provider the user has no credentials for. See docstring for why
+    #    we do NOT fall back to "any single-eligible registered provider".
     for legacy in _LEGACY_PREFERENCE:
         provider = snapshot.get(legacy)
         if provider is not None and _is_available_safe(provider):

@@ -42,7 +42,7 @@ _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
 _FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|schtasks timed out|schtasks produced no output)",
+    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
     re.IGNORECASE,
 )
 
@@ -344,6 +344,56 @@ def _derive_venv_pythonw(python_exe: str) -> str:
     return python_exe
 
 
+def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
+    cfg_path = venv_dir / "pyvenv.cfg"
+    try:
+        lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    parsed: dict[str, str] = {}
+    for raw in lines:
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        parsed[key.strip().lower()] = value.strip()
+    return parsed
+
+
+def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
+    """Return (windowed_python, venv_dir, extra_pythonpath) for detached runs.
+
+    uv-created Windows venv launchers are special: ``venv\\Scripts\\pythonw.exe``
+    starts hidden, but then respawns the base interpreter as console
+    ``python.exe``.  That child opens a visible Windows Terminal tab.  For uv
+    venvs, use the base ``pythonw.exe`` directly and put the repo + venv
+    site-packages on ``PYTHONPATH`` so imports still resolve without the venv
+    launcher.
+    """
+    p = Path(python_exe)
+    venv_dir = p.parent.parent
+    windowed = _derive_venv_pythonw(python_exe)
+
+    cfg = _read_pyvenv_cfg(venv_dir)
+    home = cfg.get("home", "")
+    if "uv" in cfg and home:
+        base_pythonw = Path(home) / "pythonw.exe"
+        site_packages = venv_dir / "Lib" / "site-packages"
+        if base_pythonw.exists() and site_packages.exists():
+            return (str(base_pythonw), venv_dir, [str(site_packages)])
+
+    return (windowed, venv_dir, [])
+
+
+def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:
+    clean_entries = [entry for entry in entries if entry]
+    if not clean_entries:
+        return
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        clean_entries.append(existing)
+    env_overlay["PYTHONPATH"] = os.pathsep.join(clean_entries)
+
+
 def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     """Build (argv, working_dir, env_overlay) for the gateway subprocess.
 
@@ -359,7 +409,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         get_python_path,
     )
 
-    python_exe = _derive_venv_pythonw(get_python_path())
+    python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(get_python_path())
     working_dir = str(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
@@ -373,8 +423,9 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_HOME": hermes_home,
         "PYTHONIOENCODING": "utf-8",
         "HERMES_GATEWAY_DETACHED": "1",
-        "VIRTUAL_ENV": str(Path(python_exe).resolve().parent.parent),
+        "VIRTUAL_ENV": str(venv_dir),
     }
+    _prepend_pythonpath(env_overlay, [working_dir, *extra_pythonpath] if extra_pythonpath else [])
     return argv, working_dir, env_overlay
 
 

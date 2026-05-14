@@ -152,6 +152,30 @@ def test_aiagent_reuses_existing_errors_log_handler():
 
 
 class TestProviderModelNormalization:
+    def test_aiagent_adopts_auto_router_resolved_model_when_no_model_was_passed(self):
+        routed_client = MagicMock()
+        routed_client.api_key = "minimax-key"
+        routed_client.base_url = "https://api.minimax.io/v1"
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.auxiliary_client.resolve_provider_client") as resolve_provider_client,
+            patch("run_agent.OpenAI"),
+        ):
+            resolve_provider_client.return_value = (routed_client, "MiniMax-M2.7")
+
+            agent = AIAgent(
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.model == "MiniMax-M2.7"
+        assert agent._primary_runtime["model"] == "MiniMax-M2.7"
+
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (
             patch(

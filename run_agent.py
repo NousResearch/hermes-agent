@@ -1693,9 +1693,11 @@ class AIAgent:
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
-                _routed_client, _ = resolve_provider_client(
+                _routed_client, _resolved_model = resolve_provider_client(
                     self.provider or "auto", model=self.model, raw_codex=True)
                 if _routed_client is not None:
+                    if not self.model and _resolved_model:
+                        self.model = str(_resolved_model)
                     client_kwargs = {
                         "api_key": _routed_client.api_key,
                         "base_url": str(_routed_client.base_url),

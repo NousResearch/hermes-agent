@@ -89,6 +89,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<question>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
+    CommandDef("swarm", "Launch or control a detached swarm foreman", "Session",
+               gateway_only=True, subcommands=("status", "pause", "resume", "start", "stop"),
+               args_hint="[status|pause|resume|start <prompt>|stop <id>|<prompt>]"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
@@ -299,6 +302,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "status",
         "steer",
         "stop",
+        "swarm",
         "update",
     }
 )

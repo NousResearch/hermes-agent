@@ -95,6 +95,7 @@ class TestResolveCommand:
         assert resolve_command("background").name == "background"
         assert resolve_command("copy").name == "copy"
         assert resolve_command("agents").name == "agents"
+        assert resolve_command("swarm").name == "swarm"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
@@ -113,6 +114,12 @@ class TestResolveCommand:
     def test_unknown_returns_none(self):
         assert resolve_command("nonexistent") is None
         assert resolve_command("") is None
+
+    def test_swarm_has_expected_subcommands(self):
+        cmd = resolve_command("swarm")
+        assert cmd is not None
+        assert cmd.gateway_only is True
+        assert cmd.subcommands == ("status", "pause", "resume")
 
 
 # ---------------------------------------------------------------------------

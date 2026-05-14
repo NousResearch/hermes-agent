@@ -3037,6 +3037,7 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOWED_USERS",
         }
         platform_group_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_GROUP_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
@@ -3518,6 +3519,11 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /swarm is a detached control/launch surface and must not interrupt
+            # the current run.
+            if _cmd_def_inner and _cmd_def_inner.name == "swarm":
+                return await self._handle_swarm_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
@@ -3718,6 +3724,9 @@ class GatewayRunner:
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "swarm":
+            return await self._handle_swarm_command(event)
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
@@ -5295,6 +5304,297 @@ class GatewayRunner:
             lines.append("No active agents or running tasks.")
 
         return "\n".join(lines)
+
+    def _load_swarm_settings(self, user_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        cfg = dict((user_config or _load_gateway_config()).get("swarm") or {})
+
+        try:
+            max_workers = int(cfg.get("max_workers", 10))
+        except (TypeError, ValueError):
+            max_workers = 10
+        max_workers = max(1, min(10, max_workers))
+
+        try:
+            max_iterations = int(cfg.get("max_iterations", 120))
+        except (TypeError, ValueError):
+            max_iterations = 120
+        max_iterations = max(1, max_iterations)
+
+        return {
+            "default_mode": str(cfg.get("default_mode") or "detached_foreman").strip().lower() or "detached_foreman",
+            "max_workers": max_workers,
+            "max_iterations": max_iterations,
+            "enable_hermes_workers": is_truthy_value(cfg.get("enable_hermes_workers"), default=True),
+            "enable_claude_workers": is_truthy_value(cfg.get("enable_claude_workers"), default=True),
+            "enable_codex_workers": is_truthy_value(cfg.get("enable_codex_workers"), default=True),
+        }
+
+    def _build_swarm_foreman_prompt(self, settings: dict[str, Any]) -> str:
+        worker_modes: list[str] = []
+        if settings.get("enable_hermes_workers"):
+            worker_modes.append("Hermes subagents via delegate_task")
+        if settings.get("enable_claude_workers"):
+            worker_modes.append("Claude Code workers via terminal/process")
+        if settings.get("enable_codex_workers"):
+            worker_modes.append("Codex CLI workers via terminal/process")
+        if not worker_modes:
+            worker_modes.append("Hermes subagents via delegate_task")
+
+        worker_modes_text = ", ".join(worker_modes)
+        max_workers = settings.get("max_workers", 10)
+
+        return (
+            "You are Main Sub, a detached swarm foreman running in the background while the live user chat stays free. "
+            "You are not the primary conversational agent. Your job is to solve the assigned task by orchestrating a bounded worker team and then return a synthesized result.\n\n"
+            "Required operating pattern:\n"
+            f"- Direct worker-wave budget: up to {max_workers} workers across all worker types. Use fewer when the task is simple, and treat this as your default total budget unless you have a compelling reason to stay smaller.\n"
+            f"- Available worker modes: {worker_modes_text}.\n"
+            "- Immediately assess task complexity, make a plan with todo, and then load the skills you need. At minimum, load swarm-orchestration. "
+            "Load claude-code and codex before launching Claude/Codex workers. Load using-git-worktrees before parallel writer lanes or any long-lived code-editing lanes.\n"
+            "- Prefer Hermes subagents for read-only scouting, synthesis, QA, and bounded reasoning branches.\n"
+            "- Prefer Claude Code or Codex CLI workers for long coding loops, iterative repair, or autonomous implementation lanes.\n"
+            "- If more than one writing lane is active, isolate them in separate git worktrees before editing.\n"
+            "- Re-synthesize after each worker wave instead of blindly continuing to fan out.\n"
+            "- Do not ask the user clarifying questions. The parent chat is elsewhere. Make reasonable decisions and keep moving.\n"
+            "- Return a concise but complete final synthesis with what was done, evidence, risks, and next actions.\n"
+            "- If blocked, return a blocker report with the exact failing command, output, and the smallest next fix."
+        )
+
+    def _is_swarm_home_channel(self, source: SessionSource) -> bool:
+        """Return True when *source* is the configured home channel for its platform."""
+        platform = getattr(source, "platform", None)
+        if not platform:
+            return False
+        cfg = getattr(self, "config", None)
+        getter = getattr(cfg, "get_home_channel", None)
+        if not callable(getter):
+            return False
+        try:
+            home = getter(platform)
+        except Exception:
+            return False
+        if not home:
+            return False
+        return str(getattr(home, "chat_id", "") or "") == str(getattr(source, "chat_id", "") or "")
+
+    @staticmethod
+    def _swarm_row_matches_source(row: dict[str, Any], source: SessionSource) -> bool:
+        return (
+            str(row.get("kind") or "") == "detached_foreman"
+            and str(row.get("source_platform") or "") == str(source.platform.value if source.platform else "")
+            and str(row.get("source_chat_id") or "") == str(source.chat_id or "")
+            and str(row.get("source_thread_id") or "") == str(source.thread_id or "")
+        )
+
+    def _scoped_swarm_rows(self, rows: list[dict[str, Any]], source: SessionSource) -> list[dict[str, Any]]:
+        """Return only the foreman(s) for this chat/thread plus their descendants."""
+        visible_ids = {
+            str(row.get("subagent_id") or "")
+            for row in rows
+            if self._swarm_row_matches_source(row, source)
+        }
+        visible_ids.discard("")
+        if not visible_ids:
+            return []
+
+        changed = True
+        while changed:
+            changed = False
+            for row in rows:
+                sid = str(row.get("subagent_id") or "")
+                parent_id = str(row.get("parent_id") or "")
+                if sid and sid not in visible_ids and parent_id in visible_ids:
+                    visible_ids.add(sid)
+                    changed = True
+
+        return [row for row in rows if str(row.get("subagent_id") or "") in visible_ids]
+
+    async def _handle_swarm_command(self, event: MessageEvent) -> str:
+        """Handle /swarm command - launch or control detached swarm foremen."""
+        from tools.delegate_tool import (
+            _get_max_concurrent_children,
+            _get_max_spawn_depth,
+            interrupt_subagent,
+            is_spawn_paused,
+            list_active_subagents,
+            set_spawn_paused,
+        )
+
+        user_config = _load_gateway_config()
+        swarm_settings = self._load_swarm_settings(user_config)
+        args = (event.get_command_args() or "").strip()
+        normalized_args = args.lower()
+        parts = args.split(None, 1) if args else []
+        subcommand = parts[0].lower() if parts else "status"
+        remainder = parts[1].strip() if len(parts) > 1 else ""
+        reserved_prompt_hint = (
+            "If your prompt begins with a control word, use `/swarm start <prompt>`."
+        )
+        source = event.source
+
+        if not args or (subcommand == "status" and not remainder):
+            all_rows = list_active_subagents()
+            rows = self._scoped_swarm_rows(all_rows, source)
+            rows.sort(
+                key=lambda row: (
+                    0 if str(row.get("kind") or "") == "detached_foreman" else 1,
+                    int(row.get("depth", 0) or 0),
+                    str(row.get("subagent_id") or ""),
+                )
+            )
+
+            lines = [
+                "**Swarm Status**",
+                "",
+                f"**Paused:** {'Yes' if is_spawn_paused() else 'No'}",
+                f"**Default mode:** {swarm_settings['default_mode']}",
+                f"**Detached foreman worker cap:** {swarm_settings['max_workers']}",
+                f"**Max depth:** {_get_max_spawn_depth()}",
+                f"**Delegate batch max concurrency:** {_get_max_concurrent_children()}",
+                f"**Active swarm agents in this chat:** {len(rows)}",
+            ]
+
+            if self._is_swarm_home_channel(source):
+                hidden_rows = max(0, len(all_rows) - len(rows))
+                lines.append(f"**Other active swarm agents:** {hidden_rows}")
+
+            if rows:
+                for row in rows[:12]:
+                    sid = str(row.get("subagent_id") or "?")
+                    depth = int(row.get("depth", 0) or 0)
+                    kind = str(row.get("kind") or "")
+                    role_label = "foreman" if kind == "detached_foreman" else f"d{depth}"
+                    status = str(row.get("status") or "running")
+                    stalled = "yes" if row.get("stalled") else "no"
+                    idle = max(0, int(float(row.get("idle_seconds", 0) or 0)))
+                    model = str(row.get("model") or "-")
+                    goal = " ".join(str(row.get("goal") or "").split())
+                    if len(model) > 40:
+                        model = model[:37] + "..."
+                    if len(goal) > 72:
+                        goal = goal[:69] + "..."
+                    lines.append(
+                        f"- `{sid}` · {role_label} · {status} · stalled={stalled} "
+                        f"· idle={idle}s · `{model}` · {goal or '-'}"
+                    )
+                if len(rows) > 12:
+                    lines.append(f"... and {len(rows) - 12} more")
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "No active detached swarms or subagents in this chat.",
+                        "Launch one with `/swarm start <prompt>` or `/swarm <prompt>`."
+                    ]
+                )
+
+            return "\n".join(lines)
+
+        if subcommand == "status" and remainder:
+            return f"Usage: /swarm status\n{reserved_prompt_hint}"
+
+        if subcommand == "pause":
+            if remainder:
+                return f"Usage: /swarm pause\n{reserved_prompt_hint}"
+            if not self._is_swarm_home_channel(source):
+                return (
+                    "Global `/swarm pause` is restricted to the platform home channel because it affects every chat. "
+                    "Use `/swarm stop` to stop the swarm for just this chat."
+                )
+            set_spawn_paused(True)
+            return (
+                "Swarm paused. Active subagents keep running; "
+                "new delegation spawns are blocked."
+            )
+
+        if subcommand == "resume":
+            if remainder:
+                return f"Usage: /swarm resume\n{reserved_prompt_hint}"
+            if not self._is_swarm_home_channel(source):
+                return (
+                    "Global `/swarm resume` is restricted to the platform home channel because it affects every chat."
+                )
+            set_spawn_paused(False)
+            return "Swarm resumed. New delegation spawns are allowed."
+
+        if subcommand == "stop":
+            stop_parts = remainder.split() if remainder else []
+            if len(stop_parts) > 1:
+                return f"Usage: /swarm stop <id>\n{reserved_prompt_hint}"
+            stop_target = stop_parts[0] if stop_parts else ""
+            rows = list_active_subagents()
+            matching_foremen = [
+                row for row in rows
+                if self._swarm_row_matches_source(row, source)
+            ]
+
+            if stop_target:
+                target_row = next((row for row in matching_foremen if str(row.get("subagent_id") or "") == stop_target), None)
+                if target_row is None:
+                    if any(str(row.get("subagent_id") or "") == stop_target for row in rows):
+                        return f"Swarm foreman `{stop_target}` belongs to a different chat."
+                    return f"No active swarm foreman found with id `{stop_target}` for this chat."
+                if interrupt_subagent(stop_target):
+                    return f"🛑 Swarm stop requested for `{stop_target}`."
+                if str(target_row.get("status") or "") in {"launching", "queued"}:
+                    return f"Swarm foreman `{stop_target}` is still launching; try `/swarm stop {stop_target}` again in a moment."
+                return "Swarm stop failed — the foreman is no longer interruptible."
+
+            if not matching_foremen:
+                return "No detached swarm foreman is active for this chat."
+            if len(matching_foremen) > 1:
+                return "Multiple detached swarms are active for this chat. Use `/swarm stop <id>` after checking `/swarm status`."
+
+            foreman_id = str(matching_foremen[0].get("subagent_id") or "")
+            if foreman_id and interrupt_subagent(foreman_id):
+                return f"🛑 Swarm stop requested for `{foreman_id}`."
+            if str(matching_foremen[0].get("status") or "") in {"launching", "queued"}:
+                return f"Swarm foreman `{foreman_id}` is still launching; try `/swarm stop {foreman_id}` again in a moment."
+            return "Swarm stop failed — the foreman is no longer interruptible."
+
+        prompt = remainder if subcommand == "start" and remainder else ("" if normalized_args == "start" else args)
+        if not prompt:
+            return (
+                "Usage: /swarm [status|pause|resume|start <prompt>|stop <id>|<prompt>]\n"
+                "Example: /swarm start Audit the auth subsystem and propose a patch plan\n\n"
+                "Launches a detached foreman swarm in a separate background session. "
+                "You can keep chatting while Main Sub runs the swarm."
+            )
+
+        source = event.source
+        active_foremen = [
+            row for row in list_active_subagents()
+            if self._swarm_row_matches_source(row, source)
+        ]
+        if active_foremen:
+            return "A detached swarm foreman is already active for this chat. Use `/swarm status` to inspect it or `/swarm stop` to interrupt it first."
+
+        task_id = f"swarm_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        from tools.delegate_tool import _register_subagent
+        _register_subagent(
+            {
+                "subagent_id": task_id,
+                "parent_id": None,
+                "depth": 0,
+                "goal": prompt,
+                "status": "launching",
+                "kind": "detached_foreman",
+                "source_platform": source.platform.value if source.platform else None,
+                "source_chat_id": source.chat_id,
+                "source_thread_id": source.thread_id,
+            }
+        )
+        _task = asyncio.create_task(self._run_swarm_task(prompt, source, task_id))
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        return (
+            f'🐝 Detached swarm started: "{preview}"\n'
+            f"Swarm ID: {task_id}\n"
+            f"Worker budget: up to {swarm_settings['max_workers']}\n"
+            "You can keep chatting — Main Sub is running in the background."
+        )
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
@@ -6676,6 +6976,204 @@ class GatewayRunner:
                 await adapter.send(
                     chat_id=source.chat_id,
                     content=f"❌ Background task {task_id} failed: {e}",
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass
+
+    async def _run_swarm_task(
+        self, prompt: str, source: "SessionSource", task_id: str
+    ) -> None:
+        """Execute a detached swarm foreman and deliver the result to the chat."""
+        from run_agent import AIAgent
+        from hermes_cli.tools_config import _get_platform_tools
+        from tools.delegate_tool import _mark_subagent_activity, _register_subagent, _unregister_subagent
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            logger.warning("No adapter for platform %s in swarm task %s", source.platform, task_id)
+            _unregister_subagent(task_id)
+            return
+
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
+        try:
+            user_config = _load_gateway_config()
+            swarm_settings = self._load_swarm_settings(user_config)
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                user_config=user_config,
+            )
+            if not runtime_kwargs.get("api_key"):
+                await adapter.send(
+                    source.chat_id,
+                    f"❌ Swarm task {task_id} failed: no provider credentials configured.",
+                    metadata=_thread_metadata,
+                )
+                _unregister_subagent(task_id)
+                return
+
+            platform_key = _platform_config_key(source.platform)
+            enabled_toolsets = set(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets.update({"delegation", "terminal", "file", "skills", "todo", "session_search", "web"})
+            disabled_toolsets = {"clarify", "cronjob", "messaging", "memory"}
+            enabled_toolsets = sorted(t for t in enabled_toolsets if t and t not in disabled_toolsets)
+            disabled_toolsets = sorted(disabled_toolsets)
+
+            pr = self._provider_routing
+            reasoning_config = self._load_reasoning_config()
+            self._reasoning_config = reasoning_config
+            self._service_tier = self._load_service_tier()
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            foreman_prompt = self._build_swarm_foreman_prompt(swarm_settings)
+
+            parent_session_id = None
+            try:
+                session_entry = self.session_store.get_or_create_session(source)
+                parent_session_id = getattr(session_entry, "session_id", None)
+            except Exception:
+                parent_session_id = None
+
+            def _foreman_progress(tool_name: str, args_preview: str = "") -> None:
+                _mark_subagent_activity(
+                    task_id,
+                    "foreman.tool",
+                    status="running",
+                    last_tool=tool_name or "",
+                    last_preview=args_preview or "",
+                )
+
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=swarm_settings["max_iterations"],
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                reasoning_config=reasoning_config,
+                service_tier=self._service_tier,
+                request_overrides=turn_route.get("request_overrides"),
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
+                session_id=task_id,
+                platform=platform_key,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                session_db=self._session_db,
+                parent_session_id=parent_session_id,
+                fallback_model=self._fallback_model,
+                ephemeral_system_prompt=foreman_prompt,
+                tool_progress_callback=_foreman_progress,
+            )
+            agent._delegate_max_concurrent_children_override = swarm_settings["max_workers"]
+            agent._delegate_depth = 0
+            agent._delegate_role = "orchestrator"
+            agent._subagent_id = task_id
+            agent._subagent_goal = prompt
+
+            _register_subagent(
+                {
+                    "subagent_id": task_id,
+                    "parent_id": None,
+                    "depth": 0,
+                    "goal": prompt,
+                    "model": turn_route["model"],
+                    "status": "queued",
+                    "kind": "detached_foreman",
+                    "source_platform": source.platform.value if source.platform else None,
+                    "source_chat_id": source.chat_id,
+                    "source_thread_id": source.thread_id,
+                    "agent": agent,
+                }
+            )
+
+            def run_sync():
+                _mark_subagent_activity(task_id, "foreman.started", status="running")
+                try:
+                    result = agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
+                    _mark_subagent_activity(task_id, "foreman.completed", status="completed")
+                    return result
+                except Exception:
+                    _mark_subagent_activity(task_id, "foreman.error", status="error")
+                    raise
+                finally:
+                    _unregister_subagent(task_id)
+                    self._cleanup_agent_resources(agent)
+
+            result = await self._run_in_executor_with_context(run_sync)
+
+            response = result.get("final_response", "") if result else ""
+            if not response and result and result.get("error"):
+                response = f"Error: {result['error']}"
+
+            if response:
+                media_files, response = adapter.extract_media(response)
+                images, text_content = adapter.extract_images(response)
+
+                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+                header = f'✅ Swarm task complete\nPrompt: "{preview}"\n\n'
+
+                if text_content:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=header + text_content,
+                        metadata=_thread_metadata,
+                    )
+                elif not images and not media_files:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=header + "(No response generated)",
+                        metadata=_thread_metadata,
+                    )
+
+                for image_url, alt_text in (images or []):
+                    try:
+                        await adapter.send_image(
+                            chat_id=source.chat_id,
+                            image_url=image_url,
+                            caption=alt_text,
+                        )
+                    except Exception:
+                        pass
+
+                for media_path, _is_voice in (media_files or []):
+                    try:
+                        await adapter.send_document(
+                            chat_id=source.chat_id,
+                            file_path=media_path,
+                        )
+                    except Exception:
+                        pass
+            else:
+                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f'✅ Swarm task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    metadata=_thread_metadata,
+                )
+
+        except Exception as e:
+            logger.exception("Swarm task %s failed", task_id)
+            try:
+                _unregister_subagent(task_id)
+            except Exception:
+                pass
+            try:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f"❌ Swarm task {task_id} failed: {e}",
                     metadata=_thread_metadata,
                 )
             except Exception:

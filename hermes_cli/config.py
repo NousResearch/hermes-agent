@@ -760,6 +760,7 @@ DEFAULT_CONFIG = {
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "orchestrator_model": "",  # optional model override for effective role="orchestrator" children only
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
@@ -775,6 +776,7 @@ DEFAULT_CONFIG = {
                                        # no ceiling). High-reasoning models on large tasks
                                        # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
                                        # raise if children time out before producing output.
+        "stall_threshold_seconds": 300,  # mark active subagents stalled after this many idle seconds (floor 30)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
@@ -783,6 +785,17 @@ DEFAULT_CONFIG = {
         # warning log if out of range.
         "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+    },
+
+    # Detached swarm foreman mode — a background duplicate that can orchestrate
+    # Hermes subagents plus CLI workers while the main chat stays free.
+    "swarm": {
+        "default_mode": "detached_foreman",
+        "max_workers": 10,
+        "max_iterations": 120,
+        "enable_hermes_workers": True,
+        "enable_claude_workers": True,
+        "enable_codex_workers": True,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -2225,7 +2238,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "delegation", "swarm",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }

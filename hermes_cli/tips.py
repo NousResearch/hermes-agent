@@ -284,7 +284,7 @@ TIPS = [
     "V4A patch format supports Add File, Delete File, and Move File directives — not just Update.",
     "MCP servers can request LLM completions back via sampling — the agent becomes a tool for the server.",
     "MCP servers send notifications/tools/list_changed to trigger automatic tool re-registration without restart.",
-    "delegate_task with acp_command: 'claude' spawns Claude Code as a child agent from any platform.",
+    "delegate_task runs Hermes/OpenAI-compatible subagents; use terminal `claude -p` for Claude Code on machines without Claude ACP support.",
     "Delegation has a heartbeat thread — child activity propagates to the parent, preventing gateway timeouts.",
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",

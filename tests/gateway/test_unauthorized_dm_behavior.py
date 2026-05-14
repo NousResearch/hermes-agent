@@ -12,6 +12,7 @@ from gateway.session import SessionSource
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
         "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_ALLOWED_GROUP_CHATS",
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
@@ -136,6 +137,46 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
         chat_type="dm",
     )
     assert runner._is_user_authorized(source) is True
+
+
+def test_telegram_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_GROUP_CHATS", "-1001234567890")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="421433470",
+        chat_id="-1001234567890",
+        user_name="group member",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_telegram_group_allowlist_does_not_authorize_other_groups(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_GROUP_CHATS", "-1001234567890")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="421433470",
+        chat_id="-1009999999999",
+        user_name="group member",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is False
 
 
 def test_qq_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):

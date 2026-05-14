@@ -113,6 +113,15 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
+    started_at = record.get("started_at")
+    try:
+        started_at = float(started_at)
+    except (TypeError, ValueError):
+        started_at = time.time()
+    record["started_at"] = started_at
+    record.setdefault("last_activity_at", started_at)
+    record.setdefault("last_activity_kind", "registered")
+    record.setdefault("status", "starting")
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
@@ -120,6 +129,30 @@ def _register_subagent(record: Dict[str, Any]) -> None:
 def _unregister_subagent(subagent_id: str) -> None:
     with _active_subagents_lock:
         _active_subagents.pop(subagent_id, None)
+
+
+def _mark_subagent_activity(
+    subagent_id: Optional[str],
+    kind: str,
+    *,
+    status: Optional[str] = None,
+    when: Optional[float] = None,
+    **fields,
+) -> None:
+    """Update live telemetry for a running subagent."""
+    if not subagent_id:
+        return
+    at = time.time() if when is None else when
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return
+        record["last_activity_at"] = at
+        record["last_activity_kind"] = kind
+        if status:
+            record["status"] = status
+        if fields:
+            record.update(fields)
 
 
 def interrupt_subagent(subagent_id: str) -> bool:
@@ -148,14 +181,28 @@ def interrupt_subagent(subagent_id: str) -> bool:
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
-    Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
+    Each record includes live telemetry derived from the running child:
+    ``last_activity_at``, ``last_activity_kind``, ``idle_seconds``, and
+    ``stalled``. Safe to call from any thread — returns copies only.
     """
+    now = time.time()
+    stall_threshold = _get_stall_threshold_seconds()
     with _active_subagents_lock:
-        return [
-            {k: v for k, v in r.items() if k != "agent"}
-            for r in _active_subagents.values()
-        ]
+        rows: List[Dict[str, Any]] = []
+        for r in _active_subagents.values():
+            row = {k: v for k, v in r.items() if k != "agent"}
+            last_activity_at = row.get("last_activity_at", row.get("started_at", now))
+            try:
+                last_activity_at = float(last_activity_at)
+            except (TypeError, ValueError):
+                last_activity_at = now
+            idle_seconds = max(0.0, now - last_activity_at)
+            row["last_activity_at"] = last_activity_at
+            row["last_activity_kind"] = str(row.get("last_activity_kind") or "unknown")
+            row["idle_seconds"] = round(idle_seconds, 1)
+            row["stalled"] = idle_seconds >= stall_threshold
+            rows.append(row)
+        return rows
 
 
 def _extract_output_tail(
@@ -263,15 +310,34 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
-def _get_max_concurrent_children() -> int:
-    """Read delegation.max_concurrent_children from config, falling back to
-    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
+def _get_max_concurrent_children(parent_agent=None) -> int:
+    """Read the effective parallel child budget.
+
+    Precedence:
+    1. Parent-agent override (`_delegate_max_concurrent_children_override`) when set.
+    2. delegation.max_concurrent_children in config.yaml.
+    3. DELEGATION_MAX_CONCURRENT_CHILDREN env var.
+    4. Default (3).
 
     Users can raise this as high as they want; only the floor (1) is enforced.
-
-    Uses the same ``_load_config()`` path that the rest of ``delegate_task``
-    uses, keeping config priority consistent (config.yaml > env > default).
     """
+    if parent_agent is not None:
+        override = None
+        try:
+            parent_dict = object.__getattribute__(parent_agent, "__dict__")
+        except Exception:
+            parent_dict = None
+        if isinstance(parent_dict, dict) and "_delegate_max_concurrent_children_override" in parent_dict:
+            override = parent_dict.get("_delegate_max_concurrent_children_override")
+        if override is not None:
+            try:
+                return max(1, int(override))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "parent override _delegate_max_concurrent_children_override=%r is not a valid integer; ignoring",
+                    override,
+                )
+
     cfg = _load_config()
     val = cfg.get("max_concurrent_children")
     if val is not None:
@@ -410,6 +476,7 @@ def _preserve_parent_mcp_toolsets(
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+DEFAULT_STALL_THRESHOLD_SECONDS = 300  # seconds with no subagent activity before flagged stalled
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 _HEARTBEAT_STALE_CYCLES = (
     5  # mark child stale after this many heartbeats with no iteration progress
@@ -615,6 +682,11 @@ def _build_child_progress_callback(
     _batch: List[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
 
+    def _record(kind: str, *, status: Optional[str] = None, **fields) -> None:
+        if subagent_id is None:
+            return
+        _mark_subagent_activity(subagent_id, kind, status=status, **fields)
+
     def _identity_kwargs() -> Dict[str, Any]:
         kw: Dict[str, Any] = {
             "task_index": task_index,
@@ -652,6 +724,7 @@ def _build_child_progress_callback(
         # Lifecycle events emitted by the orchestrator itself — handled
         # before enum normalisation since they are not part of DelegateEvent.
         if event_type == "subagent.start":
+            _record("subagent.start", status="running")
             if spinner and goal_label:
                 short = (
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
@@ -664,6 +737,10 @@ def _build_child_progress_callback(
             return
 
         if event_type == "subagent.complete":
+            _record(
+                "subagent.complete",
+                status=str(kwargs.get("status") or "completed"),
+            )
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
@@ -683,6 +760,7 @@ def _build_child_progress_callback(
 
         if event == DelegateEvent.TASK_THINKING:
             text = preview or tool_name or ""
+            _record("subagent.thinking", status="running")
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
@@ -696,6 +774,7 @@ def _build_child_progress_callback(
             return
 
         if event == DelegateEvent.TASK_PROGRESS:
+            _record("subagent.progress", status="running")
             # Pre-batched progress summary relayed from a nested
             # orchestrator's grandchild (upstream emits as
             # parent_cb("subagent_progress", summary_string) where the
@@ -719,11 +798,12 @@ def _build_child_progress_callback(
         # TASK_TOOL_STARTED — display and batch for parent relay
         _tool_count[0] += 1
         if subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(subagent_id)
-                if rec is not None:
-                    rec["tool_count"] = _tool_count[0]
-                    rec["last_tool"] = tool_name or ""
+            _record(
+                "subagent.tool_started",
+                status="running",
+                tool_count=_tool_count[0],
+                last_tool=tool_name or "",
+            )
         if spinner:
             short = (
                 (preview[:35] + "...")
@@ -804,6 +884,11 @@ def _build_child_agent(
     max_spawn = _get_max_spawn_depth()
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
+    effective_child_model = model
+    if effective_role == "orchestrator":
+        orchestrator_model = _get_orchestrator_model()
+        if orchestrator_model:
+            effective_child_model = orchestrator_model
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
@@ -872,7 +957,7 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    effective_model_for_cb = effective_child_model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
@@ -908,7 +993,7 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    effective_model = effective_child_model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
@@ -923,6 +1008,13 @@ def _build_child_agent(
     )
 
     if override_acp_command:
+        _cmd_name = os.path.basename(str(override_acp_command).split()[0]).lower()
+        if _cmd_name == "claude":
+            raise ValueError(
+                "Claude Code ACP delegation is not supported on this machine: "
+                "`claude --acp --stdio` fails with 'unknown option --acp'. "
+                "Use terminal print mode instead: `claude -p ... --model claude-opus-4-6`."
+            )
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
         # so run_agent.py initializes the CopilotACPClient.
         effective_provider = "copilot-acp"
@@ -988,6 +1080,12 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    try:
+        parent_dict = object.__getattribute__(parent_agent, "__dict__")
+    except Exception:
+        parent_dict = None
+    if isinstance(parent_dict, dict) and "_delegate_max_concurrent_children_override" in parent_dict:
+        child._delegate_max_concurrent_children_override = parent_dict["_delegate_max_concurrent_children_override"]
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1282,6 +1380,7 @@ def _run_single_child(
                     else None
                 ),
                 "started_at": time.time(),
+                "last_activity_kind": "registered",
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
@@ -1289,6 +1388,7 @@ def _run_single_child(
         )
 
     try:
+        _mark_subagent_activity(_subagent_id, "subagent.start", status="running")
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.start", preview=goal)
@@ -1373,6 +1473,11 @@ def _run_single_child(
 
             if child_progress_cb:
                 try:
+                    _mark_subagent_activity(
+                        _subagent_id,
+                        "subagent.complete",
+                        status="timeout" if is_timeout else "error",
+                    )
                     child_progress_cb(
                         "subagent.complete",
                         preview=(
@@ -1610,6 +1715,7 @@ def _run_single_child(
 
         if child_progress_cb:
             try:
+                _mark_subagent_activity(_subagent_id, "subagent.complete", status=status)
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
@@ -1621,6 +1727,7 @@ def _run_single_child(
         logging.exception(f"[subagent-{task_index}] failed")
         if child_progress_cb:
             try:
+                _mark_subagent_activity(_subagent_id, "subagent.complete", status="failed")
                 child_progress_cb(
                     "subagent.complete",
                     preview=str(exc),
@@ -1729,8 +1836,8 @@ def delegate_task(
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
-    # Depth limit — configurable via delegation.max_spawn_depth,
-    # default 2 for parity with the original MAX_DEPTH constant.
+    # Depth limit — configurable via delegation.max_spawn_depth.
+    # Default is flat (MAX_DEPTH=1); profile configs can raise it deliberately.
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
@@ -1772,7 +1879,7 @@ def delegate_task(
         return tool_error(str(exc))
 
     # Normalize to task list
-    max_children = _get_max_concurrent_children()
+    max_children = _get_max_concurrent_children(parent_agent)
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
@@ -2190,6 +2297,64 @@ def _load_config() -> dict:
         return {}
 
 
+def _get_stall_threshold_seconds() -> float:
+    """Read delegation.stall_threshold_seconds with env fallback.
+
+    Default: 300 seconds. Floor: 30 seconds.
+    """
+
+    def _parse(raw: Any, *, label: str) -> Optional[float]:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s=%r is not a valid number; using default %d",
+                label,
+                raw,
+                DEFAULT_STALL_THRESHOLD_SECONDS,
+            )
+            return None
+        if value < 30.0:
+            logger.warning(
+                "%s=%r out of range [30, inf); clamping to 30",
+                label,
+                raw,
+            )
+            return 30.0
+        return value
+
+    cfg = _load_config()
+    cfg_val = cfg.get("stall_threshold_seconds")
+    if cfg_val is not None:
+        parsed = _parse(cfg_val, label="delegation.stall_threshold_seconds")
+        return (
+            parsed
+            if parsed is not None
+            else float(DEFAULT_STALL_THRESHOLD_SECONDS)
+        )
+
+    env_val = os.getenv("DELEGATION_STALL_THRESHOLD_SECONDS")
+    if env_val:
+        parsed = _parse(env_val, label="DELEGATION_STALL_THRESHOLD_SECONDS")
+        return (
+            parsed
+            if parsed is not None
+            else float(DEFAULT_STALL_THRESHOLD_SECONDS)
+        )
+
+    return float(DEFAULT_STALL_THRESHOLD_SECONDS)
+
+
+def _get_orchestrator_model() -> Optional[str]:
+    """Read delegation.orchestrator_model with env fallback."""
+    cfg = _load_config()
+    cfg_val = str(cfg.get("orchestrator_model") or "").strip()
+    if cfg_val:
+        return cfg_val
+    env_val = str(os.getenv("DELEGATION_ORCHESTRATOR_MODEL") or "").strip()
+    return env_val or None
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -2222,7 +2387,7 @@ DELEGATE_TASK_SCHEMA = {
         "delegate_task so they can spawn their own workers, but still "
         "cannot use clarify, memory, send_message, or execute_code. "
         "Orchestrators are bounded by delegation.max_spawn_depth "
-        "(default 2) and can be disabled globally via "
+        "(default 1) and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
@@ -2275,12 +2440,16 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": (
+                                "Per-task ACP command override for supported ACP subprocess transports. "
+                                "Do not use this for Claude Code on this machine; installed Claude Code lacks "
+                                "`--acp --stdio`. Use terminal `claude -p ...` for Claude instead."
+                            ),
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Per-task ACP args override for supported ACP subprocess transports.",
                         },
                         "role": {
                             "type": "string",
@@ -2315,18 +2484,18 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "Override ACP command for supported child-agent subprocess transports. "
+                    "Current implementation is wired through the Copilot ACP client path; "
+                    "do not use this for Claude Code on this machine because `claude --acp --stdio` "
+                    "is not supported. For Claude, call `claude -p ...` via terminal instead."
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "Arguments for the ACP command. Only used when acp_command is set. "
+                    "Do not pass ['--acp', '--stdio'] to Claude Code here; use terminal print mode instead."
                 ),
             },
         },

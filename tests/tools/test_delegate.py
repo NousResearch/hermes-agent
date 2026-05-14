@@ -22,6 +22,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _get_stall_threshold_seconds,
     _LEGACY_EVENT_MAP,
     MAX_DEPTH,
     check_delegate_requirements,
@@ -307,6 +308,25 @@ class TestDelegateTask(unittest.TestCase):
         self.assertTrue(callable(mock_child.thinking_callback))
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
+
+    def test_claude_acp_override_fails_fast_with_clear_guidance(self):
+        """Claude Code on this machine lacks --acp, so do not route it through ACP."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent"):
+            with self.assertRaisesRegex(ValueError, "Claude Code ACP delegation is not supported"):
+                _build_child_agent(
+                    task_index=0,
+                    goal="Do not spawn Claude through ACP",
+                    context=None,
+                    toolsets=None,
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                    override_acp_command="claude",
+                    override_acp_args=["--acp", "--stdio"],
+                )
 
 
 class TestToolNamePreservation(unittest.TestCase):
@@ -1585,10 +1605,131 @@ class TestConcurrencyDefaults(unittest.TestCase):
         with patch.dict(os.environ, {"DELEGATION_MAX_CONCURRENT_CHILDREN": "12"}):
             self.assertEqual(_get_max_concurrent_children(), 12)
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_parent_override_honored(self, mock_cfg):
+        parent = MagicMock()
+        parent._delegate_max_concurrent_children_override = 9
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_concurrent_children(parent), 9)
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 6})
+    def test_parent_override_beats_config(self, mock_cfg):
+        parent = MagicMock()
+        parent._delegate_max_concurrent_children_override = 8
+        self.assertEqual(_get_max_concurrent_children(parent), 8)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_invalid_parent_override_falls_back(self, mock_cfg):
+        parent = MagicMock()
+        parent._delegate_max_concurrent_children_override = "bad"
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_concurrent_children(parent), 3)
+
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 6})
     def test_configured_value_returned(self, mock_cfg):
         self.assertEqual(_get_max_concurrent_children(), 6)
+
+
+# =========================================================================
+# stall_threshold_seconds helper + active subagent telemetry
+# =========================================================================
+
+
+class TestStallThresholdSeconds(unittest.TestCase):
+    """Tests for delegation.stall_threshold_seconds parsing and clamping."""
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_default_is_300_seconds(self, mock_cfg):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_stall_threshold_seconds(), 300.0)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"stall_threshold_seconds": 45})
+    def test_configured_value_returned(self, mock_cfg):
+        self.assertEqual(_get_stall_threshold_seconds(), 45.0)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"stall_threshold_seconds": 5})
+    def test_config_below_floor_clamps_and_warns(self, mock_cfg):
+        import logging
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _get_stall_threshold_seconds()
+        self.assertEqual(result, 30.0)
+        self.assertTrue(any("clamping to 30" in m for m in cm.output))
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_env_fallback_honored(self, mock_cfg):
+        with patch.dict(os.environ, {"DELEGATION_STALL_THRESHOLD_SECONDS": "90"}):
+            self.assertEqual(_get_stall_threshold_seconds(), 90.0)
+
+
+class TestActiveSubagentTelemetry(unittest.TestCase):
+    """Tests for the live subagent registry telemetry snapshot."""
+
+    def test_list_active_subagents_includes_stall_fields(self):
+        from tools.delegate_tool import _register_subagent, _unregister_subagent, list_active_subagents
+
+        sid = "sa-test-stall"
+        now = time.time()
+        _register_subagent(
+            {
+                "subagent_id": sid,
+                "parent_id": None,
+                "depth": 0,
+                "goal": "Investigate slow tests",
+                "model": "openai/test-orchestrator",
+                "started_at": now - 320,
+                "last_activity_at": now - 310,
+                "last_activity_kind": "subagent.thinking",
+                "status": "running",
+                "tool_count": 2,
+                "agent": MagicMock(),
+            }
+        )
+        try:
+            with patch("tools.delegate_tool._get_stall_threshold_seconds", return_value=300.0):
+                rows = [r for r in list_active_subagents() if r["subagent_id"] == sid]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["last_activity_kind"], "subagent.thinking")
+            self.assertTrue(row["stalled"])
+            self.assertGreaterEqual(row["idle_seconds"], 300)
+            self.assertNotIn("agent", row)
+        finally:
+            _unregister_subagent(sid)
+
+    def test_completed_subagent_record_is_not_kept(self):
+        from tools.delegate_tool import _run_single_child, list_active_subagents
+
+        sid = "sa-test-complete"
+        child = MagicMock()
+        child._subagent_id = sid
+        child._delegate_depth = 1
+        child._parent_subagent_id = None
+        child._delegate_role = "leaf"
+        child.model = "openai/test-leaf"
+        child._credential_pool = None
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.session_reasoning_tokens = 0
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        _run_single_child(
+            task_index=0,
+            goal="Finish quickly",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertFalse(
+            any(row["subagent_id"] == sid for row in list_active_subagents())
+        )
 
 
 # =========================================================================
@@ -1815,6 +1956,56 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
                 kwargs = MockAgent.call_args[1]
                 self.assertNotIn("delegation", kwargs["enabled_toolsets"])
                 self.assertEqual(mock_child._delegate_role, "leaf")
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_spawn_depth": 2, "orchestrator_model": "openai/orch-model"})
+    @patch("tools.delegate_tool._build_child_progress_callback")
+    @patch("run_agent.AIAgent")
+    def test_orchestrator_model_override_applies_only_to_orchestrators(
+        self, MockAgent, mock_progress_cb, mock_cfg
+    ):
+        """delegation.orchestrator_model overrides the general child model
+        only when the effective role is orchestrator, and the callback sees
+        the same effective model.
+        """
+        mock_progress_cb.return_value = None
+        MockAgent.return_value = _make_role_mock_child()
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file", "delegation"]
+
+        _build_child_agent(
+            task_index=0,
+            goal="Coordinate broad work",
+            context=None,
+            toolsets=None,
+            model="openai/general-model",
+            max_iterations=50,
+            task_count=1,
+            parent_agent=parent,
+            role="orchestrator",
+        )
+
+        orch_call = MockAgent.call_args_list[0].kwargs
+        orch_cb_call = mock_progress_cb.call_args_list[0].kwargs
+        self.assertEqual(orch_call["model"], "openai/orch-model")
+        self.assertEqual(orch_cb_call["model"], "openai/orch-model")
+
+        _build_child_agent(
+            task_index=1,
+            goal="Handle one leaf task",
+            context=None,
+            toolsets=None,
+            model="openai/general-model",
+            max_iterations=50,
+            task_count=1,
+            parent_agent=parent,
+            role="leaf",
+        )
+
+        leaf_call = MockAgent.call_args_list[1].kwargs
+        leaf_cb_call = mock_progress_cb.call_args_list[1].kwargs
+        self.assertEqual(leaf_call["model"], "openai/general-model")
+        self.assertEqual(leaf_cb_call["model"], "openai/general-model")
 
     # ── Role-aware system prompt ────────────────────────────────────────
 

@@ -68,24 +68,63 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
+def _current_session_scope() -> Optional[Dict[str, Optional[str]]]:
+    """Return the current messaging session scope, if this tool is running in one."""
+    from gateway.session_context import get_session_env
+
+    platform = (get_session_env("HERMES_SESSION_PLATFORM") or "").strip()
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID") or "").strip()
+    if not platform or not chat_id:
+        return None
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID") or "").strip() or None
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
+
+
 def _origin_from_env() -> Optional[Dict[str, str]]:
     from gateway.session_context import get_session_env
-    origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
-    origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-    if origin_platform and origin_chat_id:
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+
+    scope = _current_session_scope()
+    if scope:
+        thread_id = scope.get("thread_id")
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",
-                thread_id, origin_platform, origin_chat_id,
+                thread_id, scope["platform"], scope["chat_id"],
             )
         return {
-            "platform": origin_platform,
-            "chat_id": origin_chat_id,
+            "platform": scope["platform"],
+            "chat_id": scope["chat_id"],
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
             "thread_id": thread_id,
         }
     return None
+
+
+def _job_matches_session_scope(job: Dict[str, Any], scope: Optional[Dict[str, Optional[str]]]) -> bool:
+    """Return True when a cron job belongs to the active messaging chat/topic.
+
+    No active session scope means CLI/admin behaviour: show all jobs.  When a
+    messaging chat is active, origin-less jobs and jobs from other chats/topics
+    must stay hidden so status/list operations don't leak cross-chat state.
+    """
+    if not scope:
+        return True
+
+    origin = job.get("origin") or {}
+    if not isinstance(origin, dict):
+        return False
+
+    if str(origin.get("platform") or "").strip() != scope["platform"]:
+        return False
+    if str(origin.get("chat_id") or "").strip() != scope["chat_id"]:
+        return False
+
+    origin_thread_id = str(origin.get("thread_id") or "").strip() or None
+    return origin_thread_id == scope.get("thread_id")
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
@@ -298,14 +337,20 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            scope = _current_session_scope()
+            visible_jobs = [
+                job for job in list_jobs(include_disabled=include_disabled)
+                if _job_matches_session_scope(job, scope)
+            ]
+            jobs = [_format_job(job) for job in visible_jobs]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         job = get_job(job_id)
-        if not job:
+        scope = _current_session_scope()
+        if not job or not _job_matches_session_scope(job, scope):
             return json.dumps(
                 {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
                 indent=2,

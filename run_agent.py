@@ -467,6 +467,44 @@ def _paths_overlap(left: Path, right: Path) -> bool:
 
 
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_LLM_SPECIAL_TOKEN_REPLACEMENT = "[REMOVED_SPECIAL_TOKEN]"
+_LLM_SPECIAL_TOKEN_LITERALS = (
+    # ChatML / Qwen
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    # Llama 3.x / 4.x
+    "<|begin_of_text|>",
+    "<|end_of_text|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "<|eot_id|>",
+    "<|python_tag|>",
+    "<|eom_id|>",
+    # Mistral / Mixtral
+    "[INST]",
+    "[/INST]",
+    "<<SYS>>",
+    "<</SYS>>",
+    # Phi and other sentencepiece-style templates
+    "<s>",
+    "</s>",
+    # GPT-OSS / harmony
+    "<|channel|>",
+    "<|message|>",
+    "<|return|>",
+    "<|call|>",
+    # Gemma
+    "<start_of_turn>",
+    "<end_of_turn>",
+)
+_LLM_RESERVED_SPECIAL_TOKEN_RE = re.compile(r"<\|reserved_special_token_\d+\|>")
+_LLM_NESTED_SPECIAL_TOKEN_FRAGMENT_RE = re.compile(
+    r"<\|(?:im_start|im_end|endoftext|begin_of_text|end_of_text|start_header_id|"
+    r"end_header_id|eot_id|python_tag|eom_id|channel|message|return|call)"
+    + re.escape(_LLM_SPECIAL_TOKEN_REPLACEMENT)
+    + r"\|>"
+)
 
 
 
@@ -628,8 +666,71 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+def _sanitize_llm_special_token_literals(text: str) -> str:
+    """Strip chat-template special-token literals from untrusted text.
+
+    Some OpenAI-compatible self-hosted backends preserve tokenizer special
+    tokens in user/tool text.  If those literals survive into the tokenizer,
+    external content can try to spoof role boundaries below the API layer.
+    """
+    if not text:
+        return text
+    output = text
+    while True:
+        previous = output
+        for literal in _LLM_SPECIAL_TOKEN_LITERALS:
+            if literal in output:
+                output = output.replace(literal, _LLM_SPECIAL_TOKEN_REPLACEMENT)
+        output = _LLM_RESERVED_SPECIAL_TOKEN_RE.sub(_LLM_SPECIAL_TOKEN_REPLACEMENT, output)
+        output = _LLM_NESTED_SPECIAL_TOKEN_FRAGMENT_RE.sub(
+            _LLM_SPECIAL_TOKEN_REPLACEMENT,
+            output,
+        )
+        if output == previous:
+            return output
+
+
 # _summarize_user_message_for_log is imported from agent.codex_responses_adapter
 # (see import block above). Remains importable from run_agent for backward compat.
+
+
+def _sanitize_untrusted_message_content(content: Any) -> tuple[Any, bool]:
+    """Return content with LLM special tokens stripped from text-bearing parts."""
+    if isinstance(content, str):
+        sanitized = _sanitize_llm_special_token_literals(content)
+        return sanitized, sanitized != content
+    if isinstance(content, list):
+        changed = False
+        sanitized_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                new_part = dict(part)
+                text = new_part.get("text")
+                if isinstance(text, str):
+                    sanitized = _sanitize_llm_special_token_literals(text)
+                    if sanitized != text:
+                        new_part["text"] = sanitized
+                        changed = True
+                sanitized_parts.append(new_part)
+            else:
+                sanitized_parts.append(part)
+        return sanitized_parts, changed
+    return content, False
+
+
+def _sanitize_untrusted_messages_llm_special_tokens(messages: list) -> bool:
+    """Strip LLM special-token literals from user/tool message text in-place."""
+    changed = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") not in {"user", "tool"}:
+            continue
+        sanitized, content_changed = _sanitize_untrusted_message_content(msg.get("content"))
+        if content_changed:
+            msg["content"] = sanitized
+            changed = True
+    return changed
 
 
 def _sanitize_structure_surrogates(payload: Any) -> bool:
@@ -11863,6 +11964,9 @@ class AIAgent:
         # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
         if isinstance(user_message, str):
             user_message = _sanitize_surrogates(user_message)
+            user_message = _sanitize_llm_special_token_literals(user_message)
+        elif isinstance(user_message, list):
+            user_message, _ = _sanitize_untrusted_message_content(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
 
@@ -11936,6 +12040,7 @@ class AIAgent:
 
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
+        _sanitize_untrusted_messages_llm_special_tokens(messages)
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -12521,6 +12626,7 @@ class AIAgent:
             # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
             # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
+            _sanitize_untrusted_messages_llm_special_tokens(api_messages)
             _sanitize_messages_surrogates(api_messages)
 
             # Calculate approximate request size for logging

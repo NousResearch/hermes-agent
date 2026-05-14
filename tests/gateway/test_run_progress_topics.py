@@ -825,6 +825,41 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
 
 
 @pytest.mark.asyncio
+async def test_base_processing_passes_delivery_result_to_post_delivery_callback():
+    adapter = ProgressCaptureAdapter()
+
+    async def _handler(event):
+        return "done"
+
+    adapter.set_message_handler(_handler)
+
+    delivery_results = []
+
+    def _post_delivery_cb(delivered):
+        delivery_results.append(delivered)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1002",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-2",
+    )
+    session_key = "agent:main:telegram:group:-1002:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await adapter._process_message_background(event, session_key)
+
+    assert delivery_results == [True]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 

@@ -2825,7 +2825,12 @@ class BasePlatformAdapter(ABC):
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
-                    _post_cb()
+                    _post_cb(delivery_attempted and delivery_succeeded)
+                except TypeError:
+                    try:
+                        _post_cb()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             # Stop typing indicator

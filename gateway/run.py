@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import httpx
 import json
 import logging
 import os
@@ -471,6 +472,172 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_CHAT_TASK_HEARTBEAT_THRESHOLD_SECS = 30.0
+_CHAT_TASK_HEARTBEAT_PATCH_INTERVAL_SECS = 30.0
+_OS_TASKS_API_URL = "https://os.mattdowney.com/api/tasks"
+
+
+class _GatewayChatTaskHeartbeat:
+    """Create and maintain an OS task-board heartbeat for long gateway replies."""
+
+    def __init__(
+        self,
+        *,
+        user_message: str,
+        source: SessionSource,
+        threshold_seconds: float = _CHAT_TASK_HEARTBEAT_THRESHOLD_SECS,
+        patch_interval_seconds: float = _CHAT_TASK_HEARTBEAT_PATCH_INTERVAL_SECS,
+    ) -> None:
+        self.user_message = user_message or ""
+        self.source = source
+        self.threshold_seconds = max(0.0, float(threshold_seconds))
+        self.patch_interval_seconds = max(1.0, float(patch_interval_seconds))
+        self._stop_event = asyncio.Event()
+        self._runner_task: Optional[asyncio.Task] = None
+        self._finished = False
+        self._task_id: Optional[str] = None
+
+    async def start(self) -> None:
+        if self._runner_task is not None:
+            return
+        self._runner_task = asyncio.create_task(self._run(), name="gateway-chat-task-heartbeat")
+
+    async def finish(self, *, cancelled: bool) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._stop_event.set()
+        if self._runner_task is not None:
+            try:
+                await self._runner_task
+            except Exception as exc:
+                logger.warning("chat heartbeat runner failed while closing: %s", exc)
+        if not self._task_id:
+            return
+        await self._patch_task(
+            {
+                "status": "cancelled" if cancelled else "done",
+                "working": False,
+            },
+            reason="complete",
+        )
+
+    async def _run(self) -> None:
+        await asyncio.sleep(self.threshold_seconds)
+        if self._stop_event.is_set():
+            return
+        created = await self._create_task()
+        if not created:
+            return
+        while True:
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.patch_interval_seconds)
+                return
+            except asyncio.TimeoutError:
+                await self._patch_task({"working": True}, reason="heartbeat")
+
+    def _task_title(self) -> str:
+        if len(self.user_message) <= 80:
+            return self.user_message
+        return f"{self.user_message[:80]}…"
+
+    def _request_headers(self) -> Optional[dict[str, str]]:
+        try:
+            load_dotenv(_env_path, override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(_env_path, override=True, encoding="latin-1")
+        except Exception:
+            pass
+        api_key = (os.getenv("OS_AGENT_API_KEY") or "").strip()
+        if not api_key:
+            logger.debug("chat heartbeat skipped: OS_AGENT_API_KEY is unset")
+            return None
+        return {
+            "content-type": "application/json",
+            "x-api-key": api_key,
+        }
+
+    async def _create_task(self) -> bool:
+        headers = self._request_headers()
+        if not headers:
+            return False
+        payload = {
+            "title": self._task_title(),
+            "status": "in_progress",
+            "working": True,
+            "source": "agent",
+            "metadata": {
+                "kind": "chat",
+            },
+        }
+        response_data = await self._request(
+            "POST",
+            _OS_TASKS_API_URL,
+            headers=headers,
+            payload=payload,
+            reason="create",
+        )
+        if not response_data:
+            return False
+        task = response_data.get("task") or {}
+        task_id = task.get("id")
+        if not task_id:
+            logger.warning("chat heartbeat POST succeeded without task id: %s", response_data)
+            return False
+        self._task_id = str(task_id)
+        return True
+
+    async def _patch_task(self, payload: dict[str, Any], *, reason: str) -> bool:
+        if not self._task_id:
+            return False
+        headers = self._request_headers()
+        if not headers:
+            return False
+        return bool(
+            await self._request(
+                "PATCH",
+                f"{_OS_TASKS_API_URL}/{self._task_id}",
+                headers=headers,
+                payload=payload,
+                reason=reason,
+            )
+        )
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        reason: str,
+    ) -> Optional[dict[str, Any]]:
+        logger.info(
+            "chat heartbeat %s attempt: method=%s url=%s payload=%s",
+            reason,
+            method,
+            url,
+            json.dumps(payload, ensure_ascii=False, default=str),
+        )
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                response = await client.request(method, url, headers=headers, json=payload)
+            response_text = response.text[:1000]
+            logger.info(
+                "chat heartbeat %s response: status=%s body=%s",
+                reason,
+                response.status_code,
+                response_text,
+            )
+            response.raise_for_status()
+            if not response_text.strip():
+                return {}
+            return response.json()
+        except Exception as exc:
+            logger.warning("chat heartbeat %s failed: %s", reason, exc)
+            return None
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -5369,6 +5536,12 @@ class GatewayRunner:
             run_generation,
         )
 
+        heartbeat = _GatewayChatTaskHeartbeat(
+            user_message=message_text,
+            source=source,
+        )
+        await heartbeat.start()
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -5406,6 +5579,7 @@ class GatewayRunner:
                     _quick_key or "?",
                     run_generation,
                 )
+                await heartbeat.finish(cancelled=True)
                 _stale_adapter = self.adapters.get(source.platform)
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
@@ -5754,11 +5928,33 @@ class GatewayRunner:
                             await _foot_adapter.send(source.chat_id, _footer_line)
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                await heartbeat.finish(cancelled=False)
                 return None
+
+            _response_adapter = self.adapters.get(source.platform)
+            if _response_adapter and session_key:
+                def _finish_heartbeat_after_delivery(delivered: bool = False) -> None:
+                    asyncio.create_task(
+                        heartbeat.finish(cancelled=not delivered)
+                    )
+
+                if getattr(type(_response_adapter), "register_post_delivery_callback", None) is not None:
+                    _response_adapter.register_post_delivery_callback(
+                        session_key,
+                        _finish_heartbeat_after_delivery,
+                        generation=run_generation,
+                    )
+                else:
+                    _pdc = getattr(_response_adapter, "_post_delivery_callbacks", None)
+                    if _pdc is not None:
+                        _pdc[session_key] = _finish_heartbeat_after_delivery
+            else:
+                await heartbeat.finish(cancelled=not bool(response))
 
             return response
             
         except Exception as e:
+            await heartbeat.finish(cancelled=True)
             # Stop typing indicator on error too
             try:
                 _err_adapter = self.adapters.get(source.platform)

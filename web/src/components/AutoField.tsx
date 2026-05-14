@@ -17,6 +17,38 @@ function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; sch
   );
 }
 
+
+/**
+ * Serialize a single list item for display. Primitive values are stringified
+ * directly; objects/arrays are JSON-encoded so they round-trip correctly
+ * instead of rendering as "[object Object]".
+ */
+function serializeListItem(item: unknown): string {
+  if (typeof item === "object" && item !== null) {
+    return JSON.stringify(item);
+  }
+  return String(item);
+}
+
+/**
+ * Split a user-edited list string on commas that are NOT inside JSON
+ * objects/arrays, then attempt to parse each token back to its original type.
+ */
+function parseListInput(raw: string): unknown[] {
+  const tokens = raw.split(/,(?![^{\[]*[}\]])/g);
+  return tokens
+    .map((s) => {
+      const t = s.trim();
+      if (!t) return undefined;
+      try {
+        return JSON.parse(t);
+      } catch {
+        return t;
+      }
+    })
+    .filter((v) => v !== undefined && v !== "");
+}
+
 export function AutoField({
   schemaKey,
   schema,
@@ -99,15 +131,8 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
-          value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
+          value={Array.isArray(value) ? value.map(serializeListItem).join(", ") : String(value ?? "")}
+          onChange={(e) => onChange(parseListInput(e.target.value))}
           placeholder="comma-separated values"
         />
       </div>

@@ -1017,7 +1017,18 @@ def _build_child_agent(
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
+    # different provider than the parent — each provider has its own API surface
+    # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
+    # Inheriting the parent's mode causes 404 errors when the child routes to the
+    # wrong endpoint.  Derive the mode from the target provider when it differs.
+    _parent_provider = getattr(parent_agent, "provider", None) or ""
+    if override_api_mode is not None:
+        effective_api_mode = override_api_mode
+    elif effective_provider != _parent_provider:
+        effective_api_mode = None  # force re-derivation from provider's defaults
+    else:
+        effective_api_mode = getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )

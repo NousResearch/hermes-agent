@@ -294,6 +294,11 @@ class _ProviderCollector:
     def register_memory_provider(self, provider):
         self.provider = provider
 
+    def register_skill_provider(self, provider, namespace=None):
+        from agent.skill_providers import register_skill_provider
+
+        register_skill_provider(provider, namespace=namespace)
+
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):
         pass
@@ -318,6 +323,30 @@ def _get_active_memory_provider() -> Optional[str]:
         return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
+
+
+def register_active_memory_skill_providers() -> None:
+    """Register virtual skills exposed by the active memory provider.
+
+    Memory plugins may expose skills backed by their storage layer (for example,
+    Ferrosa/fmem skills) without writing SKILL.md files into the local skills
+    directory.  Only the configured active memory provider is loaded so startup
+    does not import every optional memory backend.
+    """
+    active_provider = _get_active_memory_provider()
+    if not active_provider:
+        return
+    plugin_dir = find_provider_dir(active_provider)
+    if not plugin_dir:
+        return
+    try:
+        _load_provider_from_dir(plugin_dir)
+    except Exception as e:
+        logger.debug(
+            "Failed to register skill providers for active memory plugin '%s': %s",
+            active_provider,
+            e,
+        )
 
 
 def discover_plugin_cli_commands() -> List[dict]:

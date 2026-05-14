@@ -686,28 +686,36 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        created_skills_dir = False
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
+            created_skills_dir = True
 
-        # Find all skills
+        # Find all filesystem-backed skills.
         all_skills = _find_all_skills()
 
+        # Add virtual skills exposed by the active memory provider.
+        try:
+            import plugins.memory
+            from agent.skill_providers import list_provider_skill_metadata
+
+            plugins.memory.register_active_memory_skill_providers()
+            all_skills.extend(list_provider_skill_metadata())
+        except Exception:
+            logger.debug("Could not list active memory provider skills", exc_info=True)
+
         if not all_skills:
+            message = (
+                f"No skills found. Skills directory created at {display_hermes_home()}/skills/"
+                if created_skills_dir
+                else "No skills found in skills/ directory."
+            )
             return json.dumps(
                 {
                     "success": True,
                     "skills": [],
                     "categories": [],
-                    "message": "No skills found in skills/ directory.",
+                    "message": message,
                 },
                 ensure_ascii=False,
             )
@@ -929,7 +937,72 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan.
+
+            # Virtual skills from the active memory provider are also addressed
+            # as qualified names (for example, ``fmem:blueprint``), but they do
+            # not have an on-disk SKILL.md file in the plugin registry.
+            try:
+                import plugins.memory
+                from dataclasses import asdict, is_dataclass
+                from agent.skill_providers import (
+                    read_provider_supporting_file,
+                    resolve_provider_skill,
+                )
+
+                plugins.memory.register_active_memory_skill_providers()
+                if file_path:
+                    from tools.path_security import has_traversal_component
+
+                    if has_traversal_component(file_path):
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": "Path traversal ('..') is not allowed.",
+                                "hint": "Use a relative path within the skill directory",
+                            },
+                            ensure_ascii=False,
+                        )
+                    provided_file = read_provider_supporting_file(namespace, bare, file_path)
+                    if provided_file is not None:
+                        if isinstance(provided_file, dict):
+                            return json.dumps({"success": True, "name": name, **provided_file}, ensure_ascii=False)
+                        return json.dumps(
+                            {
+                                "success": True,
+                                "name": name,
+                                "file": file_path,
+                                "content": str(provided_file),
+                            },
+                            ensure_ascii=False,
+                        )
+
+                provider_payload = resolve_provider_skill(namespace, bare)
+                if provider_payload is not None:
+                    payload = asdict(provider_payload) if is_dataclass(provider_payload) else dict(provider_payload)
+                    return json.dumps(
+                        {
+                            "success": True,
+                            "name": name,
+                            "provider": namespace,
+                            "description": payload.get("description", ""),
+                            "tags": payload.get("tags", []),
+                            "related_skills": payload.get("related_skills", []),
+                            "content": payload.get("content", ""),
+                            "linked_files": payload.get("linked_files"),
+                            "readiness_status": payload.get(
+                                "readiness_status",
+                                SkillReadinessStatus.AVAILABLE.value,
+                            ),
+                            "setup_needed": bool(payload.get("setup_needed", False)),
+                            "setup_skipped": bool(payload.get("setup_skipped", False)),
+                            "metadata": payload.get("metadata"),
+                        },
+                        ensure_ascii=False,
+                    )
+            except Exception:
+                logger.debug("Could not resolve provider skill %s", name, exc_info=True)
+
+            # Plugin/provider itself not found — fall through to flat-tree scan.
             # Categorized local skills also use `category:skill` in config and
             # gateway prompts, so preserve that form and translate it to the
             # on-disk `category/skill` path during the local scan below.

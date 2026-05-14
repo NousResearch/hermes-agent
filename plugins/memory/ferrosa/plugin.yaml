@@ -1,0 +1,7 @@
+name: ferrosa
+version: 1.0.0
+description: "Ferrosa Memory — knowledge graph memory backed by ferrosa-memory (semantic memory, skills catalog, intentions, temporal facts)."
+pip_dependencies: []
+hooks:
+  - on_session_end
+  - on_memory_write

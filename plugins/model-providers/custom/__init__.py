@@ -3,7 +3,9 @@
 Covers any endpoint registered as provider="custom", including local
 Ollama instances. Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → extra_body.think = False
+  - reasoning_config disabled → extra_body.think = False + top-level
+    reasoning_effort = "none" (Ollama ignores extra_body.think but
+    respects the top-level field — see ollama/ollama#14820)
 """
 
 from typing import Any
@@ -23,6 +25,7 @@ class CustomProfile(ProviderProfile):
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
 
         # Ollama context window
         if ollama_num_ctx:
@@ -30,14 +33,19 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
+        # Disable thinking when reasoning is turned off.
+        # Ollama's /v1/chat/completions silently ignores extra_body.think
+        # (ollama/ollama#14820) but respects the top-level reasoning_effort
+        # field. Emit both so this works on Ollama and on other custom
+        # endpoints (vLLM, llama.cpp) that may honour either form.
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
+                top_level["reasoning_effort"] = "none"
 
-        return extra_body, {}
+        return extra_body, top_level
 
     def fetch_models(
         self,

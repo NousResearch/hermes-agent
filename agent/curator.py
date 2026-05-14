@@ -1659,6 +1659,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     # (canonical aux-task slot, wired through `hermes model` → auxiliary
     # picker and the dashboard Models tab), with a legacy fallback to
     # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
+    _reasoning_config = None
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -1680,6 +1681,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        # Propagate reasoning_config so the curator fork respects
+        # agent.reasoning_effort (e.g. "none" to disable thinking).
+        # Without this, the fork defaults to medium and can spiral on
+        # thinking-capable models (see issue #25758).
+        try:
+            from hermes_constants import parse_reasoning_effort
+            _effort_raw = _cfg.get("agent", {}).get("reasoning_effort", "")
+            _reasoning_config = parse_reasoning_effort(str(_effort_raw))
+        except Exception:
+            pass
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
 
@@ -1704,6 +1715,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             platform="curator",
             skip_context_files=True,
             skip_memory=True,
+            reasoning_config=_reasoning_config,
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0

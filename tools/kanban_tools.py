@@ -470,6 +470,71 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_suspend(args: dict, **kw) -> str:
+    """Transition the task to suspended — preserves run state for later resume.
+
+    Unlike ``kanban_block`` (ends the run with outcome=blocked), suspend keeps
+    the task in a frozen state so it can be resumed without losing context.
+    Use when: waiting for human input, hitting a long-duration API call, or
+    needing to hand off mid-task. The next dispatch tick will see the task as
+    'suspended -> ready' and a worker can pick it up via ``kanban_resume``.
+    """
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required — explain what caused the suspend")
+    try:
+        kb, conn = _connect()
+        try:
+            from hermes_cli.kanban_db import suspend_task
+            ok = suspend_task(conn, tid)
+            if not ok:
+                return tool_error(
+                    f"could not suspend {tid} (unknown id or not in running state)"
+                )
+            return _ok(task_id=tid, note=f"suspended: {reason}")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_suspend failed")
+        return tool_error(f"kanban_suspend: {e}")
+
+
+def _handle_resume(args: dict, **kw) -> str:
+    """Transition a suspended task back to running.
+
+    Called when the worker is ready to continue after a suspend. The task
+    must currently be in 'suspended' state.
+    """
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    try:
+        kb, conn = _connect()
+        try:
+            from hermes_cli.kanban_db import resume_task
+            ok = resume_task(conn, tid)
+            if not ok:
+                return tool_error(
+                    f"could not resume {tid} (unknown id or not in suspended state)"
+                )
+            return _ok(task_id=tid, note="resumed — worker is continuing")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_resume failed")
+        return tool_error(f"kanban_resume: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1109,6 +1174,48 @@ registry.register(
     handler=_handle_comment,
     check_fn=_check_kanban_mode,
     emoji="💬",
+)
+
+registry.register(
+    name="kanban_suspend",
+    toolset="kanban",
+    schema={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task to suspend (defaults to HERMES_KANBAN_TASK env var). "
+                               "The task must be in 'running' state.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Human-readable reason — what caused the suspend and what "
+                               "resumption depends on.",
+            },
+        },
+        "required": ["reason"],
+    },
+    handler=_handle_suspend,
+    check_fn=_check_kanban_mode,
+    emoji="⏸",
+)
+
+registry.register(
+    name="kanban_resume",
+    toolset="kanban",
+    schema={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task to resume (defaults to HERMES_KANBAN_TASK env var). "
+                               "The task must be in 'suspended' state.",
+            },
+        },
+    },
+    handler=_handle_resume,
+    check_fn=_check_kanban_mode,
+    emoji="▶",
 )
 
 registry.register(

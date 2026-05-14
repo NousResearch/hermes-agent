@@ -1530,3 +1530,132 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# Suspend / resume primitives (issue #24699)
+# ---------------------------------------------------------------------------
+
+def test_suspend_running_task_succeeds(kanban_home):
+    """A running task can be suspended."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="long job", assignee="a")
+        kb.claim_task(conn, t)
+        assert kb.get_task(conn, t).status == "running"
+        assert kb.suspend_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "suspended"
+
+
+def test_suspend_emits_suspended_event(kanban_home):
+    """suspend_task appends a 'suspended' event to the task log."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        kb.suspend_task(conn, t)
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+            (t,),
+        ).fetchall()
+        assert any(e["kind"] == "suspended" for e in events)
+
+
+def test_resume_suspended_task_succeeds(kanban_home):
+    """A suspended task can be resumed back to running."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="long job", assignee="a")
+        kb.claim_task(conn, t)
+        kb.suspend_task(conn, t)
+        assert kb.get_task(conn, t).status == "suspended"
+        assert kb.resume_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_resume_emits_resumed_event(kanban_home):
+    """resume_task appends a 'resumed' event to the task log."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        kb.suspend_task(conn, t)
+        kb.resume_task(conn, t)
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+            (t,),
+        ).fetchall()
+        kinds = [e["kind"] for e in events]
+        assert "suspended" in kinds
+        assert "resumed" in kinds
+
+
+def test_suspend_non_running_task_returns_false(kanban_home):
+    """Only running tasks can be suspended; ready/todo are rejected."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        # Task starts in 'ready' state
+        assert kb.suspend_task(conn, t) is False
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_suspend_nonexistent_task_returns_false(kanban_home):
+    """Suspending an unknown task_id returns False."""
+    with kb.connect() as conn:
+        assert kb.suspend_task(conn, "not-a-real-id") is False
+
+
+def test_resume_non_suspended_task_returns_false(kanban_home):
+    """Only suspended tasks can be resumed; running is rejected."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        # Task is in 'running' state — not suspended
+        assert kb.resume_task(conn, t) is False
+
+
+def test_resume_nonexistent_task_returns_false(kanban_home):
+    """Resuming an unknown task_id returns False."""
+    with kb.connect() as conn:
+        assert kb.resume_task(conn, "not-a-real-id") is False
+
+
+def test_suspend_resume_idempotent(kanban_home):
+    """Suspend and resume are each other's inverse and are both idempotent."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="round-trip task", assignee="a")
+        kb.claim_task(conn, t)
+
+        # running -> suspended
+        assert kb.suspend_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "suspended"
+
+        # Second suspend: rejected (already suspended)
+        assert kb.suspend_task(conn, t) is False
+
+        # suspended -> running
+        assert kb.resume_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "running"
+
+        # Second resume: rejected (already running)
+        assert kb.resume_task(conn, t) is False
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_block_and_suspend_are_distinct_states(kanban_home):
+    """Blocked tasks and suspended tasks are separate; cross-transition is rejected."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+
+        # running -> blocked (via block_task)
+        kb.block_task(conn, t, reason="need input")
+        assert kb.get_task(conn, t).status == "blocked"
+
+        # blocked -> ready (via unblock)
+        kb.unblock_task(conn, t)
+        assert kb.get_task(conn, t).status == "ready"
+
+        # ready -> running -> suspended (via claim + suspend)
+        kb.claim_task(conn, t)
+        kb.suspend_task(conn, t)
+        assert kb.get_task(conn, t).status == "suspended"
+
+        # Suspended task cannot be block_task'd directly — must resume first
+        assert kb.block_task(conn, t, reason="need input") is False

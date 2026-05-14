@@ -90,7 +90,7 @@ from toolsets import get_toolset_names
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "suspended", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
@@ -2688,6 +2688,76 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
+        return True
+
+
+def suspend_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Transition ``running -> suspended`` — preserves full run state for resume.
+
+    Unlike ``block_task`` (which ends the run with ``outcome=blocked`` and is
+    used when the agent can't proceed), ``suspend_task`` freezes the task so
+    the dispatcher knows it may be re-queued once the worker is ready to
+    continue. The run stays ``status='running'`` so the dispatcher does NOT
+    reclaim it.
+
+    The worker calls ``suspend_task`` when it needs to pause for human input
+    but wants to keep its conversation/iteration state intact for when the
+    human resumes it. On the next dispatch tick the task goes ``ready`` and
+    a (possibly different) worker can pick it up via ``resume_task``.
+
+    Returns False if the task is not in ``running`` state or doesn't exist.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'suspended' "
+            "WHERE id = ? AND status = 'running'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "suspended", None)
+        return True
+
+
+def resume_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Transition ``suspended -> running`` — restores a suspended task.
+
+    Called by the dispatcher when a suspended task is picked up again.
+    Unlike ``unblock_task`` (which is for ``blocked`` tasks that need human
+    input before resuming), ``resume_task`` is for ``suspended`` tasks whose
+    worker is ready to continue without any additional input.
+
+    Defensively closes any stale run that may have been left open (should
+    not happen in normal flow but protects against edge cases).
+
+    Returns False if the task is not in ``suspended`` state or doesn't exist.
+    """
+    with write_txn(conn):
+        # Close any stale open run (defensive — normal flow has no open run)
+        stale = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'suspended'",
+            (task_id,),
+        ).fetchone()
+        if stale and stale["current_run_id"]:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reclaimed', outcome = 'reclaimed',
+                       summary = COALESCE(summary, 'suspend/resume invariant recovery'),
+                       ended_at = ?,
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                 WHERE id = ? AND ended_at IS NULL
+                """,
+                (int(time.time()), int(stale["current_run_id"])),
+            )
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'running', current_run_id = NULL "
+            "WHERE id = ? AND status = 'suspended'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "resumed", None)
         return True
 
 

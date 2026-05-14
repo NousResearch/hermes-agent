@@ -445,6 +445,54 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _build_openai_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an OpenAI Chat Completions usage dict from internal usage data.
+
+    Maps internal keys (input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens) to the OpenAI Chat Completions schema, including
+    ``prompt_tokens_details`` when cached-token data is available.
+    """
+    result: Dict[str, Any] = {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cache_read = usage.get("cache_read_tokens", 0)
+    cache_write = usage.get("cache_write_tokens", 0)
+    if cache_read or cache_write:
+        details: Dict[str, int] = {}
+        if cache_read:
+            details["cached_tokens"] = cache_read
+        if cache_write:
+            details["cache_creation_input_tokens"] = cache_write
+        result["prompt_tokens_details"] = details
+    return result
+
+
+def _build_responses_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an OpenAI Responses API usage dict from internal usage data.
+
+    Same idea as :func:`_build_openai_usage` but uses the Responses API
+    field names (``input_tokens``, ``output_tokens``) and attaches
+    ``input_tokens_details`` when cached-token data is available.
+    """
+    result: Dict[str, Any] = {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cache_read = usage.get("cache_read_tokens", 0)
+    cache_write = usage.get("cache_write_tokens", 0)
+    if cache_read or cache_write:
+        details: Dict[str, int] = {}
+        if cache_read:
+            details["cached_tokens"] = cache_read
+        if cache_write:
+            details["cache_creation_input_tokens"] = cache_write
+        result["input_tokens_details"] = details
+    return result
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -1267,11 +1315,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _build_openai_usage(usage),
         }
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
@@ -1396,11 +1440,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
+                "usage": _build_openai_usage(usage),
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
@@ -1588,11 +1628,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
             incomplete_env = _envelope("incomplete")
             incomplete_env["output"] = incomplete_items
-            incomplete_env["usage"] = {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            }
+            incomplete_env["usage"] = _build_responses_usage(usage)
             incomplete_history = list(conversation_history)
             incomplete_history.append({"role": "user", "content": user_message})
             if incomplete_text:
@@ -1931,11 +1967,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
                 failed_env["error"] = {"message": agent_error, "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = _build_responses_usage(usage)
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
                 if final_response_text or agent_error:
@@ -1955,11 +1987,7 @@ class APIServerAdapter(BasePlatformAdapter):
             else:
                 completed_env = _envelope("completed")
                 completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                completed_env["usage"] = _build_responses_usage(usage)
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,
@@ -2021,11 +2049,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = list(emitted_items)
                 failed_env["error"] = {"message": str(_exc)[:500], "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = _build_responses_usage(usage)
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
@@ -2291,11 +2315,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _build_responses_usage(usage),
         }
 
         # Store the complete response object for future chaining / GET retrieval

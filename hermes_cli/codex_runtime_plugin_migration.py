@@ -304,6 +304,37 @@ def render_codex_toml_section(
     return "\n".join(out) + "\n"
 
 
+def _insert_managed_block_at_top_level(user_text: str, managed_block: str) -> str:
+    """Insert Hermes' managed Codex TOML block while keeping root keys root-scoped.
+
+    TOML has no syntax to return to the document root after a table header.
+    Therefore appending a root key like `default_permissions = ...` after a
+    user table such as `[features]` actually creates `features.default_permissions`,
+    which Codex rejects. Insert the managed block before the first table header
+    so its root keys remain top-level, while preserving user content verbatim.
+    """
+    if not user_text.strip():
+        return managed_block
+
+    lines = user_text.splitlines(keepends=True)
+    first_table_idx: Optional[int] = None
+    for idx, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            first_table_idx = idx
+            break
+
+    if first_table_idx is None:
+        prefix = user_text.rstrip("\n")
+        return f"{prefix}\n\n{managed_block}" if prefix else managed_block
+
+    prefix = "".join(lines[:first_table_idx]).rstrip("\n")
+    suffix = "".join(lines[first_table_idx:]).lstrip("\n")
+    if prefix:
+        return f"{prefix}\n\n{managed_block}\n{suffix}"
+    return f"{managed_block}\n{suffix}"
+
+
 def _strip_existing_managed_block(toml_text: str) -> str:
     """Remove any prior managed section so re-runs idempotently replace it.
 
@@ -571,14 +602,7 @@ def migrate(
             report.errors.append(f"could not read {target}: {exc}")
             return report
         without_managed = _strip_existing_managed_block(existing)
-        # Ensure exactly one blank line between user content and managed block
-        if without_managed and not without_managed.endswith("\n"):
-            without_managed += "\n"
-        new_text = (
-            without_managed.rstrip("\n") + "\n\n" + managed_block
-            if without_managed.strip()
-            else managed_block
-        )
+        new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
     else:
         new_text = managed_block
 

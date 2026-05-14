@@ -567,9 +567,30 @@ class TestMigrate:
         assert "[model]" in new_text
         assert 'profile = "default"' in new_text
         assert "[providers.openai]" in new_text
-        # And new MCP block appended
+        # And new MCP block inserted without breaking user tables
         assert "[mcp_servers.a]" in new_text
         assert MIGRATION_MARKER in new_text
+
+    def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
+        """TOML has no explicit 'leave current table' syntax. If Hermes appends
+        root keys like default_permissions after a user table such as [features],
+        Codex parses them as features.default_permissions and rejects the config.
+        The managed block must therefore be inserted before the first table."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'model = "gpt-5.5"\n'
+            "\n"
+            "[features]\n"
+            "terminal_resize_reflow = true\n"
+        )
+        migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
+        new_text = target.read_text()
+        parsed = tomllib.loads(new_text)
+        assert parsed["default_permissions"] == ":workspace"
+        assert "default_permissions" not in parsed["features"]
+        assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
         """Quirk #6: when a user adds their own MCP server entry directly

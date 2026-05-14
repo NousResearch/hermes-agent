@@ -1479,6 +1479,88 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def create_thread(
+        self,
+        chat_id: str,
+        name: str,
+        auto_archive_duration: int = 1440,
+        message: str = "",
+    ) -> Dict[str, Any]:
+        """Create a Discord thread from a parent-channel seed message."""
+        if not self._client:
+            return {"success": False, "error": "Not connected"}
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return {"success": False, "error": f"Channel {chat_id} not found"}
+
+            seed_message_text = message.strip() if message else str(name).strip()
+            if not message:
+                mentions = [
+                    f"<@{user_id}>"
+                    for user_id in sorted(str(uid) for uid in self._allowed_user_ids)
+                    if user_id.isdigit()
+                ]
+                if mentions:
+                    seed_message_text = f"{seed_message_text} {' '.join(mentions)}"
+
+            seed_msg = await channel.send(seed_message_text, suppress_embeds=True)
+            thread = await seed_msg.create_thread(
+                name=str(name),
+                auto_archive_duration=auto_archive_duration,
+            )
+            thread_id = str(getattr(thread, "id", ""))
+            thread_name = str(getattr(thread, "name", name))
+            seed_message_id = str(getattr(seed_msg, "id", ""))
+
+            if thread_id:
+                try:
+                    self._threads.mark(thread_id)
+                except Exception as exc:
+                    logger.debug("[%s] Failed to mark Discord delivery thread %s as managed: %s", self.name, thread_id, exc)
+
+            session_store = getattr(self, "_session_store", None)
+            if session_store is not None and thread_id:
+                try:
+                    source = self.build_source(
+                        chat_id=thread_id,
+                        chat_name=thread_name,
+                        chat_type="thread",
+                        thread_id=thread_id,
+                        parent_chat_id=str(chat_id),
+                        message_id=seed_message_id or None,
+                    )
+                    session_store.get_or_create_session(source)
+                except Exception as exc:
+                    logger.debug("[%s] Failed to register Discord delivery thread session: %s", self.name, exc)
+
+            return {
+                "success": True,
+                "thread_id": thread_id,
+                "thread_name": thread_name,
+                "seed_message": seed_message_text,
+                "seed_message_id": seed_message_id,
+            }
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to create Discord thread in %s: %s", self.name, chat_id, e, exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def create_delivery_thread(
+        self,
+        chat_id: str,
+        name: str,
+        auto_archive_duration: int = 1440,
+    ) -> Dict[str, Any]:
+        """Compatibility wrapper used by cron live delivery."""
+        return await self.create_thread(
+            chat_id=chat_id,
+            name=name,
+            auto_archive_duration=auto_archive_duration,
+        )
+
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
@@ -1624,6 +1706,7 @@ class DiscordAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment.
 
@@ -1633,11 +1716,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        channel = self._client.get_channel(int(chat_id))
+        target_id = str(metadata.get("thread_id") or chat_id) if metadata else str(chat_id)
+        channel = self._client.get_channel(int(target_id))
         if not channel:
-            channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._client.fetch_channel(int(target_id))
         if not channel:
-            return SendResult(success=False, error=f"Channel {chat_id} not found")
+            noun = "Thread" if metadata and metadata.get("thread_id") else "Channel"
+            return SendResult(success=False, error=f"{noun} {target_id} not found")
 
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
@@ -1810,11 +1895,13 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import io
 
-            channel = self._client.get_channel(int(chat_id))
+            target_id = str(metadata.get("thread_id") or chat_id) if metadata else str(chat_id)
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
             if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                noun = "Thread" if metadata and metadata.get("thread_id") else "Channel"
+                return SendResult(success=False, error=f"{noun} {target_id} not found")
 
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
@@ -2510,7 +2597,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            return await self._send_file_attachment(chat_id, image_path, caption, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2675,7 +2762,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            return await self._send_file_attachment(chat_id, video_path, caption, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2693,7 +2780,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging

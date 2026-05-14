@@ -54,7 +54,7 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     sent_msg = SimpleNamespace(id=1234)
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -92,7 +92,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -135,7 +135,7 @@ async def test_send_does_not_retry_on_unrelated_errors():
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         raise RuntimeError(
             "403 Forbidden (error code: 50013): Missing Permissions"
@@ -158,6 +158,55 @@ async def test_send_does_not_retry_on_unrelated_errors():
     # Only the first attempt happens — no reference-retry replay.
     assert channel.send.await_count == 1
     assert send_calls[0]["reference"] is reference_obj
+
+
+@pytest.mark.asyncio
+async def test_send_document_uses_metadata_thread_id(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    file_path = tmp_path / "report.txt"
+    file_path.write_text("report")
+    sent_msg = SimpleNamespace(id=1234)
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_document(
+        "111",
+        str(file_path),
+        caption="caption",
+        metadata={"thread_id": "222"},
+    )
+
+    assert result.success is True
+    adapter._client.get_channel.assert_called_once_with(222)
+    adapter._client.fetch_channel.assert_not_awaited()
+    channel.send.assert_awaited_once()
+    assert channel.send.call_args.kwargs["content"] == "caption"
+
+
+@pytest.mark.asyncio
+async def test_send_voice_uses_metadata_thread_id(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    audio_path = tmp_path / "voice.ogg"
+    audio_path.write_bytes(b"ogg")
+    channel = SimpleNamespace(id=222, send=AsyncMock(return_value=SimpleNamespace(id=1235)))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+        http=SimpleNamespace(request=AsyncMock(return_value={"id": "9999"})),
+    )
+
+    result = await adapter.send_voice(
+        "111",
+        str(audio_path),
+        metadata={"thread_id": "222"},
+    )
+
+    assert result.success is True
+    adapter._client.get_channel.assert_called_once_with(222)
+    adapter._client.fetch_channel.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +326,64 @@ async def test_send_to_forum_create_thread_failure():
 
     assert result.success is False
     assert "rate limited" in result.error
+
+
+@pytest.mark.asyncio
+async def test_create_delivery_thread_sends_seed_with_allowed_user_mentions_and_registers_session():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._allowed_user_ids = {"123", "not-numeric"}
+
+    seed_msg = SimpleNamespace(id=321, create_thread=AsyncMock(return_value=SimpleNamespace(id=654, name="Daily Digest")))
+    parent = SimpleNamespace(send=AsyncMock(return_value=seed_msg))
+    session_store = MagicMock()
+    adapter.set_session_store(session_store)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.create_delivery_thread("999", "Daily Digest", auto_archive_duration=10080)
+
+    assert result == {
+        "success": True,
+        "thread_id": "654",
+        "thread_name": "Daily Digest",
+        "seed_message": "Daily Digest <@123>",
+        "seed_message_id": "321",
+    }
+    parent.send.assert_awaited_once_with("Daily Digest <@123>", suppress_embeds=True)
+    seed_msg.create_thread.assert_awaited_once_with(name="Daily Digest", auto_archive_duration=10080)
+    session_store.get_or_create_session.assert_called_once()
+    source = session_store.get_or_create_session.call_args.args[0]
+    assert source.chat_id == "654"
+    assert source.thread_id == "654"
+    assert source.chat_type == "thread"
+    assert source.parent_chat_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_send_file_attachment_honors_thread_metadata(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    payload = tmp_path / "digest.png"
+    payload.write_bytes(b"fake image")
+
+    parent = SimpleNamespace(send=AsyncMock())
+    thread = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=987)))
+
+    def get_channel(channel_id):
+        return thread if int(channel_id) == 654 else parent
+
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter._send_file_attachment("999", str(payload), metadata={"thread_id": "654"})
+
+    assert result.success is True
+    assert result.message_id == "987"
+    thread.send.assert_awaited_once()
+    parent.send.assert_not_called()
 
 
 

@@ -293,8 +293,30 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 
 
 # ------------------------------------------------------------------
-# _handle_thread_create_slash — success, session dispatch, failure
+# create_thread / _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_thread_marks_delivery_thread_as_managed(adapter):
+    created_thread = SimpleNamespace(id=555, name="Cron Digest")
+    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    parent_channel = SimpleNamespace(send=AsyncMock(return_value=seed_message))
+    adapter._client.get_channel = lambda _id: parent_channel
+    adapter._client.fetch_channel = AsyncMock()
+    adapter._allowed_user_ids = {"42"}
+    adapter._threads = MagicMock()
+
+    result = await adapter.create_thread("123", "Cron Digest", auto_archive_duration=10080)
+
+    assert result["success"] is True
+    assert result["thread_id"] == "555"
+    adapter._threads.mark.assert_called_once_with("555")
+    parent_channel.send.assert_awaited_once_with("Cron Digest <@42>", suppress_embeds=True)
+    seed_message.create_thread.assert_awaited_once_with(
+        name="Cron Digest",
+        auto_archive_duration=10080,
+    )
 
 
 @pytest.mark.asyncio

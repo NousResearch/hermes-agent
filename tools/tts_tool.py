@@ -80,11 +80,34 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user picked ElevenLabs as their TTS provider but never ran
+    the post-setup hook (e.g. enabled it by editing config.yaml directly).
+    Raises ``ImportError`` on lazy-install failure so existing callers'
+    error-handling paths keep working.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.elevenlabs", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import
+        # so older code paths still get a clean ImportError.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -136,9 +159,9 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MINIMAX_MODEL = "speech-01"
-DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
-DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.chat/v1/text_to_speech"
+DEFAULT_MINIMAX_MODEL = "speech-02-hd"
+DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
+DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -937,11 +960,11 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
-    Generate audio using MiniMax TTS API (v1/text_to_speech).
+    Generate audio using MiniMax TTS API.
 
-    The current API (api.minimax.chat/v1/text_to_speech) uses a simple payload
-    and returns raw audio bytes directly (Content-Type: audio/mpeg), unlike
-    the deprecated v1/t2a_v2 endpoint which returned JSON with hex-encoded audio.
+    Supports two endpoints:
+    - v1/text_to_speech: simple payload, returns raw audio (Content-Type: audio/mpeg)
+    - v1/t2a_v2: nested voice_setting/audio_setting, returns JSON with hex-encoded audio
 
     Args:
         text: Text to convert (max 10,000 characters).
@@ -961,56 +984,106 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    speed = mm_config.get("speed", 1.0)
+    vol = mm_config.get("vol", 1.0)
+    pitch = mm_config.get("pitch", 0)
+    emotion = mm_config.get("emotion", "neutral")
+    sample_rate = mm_config.get("sample_rate", 32000)
+    bitrate = mm_config.get("bitrate", 128000)
 
-    payload = {
-        "model": model,
-        "text": text,
-        "voice_id": voice_id,
-    }
+    # MiniMax accounts scope TTS requests by GroupId.  When present, the docs
+    # show it as a ?GroupId=<id> query param on the t2a_v2 URL.  Accept it
+    # from config or from the MINIMAX_GROUP_ID env var; only attach when the
+    # URL doesn't already carry one.
+    group_id = (
+        str(mm_config.get("group_id") or "").strip()
+        or (get_env_value("MINIMAX_GROUP_ID") or "").strip()
+    )
+    if group_id and "GroupId=" not in base_url:
+        sep = "&" if "?" in base_url else "?"
+        base_url = f"{base_url}{sep}GroupId={group_id}"
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
 
+    # Detect endpoint from URL
+    is_t2a_v2 = "t2a_v2" in base_url
+
+    if is_t2a_v2:
+        # t2a_v2 endpoint: nested voice_setting/audio_setting structure
+        payload = {
+            "model": model,
+            "text": text,
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": speed,
+                "vol": vol,
+                "pitch": pitch,
+                "emotion": emotion,
+            },
+            "audio_setting": {
+                "sample_rate": sample_rate,
+                "bitrate": bitrate,
+                "format": "mp3",
+                "channel": 1,
+            },
+        }
+    else:
+        # text_to_speech endpoint: flat payload
+        payload = {
+            "model": model,
+            "text": text,
+            "voice_id": voice_id,
+        }
+
     response = requests.post(base_url, json=payload, headers=headers, timeout=60)
 
-    content_type = response.headers.get("Content-Type", "")
+    if is_t2a_v2:
+        # t2a_v2 returns JSON with hex-encoded audio
+        result = response.json()
+        base_resp = result.get("base_resp", {})
+        status_code = base_resp.get("status_code", -1)
 
-    if "audio/" in content_type:
-        # New API: returns raw audio directly
+        if status_code != 0:
+            status_msg = base_resp.get("status_msg", "unknown error")
+            raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+
+        hex_audio = result.get("data", {}).get("audio", "")
+        if not hex_audio:
+            raise RuntimeError("MiniMax TTS returned empty audio data")
+
+        audio_bytes = bytes.fromhex(hex_audio)
         with open(output_path, "wb") as f:
-            f.write(response.content)
+            f.write(audio_bytes)
         return output_path
 
-    # Legacy / fallback: try parsing as JSON with hex-encoded audio
-    try:
-        result = response.json()
-    except Exception:
-        response.raise_for_status()
-        raise RuntimeError(
-            f"MiniMax TTS returned unexpected Content-Type '{content_type}' "
-            f"({len(response.content)} bytes)"
-        )
+    else:
+        # text_to_speech returns raw audio directly
+        content_type = response.headers.get("Content-Type", "")
 
-    base_resp = result.get("base_resp", {})
-    status_code = base_resp.get("status_code", -1)
+        if "audio/" in content_type:
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            return output_path
 
-    if status_code != 0:
-        status_msg = base_resp.get("status_msg", "unknown error")
-        raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+        # Fallback: try parsing as JSON
+        try:
+            result = response.json()
+            base_resp = result.get("base_resp", {})
+            status_code = base_resp.get("status_code", -1)
+            if status_code != 0:
+                status_msg = base_resp.get("status_msg", "unknown error")
+                raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+        except Exception:
+            response.raise_for_status()
+            raise RuntimeError(
+                f"MiniMax TTS returned unexpected Content-Type '{content_type}' "
+                f"({len(response.content)} bytes)"
+            )
 
-    hex_audio = result.get("data", {}).get("audio", "")
-    if not hex_audio:
-        raise RuntimeError("MiniMax TTS returned empty audio data")
-
-    # Legacy: hex-encoded audio
-    audio_bytes = bytes.fromhex(hex_audio)
-
-    with open(output_path, "wb") as f:
-        f.write(audio_bytes)
-
-    return output_path
+        raise RuntimeError("MiniMax TTS returned no audio data")
 
 
 # ===========================================================================
@@ -1662,16 +1735,21 @@ def text_to_speech_tool(
             _generate_xai_tts(text, file_str, tts_config)
 
         elif provider == "mistral":
-            try:
-                _import_mistral_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Mistral Voxtral TTS...")
-            _generate_mistral_tts(text, file_str, tts_config)
+            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
+            # malicious 2.4.6 release. Surface a clear status message instead
+            # of attempting an import that would either fail or pull a stale
+            # cached package.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Mistral Voxtral TTS is temporarily disabled. The "
+                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
+                    "after a malicious 2.4.6 release. Switch tts.provider in "
+                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
+                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
+                    "support will return once PyPI un-quarantines the package."
+                ),
+            }, ensure_ascii=False)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")

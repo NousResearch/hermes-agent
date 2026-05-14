@@ -235,6 +235,52 @@ If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. D
 
 Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/browser_auth/camofox/` (or the equivalent under `$HERMES_HOME` for non-default profiles). The actual browser profile data lives on the Camofox server side, keyed by that `userId`. To fully reset a persistent profile, clear it on the Camofox server and remove the corresponding Hermes profile's state directory.
 
+#### Externally managed Camofox sessions
+
+When another app drives the visible Camofox browser (a desktop assistant, a custom integration, another agent), configure Hermes to operate inside that same identity instead of spawning its own isolated profile.
+
+Three knobs control the behavior:
+
+| Setting | Env var | Effect |
+|---------|---------|--------|
+| `browser.camofox.user_id` | `CAMOFOX_USER_ID` | Camofox `userId` Hermes uses when creating tabs. Setting this opts the session into "externally managed" mode. |
+| `browser.camofox.session_key` | `CAMOFOX_SESSION_KEY` | `sessionKey` (a.k.a. `listItemId`) sent on tab creation. Used to match an existing tab during adoption. Defaults to a per-task value if unset. |
+| `browser.camofox.adopt_existing_tab` | `CAMOFOX_ADOPT_EXISTING_TAB` | When true, Hermes calls `GET /tabs?userId=<user_id>` on first use and reuses an existing tab before creating a new one. |
+
+Env vars take precedence over `config.yaml`. Either form works:
+
+```yaml
+browser:
+  camofox:
+    user_id: shared-camofox
+    session_key: visible-tab
+    adopt_existing_tab: true
+```
+
+```bash
+CAMOFOX_USER_ID=shared-camofox
+CAMOFOX_SESSION_KEY=visible-tab
+CAMOFOX_ADOPT_EXISTING_TAB=true
+```
+
+**What changes when `user_id` is set:**
+
+- Hermes skips destructive cleanup at task end (same as `managed_persistence: true`). The other app's tab/cookies/profile survive.
+- Hermes does **not** call `DELETE /sessions/<user_id>` — that endpoint wipes all user data, so it would nuke the external app's session if it fired.
+
+**How tab adoption works (when `adopt_existing_tab: true`):**
+
+1. On the first browser tool call after a process start, Hermes issues `GET /tabs?userId=<user_id>` (5-second timeout).
+2. If any tab in the response has `listItemId == session_key`, Hermes adopts the most recently created one in that group.
+3. Otherwise, Hermes adopts the most recently created tab for the user (any `listItemId`).
+4. If no tabs exist or the request fails, Hermes falls back to creating a new tab on the next operation.
+
+Adoption only fires until `tab_id` is populated for the session. If the external app closes the adopted tab mid-run, the next browser tool call will surface a Camofox error — Hermes does not re-poll for a fresh tab on every call.
+
+**Picking `session_key`:** if you want Hermes to reliably attach to a *specific* existing tab, set `session_key` to the `listItemId` the external app used when creating it. If you leave `session_key` unset and only set `user_id`, Hermes generates a per-task `session_key` (`task_<id>`) — Hermes will share cookies and the profile with the external app, but will open its own tab alongside instead of reusing one.
+
+**Concurrency note:** the external app and Hermes can drive the same Camofox `userId` simultaneously, but Camofox does not coordinate per-tab focus between clients. Coordinate ownership at the application layer (e.g. the external app pauses while Hermes runs).
+
 #### VNC live view
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.

@@ -42,6 +42,19 @@ if TYPE_CHECKING:
 
 DEFAULT_VERCEL_CWD = "/vercel/sandbox"
 _DEFAULT_CONTAINER_DISK_MB = 51200
+
+
+def _ensure_vercel_sdk() -> None:
+    """Lazy-install vercel SDK on demand. Idempotent."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.vercel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+
+
 _CREATE_RETRY_ATTEMPTS = 3
 _WRITE_RETRY_ATTEMPTS = 3
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -194,6 +207,7 @@ def _extract_snapshot_id(snapshot: Any) -> str | None:
 
 @cache
 def _sandbox_status_type() -> type[SandboxStatus]:
+    _ensure_vercel_sdk()
     from vercel.sandbox import SandboxStatus
 
     return SandboxStatus
@@ -260,6 +274,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                 "Use the default shared setting."
             )
 
+        _ensure_vercel_sdk()
         from vercel.sandbox import Resources
 
         sandbox_timeout = max(
@@ -281,6 +296,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         )
 
     def _create_sandbox(self) -> Sandbox:
+        _ensure_vercel_sdk()
         from vercel.sandbox import Sandbox
 
         snapshot_id = _get_snapshot_id(self._task_id) if self._persistent else None

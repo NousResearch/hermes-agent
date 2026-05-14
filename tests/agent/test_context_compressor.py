@@ -991,9 +991,12 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         # Last head message (index 2) is "user" → summary should be "assistant"
+        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
+        # the system prompt (always implicitly protected), yielding head [system,
+        # user, user] with last head = user.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1059,11 +1062,13 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         # Head: [system, user, assistant]  →  last head = assistant
         # Tail: [user, assistant, user]    →  first tail = user
         # summary_role="user" collides with tail, "assistant" collides with head → merge
+        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
+        # the system prompt (always implicitly protected).
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1097,7 +1102,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         msgs = [
             {"role": "system", "content": "system prompt"},
@@ -1133,13 +1138,15 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=2)
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant
         # summary_role="assistant" collides with tail, "user" collides with head → merge
+        # NOTE: protect_first_n=1 preserves 1 non-system message in addition to
+        # the system prompt (always implicitly protected).
         # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
+        # Need 8 messages: _min_for_compress = head(2) + 3 + 1 = 6, must have > 6.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1291,6 +1298,92 @@ class TestSummaryTargetRatio:
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.protect_last_n == 20
+
+    def test_default_protect_first_n_is_3(self):
+        """Default protect_first_n is 3 (system + 3 extra non-system messages =
+        4 protected messages total when a system prompt is present). With the
+        new semantics, the constructor default is 3 — the system prompt is
+        always implicitly protected ON TOP OF protect_first_n non-system
+        messages.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.protect_first_n == 3
+
+    def test_protect_first_n_override(self):
+        """protect_first_n=0 should be honoured — for users who rely on rolling
+        compaction and want NOTHING pinned at head except the system prompt
+        (always implicitly protected)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=0)
+        assert c.protect_first_n == 0
+
+    def test_protect_first_n_0_preserves_only_system_prompt(self):
+        """End-to-end: when protect_first_n=0, compression should treat only
+        the system prompt as head.  All user/assistant messages between the
+        system prompt and the protected tail become summarization candidates.
+
+        This is the cleanest configuration for long-running rolling-compaction
+        sessions — no user/assistant turn gets pinned verbatim forever just
+        because it happened to be early in the session."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=0,
+                protect_last_n=2,
+            )
+        msgs = (
+            [{"role": "system", "content": "System prompt"}]
+            + [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+               for i in range(8)]
+        )
+        result = c.compress(msgs)
+        # System prompt (msg[0]) survives as head
+        assert result[0]["role"] == "system"
+        assert result[0]["content"].startswith("System prompt")
+        # The first user/assistant exchange (msg 0, msg 1) should NOT be pinned
+        # as head verbatim — those would have been summarized or absorbed.
+        # Under default protect_first_n=3, result[1..3] would be the literal
+        # "msg 0" / "msg 1" / "msg 2"; with protect_first_n=0 they aren't.
+        assert result[1].get("content") != "msg 0"
+        # Last 2 messages are tail-protected under protect_last_n=2
+        assert result[-1]["content"] == msgs[-1]["content"]
+
+    def test_protect_first_n_semantics_stable_without_system_prompt(self):
+        """Regression: gateway /compress handler strips the system prompt
+        before calling compress().  protect_first_n must mean the same thing
+        in both paths — "N non-system head messages" — so configuring
+        protect_first_n=0 preserves NOTHING at the head regardless of whether
+        the system prompt is in the messages list.
+
+        Bug this covers: under the old semantics, protect_first_n counted
+        literally from messages[0].  In the gateway path (no system prompt)
+        that meant protect_first_n=1 would pin the first user turn of the
+        session forever — a user-reported complaint that a week-old
+        resolved question kept getting reinserted into every compaction
+        summary."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=0,
+                protect_last_n=2,
+            )
+        # No system prompt — this is what the gateway passes to compress().
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+        head_size = c._protect_head_size(msgs)
+        # With no system prompt and protect_first_n=0 → head is empty.
+        # The first user message is NOT pinned as head.
+        assert head_size == 0
+
+        # And with protect_first_n=3 on the same no-system-prompt list →
+        # head size is 3 (the three earliest non-system messages).
+        c.protect_first_n = 3
+        assert c._protect_head_size(msgs) == 3
 
 
 class TestTokenBudgetTailProtection:

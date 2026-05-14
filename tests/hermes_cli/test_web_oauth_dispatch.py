@@ -19,6 +19,8 @@ The fix:
 
 These tests pin the corrected behavior.
 """
+import time
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -65,6 +67,53 @@ def test_minimax_login_does_not_launch_anthropic_flow():
     assert "minimax" in body["verification_url"].lower()
     assert body["user_code"] == "ABCD-1234"
     assert body["expires_in"] == 600
+
+
+def test_minimax_dashboard_poller_accepts_absolute_ms_expired_in():
+    """Dashboard MiniMax completion must accept unix-ms token expiry values."""
+    from hermes_cli import web_server as ws
+
+    now = datetime.now(timezone.utc)
+    abs_ms = int((now.timestamp() + 1800) * 1000)
+    session_id = "minimax-absolute-ms-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "minimax-oauth",
+        "flow": "device_code",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "portal_base_url": "https://api.minimax.io",
+        "client_id": "client-id",
+        "user_code": "ABCD-1234",
+        "code_verifier": "verifier",
+        "interval_ms": 2000,
+        "expired_in_raw": abs_ms,
+        "region": "global",
+    }
+    captured_state = {}
+
+    try:
+        with patch(
+            "hermes_cli.auth._minimax_poll_token",
+            return_value={
+                "status": "success",
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "expired_in": abs_ms,
+                "token_type": "Bearer",
+            },
+        ), patch(
+            "hermes_cli.auth._minimax_save_auth_state",
+            side_effect=lambda state: captured_state.update(state),
+        ):
+            ws._minimax_poller(session_id)
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+    assert captured_state["access_token"] == "access"
+    assert 1790 <= captured_state["expires_in"] <= 1810
+    assert datetime.fromisoformat(captured_state["expires_at"]).year < 9999
 
 
 def test_anthropic_pkce_branch_still_works():

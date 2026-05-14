@@ -56,10 +56,22 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
-    raise SystemExit(
-        "Web UI requires fastapi and uvicorn.\n"
-        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
-    )
+    # First try lazy-installing the dashboard extras. Only the user actually
+    # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
+    # them out of every other install path. After install, re-import.
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.dashboard", prompt=False)
+        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.staticfiles import StaticFiles
+        from pydantic import BaseModel
+    except Exception:
+        raise SystemExit(
+            "Web UI requires fastapi and uvicorn.\n"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+        )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
@@ -273,7 +285,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        "options": ["local", "openai", "mistral"],
+        # "mistral" temporarily removed — mistralai PyPI package quarantined
+        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
+        "options": ["local", "openai"],
     },
     "display.skin": {
         "type": "select",
@@ -980,39 +994,9 @@ def get_model_options():
     can share the same types.
     """
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
-            current_provider = model_cfg.get("provider", "") or ""
-            current_base_url = model_cfg.get("base_url", "") or ""
-        else:
-            current_model = str(model_cfg) if model_cfg else ""
-            current_provider = ""
-            current_base_url = ""
-
-        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        custom_providers = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-
-        providers = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=user_providers,
-            custom_providers=custom_providers,
-            max_models=50,
-        )
-        return {
-            "providers": providers,
-            "model": current_model,
-            "provider": current_provider,
-        }
+        return build_models_payload(load_picker_context(), max_models=50)
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -2053,6 +2037,7 @@ def _minimax_poller(session_id: str) -> None:
     """
     from hermes_cli.auth import (
         _minimax_poll_token,
+        _minimax_resolve_token_expiry_unix,
         _minimax_save_auth_state,
         MINIMAX_OAUTH_GLOBAL_INFERENCE,
         MINIMAX_OAUTH_SCOPE,
@@ -2090,8 +2075,10 @@ def _minimax_poller(session_id: str) -> None:
         # dashboard path; cn-region operators can still use the CLI
         # flow which supports `--region cn`.
         now = datetime.now(timezone.utc)
-        expires_in_s = int(token_data["expired_in"])
-        expires_at_ts = now.timestamp() + expires_in_s
+        expires_at_ts = _minimax_resolve_token_expiry_unix(
+            int(token_data["expired_in"]), now=now,
+        )
+        expires_in_s = max(0, int(expires_at_ts - now.timestamp()))
         auth_state = {
             "provider": "minimax-oauth",
             "region": sess.get("region", "global"),
@@ -4004,6 +3991,9 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
     if _dashboard_plugins_cache is None or force_rescan:
         _dashboard_plugins_cache = _discover_dashboard_plugins()
+    elif _dashboard_plugins_cache:
+        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
+            _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
 
 
@@ -4415,11 +4405,33 @@ def start_server(
     if open_browser:
         import webbrowser
 
-        def _open():
-            time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+        # On headless Linux (no DISPLAY or WAYLAND_DISPLAY) some registered
+        # browsers are TUI programs (links, lynx, www-browser) that try to
+        # take over the terminal.  That can send SIGHUP to the server process
+        # and cause an immediate exit even though uvicorn bound successfully.
+        # Skip the auto-open attempt on headless systems and let the user
+        # open the URL manually.  macOS and Windows are always considered
+        # display-capable.
+        _has_display = (
+            sys.platform != "linux"
+            or bool(os.environ.get("DISPLAY"))
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
 
-        threading.Thread(target=_open, daemon=True).start()
+        if _has_display:
+            def _open():
+                try:
+                    time.sleep(1.0)
+                    webbrowser.open(f"http://{host}:{port}")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_open, daemon=True).start()
+        else:
+            _log.debug(
+                "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
+                "(headless Linux). Pass --no-open to suppress this detection."
+            )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

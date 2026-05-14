@@ -36,6 +36,14 @@ def _get_anthropic_sdk():
     global _anthropic_sdk
     if _anthropic_sdk is ...:
         try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("provider.anthropic", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            # FeatureUnavailable — fall through to ImportError handling below
+            pass
+        try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
         except ImportError:
@@ -1297,9 +1305,8 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             ),
         }
         # Forward cache_control marker when present on the OpenAI-format
-        # tool dict (set by ``mark_tools_for_long_lived_cache``). Anthropic's
-        # tools array supports cache_control on the last tool to cache the
-        # entire schema cross-session.
+        # tool dict. Anthropic's tools array supports cache_control on the
+        # last tool to cache the entire schema cross-session.
         cache_control = t.get("cache_control")
         if isinstance(cache_control, dict):
             anthropic_tool["cache_control"] = dict(cache_control)

@@ -477,6 +477,12 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Maximum time (seconds) the gateway will block an agent waiting for
+        # a clarify-tool response from the user.  Hit this and the agent
+        # unblocks with "[user did not respond within Xm]" so it can adapt
+        # rather than pinning the running-agent guard forever.  CLI clarify
+        # blocks indefinitely (input() is synchronous) and ignores this.
+        "clarify_timeout": 600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -628,6 +634,12 @@ DEFAULT_CONFIG = {
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
+            # Optional externally managed Camofox identity. Useful when another
+            # app owns the visible browser and Hermes should operate in it.
+            "user_id": "",
+            "session_key": "",
+            # Rehydrate tab_id from Camofox before creating a new tab.
+            "adopt_existing_tab": False,
         },
     },
 
@@ -719,19 +731,18 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "protect_first_n": 3,         # non-system head messages always preserved
+                                      # verbatim, in ADDITION to the system prompt
+                                      # (which is always implicitly protected). Set to
+                                      # 0 for long-running rolling-compaction sessions
+                                      # where you want nothing pinned except the
+                                      # system prompt + rolling summary + recent tail.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
-    # long_lived_prefix: when true (default), Claude on Anthropic / OpenRouter / Nous
-    #   Portal uses a split layout: tools[-1] + stable system prefix at long_lived_ttl
-    #   (cross-session cache), last 2 messages at cache_ttl (within-session rolling).
-    #   Set false to keep the legacy "system + last 3 messages" single-tier layout.
-    # long_lived_ttl: TTL for the cross-session prefix tier ("5m" or "1h"; default "1h").
     "prompt_caching": {
         "cache_ttl": "5m",
-        "long_lived_prefix": True,
-        "long_lived_ttl": "1h",
     },
 
     # OpenRouter-specific settings.
@@ -917,6 +928,14 @@ DEFAULT_CONFIG = {
         "persistent_output": True,
         "persistent_output_max_lines": 200,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        # File-mutation verifier footer.  When true (default), the agent
+        # appends a one-line advisory to its final response whenever a
+        # write_file / patch call failed during the turn and was never
+        # superseded by a successful write to the same path.  This catches
+        # the "batch of parallel patches, half fail, model claims success"
+        # class of over-claim that otherwise forces users to run
+        # `git status` to verify edits landed.  Set false to suppress.
+        "file_mutation_verifier": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
@@ -958,6 +977,21 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Hide the token/cost analytics surfaces (Analytics page, token bars and
+        # cost figures on the Models page) by default.  The numbers shown there
+        # are a local debug estimate: they only count successful main-agent
+        # responses with a usable ``response.usage``, and silently exclude every
+        # auxiliary call (context compression, title generation, vision,
+        # session search, web extract, smart approval, MCP routing, plugin LLM
+        # access) plus provider-side retries, fallback attempts, and any call
+        # whose usage block didn't come back.  Cache writes are also missing
+        # from the API response.  On models with heavy auxiliary traffic
+        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
+        # the provider bill, which is worse than hiding the numbers entirely
+        # because they look precise enough to compare against the provider.
+        # Set this to True to re-enable the surfaces with the understanding
+        # that the numbers are a local lower-bound estimate, not billing.
+        "show_token_analytics": False,
     },
 
     # Privacy settings
@@ -1216,6 +1250,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
@@ -1332,6 +1367,21 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        # Acknowledged supply-chain security advisories. Each entry is the
+        # ID of an advisory the user has read and acted on (uninstalled the
+        # compromised package, rotated credentials). Acked advisories no
+        # longer trigger the startup banner. Add via `hermes doctor --ack
+        # <id>`; remove by editing the list directly. See
+        # ``hermes_cli/security_advisories.py`` for the catalog.
+        "acked_advisories": [],
+        # Allow Hermes to lazy-install opt-in backend packages from PyPI
+        # the first time the user enables a backend that needs them
+        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
+        # their TTS provider). Set to false to require explicit
+        # ``pip install`` for everything beyond the base set — appropriate
+        # for restricted networks, audited environments, or air-gapped
+        # systems where any runtime install is unacceptable.
+        "allow_lazy_installs": True,
     },
 
     "cron": {
@@ -1468,6 +1518,53 @@ DEFAULT_CONFIG = {
         # disable backups entirely, set ``pre_update_backup: false`` above
         # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+    },
+
+    # Language Server Protocol — semantic diagnostics from real
+    # language servers (pyright, gopls, rust-analyzer, etc.) wired
+    # into the post-write lint check used by ``write_file`` and
+    # ``patch``.
+    #
+    # LSP is gated on git-workspace detection: when the agent's
+    # cwd (or the file being edited) is inside a git worktree, LSP
+    # runs against that workspace.  When neither is in a git repo,
+    # LSP stays dormant and the in-process syntax check is the only
+    # tier — handy for Telegram/Discord chats where the cwd is the
+    # user's home directory.
+    "lsp": {
+        # Master toggle.  Setting this to false disables the entire
+        # subsystem — no servers spawn, no background event loop, no
+        # cost.
+        "enabled": True,
+
+        # Diagnostic-wait mode for the post-write check.
+        # ``"document"`` waits up to ``wait_timeout`` seconds for the
+        # current file's diagnostics; ``"full"`` additionally requests
+        # workspace-wide diagnostics (slower).
+        "wait_mode": "document",
+        "wait_timeout": 5.0,
+
+        # How to handle missing server binaries.
+        # ``"auto"`` — try to install via npm/go/pip into
+        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
+        # ``"manual"`` — only use binaries already on PATH.
+        # ``"off"`` — alias for ``manual``.
+        "install_strategy": "auto",
+
+        # Per-server overrides.  Each key is a server_id from the
+        # registry (``pyright``, ``typescript``, ``gopls``,
+        # ``rust-analyzer``, etc.) and accepts:
+        #   disabled: true
+        #     — skip this server even when its extensions match
+        #   command: ["full/path/to/server", "--stdio"]
+        #     — pin a custom binary path; bypasses auto-install
+        #   env: {"KEY": "value"}
+        #     — extra env vars passed to the spawned process
+        #   initialization_options: {...}
+        #     — merged into the LSP ``initializationOptions``
+        # Empty by default; the registry defaults work for typical
+        # setups.
+        "servers": {},
     },
 
     # Config schema version - bump this when adding new required fields
@@ -2032,10 +2129,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "FAL_KEY": {
-        "description": "FAL API key for image generation",
+        "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "video_generate"],
         "password": True,
         "category": "tool",
     },
@@ -4244,10 +4341,34 @@ def load_env() -> Dict[str, str]:
     concatenated KEY=VALUE pairs on a single line) are handled
     gracefully instead of producing mangled values such as duplicated
     bot tokens.  See #8908.
+
+    The parsed dict is memoised keyed on the .env file mtime, because
+    ``get_env_value()`` is called dozens-to-hundreds of times per
+    interactive menu render (`hermes tools`, `hermes setup`, status
+    panels). Sanitisation is O(lines × known-keys), so re-parsing the
+    same file on every call was burning ~300ms of CPU per `hermes tools`
+    menu paint on top of the OAuth-refresh slowness. The mtime check
+    invalidates the cache when the user edits .env mid-process.
     """
+    global _env_cache
     env_path = get_env_path()
-    env_vars = {}
-    
+
+    try:
+        mtime = env_path.stat().st_mtime
+        size = env_path.stat().st_size
+        cache_key = (str(env_path), mtime, size)
+    except FileNotFoundError:
+        cache_key = (str(env_path), None, None)
+    except Exception:
+        cache_key = None
+
+    if cache_key is not None and _env_cache is not None:
+        cached_key, cached_vars = _env_cache
+        if cached_key == cache_key:
+            return dict(cached_vars)
+
+    env_vars: Dict[str, str] = {}
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
@@ -4263,8 +4384,31 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
+    if cache_key is not None:
+        _env_cache = (cache_key, dict(env_vars))
+
     return env_vars
+
+
+# Module-level memo for load_env(), keyed on (path, mtime, size).
+# Editing .env bumps mtime → next load_env() rebuilds. invalidate_env_cache()
+# is the explicit knob for writers that update .env via this module
+# (set_env_value, save_env, etc.) without relying on filesystem mtime
+# resolution.
+_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+
+
+def invalidate_env_cache() -> None:
+    """Clear the load_env() process-level memo.
+
+    Writers that mutate .env (set_env_value, save_env, etc.) call this
+    to guarantee the next load_env() sees their change even on
+    filesystems with coarse mtime resolution. Reads invalidate naturally
+    via the mtime/size check.
+    """
+    global _env_cache
+    _env_cache = None
 
 
 def _sanitize_env_lines(lines: list) -> list:
@@ -4369,6 +4513,7 @@ def sanitize_env_file() -> int:
             pass
         raise
     _secure_file(env_path)
+    invalidate_env_cache()
     return fixes
 
 
@@ -4480,6 +4625,7 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
+    invalidate_env_cache()
 
 
 def remove_env_value(key: str) -> bool:
@@ -4535,6 +4681,7 @@ def remove_env_value(key: str) -> bool:
         _secure_file(env_path)
 
     os.environ.pop(key, None)
+    invalidate_env_cache()
     return found
 
 
@@ -4721,6 +4868,7 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})
         _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")

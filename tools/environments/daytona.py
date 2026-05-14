@@ -51,6 +51,13 @@ class DaytonaEnvironment(BaseEnvironment):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.daytona", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
         from daytona import (
             Daytona,
             CreateSandboxFromImageParams,
@@ -94,9 +101,13 @@ class DaytonaEnvironment(BaseEnvironment):
 
             if self._sandbox is None:
                 try:
-                    page = self._daytona.list(labels=labels, page=1, limit=1)
-                    if page.items:
-                        self._sandbox = page.items[0]
+                    # Daytona SDK >=0.108.0 uses cursor-based pagination and
+                    # list() returns an iterator. Offset-based pagination
+                    # (page=1) is removed on June 10, 2026.
+                    results = self._daytona.list(labels=labels, limit=1)
+                    legacy = next(iter(results), None)
+                    if legacy is not None:
+                        self._sandbox = legacy
                         self._sandbox.start()
                         logger.info("Daytona: resumed legacy sandbox %s for task %s",
                                     self._sandbox.id, task_id)

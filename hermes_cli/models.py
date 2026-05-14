@@ -621,6 +621,71 @@ def union_with_portal_free_recommendations(
     return (augmented_ids, augmented_pricing)
 
 
+def union_with_portal_paid_recommendations(
+    curated_ids: list[str],
+    pricing: dict[str, dict[str, str]],
+    portal_base_url: str = "",
+    *,
+    force_refresh: bool = False,
+) -> tuple[list[str], dict[str, dict[str, str]]]:
+    """Augment curated list with the Portal's ``paidRecommendedModels``.
+
+    Mirror of :func:`union_with_portal_free_recommendations` for paid-tier
+    users. The Portal's ``/api/nous/recommended-models`` endpoint advertises
+    which paid models are blessed *right now* — independent of what the
+    in-repo ``_PROVIDER_MODELS["nous"]`` list happens to contain or whether
+    the docs-hosted catalog manifest has been rebuilt since the last release.
+
+    For paid-tier users this lets newly-launched paid models surface in the
+    picker even if the user is running an older Hermes that doesn't ship
+    them in its hardcoded curated list. This function returns an augmented
+    ``(model_ids, pricing)`` pair where:
+
+    * Portal paid recommendations missing from ``curated_ids`` are
+      appended at the front (so the picker shows them first).
+    * ``pricing`` is left untouched — we deliberately do NOT synthesize
+      pricing entries for paid models. Live pricing is fetched separately
+      via :func:`get_pricing_for_provider`; if the live endpoint hasn't
+      published pricing yet, the picker shows a blank price column rather
+      than fabricating numbers. (The free helper synthesizes ``$0`` so
+      :func:`partition_nous_models_by_tier` keeps free models selectable;
+      no equivalent gating applies on the paid side, so synthesis would
+      only mislead the user.)
+
+    Failures (network, parse, missing field) are silent and degrade to
+    returning the inputs unchanged — never block the picker on a
+    Portal-side hiccup.
+    """
+    try:
+        payload = fetch_nous_recommended_models(
+            portal_base_url, force_refresh=force_refresh
+        )
+    except Exception:
+        return (list(curated_ids), dict(pricing))
+
+    paid_block = payload.get("paidRecommendedModels") if isinstance(payload, dict) else None
+    if not isinstance(paid_block, list) or not paid_block:
+        return (list(curated_ids), dict(pricing))
+
+    portal_paid_ids: list[str] = []
+    for entry in paid_block:
+        name = _extract_model_name(entry)
+        if name:
+            portal_paid_ids.append(name)
+    if not portal_paid_ids:
+        return (list(curated_ids), dict(pricing))
+
+    augmented_ids = list(curated_ids)
+    seen = set(augmented_ids)
+    # Prepend Portal paid recommendations that aren't already curated, so
+    # the Portal-blessed picks surface first in the picker.
+    new_ones = [mid for mid in portal_paid_ids if mid not in seen]
+    if new_ones:
+        augmented_ids = new_ones + augmented_ids
+
+    return (augmented_ids, dict(pricing))
+
+
 # ---------------------------------------------------------------------------
 # TTL cache for free-tier detection — avoids repeated API calls within a
 # session while still picking up upgrades quickly.
@@ -843,10 +908,10 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
+    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
-    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
@@ -861,7 +926,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
-    ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
@@ -871,6 +935,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
+    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/

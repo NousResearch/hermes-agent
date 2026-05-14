@@ -397,6 +397,22 @@ def _query_codex_plugins(
             installed = bool(plugin.get("installed", False))
             if not installed:
                 continue
+            # Skip plugins codex itself reports as unavailable (broken
+            # install, missing OAuth, removed from marketplace, etc.).
+            # Cf. openclaw/openclaw#80815 — OpenClaw learned to gate
+            # migration on app readiness to avoid writing config that
+            # would fail at activation time. Our migration writes to
+            # codex's config.toml directly, so a broken plugin would
+            # surface as a codex error on first use. Skipping it here
+            # keeps the migrated config clean and the user's first
+            # codex turn from failing.
+            availability = str(plugin.get("availability") or "").upper()
+            if availability and availability != "AVAILABLE":
+                logger.debug(
+                    "skipping plugin %s: availability=%s",
+                    plugin.get("name"), availability,
+                )
+                continue
             name = str(plugin.get("name") or "")
             if not name:
                 continue

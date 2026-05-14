@@ -340,7 +340,8 @@ Plugins installed via `codex plugin` (Linear, GitHub, Gmail, Calendar, Canva, et
 This means: when your friend says "I have Calendar and GitHub set up in my Codex CLI" and they enable Hermes' codex runtime, Hermes activates those automatically. No re-configuration needed.
 
 What's NOT migrated:
-- Plugins not yet installed in Codex CLI. Install them via `codex plugin` first.
+- Plugins you haven't installed yet — install them in Codex first.
+- Plugins where codex reports `availability != AVAILABLE` (broken install, expired OAuth, removed from marketplace, etc.). These are skipped to avoid writing config that would fail at activation time.
 - ChatGPT app marketplace entries (the per-account `app/list` results — these are already enabled inside codex by virtue of your account auth).
 - Plugin OAuth — you authorize each plugin once in Codex itself; Hermes doesn't touch credentials.
 

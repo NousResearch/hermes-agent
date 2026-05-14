@@ -1410,6 +1410,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
+        # Keep the exact caller-provided message list available. The pruning
+        # pass below is intentionally lossy, so failed summary generation must
+        # return this original object instead of the post-pruning copy.
+        original_messages = messages
+
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n,
@@ -1470,7 +1475,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            return messages
+            return original_messages
 
         # Phase 4: Assemble compressed message list
         compressed = []

@@ -756,6 +756,56 @@ class TestSummaryFailureTrackingForGatewayWarning:
             for m in result
         )
 
+    def test_summary_failure_returns_exact_original_before_tool_pruning(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+                summary_target_ratio=0.10,
+            )
+        c.tail_token_budget = 1
+
+        unique_tool_output = "UNIQUE_TOOL_OUTPUT_" + ("x" * 2000)
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"cmd": "pytest"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": unique_tool_output},
+            {"role": "assistant", "content": "processed tool output"},
+            {"role": "user", "content": "middle user work"},
+            {"role": "assistant", "content": "middle assistant work"},
+            {"role": "user", "content": "recent user request"},
+            {"role": "assistant", "content": "recent assistant reply"},
+        ]
+
+        pruned_preview, pruned_count = c._prune_old_tool_results(
+            msgs,
+            protect_tail_count=c.protect_last_n,
+            protect_tail_tokens=c.tail_token_budget,
+        )
+        assert pruned_count >= 1
+        assert pruned_preview[3]["content"] != unique_tool_output
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("summary unavailable")):
+            result = c.compress(msgs)
+
+        assert result is msgs
+        assert result[3]["content"] == unique_tool_output
+        assert c._last_summary_fallback_used is True
+        assert c.compression_count == 0
+
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

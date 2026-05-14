@@ -105,6 +105,8 @@ class TestHasAwsCredentials:
 
 
 class TestResolveBedrocRegion:
+    pytest.importorskip("botocore", reason="botocore required for region resolution tests")
+
     def test_prefers_aws_region(self):
         from agent.bedrock_adapter import resolve_bedrock_region
         env = {"AWS_REGION": "eu-west-1", "AWS_DEFAULT_REGION": "us-west-2"}
@@ -1321,7 +1323,9 @@ class TestIsStaleConnectionError:
         # frame's ``f_globals["__name__"]`` is what the classifier inspects.
         fake_globals = {"__name__": "urllib3.connectionpool"}
         try:
-            exec("def _boom():\n    assert False\n_boom()", fake_globals)
+            exec("def _boom():
+    assert False
+_boom()", fake_globals)
         except AssertionError as exc:
             assert is_stale_connection_error(exc) is True
         else:
@@ -1332,7 +1336,9 @@ class TestIsStaleConnectionError:
         from agent.bedrock_adapter import is_stale_connection_error
         fake_globals = {"__name__": "botocore.httpsession"}
         try:
-            exec("def _boom():\n    assert False\n_boom()", fake_globals)
+            exec("def _boom():
+    assert False
+_boom()", fake_globals)
         except AssertionError as exc:
             assert is_stale_connection_error(exc) is True
         else:

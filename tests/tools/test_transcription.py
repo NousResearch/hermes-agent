@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+pytest.importorskip("faster_whisper", reason="faster_whisper required for transcription tests")
+
 
 # ---------------------------------------------------------------------------
 # Provider selection

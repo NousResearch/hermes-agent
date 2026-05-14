@@ -21,6 +21,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("botocore", reason="botocore required for Bedrock model picker tests")
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures

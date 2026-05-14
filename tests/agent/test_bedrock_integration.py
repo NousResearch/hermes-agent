@@ -263,6 +263,7 @@ class TestPackaging:
         content = toml_path.read_text()
         assert 'bedrock = ["boto3' in content
 
+    @pytest.mark.skip(reason="bedrock removed from [all] on 2026-05-12 (lazy-install)")
     def test_bedrock_in_all_extra(self):
         from pathlib import Path
         content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()

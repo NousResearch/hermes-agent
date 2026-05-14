@@ -985,6 +985,19 @@ install_deps() {
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
 
+        # On Android, psutil's setup.py rejects sys.platform == 'android' before
+        # it ever invokes the C build, so the next pip install would fail at
+        # "platform android is not supported".  Prebuild psutil from the official
+        # sdist with a one-line marker patch (Linux source path is fine on
+        # Android).  Stopgap until psutil#2762 ships upstream.
+        if "$PIP_PYTHON" -c 'import sys; raise SystemExit(0 if sys.platform == "android" else 1)' 2>/dev/null; then
+            log_info "Android Python detected: prebuilding psutil compatibility shim..."
+            if ! "$PIP_PYTHON" "$INSTALL_DIR/scripts/install_psutil_android.py" --pip "$PIP_PYTHON -m pip"; then
+                log_warn "psutil Android prebuild failed — package install will likely fail next."
+                log_info "Workaround: manually rerun 'python scripts/install_psutil_android.py' once your toolchain is set up."
+            fi
+        fi
+
         # Try the broad Termux profile first (best-effort "install all" for Android),
         # then fall back to the conservative Termux baseline, then base package.
         if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then

@@ -562,21 +562,42 @@ class ProcessRegistry:
         session.process = proc
         session.pid = proc.pid
 
-        # Start output reader thread
-        reader = threading.Thread(
-            target=self._reader_loop,
-            args=(session,),
-            daemon=True,
-            name=f"proc-reader-{session.id}",
-        )
-        session._reader_thread = reader
-        reader.start()
+        try:
+            # Start output reader thread
+            reader = threading.Thread(
+                target=self._reader_loop,
+                args=(session,),
+                daemon=True,
+                name=f"proc-reader-{session.id}",
+            )
+            session._reader_thread = reader
+            reader.start()
 
-        with self._lock:
-            self._prune_if_needed()
-            self._running[session.id] = session
+            with self._lock:
+                self._prune_if_needed()
+                self._running[session.id] = session
 
-        self._write_checkpoint()
+            self._write_checkpoint()
+        except Exception:
+            # Post-Popen setup failed — kill the orphaned subprocess (and any
+            # descendants spawned via setsid) before re-raising so they do not
+            # leak as untracked background processes.
+            try:
+                if not _IS_WINDOWS:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        proc.kill()
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            raise
+
         return session
 
     def spawn_via_env(

@@ -2814,7 +2814,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not to_resolve:
             return
 
-        print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
+        logger.info("[%s] Resolving %d username(s): %s", self.name, len(to_resolve), ", ".join(to_resolve))
         resolved_count = 0
 
         for guild in self._client.guilds:
@@ -2841,19 +2841,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         display_lower if display_lower in to_resolve else global_lower
                     )
                     to_resolve.discard(matched_name)
-                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
+                    logger.debug("[%s] Resolved '%s' -> %s (%s#%s)", self.name, matched_name, uid, member.name, member.discriminator)
 
             if not to_resolve:
                 break
 
         if to_resolve:
-            print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
+            logger.warning("[%s] Could not resolve usernames: %s", self.name, ", ".join(to_resolve))
 
         # Update internal set and env var so gateway auth checks use IDs
         self._allowed_user_ids = numeric_ids
         os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+            logger.info("[%s] Updated DISCORD_ALLOWED_USERS with %d resolved ID(s)", self.name, resolved_count)
 
     def format_message(self, content: str) -> str:
         """
@@ -4327,9 +4327,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
-                    print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                    logger.debug("[Discord] Cached user image: %s", cached_path)
                 except Exception as e:
-                    print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
+                    logger.warning("[Discord] Failed to cache image attachment: %s", e)
                     # Fall back to the CDN URL if caching fails
                     media_urls.append(att.url)
                     media_types.append(content_type)
@@ -4341,9 +4341,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     cached_path = await self._cache_discord_audio(att, ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
-                    print(f"[Discord] Cached user audio: {cached_path}", flush=True)
+                    logger.debug("[Discord] Cached user audio: %s", cached_path)
                 except Exception as e:
-                    print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
+                    logger.warning("[Discord] Failed to cache audio attachment: %s", e)
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:

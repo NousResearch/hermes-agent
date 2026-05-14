@@ -259,6 +259,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_TOOL_DEFS_CACHE_MAX_ENTRIES = 8
 
 
 def _clear_tool_defs_cache() -> None:
@@ -320,6 +321,8 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
+        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX_ENTRIES and cache_key not in _tool_defs_cache:
+            _tool_defs_cache.clear()
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
         # schemas to self.tools) don't poison the cache. Without this, a

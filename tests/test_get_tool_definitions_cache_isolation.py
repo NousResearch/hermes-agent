@@ -87,6 +87,20 @@ class TestQuietModeCacheIsolation:
             f"baseline={baseline}, final={len(final)}."
         )
 
+    def test_cache_is_capped_and_clears_when_over_limit(self, monkeypatch):
+        """Quiet-mode cache keeps at most 8 entries by dropping all cached keys."""
+        def mock_compute(*_args, **_kwargs):
+            return [{"type": "function", "function": {"name": "mock_tool"}}]
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", mock_compute)
+
+        for idx in range(8):
+            model_tools.get_tool_definitions(enabled_toolsets=[f"set-{idx}"], quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 8
+
+        model_tools.get_tool_definitions(enabled_toolsets=["overflow"], quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 1
+
     def test_non_quiet_mode_does_not_use_cache(self):
         """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
         explains why the bug only hit Gateway."""

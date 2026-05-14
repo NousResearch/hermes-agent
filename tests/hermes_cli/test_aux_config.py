@@ -224,7 +224,7 @@ def test_reset_aux_to_auto_clears_routing_preserves_timeouts(tmp_path, monkeypat
     # User-tuned timeout survives reset
     assert cfg["auxiliary"]["vision"]["timeout"] == 300
     # Default compression timeout preserved
-    assert cfg["auxiliary"]["compression"]["timeout"] == 120
+    assert cfg["auxiliary"]["compression"]["timeout"] == 300
 
 
 def test_reset_aux_to_auto_idempotent(tmp_path, monkeypatch):

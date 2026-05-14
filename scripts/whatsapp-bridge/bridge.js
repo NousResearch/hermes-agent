@@ -300,7 +300,10 @@ async function startSocket() {
       const messageContent = getMessageContent(msg);
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
+      const quotedMessageId = contextInfo?.stanzaId || null;
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
+      const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
+      const hasQuotedMessage = !!contextInfo?.quotedMessage;
 
       // Extract message body
       let body = '';
@@ -412,7 +415,10 @@ async function startSocket() {
         mediaType,
         mediaUrls,
         mentionedIds,
+        quotedMessageId,
         quotedParticipant,
+        quotedRemoteJid,
+        hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
       };

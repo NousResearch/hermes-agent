@@ -1,0 +1,8 @@
+name: cloudflare
+version: 1.0.0
+description: "Cloudflare Workers AI image generation backend (FLUX.2, Leonardo, SDXL)."
+author: NousResearch
+kind: backend
+requires_env:
+  - CLOUDFLARE_API_TOKEN
+  - CLOUDFLARE_ACCOUNT_ID

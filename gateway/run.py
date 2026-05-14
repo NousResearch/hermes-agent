@@ -1496,6 +1496,33 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _display_platform_setting_configured(
+    user_config: dict,
+    platform_key: str,
+    setting: str,
+) -> bool:
+    """Return True when display.platforms.<platform> explicitly sets a key."""
+    return _display_platform_setting_value(user_config, platform_key, setting) is not None
+
+
+def _display_platform_setting_value(
+    user_config: dict,
+    platform_key: str,
+    setting: str,
+) -> Any:
+    """Return display.platforms.<platform>.<setting>, or None when absent."""
+    display_cfg = user_config.get("display") if isinstance(user_config, dict) else None
+    if not isinstance(display_cfg, dict):
+        return None
+    platforms_cfg = display_cfg.get("platforms")
+    if not isinstance(platforms_cfg, dict):
+        return None
+    platform_cfg = platforms_cfg.get(platform_key)
+    if not isinstance(platform_cfg, dict) or setting not in platform_cfg:
+        return None
+    return platform_cfg.get(setting)
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -16550,11 +16577,19 @@ class GatewayRunner:
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
         )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
-        )
+        if (
+            source.platform == Platform.MATRIX
+            and not _display_platform_setting_configured(
+                user_config, platform_key, "streaming"
+            )
+        ):
+            _streaming_enabled = False
+        else:
+            _streaming_enabled = (
+                _scfg.enabled and _scfg.transport != "off"
+                if _plat_streaming is None
+                else bool(_plat_streaming)
+            )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -16815,40 +16850,54 @@ class GatewayRunner:
         _platforms_cfg = _display_cfg.get("platforms") or {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
+        _platform_tool_progress_configured = (
+            isinstance(_platform_cfg, dict)
+            and "tool_progress" in _platform_cfg
+        )
         _tool_progress_configured = (
             "tool_progress" in _display_cfg
-            or (
-                isinstance(_platform_cfg, dict)
-                and "tool_progress" in _platform_cfg
-            )
+            or _platform_tool_progress_configured
             or (
                 isinstance(_legacy_tp_overrides, dict)
                 and platform_key in _legacy_tp_overrides
             )
         )
-        progress_mode = (
-            _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+        if (
+            source.platform == Platform.MATRIX
+            and not _platform_tool_progress_configured
+            and not _env_tp
+        ):
+            progress_mode = "off"
+        else:
+            progress_mode = (
+                _env_tp
+                if _env_tp and not _tool_progress_configured
+                else (_resolved_tp or _env_tp or "all")
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
-        from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
-        interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
-            and bool(
-                resolve_display_setting(
-                    user_config,
-                    platform_key,
-                    "interim_assistant_messages",
-                    True,
-                )
-            )
+        _platform_interim_value = _display_platform_setting_value(
+            user_config, platform_key, "interim_assistant_messages"
         )
+        if (
+            source.platform == Platform.MATRIX
+            and _platform_interim_value is None
+        ):
+            interim_assistant_messages_enabled = False
+        else:
+            interim_source_value = (
+                _platform_interim_value
+                if _platform_interim_value is not None
+                else display_config.get("interim_assistant_messages")
+            )
+            interim_assistant_messages_enabled = (
+                source.platform != Platform.WEBHOOK
+                and is_truthy_value(interim_source_value, default=True)
+            )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -17594,12 +17643,20 @@ class GatewayRunner:
             _plat_streaming = resolve_display_setting(
                 user_config, platform_key, "streaming"
             )
-            # None = no per-platform override → follow global config
-            _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
-            )
+            if (
+                source.platform == Platform.MATRIX
+                and not _display_platform_setting_configured(
+                    user_config, platform_key, "streaming"
+                )
+            ):
+                _streaming_enabled = False
+            else:
+                # None = no per-platform override → follow global config
+                _streaming_enabled = (
+                    _scfg.enabled and _scfg.transport != "off"
+                    if _plat_streaming is None
+                    else bool(_plat_streaming)
+                )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages

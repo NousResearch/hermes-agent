@@ -542,7 +542,10 @@ PLATFORM_HINTS = {
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
         "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
-        "and other files as downloadable attachments."
+        "and other files as downloadable attachments. "
+        "When Matrix-specific tools are available, use them for Matrix-native "
+        "room actions such as reactions, redactions, invites, room creation, "
+        "history lookup, and presence updates."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. "

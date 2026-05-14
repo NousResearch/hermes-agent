@@ -274,6 +274,19 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "matrix": {
+        "description": "Matrix-native room controls for the current Matrix gateway context",
+        "tools": [
+            "matrix_send_reaction",
+            "matrix_redact_message",
+            "matrix_create_room",
+            "matrix_invite_user",
+            "matrix_fetch_history",
+            "matrix_set_presence",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
@@ -472,7 +485,14 @@ TOOLSETS = {
 
     "hermes-matrix": {
         "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "matrix_send_reaction",
+            "matrix_redact_message",
+            "matrix_create_room",
+            "matrix_invite_user",
+            "matrix_fetch_history",
+            "matrix_set_presence",
+        ],
         "includes": []
     },
 

@@ -876,6 +876,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1018,6 +1019,19 @@ def _build_child_agent(
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+
+    # OpenCode-to-OpenCode loop protection: if the child model differs from the
+    # parent, we MUST re-derive the api_mode.  Blindly inheriting it causes
+    # 404s for the DeepSeek/MiniMax mix because they use different endpoints
+    # (one strips /v1, the other doesn't).
+    if effective_provider in ("opencode-zen", "opencode-go"):
+        if effective_model != getattr(parent_agent, "model", None) or override_provider:
+            from hermes_cli.models import opencode_model_api_mode
+
+            effective_api_mode = opencode_model_api_mode(
+                effective_provider, effective_model
+            )
+
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1041,11 +1055,15 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: task override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        delegation_effort = str(
+            override_reasoning_effort
+            or delegation_cfg.get("reasoning_effort")
+            or ""
+        ).strip()
         if delegation_effort:
             from hermes_constants import parse_reasoning_effort
 
@@ -1901,6 +1919,9 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
@@ -1910,8 +1931,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model, provider, reasoning_effort)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model, provider, reasoning_effort}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1997,7 +2018,15 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": model,
+                "provider": provider,
+                "reasoning_effort": reasoning_effort,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2038,26 +2067,60 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            task_model = t.get("model")
+            task_provider = t.get("provider")
+            task_reasoning = t.get("reasoning_effort")
+
+            task_creds = creds
+            if task_model or task_provider:
+                # Resolve specific credentials for this task override
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                    # Use delegation config as base, override with task-specifics
+                    requested_p = task_provider or cfg.get("provider")
+                    target_m = task_model or cfg.get("model")
+
+                    runtime = resolve_runtime_provider(
+                        requested=requested_p,
+                        target_model=target_m,
+                        explicit_api_key=cfg.get("api_key"),
+                        explicit_base_url=cfg.get("base_url"),
+                    )
+                    task_creds = {
+                        "model": target_m or runtime.get("model"),
+                        "provider": runtime.get("provider"),
+                        "base_url": runtime.get("base_url"),
+                        "api_key": runtime.get("api_key"),
+                        "api_mode": runtime.get("api_mode"),
+                        "command": runtime.get("command"),
+                        "args": runtime.get("args"),
+                    }
+                except Exception as exc:
+                    return tool_error(f"Task {i} credential resolution failed: {exc}")
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_reasoning_effort=task_reasoning,
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2395,7 +2458,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
+        runtime = resolve_runtime_provider(
+            requested=configured_provider,
+            target_model=configured_model,
+            explicit_api_key=configured_api_key,
+            explicit_base_url=configured_base_url,
+        )
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -2657,6 +2725,19 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": "Per-task model override (e.g. 'gpt-4o', 'claude-3-5-sonnet').",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Per-task provider override (e.g. 'openrouter', 'nous', 'zai', 'opencode-go').",
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["low", "medium", "high", "none"],
+                "description": "Per-task reasoning effort override (for models that support it).",
+            },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2678,6 +2759,19 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override (e.g. 'gpt-4o', 'claude-3-5-sonnet').",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override (e.g. 'openrouter', 'nous', 'zai', 'opencode-go').",
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high", "none"],
+                            "description": "Per-task reasoning effort override (for models that support it).",
                         },
                         "toolsets": {
                             "type": "array",

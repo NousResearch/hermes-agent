@@ -972,6 +972,180 @@ class TestDiskFailureMarker:
 # HERMES_HOME isolation
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# _is_github_host predicate + GITHUB_TOKEN scoping (W3-S2)
+# ---------------------------------------------------------------------------
+
+class TestIsGithubHost:
+    """Unit tests for the _is_github_host URL predicate."""
+
+    def test_api_github_com_is_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://api.github.com/repos/foo/bar/releases/latest") is True
+
+    def test_raw_githubusercontent_is_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://raw.githubusercontent.com/foo/bar/main/file.txt") is True
+
+    def test_github_com_is_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://github.com/foo/bar") is True
+
+    def test_subdomain_githubusercontent_is_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://objects.githubusercontent.com/foo") is True
+
+    def test_evil_host_not_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://evil.example.com/steal") is False
+
+    def test_http_github_not_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("http://github.com/foo/bar") is False
+
+    def test_http_api_github_not_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("http://api.github.com/repos") is False
+
+    def test_subdomain_attack_not_trusted(self):
+        """api.github.com.evil.com must NOT match — suffix dot is required."""
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://api.github.com.evil.com/steal") is False
+
+    def test_evilgithubusercontent_not_trusted(self):
+        """evilgithubusercontent.com must NOT match — leading dot prevents this."""
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://evilgithubusercontent.com/steal") is False
+
+    def test_empty_url_not_trusted(self):
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("") is False
+
+    def test_uppercase_hostname_is_normalised(self):
+        """urlparse normalises hostname to lowercase; HTTPS://API.GITHUB.COM must match."""
+        from tools.tirith_security import _is_github_host
+        assert _is_github_host("https://API.GITHUB.COM/repos") is True
+
+
+class TestGithubTokenScoping:
+    """_download_file injects Authorization only for trusted GitHub hosts."""
+
+    @patch("tools.tirith_security.urllib.request.urlopen")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"})
+    def test_github_token_attached_for_api_github(self, mock_urlopen):
+        """Token must be sent to api.github.com."""
+        from tools.tirith_security import _download_file
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = b""
+        mock_urlopen.return_value = mock_resp
+
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(delete=False) as f:
+            tmp = f.name
+        try:
+            _download_file("https://api.github.com/repos/foo/bar/releases/latest", tmp)
+        finally:
+            os.unlink(tmp)
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") == "token secret-token"
+
+    @patch("tools.tirith_security.urllib.request.urlopen")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"})
+    def test_github_token_attached_for_raw_githubusercontent(self, mock_urlopen):
+        """Token must be sent to raw.githubusercontent.com."""
+        from tools.tirith_security import _download_file
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = b""
+        mock_urlopen.return_value = mock_resp
+
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(delete=False) as f:
+            tmp = f.name
+        try:
+            _download_file("https://raw.githubusercontent.com/foo/bar/main/file.txt", tmp)
+        finally:
+            os.unlink(tmp)
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") == "token secret-token"
+
+    @patch("tools.tirith_security.urllib.request.urlopen")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"})
+    def test_github_token_absent_for_evil_host(self, mock_urlopen):
+        """Token must NOT be sent to an untrusted host."""
+        from tools.tirith_security import _download_file
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = b""
+        mock_urlopen.return_value = mock_resp
+
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(delete=False) as f:
+            tmp = f.name
+        try:
+            _download_file("https://evil.example.com/steal", tmp)
+        finally:
+            os.unlink(tmp)
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") is None
+
+    @patch("tools.tirith_security.urllib.request.urlopen")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"})
+    def test_github_token_absent_for_http_scheme(self, mock_urlopen):
+        """Token must NOT be sent over plain HTTP even to github.com."""
+        from tools.tirith_security import _download_file
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = b""
+        mock_urlopen.return_value = mock_resp
+
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(delete=False) as f:
+            tmp = f.name
+        try:
+            _download_file("http://github.com/foo/bar", tmp)
+        finally:
+            os.unlink(tmp)
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") is None
+
+    @patch("tools.tirith_security.urllib.request.urlopen")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"})
+    def test_github_token_absent_for_subdomain_attack(self, mock_urlopen):
+        """Token must NOT be sent to api.github.com.evil.com (suffix-squatting)."""
+        from tools.tirith_security import _download_file
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = b""
+        mock_urlopen.return_value = mock_resp
+
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(delete=False) as f:
+            tmp = f.name
+        try:
+            _download_file("https://api.github.com.evil.com/steal", tmp)
+        finally:
+            os.unlink(tmp)
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") is None
+
+
 class TestHermesHomeIsolation:
     def test_hermes_bin_dir_respects_hermes_home(self):
         """_hermes_bin_dir must use HERMES_HOME, not hardcoded ~/.hermes."""

@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 
@@ -204,12 +205,56 @@ def _detect_target() -> str | None:
     return f"{arch}-{plat}"
 
 
+_GITHUB_TRUSTED_HOSTS = frozenset({
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+})
+
+
+def _is_github_host(url: str) -> bool:
+    """Return True only when *url* targets a trusted GitHub host over HTTPS.
+
+    Accepted hostnames: api.github.com, github.com, raw.githubusercontent.com,
+    and any subdomain of githubusercontent.com.  The scheme must be ``https``;
+    plain HTTP is rejected even for legitimate GitHub domains.
+
+    Uses ``urlparse(url).hostname`` so that port numbers, userinfo, and
+    upper-case letters are all normalised before the check, preventing trivial
+    bypass attempts such as ``https://api.GITHUB.COM:443/...``.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    hostname = parsed.hostname  # already lower-cased and port-stripped by urlparse
+    if hostname is None:
+        return False
+    if parsed.scheme != "https":
+        return False
+    if hostname in _GITHUB_TRUSTED_HOSTS:
+        return True
+    # Allow subdomains of githubusercontent.com but require the leading dot so
+    # that ``evilgithubusercontent.com`` does NOT match.
+    if hostname.endswith(".githubusercontent.com"):
+        return True
+    return False
+
+
 def _download_file(url: str, dest: str, timeout: int = 10):
-    """Download a URL to a local file."""
+    """Download a URL to a local file.
+
+    The ``Authorization: token <GITHUB_TOKEN>`` header is injected **only**
+    when the request targets a trusted GitHub host (as determined by
+    ``_is_github_host``).  For any other domain the header is omitted entirely
+    to prevent accidental token leakage to attacker-controlled servers.
+    """
     req = urllib.request.Request(url)
-    token = os.getenv("GITHUB_TOKEN")
-    if token:
-        req.add_header("Authorization", f"token {token}")
+    if _is_github_host(url):
+        token = os.getenv("GITHUB_TOKEN")
+        if token:
+            req.add_header("Authorization", f"token {token}")
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
 

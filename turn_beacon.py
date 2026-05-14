@@ -34,7 +34,7 @@ PAUSE_FLAG_PATH = Path(os.environ.get("HERMES_QUEUE_PAUSE_FLAG", str(get_hermes_
 AUTO_DISPATCH_COUNT_PATH = Path(os.environ.get("HERMES_AUTO_DISPATCH_COUNT_PATH", str(get_hermes_home() / "state" / "auto-dispatch-count")))
 AUTO_DISPATCH_LIMIT = int(os.environ.get("HERMES_AUTO_DISPATCH_LIMIT", "5"))
 CHICAGO_TZ_NAME = "America/Chicago"
-MILESTONE_COMMIT_RE = re.compile(r"^(stage [a-c]|complete|ship|integrate|feat\(.*\) Plan.*complete)", re.I)
+MILESTONE_COMMIT_RE = re.compile(r"^(complete|ship|integrate|Plan)", re.I)
 TEST_THRESHOLD_START = 175
 TEST_THRESHOLD_STEP = 25
 

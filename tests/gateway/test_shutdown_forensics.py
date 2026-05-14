@@ -74,11 +74,30 @@ class TestSnapshotShutdownContext:
     ):
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         # We can't actually change ppid; skip if we happen to be reaped
-        # by init (e.g. running under tini).
-        if os.getppid() == 1:
-            pytest.skip("test process is reaped by init")
+        # by init (e.g. running under tini) on a non-Linux host where the
+        # fix still requires under_systemd=False.
+        if os.getppid() == 1 and sys.platform.startswith("linux"):
+            pytest.skip("test process is reaped by init on Linux")
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is False
+
+    def test_under_systemd_false_on_darwin_even_when_ppid_is_one(
+        self, monkeypatch
+    ):
+        """On macOS, PID 1 is launchd (not systemd); under_systemd must be False."""
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(sf.sys, "platform", "darwin")
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is False
+
+    def test_under_systemd_true_on_linux_when_ppid_is_one(self, monkeypatch):
+        """On Linux, ppid==1 is a strong signal that systemd reaped us."""
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(sf.sys, "platform", "linux")
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is True
 
     def test_completes_quickly(self):
         """Snapshot must NOT block — it runs inside the asyncio signal handler."""

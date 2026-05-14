@@ -222,6 +222,8 @@ _ARTIFACT_ANCHORS_EN: tuple[str, ...] = (
 _ARTIFACT_ANCHORS_KO: tuple[str, ...] = (
     "리포트",
     "보고서",
+    "회의록",
+    "정리하자",
     "정리해",
     "정리해줘",
     "작성해",
@@ -305,6 +307,11 @@ _EXPLICIT_WORKER_ANCHORS_KO: tuple[str, ...] = (
     "워커에 맡겨",
     "워커에게 맡겨",
     "워커한테 맡겨",
+    "워커에게",
+    "워커한테",
+    "워커어게",  # common typo while typing quickly on mobile
+    "에이전트에게",
+    "에이전트한테",
     "클로드한테 맡겨",
     "위임해",
     "위임해줘",

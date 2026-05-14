@@ -180,6 +180,19 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
         }
     } if cleanup_on else {}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
+
+    # Also wire auto_delete_tool_progress to match cleanup_on.  The
+    # progress consumer reads this from a *different* config source
+    # (hermes_cli.config.load_config), so we must mock it separately
+    # to prevent the default (True) from deleting progress bubbles
+    # even when cleanup_progress is off.
+    import hermes_cli.config as _hermes_cli_config
+    _auto_delete_cfg = {
+        "display": {"auto_delete_tool_progress": bool(cleanup_on)}
+    }
+    monkeypatch.setattr(
+        _hermes_cli_config, "load_config", lambda: _auto_delete_cfg
+    )
     return gateway_run
 
 

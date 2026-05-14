@@ -104,7 +104,7 @@ class TestLoopCommandGateway:
         session_entry = MagicMock()
         session_entry.session_id = "gw-sid-2"
         runner.session_store.get_or_create_session.return_value = session_entry
-        runner._enqueue_fifo = MagicMock()
+        runner._dispatch_loop_prompt = MagicMock()
         runner._session_key_for_source = lambda _s: "key-2"
 
         result = await runner._handle_loop_command(_make_event("/loop check deployment"))
@@ -112,7 +112,7 @@ class TestLoopCommandGateway:
         assert "Loop set" in result
         assert "check deployment" in result
         assert "300s interval" in result  # default
-        runner._enqueue_fifo.assert_called_once()
+        runner._dispatch_loop_prompt.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_set_with_interval(self, hermes_home):
@@ -121,7 +121,7 @@ class TestLoopCommandGateway:
         session_entry = MagicMock()
         session_entry.session_id = "gw-sid-3"
         runner.session_store.get_or_create_session.return_value = session_entry
-        runner._enqueue_fifo = MagicMock()
+        runner._dispatch_loop_prompt = MagicMock()
         runner._session_key_for_source = lambda _s: "key-3"
 
         result = await runner._handle_loop_command(_make_event("/loop 5m check deployment"))
@@ -129,7 +129,7 @@ class TestLoopCommandGateway:
         assert "Loop set" in result
         assert "300s interval" in result
         assert "check deployment" in result
-        runner._enqueue_fifo.assert_called_once()
+        runner._dispatch_loop_prompt.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_set_every_syntax(self, hermes_home):
@@ -138,7 +138,7 @@ class TestLoopCommandGateway:
         session_entry = MagicMock()
         session_entry.session_id = "gw-sid-4"
         runner.session_store.get_or_create_session.return_value = session_entry
-        runner._enqueue_fifo = MagicMock()
+        runner._dispatch_loop_prompt = MagicMock()
         runner._session_key_for_source = lambda _s: "key-4"
 
         result = await runner._handle_loop_command(_make_event("/loop every 30m summarize news"))
@@ -146,7 +146,7 @@ class TestLoopCommandGateway:
         assert "Loop set" in result
         assert "1800s interval" in result
         assert "summarize news" in result
-        runner._enqueue_fifo.assert_called_once()
+        runner._dispatch_loop_prompt.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_set_empty_prompt_error(self, hermes_home):

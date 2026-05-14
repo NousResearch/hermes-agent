@@ -288,13 +288,13 @@ class TestLoopScheduler:
         sched._tick()  # manual tick — bypasses sleep
         sched.stop()
 
-        # Prompt should have been injected
+        # Prompt should have been injected (without [Loop check] prefix)
         try:
             msg = pq.get(timeout=1)
         except queue.Empty:
             msg = None
         assert msg is not None
-        assert "[Loop check] check deploy" == msg
+        assert "check deploy" == msg
 
     def test_tick_skips_when_busy(self, hermes_home):
         """When is_idle returns False, no prompt should be injected."""
@@ -380,6 +380,7 @@ class TestLoopScheduler:
         sched.stop()
 
     def test_on_message_callback(self, hermes_home):
+        """on_message was removed from _tick — verify no callback is called."""
         from hermes_cli.loop import LoopScheduler, LoopState
 
         pq = queue.Queue()
@@ -398,9 +399,8 @@ class TestLoopScheduler:
         sched._tick()
         sched.stop()
 
-        assert len(messages) == 1
-        assert "Loop check" in messages[0]
-        assert "test" in messages[0]
+        # on_message callback was removed from _tick
+        assert len(messages) == 0
 
     def test_scheduler_integrated_via_loop_manager(self, hermes_home):
         """LoopManager.set() with callbacks starts the scheduler."""

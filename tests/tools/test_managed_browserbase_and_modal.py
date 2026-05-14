@@ -76,6 +76,49 @@ def _install_fake_tools_package():
         call_llm=lambda *args, **kwargs: "",
     )
 
+    # Stubs for the browser-provider plugin layer introduced in PR #25214.
+    # The fake `agent` package has an empty __path__ so real submodules
+    # aren't reachable; we install just enough stand-ins to satisfy
+    # ``tools.browser_tool``'s top-level imports. The actual lifecycle
+    # tests instantiate the real plugin classes via _load_tool_module
+    # below, so the stubs only need to satisfy import + isinstance.
+    class _StubBrowserProvider:
+        """Minimal BrowserProvider stub for ``from agent.browser_provider import BrowserProvider``."""
+
+    sys.modules["agent.browser_provider"] = types.SimpleNamespace(
+        BrowserProvider=_StubBrowserProvider,
+    )
+    sys.modules["agent.browser_registry"] = types.SimpleNamespace(
+        get_active_browser_provider=lambda: None,
+        get_provider=lambda name: None,
+        list_providers=lambda: [],
+        register_provider=lambda provider: None,
+        _resolve=lambda configured: None,
+    )
+
+    # Plugin module stubs — the real plugin classes are loaded from disk by
+    # the lifecycle tests below via _load_tool_module(). For the import
+    # phase, we just need the class names to exist on the right module path.
+    plugins_package = types.ModuleType("plugins")
+    plugins_package.__path__ = []  # type: ignore[attr-defined]
+    sys.modules["plugins"] = plugins_package
+    plugins_browser_package = types.ModuleType("plugins.browser")
+    plugins_browser_package.__path__ = []  # type: ignore[attr-defined]
+    sys.modules["plugins.browser"] = plugins_browser_package
+
+    for _name, _classname in (
+        ("browserbase", "BrowserbaseBrowserProvider"),
+        ("browser_use", "BrowserUseBrowserProvider"),
+        ("firecrawl", "FirecrawlBrowserProvider"),
+    ):
+        _vendor_pkg = types.ModuleType(f"plugins.browser.{_name}")
+        _vendor_pkg.__path__ = []  # type: ignore[attr-defined]
+        sys.modules[f"plugins.browser.{_name}"] = _vendor_pkg
+        _provider_stub_cls = type(_classname, (_StubBrowserProvider,), {})
+        sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
+            **{_classname: _provider_stub_cls},
+        )
+
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
         "tools.managed_tool_gateway",
         "managed_tool_gateway.py",

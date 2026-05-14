@@ -244,6 +244,67 @@ class TestQueryLocalContextLengthModelsList:
         assert result is None
 
 
+class TestQueryLocalContextLengthOMLX:
+    """oMLX keeps runtime context in the admin API, not the OpenAI /v1/models list."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_omlx_admin_models_fallback_reads_max_context_window(self):
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "MiniMax-M2.7-4bit-mxfp4", "owned_by": "omlx"},
+            ]
+        })
+        admin_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "id": "MiniMax-M2.7-4bit-mxfp4",
+                    "settings": {"max_context_window": 120000},
+                }
+            ]
+        })
+
+        call_count = [0]
+
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp
+            if call_count[0] == 2:
+                return list_resp
+            if call_count[0] == 3:
+                return admin_resp
+            return self._make_resp(404, {})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "MiniMax-M2.7-4bit-mxfp4",
+                "http://192.168.5.125:8098/v1",
+                api_key="secret",
+            )
+
+        assert result == 120000
+        assert [call.args[0] for call in client_mock.get.call_args_list] == [
+            "http://192.168.5.125:8098/v1/models/MiniMax-M2.7-4bit-mxfp4",
+            "http://192.168.5.125:8098/v1/models",
+            "http://192.168.5.125:8098/admin/api/models",
+        ]
+
+
 class TestQueryLocalContextLengthLmStudio:
     """_query_local_context_length with LM Studio native /api/v1/models response."""
 

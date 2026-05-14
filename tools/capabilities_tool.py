@@ -264,8 +264,14 @@ CAPABILITIES_LIST_SCHEMA = {
 }
 
 
-def _handle_capabilities_list(args: dict[str, Any] | None) -> str:
-    """Walk every profile, gather enabled skills, return JSON list."""
+def _handle_capabilities_list(args: dict[str, Any] | None, **kw: Any) -> str:
+    """Walk every profile, gather enabled skills, return JSON list.
+
+    The ``**kw`` catch-all matches the registry dispatch contract
+    (``tools/registry.py`` ``dispatch`` calls ``handler(args, **kwargs)``
+    and the gateway injects context kwargs like ``task_id`` on every
+    invocation). Mirrors the signature used by kanban handlers.
+    """
     import json
 
     profile_filter: str | None = None

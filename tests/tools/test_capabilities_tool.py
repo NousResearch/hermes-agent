@@ -483,6 +483,29 @@ def test_skills_null_in_config_does_not_crash(monkeypatch, tmp_path, caplog):
 # Audit log
 # ---------------------------------------------------------------------------
 
+def test_handler_accepts_dispatcher_kwargs(monkeypatch, tmp_path):
+    """The registry dispatches handlers as ``handler(args, **kwargs)`` and
+    the gateway injects context kwargs (``task_id``, etc.) on every
+    invocation. The handler must accept those kwargs gracefully — a
+    missing ``**kw`` catch-all surfaces in production as
+    ``TypeError: unexpected keyword argument 'task_id'`` and the model
+    falls back to manual filesystem walking.
+    """
+    home = _isolated_home(monkeypatch, tmp_path)
+    _build_profile_tree(home, {"creative": [("foo", "fd", "")]})
+
+    import importlib
+    import tools.capabilities_tool as mod
+    importlib.reload(mod)
+
+    # Direct positional+kwargs call matching the dispatcher's exact shape.
+    result = mod._handle_capabilities_list({"profile": "creative"}, task_id="t_smoke_test")
+    data = json.loads(result)
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["name"] == "foo"
+
+
 def test_info_log_emitted_on_call(monkeypatch, tmp_path, caplog):
     """Every invocation emits an INFO-level audit line naming the
     calling profile, so operators can grep gateway.log for cross-

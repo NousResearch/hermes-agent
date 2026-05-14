@@ -71,6 +71,9 @@ anthropic = ["anthropic==0.86.0"]
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
+# Microsoft Office document extraction (.docx/.pptx/.xlsx) — optional so
+# restricted profiles can enable it without broad shell/code_execution access.
+office = ["python-docx==1.2.0", "python-pptx==1.0.2", "openpyxl==3.1.5"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
@@ -192,6 +195,7 @@ all = [
   "hermes-agent[exa]",
   "hermes-agent[firecrawl]",
   "hermes-agent[parallel-web]",
+  "hermes-agent[office]",
   "hermes-agent[fal]",
   "hermes-agent[edge-tts]",
   "hermes-agent[modal]",

@@ -35,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
+    # Microsoft Office document extraction
+    "office_extract",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
@@ -174,6 +176,12 @@ TOOLSETS = {
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
+        "includes": []
+    },
+
+    "office": {
+        "description": "Read Microsoft Office files (.docx, .pptx, .xlsx) from local paths without shell access",
+        "tools": ["office_extract"],
         "includes": []
     },
     

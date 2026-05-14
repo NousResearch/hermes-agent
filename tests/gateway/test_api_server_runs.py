@@ -81,6 +81,8 @@ def _make_slow_agent(**kwargs):
     mock_agent.session_prompt_tokens = 0
     mock_agent.session_completion_tokens = 0
     mock_agent.session_total_tokens = 0
+    mock_agent.session_cache_read_tokens = 0
+    mock_agent.session_cache_write_tokens = 0
 
     return mock_agent, ready, interrupted
 
@@ -111,6 +113,8 @@ class TestStartRun:
                 mock_agent.session_prompt_tokens = 10
                 mock_agent.session_completion_tokens = 5
                 mock_agent.session_total_tokens = 15
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
@@ -182,6 +186,8 @@ class TestStartRun:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post(
@@ -208,6 +214,8 @@ class TestRunStatus:
                 mock_agent.session_prompt_tokens = 4
                 mock_agent.session_completion_tokens = 2
                 mock_agent.session_total_tokens = 6
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
@@ -237,6 +245,8 @@ class TestRunStatus:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post(
@@ -289,6 +299,8 @@ class TestRunEvents:
                 mock_agent.session_prompt_tokens = 10
                 mock_agent.session_completion_tokens = 5
                 mock_agent.session_total_tokens = 15
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 # Start run
@@ -318,6 +330,8 @@ class TestRunEvents:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
@@ -445,6 +459,8 @@ class TestStopRun:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.session_cache_write_tokens = 0
                 mock_create.return_value = mock_agent
 
                 # Start and wait for completion

@@ -51,6 +51,34 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 
+
+def _build_chat_usage(usage: dict) -> dict:
+    """Build OpenAI Chat Completions-compatible usage dict with cache details."""
+    result = {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cached = usage.get("cache_read_tokens", 0)
+    if cached:
+        result["prompt_tokens_details"] = {"cached_tokens": cached}
+    return result
+
+
+def _build_responses_usage(usage: dict) -> dict:
+    """Build OpenAI Responses API-compatible usage dict with cache details."""
+    result = {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cached = usage.get("cache_read_tokens", 0)
+    if cached:
+        result["input_tokens_details"] = {"cached_tokens": cached}
+    return result
+
+
+
 logger = logging.getLogger(__name__)
 
 # Default settings
@@ -1320,11 +1348,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _build_chat_usage(usage),
         }
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
@@ -1449,11 +1473,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
+                "usage": _build_chat_usage(usage),
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
@@ -1641,11 +1661,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
             incomplete_env = _envelope("incomplete")
             incomplete_env["output"] = incomplete_items
-            incomplete_env["usage"] = {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            }
+            incomplete_env["usage"] = _build_responses_usage(usage)
             incomplete_history = list(conversation_history)
             incomplete_history.append({"role": "user", "content": user_message})
             if incomplete_text:
@@ -1984,11 +2000,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
                 failed_env["error"] = {"message": agent_error, "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = _build_responses_usage(usage)
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
                 if final_response_text or agent_error:
@@ -2008,11 +2020,7 @@ class APIServerAdapter(BasePlatformAdapter):
             else:
                 completed_env = _envelope("completed")
                 completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                completed_env["usage"] = _build_responses_usage(usage)
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,
@@ -2074,11 +2082,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = list(emitted_items)
                 failed_env["error"] = {"message": str(_exc)[:500], "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = _build_responses_usage(usage)
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
@@ -2344,11 +2348,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _build_responses_usage(usage),
         }
 
         # Store the complete response object for future chaining / GET retrieval
@@ -2779,6 +2779,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
             }
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
@@ -3047,6 +3049,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
                     }
                     return r, u
 

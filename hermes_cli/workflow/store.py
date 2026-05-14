@@ -583,6 +583,30 @@ def list_workflows(conn: sqlite3.Connection, *, board: str | None = None, status
     return [_workflow_from_row(row) for row in rows]
 
 
+def update_workflow_status(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    status: str,
+    current_gate: str | None | object = _UNSET,
+    now: float | None = None,
+) -> WorkflowRecord | None:
+    """Update workflow status/current gate and return the workflow record."""
+
+    if get_workflow(conn, workflow_id) is None:
+        return None
+    ts = time.time() if now is None else now
+    updates = ["status = ?", "updated_at = ?"]
+    params: list[Any] = [status, ts]
+    if current_gate is not _UNSET:
+        updates.append("current_gate = ?")
+        params.append(current_gate)
+    params.append(workflow_id)
+    conn.execute(f"UPDATE workflows SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    return get_workflow(conn, workflow_id)
+
+
 def add_gate(
     conn: sqlite3.Connection,
     *,

@@ -6,6 +6,7 @@ modules instead of inferring workflow state from Kanban prose.
 """
 
 from .api import (
+    approve_workflow_for_materialization,
     get_inbox_item_detail,
     get_workflow_artifacts,
     get_workflow_dag,
@@ -14,6 +15,7 @@ from .api import (
     list_inbox_item_summaries,
     list_workflow_summaries,
     materialize_workflow_to_kanban,
+    resolve_workflow_gate_control,
     update_inbox_item_triage,
 )
 from .dag import DagValidationResult, normalize_dag, validate_dag
@@ -43,6 +45,7 @@ from .store import (
     resolve_gate,
     save_dag,
     update_inbox_item,
+    update_workflow_status,
 )
 
 __all__ = [
@@ -62,6 +65,7 @@ __all__ = [
     "add_artifact",
     "add_event",
     "add_gate",
+    "approve_workflow_for_materialization",
     "allocate_worktrees",
     "connect",
     "create_inbox_item",
@@ -85,8 +89,10 @@ __all__ = [
     "materialize_workflow_to_kanban",
     "normalize_dag",
     "resolve_gate",
+    "resolve_workflow_gate_control",
     "save_dag",
     "update_inbox_item",
     "update_inbox_item_triage",
+    "update_workflow_status",
     "validate_dag",
 ]

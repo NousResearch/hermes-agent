@@ -12,7 +12,9 @@ from hermes_cli.workflow import (
     get_workflow_node,
     list_inbox_item_summaries,
     list_workflow_summaries,
+    approve_workflow_for_materialization,
     materialize_workflow_to_kanban,
+    resolve_workflow_gate_control,
     update_inbox_item_triage,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
@@ -69,6 +71,8 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(get_workflow_artifacts)
     assert callable(list_inbox_item_summaries)
     assert callable(get_inbox_item_detail)
+    assert callable(approve_workflow_for_materialization)
+    assert callable(resolve_workflow_gate_control)
     assert callable(materialize_workflow_to_kanban)
     assert callable(update_inbox_item_triage)
 
@@ -206,6 +210,45 @@ def test_get_workflow_dag_reconstructs_nodes_edges_and_related_records(tmp_path)
     assert node_by_id["backend-api"]["kanbanTaskId"]
     assert facts["gates"][0]["status"] == "approved"
     assert facts["artifacts"][0]["kind"] == "spec"
+    assert facts["controlActions"] == []
+
+
+def test_workflow_dag_exposes_core_control_actions_for_pending_gates_and_approval(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_controls", title="Controls", board="core", status="dag_validated", now=1.0)
+        save_dag(conn, workflow_id="wf_controls", normalized_dag={**_dag(), "workflow_id": "wf_controls"}, now=2.0)
+        gate = add_gate(conn, workflow_id="wf_controls", gate_id="gate_review", gate_type="dag_review", level=1, required_actor="human", reason="needs review")
+
+        pending_payload = get_workflow_dag(conn, "wf_controls")
+        resolved_payload = resolve_workflow_gate_control(
+            conn,
+            "wf_controls",
+            "gate_review",
+            status="approved",
+            verdict="approved",
+            resolved_by="webui",
+            reason="Looks good",
+            now=3.0,
+        )
+        approved_payload = approve_workflow_for_materialization(conn, "wf_controls", actor_id="webui", now=4.0)
+
+    pending_actions = pending_payload["facts"]["controlActions"]
+    assert [action["type"] for action in pending_actions] == ["resolve_gate", "resolve_gate", "resolve_gate"]
+    assert pending_actions[0] == {
+        "id": "approve-gate:gate_review",
+        "type": "resolve_gate",
+        "label": "Approve dag_review gate",
+        "method": "POST",
+        "endpoint": "/api/workflows/wf_controls/gates/gate_review/resolve",
+        "gateId": "gate_review",
+        "status": "approved",
+        "verdict": "approved",
+        "enabled": True,
+    }
+    assert resolved_payload["facts"]["gate"]["status"] == "approved"
+    assert [action["type"] for action in resolved_payload["facts"]["controlActions"]] == ["approve_workflow"]
+    assert approved_payload["facts"]["workflow"]["status"] == "dag_approved"
+    assert [action["type"] for action in approved_payload["facts"]["controlActions"]] == ["materialize_workflow"]
 
 
 def test_get_workflow_node_returns_detail_drawer_payload(tmp_path):

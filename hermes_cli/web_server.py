@@ -49,6 +49,7 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from hermes_cli.workflow import (
+    approve_workflow_for_materialization as workflow_approve_workflow_for_materialization,
     create_inbox_item as workflow_create_inbox_item,
     get_inbox_item_detail as workflow_get_inbox_item_detail,
     get_workflow_artifacts as workflow_get_workflow_artifacts,
@@ -58,6 +59,7 @@ from hermes_cli.workflow import (
     list_inbox_item_summaries as workflow_list_inbox_item_summaries,
     list_workflow_summaries as workflow_list_workflow_summaries,
     materialize_workflow_to_kanban as workflow_materialize_workflow_to_kanban,
+    resolve_workflow_gate_control as workflow_resolve_workflow_gate_control,
     update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
 from hermes_cli.workflow.store import connect as workflow_connect
@@ -759,6 +761,51 @@ async def materialize_workflow_endpoint(workflow_id: str, request: Request):
     except ValueError as exc:
         message = str(exc)
         if message.startswith("workflow not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.post("/api/workflows/{workflow_id}/approve")
+async def approve_workflow_endpoint(workflow_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_approve_workflow_for_materialization(
+                conn,
+                workflow_id,
+                actor_id=payload.get("actorId") or "webui",
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.post("/api/workflows/{workflow_id}/gates/{gate_id}/resolve")
+async def resolve_workflow_gate_endpoint(workflow_id: str, gate_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_resolve_workflow_gate_control(
+                conn,
+                workflow_id,
+                gate_id,
+                status=str(payload.get("status") or "approved"),
+                verdict=payload.get("verdict"),
+                resolved_by=payload.get("actorId") or payload.get("resolvedBy") or "webui",
+                reason=payload.get("reason"),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith(("workflow not found:", "workflow gate not found:")):
             raise HTTPException(status_code=404, detail=message)
         raise HTTPException(status_code=400, detail=message)
 

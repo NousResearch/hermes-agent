@@ -451,6 +451,37 @@ class TestWebServerEndpoints:
         assert unready.status_code == 400
         assert "workflow is not approved for materialization" in unready.json()["detail"]
 
+    def test_workflow_gate_resolve_and_approve_endpoints_enable_materialization(self):
+        from hermes_cli.workflow.store import add_gate, connect, create_workflow, save_dag
+
+        dag = {
+            "workflow_id": "wf_control_api",
+            "nodes": [{"id": "build", "title": "Build", "role": "engineer", "profile": "engineer", "status": "waiting"}],
+        }
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_control_api", title="Control API", board="core", status="dag_validated", now=1.0)
+            save_dag(conn, workflow_id="wf_control_api", normalized_dag=dag, now=2.0)
+            add_gate(conn, workflow_id="wf_control_api", gate_id="gate_control", gate_type="dag_review", level=1, required_actor="human")
+
+        pending = self.client.get("/api/workflows/wf_control_api/dag")
+        resolved = self.client.post(
+            "/api/workflows/wf_control_api/gates/gate_control/resolve",
+            json={"status": "approved", "verdict": "approved", "actorId": "webui-test", "reason": "approved in test"},
+        )
+        approved = self.client.post("/api/workflows/wf_control_api/approve", json={"actorId": "webui-test"})
+        materialized = self.client.post("/api/workflows/wf_control_api/materialize", json={"actorId": "webui-test"})
+
+        assert pending.status_code == 200
+        assert [action["type"] for action in pending.json()["facts"]["controlActions"]] == ["resolve_gate", "resolve_gate", "resolve_gate"]
+        assert resolved.status_code == 200
+        assert resolved.json()["facts"]["gate"]["status"] == "approved"
+        assert [action["type"] for action in resolved.json()["facts"]["controlActions"]] == ["approve_workflow"]
+        assert approved.status_code == 200
+        assert approved.json()["facts"]["workflow"]["status"] == "dag_approved"
+        assert [action["type"] for action in approved.json()["facts"]["controlActions"]] == ["materialize_workflow"]
+        assert materialized.status_code == 200
+        assert materialized.json()["facts"]["status"] == "materialized"
+
     def test_workflow_events_and_artifacts_endpoints_map_read_model_errors(self):
         missing_events_resp = self.client.get("/api/workflows/missing/events")
         invalid_limit_resp = self.client.get("/api/workflows/missing/artifacts?limit=0")
@@ -472,6 +503,8 @@ class TestWebServerEndpoints:
         node_resp = unauthenticated_client.get("/api/workflows/wf_dag/nodes/build")
         events_resp = unauthenticated_client.get("/api/workflows/wf_dag/events")
         artifacts_resp = unauthenticated_client.get("/api/workflows/wf_dag/artifacts")
+        approve_resp = unauthenticated_client.post("/api/workflows/wf_dag/approve")
+        resolve_gate_resp = unauthenticated_client.post("/api/workflows/wf_dag/gates/gate_1/resolve")
         materialize_resp = unauthenticated_client.post("/api/workflows/wf_dag/materialize")
 
         assert list_resp.status_code == 401
@@ -484,6 +517,10 @@ class TestWebServerEndpoints:
         assert events_resp.json()["detail"] == "Unauthorized"
         assert artifacts_resp.status_code == 401
         assert artifacts_resp.json()["detail"] == "Unauthorized"
+        assert approve_resp.status_code == 401
+        assert approve_resp.json()["detail"] == "Unauthorized"
+        assert resolve_gate_resp.status_code == 401
+        assert resolve_gate_resp.json()["detail"] == "Unauthorized"
         assert materialize_resp.status_code == 401
         assert materialize_resp.json()["detail"] == "Unauthorized"
 

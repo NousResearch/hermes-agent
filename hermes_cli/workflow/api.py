@@ -7,7 +7,18 @@ import sqlite3
 from typing import Any
 
 from .materialize import materialize_workflow
-from .store import get_inbox_item, get_workflow, list_artifacts, list_gates, list_inbox_items, list_workflows, update_inbox_item
+from .store import (
+    add_event,
+    get_inbox_item,
+    get_workflow,
+    list_artifacts,
+    list_gates,
+    list_inbox_items,
+    list_workflows,
+    resolve_gate,
+    update_inbox_item,
+    update_workflow_status,
+)
 
 
 def list_inbox_item_summaries(
@@ -78,6 +89,7 @@ def get_workflow_dag(conn: sqlite3.Connection, workflow_id: str) -> dict[str, An
         "gates": [gate.to_dict() for gate in list_gates(conn, workflow_id)],
         "artifacts": [artifact.to_dict() for artifact in list_artifacts(conn, workflow_id)],
     }
+    facts["controlActions"] = _control_actions(workflow_id, facts["workflow"], facts["gates"])
     return _response(facts)
 
 
@@ -141,6 +153,156 @@ def materialize_workflow_to_kanban(
 ) -> dict[str, Any]:
     result = materialize_workflow(conn, workflow_id, kanban_conn=kanban_conn, actor_id=actor_id, now=now)
     return _response(result.to_dict())
+
+
+def resolve_workflow_gate_control(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    gate_id: str,
+    *,
+    status: str,
+    verdict: str | None = None,
+    resolved_by: str = "webui",
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    workflow = _require_workflow(conn, workflow_id)
+    gate = next((item for item in list_gates(conn, workflow_id) if item.id == gate_id), None)
+    if gate is None:
+        raise ValueError(f"workflow gate not found: {gate_id}")
+    if gate.status in {"approved", "rejected", "skipped"}:
+        raise ValueError(f"workflow gate is already resolved: {gate_id}")
+    if status not in {"approved", "rejected", "skipped"}:
+        raise ValueError(f"invalid gate resolution status: {status}")
+    resolved = resolve_gate(
+        conn,
+        gate_id=gate_id,
+        status=status,
+        verdict=verdict or status,
+        resolved_by=resolved_by,
+        reason=reason,
+        metadata=metadata,
+        now=now,
+    )
+    add_event(
+        conn,
+        workflow_id=workflow_id,
+        node_id=resolved.node_id,
+        event_type="gate_resolved",
+        actor_type="human" if resolved_by == "webui" else "agent",
+        actor_id=resolved_by,
+        message=f"Gate {gate_id} resolved as {status}",
+        data={"gateId": gate_id, "status": status, "verdict": verdict or status},
+        now=now,
+    )
+    workflow = get_workflow(conn, workflow_id) or workflow
+    gates = [item.to_dict() for item in list_gates(conn, workflow_id)]
+    return _response({"workflow": workflow.to_dict(), "gate": resolved.to_dict(), "controlActions": _control_actions(workflow_id, workflow.to_dict(), gates)})
+
+
+def approve_workflow_for_materialization(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    actor_id: str = "webui",
+    now: float | None = None,
+) -> dict[str, Any]:
+    workflow = _require_workflow(conn, workflow_id)
+    unresolved = [gate for gate in list_gates(conn, workflow_id) if gate.status not in {"approved", "rejected", "skipped"}]
+    if unresolved:
+        raise ValueError("workflow has unresolved gates")
+    nodes = _node_rows(conn, workflow_id)
+    if not nodes:
+        raise ValueError("workflow DAG has no persisted nodes")
+    if workflow.status == "materialized":
+        raise ValueError("workflow is already materialized")
+    if workflow.status != "dag_approved":
+        updated = update_workflow_status(conn, workflow_id, status="dag_approved", current_gate=None, now=now)
+        if updated is None:
+            raise ValueError(f"workflow not found: {workflow_id}")
+        workflow = updated
+        add_event(
+            conn,
+            workflow_id=workflow_id,
+            event_type="workflow_approved",
+            actor_type="human" if actor_id == "webui" else "agent",
+            actor_id=actor_id,
+            message="Workflow approved for materialization",
+            data={"status": "dag_approved"},
+            now=now,
+        )
+    gates = [gate.to_dict() for gate in list_gates(conn, workflow_id)]
+    return _response({"workflow": workflow.to_dict(), "controlActions": _control_actions(workflow_id, workflow.to_dict(), gates)})
+
+
+def _control_actions(workflow_id: str, workflow: dict[str, Any], gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unresolved = [gate for gate in gates if gate.get("status") not in {"approved", "rejected", "skipped"}]
+    actions: list[dict[str, Any]] = []
+    for gate in unresolved:
+        gate_id = gate.get("id")
+        gate_type = gate.get("gateType") or "workflow"
+        endpoint = f"/api/workflows/{workflow_id}/gates/{gate_id}/resolve"
+        actions.extend(
+            [
+                {
+                    "id": f"approve-gate:{gate_id}",
+                    "type": "resolve_gate",
+                    "label": f"Approve {gate_type} gate",
+                    "method": "POST",
+                    "endpoint": endpoint,
+                    "gateId": gate_id,
+                    "status": "approved",
+                    "verdict": "approved",
+                    "enabled": True,
+                },
+                {
+                    "id": f"reject-gate:{gate_id}",
+                    "type": "resolve_gate",
+                    "label": f"Reject {gate_type} gate",
+                    "method": "POST",
+                    "endpoint": endpoint,
+                    "gateId": gate_id,
+                    "status": "rejected",
+                    "verdict": "rejected",
+                    "enabled": True,
+                },
+                {
+                    "id": f"skip-gate:{gate_id}",
+                    "type": "resolve_gate",
+                    "label": f"Skip {gate_type} gate",
+                    "method": "POST",
+                    "endpoint": endpoint,
+                    "gateId": gate_id,
+                    "status": "skipped",
+                    "verdict": "skipped",
+                    "enabled": True,
+                },
+            ]
+        )
+    if not unresolved and workflow.get("status") not in {"dag_approved", "materialized"}:
+        actions.append(
+            {
+                "id": "approve-workflow",
+                "type": "approve_workflow",
+                "label": "Approve workflow for materialization",
+                "method": "POST",
+                "endpoint": f"/api/workflows/{workflow_id}/approve",
+                "enabled": True,
+            }
+        )
+    if not unresolved and workflow.get("status") == "dag_approved":
+        actions.append(
+            {
+                "id": "materialize-workflow",
+                "type": "materialize_workflow",
+                "label": "Materialize to Kanban",
+                "method": "POST",
+                "endpoint": f"/api/workflows/{workflow_id}/materialize",
+                "enabled": True,
+            }
+        )
+    return actions
 
 
 def _response(facts: dict[str, Any]) -> dict[str, Any]:

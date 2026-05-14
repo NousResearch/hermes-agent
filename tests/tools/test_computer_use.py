@@ -289,6 +289,53 @@ class TestCaptureResponse:
 
 
 # ---------------------------------------------------------------------------
+# Cua backend window selection
+# ---------------------------------------------------------------------------
+
+class TestCuaBackendWindowSelection:
+    def test_capture_explicit_app_falls_back_to_all_windows(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        calls = []
+
+        class FakeSession:
+            def call_tool(self, name, args):
+                calls.append((name, args))
+                if name == "list_windows" and args == {"on_screen_only": True}:
+                    return {"structuredContent": {"windows": [
+                        {"app_name": "iTerm2", "pid": 1, "window_id": 10,
+                         "is_on_screen": True, "on_current_space": True,
+                         "title": "terminal", "z_index": 1,
+                         "bounds": {"width": 500, "height": 400}},
+                    ]}}
+                if name == "list_windows":
+                    return {"structuredContent": {"windows": [
+                        {"app_name": "DaVinci Resolve", "pid": 2, "window_id": 20,
+                         "is_on_screen": False, "on_current_space": True,
+                         "title": "Untitled Project", "z_index": 17,
+                         "bounds": {"width": 1512, "height": 872}},
+                        {"app_name": "DaVinci Resolve", "pid": 2, "window_id": 21,
+                         "is_on_screen": False, "on_current_space": False,
+                         "title": "", "z_index": 2,
+                         "bounds": {"width": 500, "height": 500}},
+                    ]}}
+                if name == "get_window_state":
+                    assert args == {"pid": 2, "window_id": 20}
+                    return {"data": "✅ DaVinci Resolve — 1 elements\n- AXApplication \"DaVinci Resolve\"\n  - [0] AXWindow \"Untitled Project\"", "images": []}
+                raise AssertionError(name)
+
+        backend = CuaDriverBackend()
+        backend._session = FakeSession()
+        cap = backend.capture(mode="ax", app="DaVinci Resolve")
+
+        assert cap.app == "DaVinci Resolve"
+        assert cap.window_title == "Untitled Project"
+        assert backend._active_pid == 2
+        assert backend._active_window_id == 20
+        assert ("list_windows", {}) in calls
+
+
+# ---------------------------------------------------------------------------
 # Anthropic adapter: multimodal tool-result conversion
 # ---------------------------------------------------------------------------
 

@@ -556,6 +556,29 @@ class TestWebServerEndpoints:
         assert unready.status_code == 400
         assert "workflow is not approved for materialization" in unready.json()["detail"]
 
+    def test_workflow_inbox_promote_endpoint_maps_already_promoted_to_conflict(self):
+        from hermes_cli.workflow.store import connect, create_inbox_item
+
+        draft_dag = {
+            "schema_version": 1,
+            "workflow_id": "wf_second",
+            "scale": "medium",
+            "nodes": [
+                {"id": "shape-plan", "title": "Shape", "role": "planner", "profile": "planner", "scope": {"summary": "Shape stale request."}},
+                {"id": "build-slice", "title": "Build", "role": "engineer", "profile": "engineer", "parents": ["shape-plan"], "definition_of_done": ["Tests pass."], "scope": {"summary": "Build stale request."}},
+            ],
+        }
+        with connect() as conn:
+            create_inbox_item(conn, inbox_item_id="inbox_promoted", title="Already promoted", status="promoted", assigned_workflow_id="wf_first", now=1.0)
+
+        resp = self.client.post(
+            "/api/workflows/inbox/inbox_promoted/promote",
+            json={"workflowId": "wf_second", "title": "Second workflow", "draftDag": draft_dag},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "workflow inbox item already promoted: inbox_promoted"
+
     def test_workflow_gate_resolve_and_approve_endpoints_enable_materialization(self):
         from hermes_cli.workflow.store import add_gate, connect, create_workflow, save_dag
 

@@ -768,6 +768,8 @@ async def promote_workflow_inbox_item_endpoint(inbox_item_id: str, request: Requ
         message = str(exc)
         if message.startswith("workflow inbox item not found:"):
             raise HTTPException(status_code=404, detail=message)
+        if message.startswith("workflow inbox item already promoted:"):
+            raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
 
 

@@ -150,6 +150,8 @@ def promote_inbox_item_to_workflow(
     item = get_inbox_item(conn, inbox_item_id)
     if item is None:
         raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+    if item.status == "promoted":
+        raise ValueError(f"workflow inbox item already promoted: {inbox_item_id}")
     normalized = normalize_dag(draft_dag, policy=DEFAULT_POLICY)
     if not normalized.ok or normalized.dag is None:
         first = normalized.errors[0].message if normalized.errors else "unknown validation error"

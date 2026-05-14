@@ -312,6 +312,43 @@ def test_promote_inbox_item_to_workflow_rejects_invalid_draft_dag_without_assign
     assert item["assignedWorkflowId"] is None
 
 
+def test_promote_inbox_item_to_workflow_rejects_stale_already_promoted_item_without_creating_workflow(tmp_path):
+    draft_dag = {
+        "schema_version": 1,
+        "workflow_id": "wf_second",
+        "scale": "medium",
+        "nodes": [
+            {"id": "shape-plan", "title": "Shape", "role": "planner", "profile": "planner", "scope": {"summary": "Shape the stale request."}},
+            {"id": "build-slice", "title": "Build", "role": "engineer", "profile": "engineer", "parents": ["shape-plan"], "definition_of_done": ["Tests pass."], "scope": {"summary": "Build the stale request."}},
+        ],
+    }
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_stale_promote",
+            title="Already promoted",
+            status="promoted",
+            assigned_workflow_id="wf_first",
+            now=1.0,
+        )
+
+        with pytest.raises(ValueError, match="workflow inbox item already promoted: inbox_stale_promote"):
+            promote_inbox_item_to_workflow(
+                conn,
+                "inbox_stale_promote",
+                workflow_id="wf_second",
+                title="Second workflow",
+                draft_dag=draft_dag,
+                now=2.0,
+            )
+        item = get_inbox_item_detail(conn, "inbox_stale_promote")["facts"]["inboxItem"]
+        workflows = list_workflow_summaries(conn)["facts"]["workflows"]
+
+    assert item["status"] == "promoted"
+    assert item["assignedWorkflowId"] == "wf_first"
+    assert workflows == []
+
+
 def test_list_workflow_summaries_returns_facts_insights_shape_and_filters(tmp_path):
     with connect(tmp_path / "workflow.db") as conn:
         create_workflow(conn, workflow_id="wf_old", title="Old", board="core", status="running", now=1.0)

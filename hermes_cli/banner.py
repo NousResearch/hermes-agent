@@ -581,6 +581,19 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Indicate when the codex_app_server runtime is active so users
+    # understand why tool counts may not match what's actually reachable
+    # (codex builds its own tool list inside the spawned subprocess).
+    try:
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        from hermes_cli.config import load_config as _load_cfg
+        if get_current_runtime(_load_cfg()) == "codex_app_server":
+            right_lines.append(
+                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
+                f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
+            )
+    except Exception:
+        pass
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name

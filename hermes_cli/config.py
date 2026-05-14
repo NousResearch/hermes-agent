@@ -2107,10 +2107,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "FAL_KEY": {
-        "description": "FAL API key for image generation",
+        "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "video_generate"],
         "password": True,
         "category": "tool",
     },

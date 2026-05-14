@@ -107,6 +107,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "video_gen": {
+        "description": (
+            "Video generation tools. Single ``video_generate`` tool covers "
+            "text-to-video (prompt only) and image-to-video (prompt + "
+            "image_url) — the active backend auto-routes. Configure via "
+            "``hermes tools`` → Video Generation."
+        ),
+        "tools": ["video_generate"],
+        "includes": []
+    },
+
     "computer_use": {
         "description": (
             "Background macOS desktop control via cua-driver — screenshots, "

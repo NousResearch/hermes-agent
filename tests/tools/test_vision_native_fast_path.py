@@ -55,6 +55,15 @@ class TestSupportsMediaInToolResults:
     def test_gemini_2_no(self):
         assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
 
+    def test_minimax_native_yes(self):
+        assert _supports_media_in_tool_results("minimax", "minimax-m2.7") is True
+
+    def test_minimax_cn_yes(self):
+        assert _supports_media_in_tool_results("minimax-cn", "minimax-m2.7") is True
+
+    def test_minimax_oauth_yes(self):
+        assert _supports_media_in_tool_results("minimax-oauth", "minimax-m2.7-highspeed") is True
+
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
@@ -211,3 +220,25 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
+
+
+    def test_minimax_provider_uses_fast_path(self, tmp_path, monkeypatch):
+        """MiniMax with anthropic_messages api_mode → fast path returns multimodal."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("minimax", "minimax-m2.7")
+        try:
+            with patch(
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict), \
+            f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
+        assert result.get("_multimodal") is True

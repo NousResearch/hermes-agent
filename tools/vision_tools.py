@@ -452,8 +452,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in _AGGREGATORS:
         return True
 
-    # Native Anthropic
-    if p in {"anthropic", "claude", "anthropic-direct"}:
+    # Native Anthropic (and MiniMax which uses anthropic_messages api_mode)
+    if p in {"anthropic", "claude", "anthropic-direct", "minimax", "minimax-cn", "minimax-oauth"}:
         return True
 
     # OpenAI Chat Completions and Responses

@@ -593,11 +593,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
-            # Start loop ticker if a persisted loop exists for this session
-            try:
-                _ensure_loop_ticker(current, sid)
-            except Exception:
-                pass
+            # Ensure loop manager for this session (idempotent).
+            # The slash_worker persisted state to SessionDB; this
+            # LoopManager with TUI dispatch picks up the ticking.
+            if "_loop_manager" not in current:
+                try:
+                    from hermes_cli.loop import LoopManager
+                    key = current.get("session_key") or sid
+                    current["_loop_manager"] = LoopManager(
+                        session_id=key,
+                        dispatch=_make_tui_dispatch(current, sid),
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -4383,15 +4391,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
-
-        # Re-ensure loop ticker after each turn (idempotent).
-        # Covers the case where the session was just created,
-        # compression rotated the key, or the ticker was
-        # previously a no-op because no loop existed yet.
-        try:
-            _ensure_loop_ticker(session, sid)
-        except Exception:
-            pass
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

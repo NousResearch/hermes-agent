@@ -8301,17 +8301,7 @@ class HermesCLI:
             return
 
         if lower == "resume":
-            _is_slash_worker_resume = (
-                "HERMES_SLASH_WORKER" in os.environ
-                or "HERMES_SESSION_KEY" in os.environ
-            )
-            if _is_slash_worker_resume:
-                state = mgr.resume()
-            else:
-                state = mgr.resume(
-                    pending_input=self._pending_input,
-                    is_idle=lambda: not getattr(self, "_agent_running", False),
-                )
+            state = mgr.resume()
             if state is None:
                 _cprint(f"  {_DIM}No loop to resume.{_RST}")
             else:
@@ -8353,38 +8343,13 @@ class HermesCLI:
             _cprint("  Subcommands: status, pause, resume, clear")
             return
 
-        # Detect slash_worker mode: we're in a non-interactive subprocess
-        # that has no process_loop thread, so the scheduler thread + kickoff
-        # queue would be orphaned.  Just persist state — the TUI gateway's
-        # _maybe_start_loop_ticker handles the ticking.
-        _is_slash_worker = (
-            "HERMES_SLASH_WORKER" in os.environ
-            or "HERMES_SESSION_KEY" in os.environ
-        )
-
         try:
-            if _is_slash_worker:
-                state = mgr.set(prompt, interval_seconds=interval_seconds)
-            else:
-                state = mgr.set(
-                    prompt,
-                    interval_seconds=interval_seconds,
-                    pending_input=self._pending_input,
-                    is_idle=lambda: not getattr(self, "_agent_running", False),
-                )
+            state = mgr.set(prompt, interval_seconds=interval_seconds)
         except ValueError as exc:
             _cprint(f"  Invalid loop: {exc}")
             return
 
         _cprint(f"  ⊙ Loop set: every {state.interval_seconds}s → {state.prompt}")
-
-        # Kick off immediately in plain CLI mode (slash_worker gets its
-        # kickoff from the TUI gateway's _maybe_start_loop_ticker instead).
-        if not _is_slash_worker:
-            try:
-                self._pending_input.put(state.prompt)
-            except Exception:
-                pass
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
@@ -9457,9 +9422,29 @@ class HermesCLI:
         if existing is not None and getattr(existing, "session_id", None) == sid:
             return existing
 
-        mgr = LoopManager(session_id=sid)
+        # Slash_worker is an ephemeral subprocess — persist only,
+        # no scheduler (the TUI gateway creates its own LoopManager).
+        _is_slash_worker = (
+            "HERMES_SLASH_WORKER" in os.environ
+            or "HERMES_SESSION_KEY" in os.environ
+        )
+        dispatch = None if _is_slash_worker else self._make_loop_dispatch()
+
+        mgr = LoopManager(session_id=sid, dispatch=dispatch)
         self._loop_manager = mgr
         return mgr
+
+    def _make_loop_dispatch(self) -> Callable[[str], bool]:
+        """Return a dispatch callback for the CLI's input queue."""
+        def _dispatch(prompt: str) -> bool:
+            if getattr(self, "_agent_running", False):
+                return False  # busy, retry next tick
+            try:
+                self._pending_input.put(prompt)
+                return True
+            except Exception:
+                return False
+        return _dispatch
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""

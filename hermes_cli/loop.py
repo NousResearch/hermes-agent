@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
 import re
 import threading
 import time
@@ -137,6 +136,19 @@ def save_loop(session_id: str, state: LoopState) -> None:
         logger.debug("LoopManager: set_meta failed: %s", exc)
 
 
+def _del_loop_meta(session_id: str) -> None:
+    """Remove loop metadata from SessionDB."""
+    if not session_id:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    try:
+        db.set_meta(_meta_key(session_id), "")
+    except Exception as exc:
+        logger.debug("LoopManager: delete_meta failed: %s", exc)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Interval parsing
 # ──────────────────────────────────────────────────────────────────────
@@ -180,14 +192,29 @@ class LoopManager:
 
     The CLI and gateway each hold one ``LoopManager`` per live session.
     When a loop is set, a background daemon thread starts ticking every
-    second.  It only injects the loop prompt when the agent is idle.
+    second.  It only fires the loop prompt when the agent is idle.
+
+    If *dispatch* is provided, the scheduler is auto-managed — started
+    on set/resume, stopped on pause/clear/delete.  If *dispatch* is
+    ``None`` (slash_worker mode), only persistence happens — the caller
+    is responsible for ticking (usually the TUI gateway via its own
+    LoopManager, or the CLI via the process_loop).
     """
 
-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
+    def __init__(self, session_id: str, *,
+                 default_max_turns: int = DEFAULT_MAX_TURNS,
+                 dispatch: Optional[Callable[[str], bool]] = None):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self._dispatch = dispatch
         self._state: Optional[LoopState] = load_loop(session_id)
         self._scheduler: Optional[LoopScheduler] = None
+
+        # Auto-resume scheduler if a persisted active loop exists
+        if (self._state is not None
+                and self._state.status == "active"
+                and dispatch is not None):
+            self._start_scheduler()
 
     # --- introspection ------------------------------------------------
 
@@ -216,10 +243,7 @@ class LoopManager:
     # --- mutation -----------------------------------------------------
 
     def set(self, prompt: str, *,
-            interval_seconds: Optional[int] = None,
-            pending_input: Optional[queue.Queue] = None,
-            is_idle: Optional[Callable[[], bool]] = None,
-            on_message: Optional[Callable[[str], None]] = None) -> LoopState:
+            interval_seconds: Optional[int] = None) -> LoopState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("loop prompt is empty")
@@ -238,14 +262,8 @@ class LoopManager:
         )
         self._state = state
         save_loop(self.session_id, state)
-        if pending_input is not None and is_idle is not None:
-            self._scheduler = LoopScheduler(
-                self.session_id, state,
-                pending_input=pending_input,
-                is_idle=is_idle,
-                on_message=on_message,
-            )
-            self._scheduler.start()
+        if self._dispatch is not None:
+            self._start_scheduler()
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[LoopState]:
@@ -256,22 +274,13 @@ class LoopManager:
         self._stop_scheduler()
         return self._state
 
-    def resume(self, *,
-               pending_input: Optional[queue.Queue] = None,
-               is_idle: Optional[Callable[[], bool]] = None,
-               on_message: Optional[Callable[[str], None]] = None) -> Optional[LoopState]:
+    def resume(self) -> Optional[LoopState]:
         if not self._state:
             return None
         self._state.status = "active"
         save_loop(self.session_id, self._state)
-        if pending_input is not None and is_idle is not None:
-            self._scheduler = LoopScheduler(
-                self.session_id, self._state,
-                pending_input=pending_input,
-                is_idle=is_idle,
-                on_message=on_message,
-            )
-            self._scheduler.start()
+        if self._dispatch is not None:
+            self._start_scheduler()
         return self._state
 
     def clear(self) -> None:
@@ -282,11 +291,33 @@ class LoopManager:
         save_loop(self.session_id, self._state)
         self._state = None
 
+    def delete(self) -> bool:
+        """Remove loop from SessionDB entirely. Returns True if something was deleted."""
+        existed = self._state is not None
+        self._stop_scheduler()
+        self._state = None
+        try:
+            _del_loop_meta(self.session_id)
+        except Exception:
+            pass
+        return existed
+
     def shutdown(self) -> None:
-        """Stop scheduler — called on CLI exit."""
+        """Stop scheduler — called on session exit."""
         self._stop_scheduler()
 
     # --- internal -----------------------------------------------------
+
+    def _start_scheduler(self) -> None:
+        """Create and start a LoopScheduler if dispatch is configured."""
+        if self._dispatch is None:
+            return
+        self._stop_scheduler()
+        self._scheduler = LoopScheduler(
+            self.session_id,
+            dispatch=self._dispatch,
+        )
+        self._scheduler.start()
 
     def _stop_scheduler(self) -> None:
         if self._scheduler is not None:
@@ -306,13 +337,17 @@ class LoopScheduler:
     """Background daemon thread that ticks every second.
 
     On each tick:
-    1. Checks ``is_idle()`` — if agent is busy, skip
-    2. Computes elapsed since last fire
-    3. If interval elapsed, injects loop prompt into ``pending_input``
-    4. Updates state and persists
+    1. Reloads loop state from SessionDB (handles external pause/clear)
+    2. Checks if loop is active
+    3. Checks if interval has elapsed since last fire
+    4. Calls ``dispatch(prompt)`` — returns True if fire succeeded,
+       False if busy (will retry next tick)
+    5. Updates ``last_fired_at`` and ``turns_completed`` on success
 
-    This is the Claude Code ``createCronScheduler`` equivalent:
-    non‑blocking, idle‑gated, cooperative.
+    This is the single tick engine used by both CLI and TUI paths.
+    The difference is in the *dispatch* callback:
+      - CLI:  puts prompt into ``pending_input`` queue
+      - TUI:  calls ``_run_prompt_submit`` to inject into the session
     """
 
     TICK_INTERVAL = 1.0  # seconds — Claude Code uses 1s
@@ -320,17 +355,11 @@ class LoopScheduler:
     def __init__(
         self,
         session_id: str,
-        state: LoopState,
         *,
-        pending_input: queue.Queue,
-        is_idle: Callable[[], bool],
-        on_message: Optional[Callable[[str], None]] = None,
+        dispatch: Callable[[str], bool],
     ):
         self._session_id = session_id
-        self._state = state
-        self._pending_input = pending_input
-        self._is_idle = is_idle
-        self._on_message = on_message
+        self._dispatch = dispatch
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -367,38 +396,27 @@ class LoopScheduler:
     def _tick(self) -> None:
         """One tick of the scheduler.
 
-        Claude Code equivalent: the ``v()`` function in ``createCronScheduler``.
+        Equivalent: the ``v()`` function in Claude Code's ``createCronScheduler``.
         """
-        # 1. Idle gate — skip if agent is busy (equivalent: isLoading())
-        if not self._is_idle():
-            return
-
-        # 2. Reload state — might have been modified externally
+        # 1. Reload state from DB — might have been modified externally
         state = load_loop(self._session_id)
         if state is None:
             self._running = False
             return
         if state.status != "active":
             return
-        self._state = state
 
-        # 3. Interval check — has enough time elapsed?
+        # 2. Interval check — has enough time elapsed?
         now = time.time()
-        elapsed = now - state.last_fired_at
-        if state.last_fired_at > 0 and elapsed < state.interval_seconds:
+        if (state.last_fired_at > 0
+                and (now - state.last_fired_at) < state.interval_seconds):
             return
 
-        # 4. Fire!
-        state.last_fired_at = now
-        state.turns_completed += 1
-        save_loop(self._session_id, state)
-
-        prompt = state.prompt
-        try:
-            self._pending_input.put(prompt)
-        except Exception as exc:
-            logger.debug("LoopScheduler: failed to enqueue prompt: %s", exc)
-            return
+        # 3. Fire via dispatch callback
+        if self._dispatch(state.prompt):
+            state.last_fired_at = now
+            state.turns_completed += 1
+            save_loop(self._session_id, state)
 
 
 __all__ = [
@@ -406,7 +424,26 @@ __all__ = [
     "LoopManager",
     "LoopScheduler",
     "DEFAULT_MAX_TURNS",
+    "MIN_INTERVAL_SECONDS",
     "load_loop",
     "save_loop",
+    "delete_loop",
     "_parse_interval",
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Convenience helpers for external callers (Ed's terminal, tests, etc.)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def delete_loop(session_id: str) -> bool:
+    """Delete a loop from SessionDB without creating a LoopManager.
+
+    Returns True if a loop was found and deleted.
+    """
+    state = load_loop(session_id)
+    if state is None:
+        return False
+    _del_loop_meta(session_id)
+    return True

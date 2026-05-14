@@ -360,6 +360,124 @@ def atomic_roundtrip_yaml_update(
         raise
 
 
+def atomic_roundtrip_yaml_save(
+    path: Union[str, Path],
+    new_state: dict,
+) -> None:
+    """Persist a full config-state dict while preserving comments and ordering.
+
+    Behaves like ``atomic_yaml_write`` (writes the whole file in one shot from
+    ``new_state``), but routes through ruamel.yaml round-trip mode so existing
+    comments, key order, quotes, and readable Unicode survive.
+
+    Reconciliation rules against the on-disk YAML:
+
+    * Keys present in both are updated in-place via assignment, which keeps
+      ruamel's CommentedMap anchors (and their attached comments) attached to
+      their original positions.
+    * Keys missing from ``new_state`` are deleted.
+    * Keys added in ``new_state`` are appended at the end of their parent map.
+    * Nested ``dict`` values recurse with the same rules.
+    * Non-dict values (lists, scalars) are overwritten wholesale — list
+      element comments are not individually preserved, matching ruamel's
+      semantics.
+
+    This is the comment-safe replacement for ``yaml.safe_dump(cfg, f)`` in
+    callers that mutate a deep-loaded config dict and want to persist the
+    whole thing.
+
+    Shares the fail-closed contract ``hermes_cli.config.atomic_config_write``
+    enforces for plain (non-comment-preserving) full-document writes: an
+    existing-but-unreadable ``config.yaml`` (permission error, broken mount,
+    transient I/O) raises rather than being silently replaced with only
+    ``new_state``. Imported lazily to avoid a module-level circular import —
+    ``hermes_cli.config`` itself imports from this module.
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    from hermes_cli.config import require_readable_config_before_write
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    require_readable_config_before_write(path)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            existing = yaml_rt.load(f)
+        if not isinstance(existing, CommentedMap):
+            existing = CommentedMap(existing or {})
+    else:
+        existing = CommentedMap()
+
+    # ruamel's round-trip dumper resolves plain scalars against the YAML 1.2
+    # core schema, where only true/false/null are reserved words — so a plain
+    # python str like "off" or "yes" is emitted unquoted. Every other config
+    # reader in this codebase (atomic_config_write's PyYAML path, yaml.safe_load
+    # call sites, etc.) parses under YAML 1.1 rules, where on/off/yes/no are
+    # boolean synonyms. Without forcing quotes here, a freshly written
+    # `approvals.mode: off` silently round-trips back as `False` under
+    # yaml.safe_load. Force-quote any new string value that YAML 1.1 would
+    # otherwise misparse as bool/null.
+    _YAML11_AMBIGUOUS_WORDS = {
+        "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~",
+    }
+
+    def _quote_if_yaml11_ambiguous(value):
+        if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+            return DoubleQuotedScalarString(value)
+        return value
+
+    def _merge(dst: CommentedMap, src: dict) -> None:
+        # Update / recurse into keys present in src.
+        for key, value in src.items():
+            if isinstance(value, dict):
+                current = dst.get(key)
+                if not isinstance(current, CommentedMap):
+                    current = CommentedMap()
+                    dst[key] = current
+                _merge(current, value)
+            else:
+                dst[key] = _quote_if_yaml11_ambiguous(value)
+        # Delete keys missing from src — preserves "explicit absence" semantics
+        # of the old _save_cfg(cfg) pattern (e.g. cfg.pop("custom_prompt", None)
+        # then _save_cfg must actually remove the key from disk).
+        for key in [k for k in dst.keys() if k not in src]:
+            del dst[key]
+
+    _merge(existing, new_state)
+
+    original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(existing, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
 
 

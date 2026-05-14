@@ -1975,10 +1975,18 @@ def _apply_managed(cfg: dict) -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
 
-    from hermes_cli.config import atomic_config_write
+    from utils import atomic_roundtrip_yaml_save
 
     path = _hermes_home / "config.yaml"
-    atomic_config_write(path, cfg)
+    # Comment-, ordering-, and Unicode-preserving full-state write.
+    # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
+    # `atomic_config_write`, which is not comment-preserving) which clobbered
+    # the user's hand-written config every time we touched a single setting
+    # (top-level keys reordered alphabetically, comments dropped, kaomoji
+    # mangled to \\uXXXX escapes). Fails closed on an unreadable existing
+    # config.yaml the same way atomic_config_write does (see
+    # atomic_roundtrip_yaml_save's require_readable_config_before_write call).
+    atomic_roundtrip_yaml_save(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path

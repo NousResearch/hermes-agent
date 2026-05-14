@@ -12980,13 +12980,23 @@ class AIAgent:
                                         _incomplete_tools.append((_tc.function.name, str(_e)))
                                 if _incomplete_tools:
                                     _tool_name, _err = _incomplete_tools[0]
-                                    self._vprint(
-                                        f"{self.log_prefix}⚠️ Tool call '{_tool_name}' truncated "
-                                        f"({_err}). Retrying without broken JSON...",
-                                        force=True,
-                                    )
-                                    time.sleep(0.2)
-                                    continue
+                                    if truncated_tool_call_retries >= 1:
+                                        self._vprint(
+                                            f"{self.log_prefix}⚠️ Tool call '{_tool_name}' JSON "
+                                            f"still broken after retry — processing truncated response.",
+                                            force=True,
+                                        )
+                                        # Fall through to the retry-exhaustion logic below
+                                        # instead of retrying again or breaking the loop.
+                                    else:
+                                        truncated_tool_call_retries += 1
+                                        self._vprint(
+                                            f"{self.log_prefix}⚠️ Tool call '{_tool_name}' truncated "
+                                            f"({_err}). Retrying without broken JSON...",
+                                            force=True,
+                                        )
+                                        time.sleep(0.2)
+                                        continue
 
                             if assistant_message is not None and not _trunc_has_tool_calls:
                                 length_continue_retries += 1

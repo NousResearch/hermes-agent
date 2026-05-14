@@ -73,6 +73,8 @@ AUTHOR_MAP = {
     "30397170+1000Delta@users.noreply.github.com": "1000Delta",
     "szymonclawd@mac.home": "szymonclawd",
     "257759490+szymonclawd@users.noreply.github.com": "szymonclawd",
+    "zhanganzhe@tenclass.com": "luoyuctl",
+    "51604064+luoyuctl@users.noreply.github.com": "luoyuctl",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "147827411+EloquentBrush@users.noreply.github.com": "AhmetArif0",
     "97489706+purzbeats@users.noreply.github.com": "purzbeats",

@@ -1,8 +1,8 @@
 name: Gate PR Creator
 
 on:
-  pull_request:
-    types: [opened]
+  pull_request_target:
+    types: [opened, reopened]
 
 jobs:
   check-creator:
@@ -22,5 +22,5 @@ jobs:
             echo "✓ PR from authorized user: $PR_CREATOR"
           else
             echo "✗ PR from unauthorized user: $PR_CREATOR — closing"
-            gh pr close $PR_NUMBER --comment "PRs are only accepted from @badMade. Please contact the maintainer."
+            gh pr close $PR_NUMBER --repo $GITHUB_REPOSITORY --comment "PRs are only accepted from @badMade. Please contact the maintainer."
           fi

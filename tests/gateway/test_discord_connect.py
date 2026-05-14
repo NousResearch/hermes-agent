@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -68,6 +69,15 @@ _ensure_discord_mock()
 
 import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _speed_up_command_sync_mutation_pacing(monkeypatch):
+    monkeypatch.setattr(
+        DiscordAdapter,
+        "_command_sync_mutation_interval_seconds",
+        lambda self: 0.0,
+    )
 
 
 class FakeTree:
@@ -168,6 +178,69 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am is not None, "connect() must pass an AllowedMentions to commands.Bot"
     assert am.everyone is False
     assert am.roles is False
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monkeypatch):
+    """Regression for #18187: calling connect() twice without disconnect() in
+    between (e.g. during an in-process reconnect attempt) must close the old
+    commands.Bot before creating a new one. Without this guard, two websockets
+    stay alive and both fire on_message, producing double responses with
+    different wording.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class TrackedBot(FakeBot):
+        """FakeBot that records close() calls and reports open/closed state."""
+        _closed = False
+
+        def is_closed(self):
+            return self._closed
+
+        async def close(self):
+            self._closed = True
+
+    created: list[TrackedBot] = []
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        bot = TrackedBot(intents=intents, allowed_mentions=allowed_mentions)
+        created.append(bot)
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # First connect — fresh adapter, no prior client.
+    assert await adapter.connect() is True
+    assert len(created) == 1
+    first_bot = created[0]
+    assert first_bot._closed is False, "first bot should still be open after connect()"
+
+    # Second connect WITHOUT disconnect — simulates an in-process reconnect.
+    # Without the fix, first_bot would remain open (zombie), and both would
+    # receive every Discord event, causing double responses.
+    assert await adapter.connect() is True
+    assert len(created) == 2
+    second_bot = created[1]
+
+    # The first bot must be closed before the second is assigned.
+    assert first_bot._closed is True, (
+        "First Discord client must be closed on re-entry of connect() to prevent "
+        "zombie websocket (#18187)"
+    )
+    assert second_bot._closed is False, "second bot should still be open"
+    assert adapter._client is second_bot
 
     await adapter.disconnect()
 
@@ -471,6 +544,183 @@ async def test_post_connect_initialization_skips_sync_when_policy_off(monkeypatc
     await adapter._run_post_connect_initialization()
 
     fake_tree.sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_skips_same_fingerprint_after_success(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand()],
+        fetch_commands=AsyncMock(return_value=[]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    await adapter._run_post_connect_initialization()
+    await adapter._run_post_connect_initialization()
+
+    fake_tree.fetch_commands.assert_awaited_once()
+    fake_http.upsert_global_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_respects_discord_retry_after(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    class _DiscordRateLimit(RuntimeError):
+        retry_after = 123.0
+
+    sync = AsyncMock(side_effect=_DiscordRateLimit("discord rate limited"))
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    await adapter._run_post_connect_initialization()
+    await adapter._run_post_connect_initialization()
+
+    sync.assert_awaited_once()
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state = json.loads(state_path.read_text())
+    entry = state["999"]
+    assert entry["retry_after"] == 123.0
+    assert entry["retry_after_until"] > entry["last_attempt_at"]
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_reraises_non_rate_limit_exceptions(tmp_path, monkeypatch):
+    """Arbitrary failures during sync must surface, not be swallowed as rate-limits."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {"name": "status", "description": "Show Hermes status", "type": 1, "options": []}
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=4242,
+        user=SimpleNamespace(id=4242),
+    )
+
+    # Unrelated failure that happens to expose retry_after. Must NOT be
+    # caught by the rate-limit handler — it has nothing to do with 429s.
+    class _UnrelatedError(RuntimeError):
+        retry_after = 999.0
+
+    sync = AsyncMock(side_effect=_UnrelatedError("database is down"))
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    # The outer _run_post_connect_initialization has a broad except Exception
+    # that logs defensively — so we assert on state NOT being written.
+    await adapter._run_post_connect_initialization()
+
+    sync.assert_awaited_once()
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    entry = state.get("4242", {})
+    # Attempt was recorded before the sync call, but no rate-limit cooldown
+    # should have been persisted from the unrelated exception.
+    assert "retry_after_until" not in entry
+    assert "retry_after" not in entry
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_slash_commands_paces_mutation_writes(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr(
+        DiscordAdapter,
+        "_command_sync_mutation_interval_seconds",
+        lambda self: 1.25,
+    )
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", fake_sleep)
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    desired_one = {
+        "name": "status",
+        "description": "Show Hermes status",
+        "type": 1,
+        "options": [],
+    }
+    desired_two = {
+        "name": "debug",
+        "description": "Generate a debug report",
+        "type": 1,
+        "options": [],
+    }
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_one), _DesiredCommand(desired_two)],
+        fetch_commands=AsyncMock(return_value=[]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["created"] == 2
+    assert fake_http.upsert_global_command.await_count == 2
+    assert sleeps == [1.25]
 
 
 @pytest.mark.asyncio

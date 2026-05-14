@@ -901,6 +901,69 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_accepts_binary_files(self):
+        bundle = SkillBundle(
+            name="demo-binary-skill",
+            files={
+                "SKILL.md": "# Demo\n",
+                "assets/logo.png": b"\x89PNG\r\n\x1a\nbinary",
+            },
+            source="github",
+            identifier="owner/repo/demo-binary-skill",
+            trust_level="community",
+        )
+
+        digest = bundle_content_hash(bundle)
+
+        assert digest.startswith("sha256:")
+
+    def test_bundle_content_hash_bytes_matches_str_equivalent(self):
+        """Bytes content must hash identically to its str-decoded form."""
+        text_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        bytes_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"same content",
+                "references/checklist.md": b"- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        assert bundle_content_hash(bytes_bundle) == bundle_content_hash(text_bundle)
+
+    def test_bundle_content_hash_mixed_matches_on_disk(self, tmp_path):
+        """In-memory bundle hash must equal on-disk content_hash for mixed bytes+str."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"# Demo Skill\n",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

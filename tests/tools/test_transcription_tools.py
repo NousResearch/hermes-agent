@@ -414,6 +414,10 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
@@ -758,19 +762,12 @@ class TestValidateAudioFileEdgeCases:
         f = tmp_path / "test.ogg"
         f.write_bytes(b"data")
         from tools.transcription_tools import _validate_audio_file
-        real_stat = f.stat()
-        call_count = 0
 
-        def stat_side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First calls are from exists() and is_file(), let them pass
-            if call_count <= 2:
-                return real_stat
-            raise OSError("disk error")
-
-        with patch("pathlib.Path.stat", side_effect=stat_side_effect):
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.is_file", return_value=True), \
+             patch("pathlib.Path.stat", side_effect=OSError("disk error")):
             result = _validate_audio_file(str(f))
+
         assert result is not None
         assert "Failed to access" in result["error"]
 

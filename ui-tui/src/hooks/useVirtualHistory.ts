@@ -51,9 +51,9 @@ const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
-const upperBound = (arr: ArrayLike<number>, target: number) => {
+const upperBound = (arr: ArrayLike<number>, target: number, length = arr.length) => {
   let lo = 0
-  let hi = arr.length
+  let hi = length
 
   while (lo < hi) {
     const mid = (lo + hi) >> 1
@@ -76,12 +76,32 @@ export const shouldSetVirtualClamp = ({
   viewportHeight: number
 }) => itemCount > 0 && viewportHeight > 0 && !sticky && !liveTailActive
 
+export const ensureVirtualItemHeight = (
+  heights: Map<string, number>,
+  key: string,
+  index: number,
+  estimate: number,
+  estimateHeight?: (index: number, key: string) => number
+) => {
+  const cached = heights.get(key)
+
+  if (cached !== undefined) {
+    return Math.max(1, Math.floor(cached))
+  }
+
+  const seeded = Math.max(1, Math.floor(estimateHeight?.(index, key) ?? estimate))
+  heights.set(key, seeded)
+
+  return seeded
+}
+
 export function useVirtualHistory(
   scrollRef: RefObject<ScrollBoxHandle | null>,
   items: readonly { key: string }[],
   columns: number,
   {
     estimate = ESTIMATE,
+    estimateHeight,
     initialHeights,
     liveTailActive = false,
     onHeightsChange,
@@ -110,6 +130,9 @@ export function useVirtualHistory(
   })
 
   const [hasScrollRef, setHasScrollRef] = useState(false)
+  // Height cache writes happen in layout effects; bump once so offsets and
+  // clamp bounds rebuild without waiting for the next scroll/input event.
+  const [measuredHeightVersion, bumpMeasuredHeightVersion] = useState(0)
   const metrics = useRef({ sticky: true, top: 0, vp: 0 })
   const lastScrollTopRef = useRef(0)
 
@@ -208,7 +231,7 @@ export function useVirtualHistory(
     arr[0] = 0
 
     for (let i = 0; i < n; i++) {
-      arr[i + 1] = arr[i]! + Math.max(1, Math.floor(heights.current.get(items[i]!.key) ?? estimate))
+      arr[i + 1] = arr[i]! + ensureVirtualItemHeight(heights.current, items[i]!.key, i, estimate, estimateHeight)
     }
 
     offsetsCache.current = { arr, n, version: offsetVersion.current }
@@ -262,8 +285,8 @@ export function useVirtualHistory(
 
       // Binary search — offsets is monotone. Linear walk was O(n) at n=10k+,
       // ~2ms per render during scroll.
-      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo) - 1))
-      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi)))
+      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo, n + 1) - 1))
+      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi, n + 1)))
     }
   }
 
@@ -280,7 +303,7 @@ export function useVirtualHistory(
     let coverage = 0
 
     for (let i = start; i < end; i++) {
-      coverage += heights.current.get(items[i]!.key) ?? PESSIMISTIC
+      coverage += ensureVirtualItemHeight(heights.current, items[i]!.key, i, PESSIMISTIC, estimateHeight)
     }
 
     if (sticky) {
@@ -288,13 +311,13 @@ export function useVirtualHistory(
 
       while (start > minStart && coverage < needed) {
         start--
-        coverage += heights.current.get(items[start]!.key) ?? PESSIMISTIC
+        coverage += ensureVirtualItemHeight(heights.current, items[start]!.key, start, PESSIMISTIC, estimateHeight)
       }
     } else {
       const maxEnd = Math.min(n, start + maxMounted)
 
       while (end < maxEnd && coverage < needed) {
-        coverage += heights.current.get(items[end]!.key) ?? PESSIMISTIC
+        coverage += ensureVirtualItemHeight(heights.current, items[end]!.key, end, PESSIMISTIC, estimateHeight)
         end++
       }
     }
@@ -414,6 +437,7 @@ export function useVirtualHistory(
   useLayoutEffect(() => {
     const s = scrollRef.current
     let dirty = false
+    let heightDirty = false
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -454,6 +478,7 @@ export function useVirtualHistory(
         if (h > 0 && heights.current.get(k) !== h) {
           heights.current.set(k, h)
           dirty = true
+          heightDirty = true
         }
       }
     }
@@ -479,7 +504,11 @@ export function useVirtualHistory(
       offsetVersion.current++
       onHeightsChangeRef.current?.(heights.current)
     }
-  })
+
+    if (heightDirty) {
+      bumpMeasuredHeightVersion(n => n + 1)
+    }
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),
@@ -498,6 +527,7 @@ interface MeasuredNode {
 interface VirtualHistoryOptions {
   coldStartCount?: number
   estimate?: number
+  estimateHeight?: (index: number, key: string) => number
   initialHeights?: ReadonlyMap<string, number>
   liveTailActive?: boolean
   maxMounted?: number

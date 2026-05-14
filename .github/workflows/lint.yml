@@ -1,0 +1,151 @@
+name: Lint (ruff + ty)
+
+# Surface ruff and ty diagnostics as a diff vs the target branch.
+# This check is advisory only ATM it always exits zero and never blocks merge.
+# It posts a Markdown summary to the workflow run and, for pull requests,
+# comments the same summary on the PR.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "website/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "website/**"
+
+permissions:
+  contents: read
+  pull-requests: write # needed to post/update PR comments
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-diff:
+    name: ruff + ty diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # need full history for merge-base + worktree
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install ruff + ty
+        run: |
+          uv tool install ruff
+          uv tool install ty
+
+      - name: Determine base ref
+        id: base
+        run: |
+          # For PRs, diff against the merge base with the target branch.
+          # For pushes to main, diff against the previous commit on main.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+            BASE_REF="HEAD~1"
+          fi
+          echo "sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
+          echo "Base SHA: ${BASE_SHA}"
+          echo "Base ref: ${BASE_REF}"
+
+      - name: Run ruff + ty on HEAD
+        run: |
+          mkdir -p .lint-reports/head
+          ruff check --output-format json --exit-zero \
+            > .lint-reports/head/ruff.json || true
+          ty check --output-format gitlab --exit-zero \
+            > .lint-reports/head/ty.json || true
+          echo "HEAD ruff: $(wc -c < .lint-reports/head/ruff.json) bytes"
+          echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
+
+      - name: Run ruff + ty on base (via git worktree)
+        run: |
+          mkdir -p .lint-reports/base
+          # Use a worktree so we don't clobber the main checkout. If the basex
+          # SHA is identical to HEAD (e.g. first commit), skip and leave the
+          # base reports empty — the diff script handles missing files.
+          HEAD_SHA=$(git rev-parse HEAD)
+          BASE_SHA="${{ steps.base.outputs.sha }}"
+          if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
+            echo "Base SHA == HEAD SHA, skipping base scan."
+            echo '[]' > .lint-reports/base/ruff.json
+            echo '[]' > .lint-reports/base/ty.json
+          else
+            git worktree add --detach /tmp/lint-base "$BASE_SHA"
+            (
+              cd /tmp/lint-base
+              ruff check --output-format json --exit-zero \
+                > "$GITHUB_WORKSPACE/.lint-reports/base/ruff.json" || true
+              ty check --output-format gitlab --exit-zero \
+                > "$GITHUB_WORKSPACE/.lint-reports/base/ty.json" || true
+            )
+            git worktree remove --force /tmp/lint-base
+          fi
+          echo "base ruff: $(wc -c < .lint-reports/base/ruff.json) bytes"
+          echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
+
+      - name: Generate diff summary
+        run: |
+          python scripts/lint_diff.py \
+            --base-ruff .lint-reports/base/ruff.json \
+            --head-ruff .lint-reports/head/ruff.json \
+            --base-ty   .lint-reports/base/ty.json \
+            --head-ty   .lint-reports/head/ty.json \
+            --base-ref  "${{ steps.base.outputs.ref }}" \
+            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --output    .lint-reports/summary.md
+          cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports as artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lint-reports
+          path: .lint-reports/
+          retention-days: 14
+
+      - name: Post / update PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('.lint-reports/summary.md', 'utf8');
+            const marker = '<!-- lint-diff-summary -->';
+            const fullBody = marker + '\n' + body;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+            }

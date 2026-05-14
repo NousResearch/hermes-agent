@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -32,10 +32,10 @@ class ToolCall:
     * Others: ``None``
     """
 
-    id: Optional[str]
+    id: str | None
     name: str
     arguments: str  # JSON string
-    provider_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
     # ── Backward compatibility ──────────────────────────────────
     # The agent loop reads tc.function.name / tc.function.arguments
@@ -47,17 +47,17 @@ class ToolCall:
         return "function"
 
     @property
-    def function(self) -> "ToolCall":
+    def function(self) -> ToolCall:
         """Return self so tc.function.name / tc.function.arguments work."""
         return self
 
     @property
-    def call_id(self) -> Optional[str]:
+    def call_id(self) -> str | None:
         """Codex call_id from provider_data, accessed via getattr by _build_assistant_message."""
         return (self.provider_data or {}).get("call_id")
 
     @property
-    def response_item_id(self) -> Optional[str]:
+    def response_item_id(self) -> str | None:
         """Codex response_item_id from provider_data."""
         return (self.provider_data or {}).get("response_item_id")
 
@@ -101,18 +101,18 @@ class NormalizedResponse:
     * Others: ``None``
     """
 
-    content: Optional[str]
-    tool_calls: Optional[List[ToolCall]]
+    content: str | None
+    tool_calls: list[ToolCall] | None
     finish_reason: str  # "stop", "tool_calls", "length", "content_filter"
-    reasoning: Optional[str] = None
-    usage: Optional[Usage] = None
-    provider_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    reasoning: str | None = None
+    usage: Usage | None = None
+    provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
     # ── Backward compatibility ──────────────────────────────────
     # The shim _nr_to_assistant_message() mapped these from provider_data.
     # These properties let NormalizedResponse pass through directly.
     @property
-    def reasoning_content(self) -> Optional[str]:
+    def reasoning_content(self) -> str | None:
         pd = self.provider_data or {}
         return pd.get("reasoning_content")
 
@@ -136,8 +136,9 @@ class NormalizedResponse:
 # Factory helpers
 # ---------------------------------------------------------------------------
 
+
 def build_tool_call(
-    id: Optional[str],
+    id: str | None,
     name: str,
     arguments: Any,
     **provider_fields: Any,
@@ -151,7 +152,7 @@ def build_tool_call(
     return ToolCall(id=id, name=name, arguments=args_str, provider_data=pd)
 
 
-def map_finish_reason(reason: Optional[str], mapping: Dict[str, str]) -> str:
+def map_finish_reason(reason: str | None, mapping: dict[str, str]) -> str:
     """Translate a provider-specific stop reason to the normalised set.
 
     Falls back to ``"stop"`` for unknown or ``None`` reasons.

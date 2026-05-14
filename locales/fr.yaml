@@ -1,0 +1,24 @@
+# Hermes static-message catalog -- French (français)
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  COMMANDE DANGEREUSE : {description}"
+  choose_long:     "      [o]ne fois  |  [s]ession  |  [t]oujours  |  [r]efuser"
+  choose_short:    "      [o]ne fois  |  [s]ession  |  [r]efuser"
+  prompt_long:     "      Choix [o/s/t/R] : "
+  prompt_short:    "      Choix [o/s/R] : "
+  timeout:         "      ⏱ Délai dépassé — commande refusée"
+  allowed_once:    "      ✓ Autorisé une fois"
+  allowed_session: "      ✓ Autorisé pour cette session"
+  allowed_always:  "      ✓ Ajouté à la liste d'autorisation permanente"
+  denied:          "      ✗ Refusé"
+  cancelled:       "      ✗ Annulé"
+  blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
+
+gateway:
+  approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
+  draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
+  goal_cleared:     "✓ Objectif effacé."
+  no_active_goal:   "Aucun objectif actif."
+  config_read_failed: "⚠️ Impossible de lire config.yaml : {error}"
+  config_save_failed: "⚠️ Impossible de sauvegarder la configuration : {error}"

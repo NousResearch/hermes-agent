@@ -15,11 +15,17 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
+
+
+class PluginOperationError(Exception):
+    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+
 
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
@@ -147,6 +153,24 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
                 console.print(
                     f"[yellow]Warning:[/yellow] Failed to copy {example_file.name}: {e}"
                 )
+
+
+def _missing_requires_env_names(manifest: dict) -> list[str]:
+    """Return declared ``requires_env`` names that are unset in ``~/.hermes/.env``."""
+    requires_env = manifest.get("requires_env") or []
+    if not requires_env:
+        return []
+
+    from hermes_cli.config import get_env_value
+
+    env_specs: list[dict] = []
+    for entry in requires_env:
+        if isinstance(entry, str):
+            env_specs.append({"name": entry})
+        elif isinstance(entry, dict) and entry.get("name"):
+            env_specs.append(entry)
+
+    return [s["name"] for s in env_specs if s.get("name") and not get_env_value(s["name"])]
 
 
 def _prompt_plugin_env_vars(manifest: dict, console) -> None:
@@ -282,6 +306,95 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
+    """Clone Git plugin into ``~/.hermes/plugins``.
+
+    Returns ``(target_dir, installed_manifest, canonical_name)``.
+    Raises ``PluginOperationError`` on failure.
+    """
+    import tempfile
+
+    try:
+        git_url = _resolve_git_url(identifier)
+    except ValueError as e:
+        raise PluginOperationError(str(e)) from e
+
+    plugins_dir = _plugins_dir()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_target = Path(tmp) / "plugin"
+
+        try:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", git_url, str(tmp_target)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except FileNotFoundError as e:
+            raise PluginOperationError(
+                "git is not installed or not in PATH.",
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise PluginOperationError(
+                "Git clone timed out after 60 seconds.",
+            ) from e
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            raise PluginOperationError(f"Git clone failed:\n{err}")
+
+        manifest = _read_manifest(tmp_target)
+        plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
+
+        try:
+            target = _sanitize_plugin_name(plugin_name, plugins_dir)
+        except ValueError as e:
+            raise PluginOperationError(str(e)) from e
+
+        mv = manifest.get("manifest_version")
+        if mv is not None:
+            try:
+                mv_int = int(mv)
+            except (ValueError, TypeError):
+                raise PluginOperationError(
+                    f"Plugin '{plugin_name}' has invalid manifest_version "
+                    f"'{mv}' (expected an integer).",
+                ) from None
+            if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
+
+                raise PluginOperationError(
+                    f"Plugin '{plugin_name}' requires manifest_version {mv}, "
+                    f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+                    f"Run {recommended_update_command()} to update Hermes.",
+                ) from None
+
+        if target.exists():
+            if not force:
+                raise PluginOperationError(
+                    f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                    f"or run `hermes plugins update {plugin_name}`.",
+                )
+            shutil.rmtree(target)
+
+        shutil.move(str(tmp_target), str(target))
+
+    has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
+    if not has_yaml and not (target / "__init__.py").exists():
+        logger.warning(
+            "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
+            plugin_name,
+        )
+
+    from rich.console import Console
+
+    _copy_example_files(target, Console())
+    installed_manifest = _read_manifest(target)
+    installed_name = installed_manifest.get("name") or target.name
+    return target, installed_manifest, installed_name
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -292,7 +405,6 @@ def cmd_install(
     After install, prompt "Enable now? [y/N]" unless *enable* is provided
     (True = auto-enable without prompting, False = install disabled).
     """
-    import tempfile
     from rich.console import Console
 
     console = Console()
@@ -303,114 +415,41 @@ def cmd_install(
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    # Warn about insecure / local URL schemes
     if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
-            "Consider using https:// or git@ for production installs."
+            "Consider using https:// or git@ for production installs.",
         )
 
-    plugins_dir = _plugins_dir()
+    console.print(f"[dim]Cloning {git_url}...[/dim]")
 
-    # Clone into a temp directory first so we can read plugin.yaml for the name
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_target = Path(tmp) / "plugin"
-        console.print(f"[dim]Cloning {git_url}...[/dim]")
+    try:
+        target, installed_manifest, installed_name = _install_plugin_core(
+            identifier,
+            force=force,
+        )
+    except PluginOperationError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
 
-        try:
-            result = subprocess.run(
-                ["git", "clone", "--depth", "1", git_url, str(tmp_target)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except FileNotFoundError:
-            console.print("[red]Error:[/red] git is not installed or not in PATH.")
-            sys.exit(1)
-        except subprocess.TimeoutExpired:
-            console.print("[red]Error:[/red] Git clone timed out after 60 seconds.")
-            sys.exit(1)
-
-        if result.returncode != 0:
-            console.print(
-                f"[red]Error:[/red] Git clone failed:\n{result.stderr.strip()}"
-            )
-            sys.exit(1)
-
-        # Read manifest
-        manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
-
-        # Sanitize plugin name against path traversal
-        try:
-            target = _sanitize_plugin_name(plugin_name, plugins_dir)
-        except ValueError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            sys.exit(1)
-
-        # Check manifest_version compatibility
-        mv = manifest.get("manifest_version")
-        if mv is not None:
-            try:
-                mv_int = int(mv)
-            except (ValueError, TypeError):
-                console.print(
-                    f"[red]Error:[/red] Plugin '{plugin_name}' has invalid "
-                    f"manifest_version '{mv}' (expected an integer)."
-                )
-                sys.exit(1)
-            if mv_int > _SUPPORTED_MANIFEST_VERSION:
-                from hermes_cli.config import recommended_update_command
-                console.print(
-                    f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
-                    f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
-                )
-                sys.exit(1)
-
-        if target.exists():
-            if not force:
-                console.print(
-                    f"[red]Error:[/red] Plugin '{plugin_name}' already exists at {target}.\n"
-                    f"Use [bold]--force[/bold] to remove and reinstall, or "
-                    f"[bold]hermes plugins update {plugin_name}[/bold] to pull latest."
-                )
-                sys.exit(1)
-            console.print(f"[dim]  Removing existing {plugin_name}...[/dim]")
-            shutil.rmtree(target)
-
-        # Move from temp to final location
-        shutil.move(str(tmp_target), str(target))
-
-    # Validate it looks like a plugin
-    if not (target / "plugin.yaml").exists() and not (target / "__init__.py").exists():
+    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
+        target / "__init__.py"
+    ).exists():
         console.print(
-            f"[yellow]Warning:[/yellow] {plugin_name} doesn't contain plugin.yaml "
-            f"or __init__.py. It may not be a valid Hermes plugin."
+            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
+            f"or __init__.py. It may not be a valid Hermes plugin.",
         )
 
-    # Copy .example files to their real names (e.g. config.yaml.example → config.yaml)
-    _copy_example_files(target, console)
-
-    # Re-read manifest from installed location (for env var prompting)
-    installed_manifest = _read_manifest(target)
-
-    # Prompt for required environment variables before showing after-install docs
     _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
 
-    # Determine the canonical plugin name for enable-list bookkeeping.
-    installed_name = installed_manifest.get("name") or target.name
-
-    # Decide whether to enable: explicit flag > interactive prompt > default off
     should_enable = enable
     if should_enable is None:
-        # Interactive prompt unless stdin isn't a TTY (scripted install).
         if sys.stdin.isatty() and sys.stdout.isatty():
             try:
                 answer = input(
-                    f"  Enable '{installed_name}' now? [y/N]: "
+                    f"  Enable '{installed_name}' now? [y/N]: ",
                 ).strip().lower()
                 should_enable = answer in ("y", "yes")
             except (EOFError, KeyboardInterrupt):
@@ -426,12 +465,12 @@ def cmd_install(
         _save_enabled_set(enabled)
         _save_disabled_set(disabled)
         console.print(
-            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled."
+            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
         )
     else:
         console.print(
             f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]"
+            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
         )
 
     console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
@@ -461,36 +500,22 @@ def cmd_update(name: str) -> None:
 
     console.print(f"[dim]Updating {name}...[/dim]")
 
-    try:
-        result = subprocess.run(
-            ["git", "pull", "--ff-only"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(target),
-        )
-    except FileNotFoundError:
-        console.print("[red]Error:[/red] git is not installed or not in PATH.")
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        console.print("[red]Error:[/red] Git pull timed out after 60 seconds.")
-        sys.exit(1)
-
-    if result.returncode != 0:
-        console.print(f"[red]Error:[/red] Git pull failed:\n{result.stderr.strip()}")
+    ok, output = _git_pull_plugin_dir(target)
+    if not ok:
+        console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
 
     # Copy any new .example files
     _copy_example_files(target, console)
 
-    output = result.stdout.strip()
-    if "Already up to date" in output:
+    out = output.strip()
+    if "Already up to date" in out:
         console.print(
             f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
         )
     else:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{output}[/dim]")
+        console.print(f"[dim]{out}[/dim]")
 
 
 def cmd_remove(name: str) -> None:
@@ -519,7 +544,7 @@ def _get_disabled_set() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -629,10 +654,9 @@ def _plugin_exists(name: str) -> bool:
             manifest = _read_manifest(child)
             if manifest.get("name") == name:
                 return True
-    # Bundled: <repo>/plugins/<name>/
-    from pathlib import Path as _P
-    import hermes_cli
-    repo_plugins = _P(hermes_cli.__file__).resolve().parent.parent / "plugins"
+    # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
     if repo_plugins.is_dir():
         candidate = repo_plugins / name
         if candidate.is_dir() and (
@@ -659,8 +683,8 @@ def _discover_all_plugins() -> list:
     seen: dict = {}  # name -> (name, version, description, source, path)
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    import hermes_cli
-    repo_plugins = Path(hermes_cli.__file__).resolve().parent.parent / "plugins"
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
     for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
         if not base.is_dir():
             continue
@@ -763,7 +787,7 @@ def _get_current_memory_provider() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider", "") or ""
+        return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
 
@@ -773,7 +797,7 @@ def _get_current_context_engine() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("context", {}).get("engine", "compressor") or "compressor"
+        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
     except Exception:
         return "compressor"
 
@@ -999,7 +1023,6 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             # We need to map logical cursor positions to screen rows
             # accounting for non-navigable separator/headers
 
-            draw_row = 0  # tracks navigable item index
 
             # --- General Plugins section ---
             if n_plugins > 0:
@@ -1243,6 +1266,247 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
             pass
 
     print()
+
+
+def dashboard_install_plugin(
+    identifier: str,
+    *,
+    force: bool,
+    enable: bool,
+) -> dict[str, Any]:
+    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
+    warnings: list[str] = []
+    try:
+        git_url = _resolve_git_url(identifier)
+        if git_url.startswith(("http://", "file://")):
+            warnings.append(
+                "Insecure URL scheme; prefer https:// or git@ for production installs.",
+            )
+    except ValueError:
+        pass
+
+    try:
+        target, installed_manifest, installed_name = _install_plugin_core(
+            identifier,
+            force=force,
+        )
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    missing_env = _missing_requires_env_names(installed_manifest)
+    if enable:
+        en = _get_enabled_set()
+        dis = _get_disabled_set()
+        en.add(installed_name)
+        dis.discard(installed_name)
+        _save_enabled_set(en)
+        _save_disabled_set(dis)
+
+    hint: str | None = None
+    ap = target / "after-install.md"
+    if ap.exists():
+        hint = str(ap)
+
+    return {
+        "ok": True,
+        "plugin_name": installed_name,
+        "warnings": warnings,
+        "missing_env": missing_env,
+        "after_install_path": hint,
+        "enabled": enable,
+    }
+
+
+def _get_plugin_toolset_key(name: str) -> Optional[str]:
+    """Return the toolset key a plugin registers its tools under, or None.
+
+    Queries the live tool registry — the plugin must already be loaded.
+    Falls back to reading ``provides_tools`` from plugin.yaml and looking
+    up the toolset from the registry for the first tool name found.
+    """
+    try:
+        from tools.registry import registry
+    except Exception:
+        return None
+
+    # Check the plugin manager for tools this plugin registered
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()  # idempotent — ensures plugins are loaded
+        manager = get_plugin_manager()
+        for _key, loaded in manager._plugins.items():
+            if loaded.manifest.name == name or _key == name:
+                for tool_name in loaded.tools_registered:
+                    entry = registry.get_entry(tool_name)
+                    if entry and entry.toolset:
+                        return entry.toolset
+                break
+    except Exception:
+        pass
+
+    # Fallback: read provides_tools from manifest on disk and query registry
+    try:
+        from hermes_cli.plugins import get_bundled_plugins_dir
+        for base in (get_bundled_plugins_dir(), _plugins_dir()):
+            if not base.is_dir():
+                continue
+            candidate = base / name
+            if candidate.is_dir():
+                manifest = _read_manifest(candidate)
+                for tool_name in manifest.get("provides_tools") or []:
+                    entry = registry.get_entry(tool_name)
+                    if entry and entry.toolset:
+                        return entry.toolset
+    except Exception:
+        pass
+
+    return None
+
+
+def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
+    """Add or remove a plugin's toolset from platform_toolsets for all platforms.
+
+    Only acts if the plugin actually provides tools (has a toolset key).
+    """
+    toolset_key = _get_plugin_toolset_key(name)
+    if not toolset_key:
+        return
+
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    platform_toolsets = config.get("platform_toolsets")
+    if not isinstance(platform_toolsets, dict):
+        platform_toolsets = {}
+        config["platform_toolsets"] = platform_toolsets
+
+    changed = False
+    for platform, ts_list in platform_toolsets.items():
+        if not isinstance(ts_list, list):
+            continue
+        if enable:
+            if toolset_key not in ts_list:
+                ts_list.append(toolset_key)
+                changed = True
+        else:
+            if toolset_key in ts_list:
+                ts_list.remove(toolset_key)
+                changed = True
+
+    # If enabling and no platforms have toolset lists yet, add to "cli" at minimum
+    if enable and not changed and not platform_toolsets:
+        platform_toolsets["cli"] = [toolset_key]
+        changed = True
+
+    if changed:
+        save_config(config)
+
+
+def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
+    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists).
+
+    For plugins that provide tools (toolsets), also toggles the toolset in
+    ``platform_toolsets`` so the agent actually sees the tools in sessions.
+    """
+    if not _plugin_exists(name):
+        return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
+
+    en = _get_enabled_set()
+    dis = _get_disabled_set()
+
+    if enabled:
+        if name in en and name not in dis:
+            return {"ok": True, "name": name, "unchanged": True}
+        en.add(name)
+        dis.discard(name)
+        _save_enabled_set(en)
+        _save_disabled_set(dis)
+        _toggle_plugin_toolset(name, enable=True)
+        return {"ok": True, "name": name, "unchanged": False}
+
+    if name not in en and name in dis:
+        return {"ok": True, "name": name, "unchanged": True}
+
+    en.discard(name)
+    dis.add(name)
+    _save_enabled_set(en)
+    _save_disabled_set(dis)
+    _toggle_plugin_toolset(name, enable=False)
+    return {"ok": True, "name": name, "unchanged": False}
+
+
+def _user_installed_plugin_dir(name: str) -> Optional[Path]:
+    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
+    plugins_dir = _plugins_dir()
+    try:
+        target = _sanitize_plugin_name(name, plugins_dir)
+    except ValueError:
+        return None
+    return target if target.is_dir() else None
+
+
+def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
+    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+    target = _user_installed_plugin_dir(name)
+    if target is None:
+        return {
+            "ok": False,
+            "error": f"Plugin '{name}' was not found under {_plugins_dir()}.",
+        }
+
+    if not (target / ".git").exists():
+        return {
+            "ok": False,
+            "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
+        }
+
+    ok, msg = _git_pull_plugin_dir(target)
+    if not ok:
+        return {"ok": False, "error": msg}
+
+    from rich.console import Console
+
+    _copy_example_files(target, Console())
+    unchanged = "Already up to date" in msg
+    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(target),
+        )
+    except FileNotFoundError:
+        return False, "git is not installed or not in PATH."
+    except subprocess.TimeoutExpired:
+        return False, "Git pull timed out after 60 seconds."
+
+    if result.returncode != 0:
+        err = (result.stderr or "").strip() or result.stdout.strip()
+        return False, err or "git pull failed."
+    return True, result.stdout.strip()
+
+
+def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
+    """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
+    plugins_dir = _plugins_dir()
+    for n, _ver, _d, src, _path in _discover_all_plugins():
+        if n == name and src == "bundled":
+            return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
+
+    target = _user_installed_plugin_dir(name)
+    if target is None:
+        return {
+            "ok": False,
+            "error": f"Plugin '{name}' was not found under {plugins_dir}.",
+        }
+
+    shutil.rmtree(target)
+    return {"ok": True, "name": name}
 
 
 def plugins_command(args) -> None:

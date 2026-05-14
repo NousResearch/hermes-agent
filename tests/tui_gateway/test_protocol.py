@@ -83,6 +83,134 @@ def test_write_json_broken_pipe(server):
     assert server.write_json({"x": 1}) is False
 
 
+def test_write_json_closed_stream_returns_false(server):
+    """ValueError ('I/O on closed file') used to bubble up; treat as gone."""
+
+    class _Closed:
+        def write(self, _): raise ValueError("I/O operation on closed file")
+        def flush(self): raise ValueError("I/O operation on closed file")
+
+    server._real_stdout = _Closed()
+    assert server.write_json({"x": 1}) is False
+
+
+def test_write_json_unicode_encode_error_re_raises(server):
+    """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
+    subclass).  It must NOT be swallowed as 'peer gone' — that would let
+    `entry.py` exit cleanly via the False path and hide the real config
+    bug.  We re-raise so the existing crash-log infrastructure records it."""
+
+    class _AsciiOnly:
+        def write(self, line):
+            line.encode("ascii")  # raises UnicodeEncodeError on non-ascii
+        def flush(self): pass
+
+    server._real_stdout = _AsciiOnly()
+    with pytest.raises(UnicodeEncodeError):
+        server.write_json({"msg": "héllo"})
+
+
+def test_write_json_unrelated_value_error_re_raises(server):
+    """Only ValueError('...closed file...') means peer gone.  Other
+    ValueErrors are programming errors and must surface."""
+
+    class _BadValue:
+        def write(self, _): raise ValueError("something else entirely")
+        def flush(self): pass
+
+    server._real_stdout = _BadValue()
+    with pytest.raises(ValueError, match="something else entirely"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_non_serializable_payload_re_raises(server):
+    """Non-JSON-safe payloads are programming errors — they must NOT be
+    silently dropped via the False path (which would trigger a clean exit
+    in entry.py and mask the real bug)."""
+    import io
+
+    server._real_stdout = io.StringIO()
+    with pytest.raises(TypeError):
+        server.write_json({"obj": object()})
+
+
+def test_write_json_peer_gone_oserror_on_flush_returns_false(server):
+    """A flush that raises a peer-gone OSError (EPIPE) must not strand
+    the lock or crash; it returns False so the dispatcher exits cleanly."""
+    import errno
+
+    written = []
+
+    class _FlushPeerGone:
+        def write(self, line): written.append(line)
+        def flush(self): raise OSError(errno.EPIPE, "broken pipe")
+
+    server._real_stdout = _FlushPeerGone()
+    assert server.write_json({"x": 1}) is False
+    assert written and json.loads(written[0]) == {"x": 1}
+
+
+def test_write_json_non_peer_gone_oserror_re_raises(server):
+    """Host I/O failures (ENOSPC, EACCES, EIO …) are NOT peer-gone — they
+    must re-raise so the crash log records them instead of looking like
+    a clean disconnect via the False path."""
+    import errno
+
+    class _DiskFull:
+        def write(self, _): raise OSError(errno.ENOSPC, "no space left")
+        def flush(self): pass
+
+    server._real_stdout = _DiskFull()
+    with pytest.raises(OSError, match="no space"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_skips_flush_when_disable_flush_true(monkeypatch):
+    """`StdioTransport` skips flush when `_DISABLE_FLUSH` is true.
+
+    Tests the runtime *behaviour* via direct module-attr patch.  The env
+    var → module constant wiring is covered by the dedicated env test
+    below; reloading server.py here would re-register atexit hooks and
+    recreate the worker pool.
+    """
+    import importlib
+
+    transport_mod = importlib.import_module("tui_gateway.transport")
+    monkeypatch.setattr(transport_mod, "_DISABLE_FLUSH", True)
+
+    flushed = {"count": 0}
+    written = []
+
+    class _Stream:
+        def write(self, line): written.append(line)
+        def flush(self): flushed["count"] += 1
+
+    stream = _Stream()
+    transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
+
+    assert transport.write({"x": 1}) is True
+    assert flushed["count"] == 0
+
+
+def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
+    """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
+    `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
+
+    Reloads only the transport module — server.py is untouched so its
+    atexit hooks/worker pool stay intact."""
+    import importlib
+
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
+    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
+
+    try:
+        assert transport_mod._DISABLE_FLUSH is True
+    finally:
+        # Restore the env-disabled state so other tests see the default.
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
+        importlib.reload(transport_mod)
+
+
 # ── _emit ────────────────────────────────────────────────────────────
 
 
@@ -170,7 +298,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -261,6 +389,99 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "error" in resp
     assert resp["error"]["code"] == 4018
     assert "skill command" in resp["error"]["message"]
+
+
+def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
+    """Plugin slash commands return normal slash.exec output without using the worker."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin:hello"}
+    assert worker.calls == []
+
+
+def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
+    """Plugin discovery failures must not break ordinary slash-worker commands."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        side_effect=RuntimeError("discovery boom"),
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-lookup-failure",
+            "method": "slash.exec",
+            "params": {"command": "help", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "worker:help"}
+    assert worker.calls == ["help"]
+
+
+def test_slash_exec_plugin_handler_error_returns_output(server):
+    """Plugin handler failures return slash output so the TUI does not redispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    def handler(arg):
+        raise RuntimeError(f"handler boom: {arg}")
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-handler-error",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
+    assert worker.calls == []
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
@@ -466,6 +687,24 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["name"] == "hermes-agent-dev"
 
 
+def test_command_dispatch_awaits_async_plugin_handler(server):
+    async def _handler(arg):
+        return f"async:{arg}"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "async-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin",
+            "method": "command.dispatch",
+            "params": {"name": "async-cmd", "arg": "hello"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
+
+
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 
@@ -509,6 +748,29 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
 
     assert fast_resp["result"] == {"pong": True}
     assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+
+    released.set()
+
+
+def test_dispatch_session_compress_does_not_block_fast_handler(server):
+    """Manual TUI compaction can take minutes, so it must not block the RPC loop."""
+    released = threading.Event()
+
+    def slow_compress(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"done": True})
+
+    server._methods["session.compress"] = slow_compress
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "session.compress", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
 
     released.set()
 

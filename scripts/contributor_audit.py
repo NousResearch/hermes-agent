@@ -40,7 +40,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 IGNORED_PATTERNS = [
     re.compile(r"^Claude", re.IGNORECASE),
     re.compile(r"^Copilot$", re.IGNORECASE),
-    re.compile(r"^Cursor\s+Agent$", re.IGNORECASE),
+    re.compile(r"^Cursor(\s+Agent)?$", re.IGNORECASE),
     re.compile(r"^GitHub\s*Actions?$", re.IGNORECASE),
     re.compile(r"^dependabot", re.IGNORECASE),
     re.compile(r"^renovate", re.IGNORECASE),

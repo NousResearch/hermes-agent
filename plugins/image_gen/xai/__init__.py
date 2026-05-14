@@ -203,11 +203,12 @@ class XAIImageGenProvider(ImageGenProvider):
             )
             response.raise_for_status()
         except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response else 0
+            response = exc.response
+            status = response.status_code if response is not None else 0
             try:
-                err_msg = exc.response.json().get("error", {}).get("message", exc.response.text[:300])
+                err_msg = response.json().get("error", {}).get("message", response.text[:300])
             except Exception:
-                err_msg = exc.response.text[:300] if exc.response else str(exc)
+                err_msg = response.text[:300] if response is not None else str(exc)
             logger.error("xAI image gen failed (%d): %s", status, err_msg)
             return error_response(
                 error=f"xAI image generation failed ({status}): {err_msg}",

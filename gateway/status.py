@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
+from utils import atomic_json_write
 
 if sys.platform == "win32":
     import msvcrt
@@ -34,6 +35,10 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+# Windows byte-range locks are mandatory for other readers. Lock a byte well
+# past the JSON payload so runtime status / PID readers can still read the file
+# while another process holds the mutual-exclusion lock.
+_WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
 def _get_pid_path() -> Path:
@@ -205,8 +210,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    atomic_json_write(path, payload, indent=None, separators=(",", ":"))
 
 
 def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
@@ -286,7 +290,7 @@ def _try_acquire_file_lock(handle) -> bool:
             if handle.tell() == 0:
                 handle.write("\n")
                 handle.flush()
-            handle.seek(0)
+            handle.seek(_WINDOWS_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -298,7 +302,7 @@ def _try_acquire_file_lock(handle) -> bool:
 def _release_file_lock(handle) -> None:
     try:
         if _IS_WINDOWS:
-            handle.seek(0)
+            handle.seek(_WINDOWS_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -633,12 +637,75 @@ def release_all_scoped_locks(
 
 _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
+_PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
+_PLANNED_STOP_MARKER_TTL_S = 60
 
 
 def _get_takeover_marker_path() -> Path:
     """Return the path to the --replace takeover marker file."""
     home = get_hermes_home()
     return home / _TAKEOVER_MARKER_FILENAME
+
+
+def _get_planned_stop_marker_path() -> Path:
+    """Return the path to the intentional gateway stop marker file."""
+    home = get_hermes_home()
+    return home / _PLANNED_STOP_MARKER_FILENAME
+
+
+def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
+    try:
+        written_dt = datetime.fromisoformat(written_at)
+        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
+        return age > ttl_s
+    except (TypeError, ValueError):
+        return True
+
+
+def _consume_pid_marker_for_self(
+    path: Path,
+    *,
+    pid_field: str,
+    start_time_field: str,
+    ttl_s: int,
+) -> bool:
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    try:
+        target_pid = int(record[pid_field])
+        target_start_time = record.get(start_time_field)
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    if _marker_is_stale(written_at, ttl_s):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    our_pid = os.getpid()
+    our_start_time = _get_process_start_time(our_pid)
+    matches = (
+        target_pid == our_pid
+        and target_start_time is not None
+        and our_start_time is not None
+        and target_start_time == our_start_time
+    )
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return matches
 
 
 def write_takeover_marker(target_pid: int) -> bool:
@@ -677,64 +744,57 @@ def consume_takeover_marker_for_self() -> bool:
     Always unlinks the marker on match (and on detected staleness) so
     subsequent unrelated signals don't re-trigger.
     """
-    path = _get_takeover_marker_path()
-    record = _read_json_file(path)
-    if not record:
-        return False
-
-    # Any malformed or stale marker → drop it and return False
-    try:
-        target_pid = int(record["target_pid"])
-        target_start_time = record.get("target_start_time")
-        written_at = record.get("written_at") or ""
-    except (KeyError, TypeError, ValueError):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
-
-    # TTL guard: a stale marker older than _TAKEOVER_MARKER_TTL_S is ignored.
-    stale = False
-    try:
-        written_dt = datetime.fromisoformat(written_at)
-        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
-        if age > _TAKEOVER_MARKER_TTL_S:
-            stale = True
-    except (TypeError, ValueError):
-        stale = True  # Unparseable timestamp — treat as stale
-
-    if stale:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
-
-    # Does the marker name THIS process?
-    our_pid = os.getpid()
-    our_start_time = _get_process_start_time(our_pid)
-    matches = (
-        target_pid == our_pid
-        and target_start_time is not None
-        and our_start_time is not None
-        and target_start_time == our_start_time
+    return _consume_pid_marker_for_self(
+        _get_takeover_marker_path(),
+        pid_field="target_pid",
+        start_time_field="target_start_time",
+        ttl_s=_TAKEOVER_MARKER_TTL_S,
     )
-
-    # Consume the marker whether it matched or not — a marker that doesn't
-    # match our identity is stale-for-us anyway.
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    return matches
 
 
 def clear_takeover_marker() -> None:
     """Remove the takeover marker unconditionally. Safe to call repeatedly."""
     try:
         _get_takeover_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def write_planned_stop_marker(target_pid: int) -> bool:
+    """Record that ``target_pid`` is being stopped intentionally.
+
+    The gateway exits non-zero for unexpected SIGTERM so service managers can
+    revive it. Service stop commands send the same SIGTERM, so the CLI writes
+    this short-lived marker first to let the target process exit cleanly.
+    """
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "stopper_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_planned_stop_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_planned_stop_marker_for_self() -> bool:
+    """Return True when the current process is being intentionally stopped."""
+    return _consume_pid_marker_for_self(
+        _get_planned_stop_marker_path(),
+        pid_field="target_pid",
+        start_time_field="target_start_time",
+        ttl_s=_PLANNED_STOP_MARKER_TTL_S,
+    )
+
+
+def clear_planned_stop_marker() -> None:
+    """Remove the planned-stop marker unconditionally."""
+    try:
+        _get_planned_stop_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
 

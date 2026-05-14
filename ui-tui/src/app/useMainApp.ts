@@ -1,4 +1,4 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
+import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -16,7 +16,9 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -25,6 +27,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -51,7 +54,7 @@ const capHistory = (items: Msg[]): Msg[] => {
   return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
 }
 
-const statusColorOf = (status: string, t: { dim: string; error: string; ok: string; warn: string }) => {
+const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
     return t.ok
   }
@@ -64,7 +67,7 @@ const statusColorOf = (status: string, t: { dim: string; error: string; ok: stri
     return t.warn
   }
 
-  return t.dim
+  return t.muted
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -101,6 +104,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
@@ -142,10 +146,51 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasSelection = useHasSelection()
   const selection = useSelection()
+  const lastCopiedVersionRef = useRef(-1)
 
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
+  // mouse tracking, so the only reliable native-feeling path is iTerm-style
+  // copy-on-select: once a drag creates a stable TUI selection, write it to
+  // the system clipboard while keeping the highlight visible.
+  //
+  // Subscribe directly via the ink selection bus (not useSyncExternalStore)
+  // so React doesn't re-render MainApp on every drag-move tick. The version
+  // ref de-dupes against re-entrant notifications.
+  useEffect(() => {
+    if (!isMac) {
+      return
+    }
+
+    return selection.subscribe(() => {
+      if (!selection.hasSelection()) {
+        return
+      }
+
+      const state = selection.getState() as { isDragging?: boolean } | null
+
+      if (state?.isDragging) {
+        return
+      }
+
+      const version = selection.version()
+
+      if (version === lastCopiedVersionRef.current) {
+        return
+      }
+
+      lastCopiedVersionRef.current = version
+      void selection.copySelectionNoClear()
+    })
+  }, [selection])
+
+  const clearSelection = useCallback(() => {
+    selection.clearSelection()
+    getInputSelection()?.collapseToEnd()
+  }, [selection])
 
   const composer = useComposerState({
     gw,
@@ -201,7 +246,8 @@ export function useMainApp(gw: GatewayClient) {
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
   const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   const heightCache = useMemo(() => {
     let cache = heightCachesRef.current.get(heightCacheKey)
@@ -218,23 +264,16 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
-  const initialHeights = useMemo(() => {
-    const out = new Map<string, number>()
-
-    for (const row of virtualRows) {
-      out.set(
-        row.key,
-        heightCache.get(row.key) ??
-          estimatedMsgHeight(row.msg, cols, {
-            compact: ui.compact,
-            details: detailsVisible,
-            limitHistory: row.index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
-          })
-      )
-    }
-
-    return out
-  }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+  const estimateRowHeight = useCallback(
+    (index: number) =>
+      estimatedMsgHeight(virtualRows[index]!.msg, cols, {
+        compact: ui.compact,
+        details: detailsVisible,
+        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS,
+        userPrompt: ui.theme.brand.prompt
+      }),
+    [cols, detailsVisible, ui.compact, ui.theme.brand.prompt, virtualRows]
+  )
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
@@ -250,7 +289,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
-    initialHeights,
+    estimateHeight: estimateRowHeight,
+    initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -322,6 +362,13 @@ export function useMainApp(gw: GatewayClient) {
   const die = useCallback(() => {
     gw.kill()
     exit()
+    // Ink's exit() calls unmount() which resets terminal modes but does NOT
+    // call process.exit().  Without an explicit exit the Node process stays
+    // alive (stdin listener keeps the event loop open), so the process.on('exit')
+    // handler in entry.tsx — which sends the final resetTerminalModes() — never
+    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
+    // in the parent shell.  See issue #19194.
+    process.exit(0)
   }, [exit, gw])
 
   const session = useSessionLifecycle({
@@ -348,7 +395,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
@@ -493,6 +540,7 @@ export function useMainApp(gw: GatewayClient) {
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
+      recordKey: voiceRecordKey,
       recording: voiceRecording,
       setProcessing: setVoiceProcessing,
       setRecording: setVoiceRecording,
@@ -526,6 +574,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -557,10 +606,10 @@ export function useMainApp(gw: GatewayClient) {
     gw.on('exit', exitHandler)
     gw.drain()
 
+    // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
-      gw.kill()
     }
   }, [gw, sys])
 
@@ -582,7 +631,8 @@ export function useMainApp(gw: GatewayClient) {
           catalog,
           getHistoryItems: () => historyItemsRef.current,
           getLastUserMsg: () => lastUserMsgRef.current,
-          maybeWarn
+          maybeWarn,
+          setCatalog
         },
         session: {
           closeSession: session.closeSession,
@@ -595,7 +645,7 @@ export function useMainApp(gw: GatewayClient) {
         },
         slashFlightRef,
         transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
-        voice: { setVoiceEnabled }
+        voice: { setVoiceEnabled, setVoiceRecordKey }
       }),
     [
       catalog,
@@ -662,7 +712,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value} --global`)
+    slashRef.current(`/model ${value}`)
   }, [])
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
@@ -674,6 +724,12 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+  const thinkingPanelVisible =
+    sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+  const toolsPanelVisible =
+    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+  const activityPanelVisible =
+    sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
@@ -681,12 +737,27 @@ export function useMainApp(gw: GatewayClient) {
           ui.busy ||
           state.outcome ||
           state.streamPendingTools.length ||
-          state.streamSegments.length ||
+          state.streamSegments.some(segment => {
+            const hasThinking = Boolean(segment.thinking?.trim())
+            const hasTrailTools = Boolean(segment.tools?.length)
+
+            if (segment.kind === 'trail' && !segment.text) {
+              return (
+                (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+              )
+            }
+
+            return (
+              Boolean(segment.text?.trim()) ||
+              (thinkingPanelVisible && hasThinking) ||
+              ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+            )
+          }) ||
           state.subagents.length ||
           state.tools.length ||
           state.todos.length ||
           state.turnTrail.length ||
-          hasReasoning ||
+          (thinkingPanelVisible && hasReasoning) ||
           state.activity.length
         )
       : state.activity.some(item => item.tone !== 'info')
@@ -698,11 +769,12 @@ export function useMainApp(gw: GatewayClient) {
       answerClarify,
       answerSecret,
       answerSudo,
+      clearSelection,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, session.resumeById]
+    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
   )
 
   const appComposer = useMemo(
@@ -718,9 +790,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput
+      updateInput: composerActions.setInput,
+      voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

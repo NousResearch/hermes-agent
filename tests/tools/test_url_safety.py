@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from tools.url_safety import (
     is_safe_url,
+    is_always_blocked_url,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -407,3 +408,69 @@ class TestAllowPrivateUrlsIntegration:
         """Empty URLs are still blocked."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_safe_url("") is False
+
+
+class TestIsAlwaysBlockedUrl:
+    """The always-blocked floor — cloud metadata only, narrower than is_safe_url."""
+
+    # -- The sentinel set that must always block --------------------------------
+
+    @pytest.mark.parametrize("url", [
+        "http://169.254.169.254/latest/meta-data/",            # AWS / GCP / Azure / DO / Oracle
+        "http://169.254.169.253/metadata/instance",              # Azure IMDS wire server
+        "http://169.254.170.2/v2/credentials",                   # AWS ECS task metadata
+        "http://100.100.100.200/latest/meta-data/",              # Alibaba Cloud
+        "http://169.254.42.1/",                                  # Any /16 link-local
+    ])
+    def test_literal_imds_ips_always_blocked(self, url):
+        """Literal IMDS IPs and the /16 link-local range always block."""
+        assert is_always_blocked_url(url) is True
+
+    def test_gcp_metadata_hostname_always_blocked_even_without_dns(self):
+        """metadata.google.internal blocks by hostname, no DNS needed."""
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
+            assert is_always_blocked_url("http://metadata.google.internal/") is True
+
+    def test_hostname_resolving_to_imds_always_blocked(self):
+        """Attacker-controlled hostname resolving to IMDS still blocks."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
+
+    # -- Things the floor must NOT block ----------------------------------------
+
+    def test_public_url_not_blocked(self):
+        assert is_always_blocked_url("https://example.com/path") is False
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:8080/",
+        "http://192.168.1.1/",
+        "http://10.0.0.5/",
+        "http://172.16.0.1/",
+        "http://100.64.0.1/",  # CGNAT — blocked by is_safe_url but not by the floor
+    ])
+    def test_ordinary_private_urls_not_in_floor(self, url):
+        """Floor is narrower than is_safe_url — ordinary private URLs pass."""
+        assert is_always_blocked_url(url) is False
+
+    def test_dns_failure_not_in_floor(self):
+        """DNS failure on a non-sentinel hostname = not always-blocked.
+
+        Caller's ordinary fail-closed path (is_safe_url) handles that case.
+        """
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
+            assert is_always_blocked_url("http://nonexistent.example.com/") is False
+
+    def test_empty_url_not_in_floor(self):
+        """Empty URL falls through — caller decides what to do with a malformed URL."""
+        assert is_always_blocked_url("") is False
+
+    def test_malformed_url_not_in_floor(self):
+        """Parse errors don't claim always-blocked status."""
+        assert is_always_blocked_url("not a url at all") is False
+
+    def test_floor_ignores_allow_private_urls_toggle(self, monkeypatch):
+        """security.allow_private_urls can NOT unblock cloud metadata."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert is_always_blocked_url("http://169.254.169.254/") is True

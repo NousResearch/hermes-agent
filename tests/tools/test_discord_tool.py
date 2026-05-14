@@ -175,6 +175,12 @@ class TestDiscordServerValidation:
         assert "error" in result
         assert "channel_id" in result["error"]
 
+    def test_missing_required_message_id_for_delete(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11"))
+        assert "error" in result
+        assert "message_id" in result["error"]
+
     def test_missing_multiple_params(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         result = json.loads(discord_admin_handler(action="add_role"))
@@ -407,10 +413,10 @@ class TestListPins:
 
 
 # ---------------------------------------------------------------------------
-# Actions: pin_message / unpin_message
+# Actions: pin_message / unpin_message / delete_message
 # ---------------------------------------------------------------------------
 
-class TestPinUnpin:
+class TestPinUnpinDelete:
     @patch("tools.discord_tool._discord_request")
     def test_pin_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -425,6 +431,16 @@ class TestPinUnpin:
         mock_req.return_value = None
         result = json.loads(discord_admin_handler(action="unpin_message", channel_id="11", message_id="500"))
         assert result["success"] is True
+        mock_req.assert_called_once_with("DELETE", "/channels/11/pins/500", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_delete_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11", message_id="500"))
+        assert result["success"] is True
+        assert "deleted" in result["message"]
+        mock_req.assert_called_once_with("DELETE", "/channels/11/messages/500", "test-token")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +602,7 @@ class TestRegistration:
         desc = entry.schema["description"]
         assert "list_guilds()" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
+        assert "delete_message(channel_id, message_id)" in desc
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
         assert "create_thread(" not in desc
@@ -694,6 +711,38 @@ class TestCapabilityDetection:
         mock_req.return_value = {"flags": 0}
         _detect_capabilities("tok")
         _detect_capabilities("tok", force=True)
+        assert mock_req.call_count == 2
+
+    @patch("tools.discord_tool._discord_request")
+    def test_cache_is_keyed_by_token(self, mock_req):
+        """Regression: token A's capabilities must not leak to token B.
+
+        Before the fix, the cache was a single module-global dict. The first
+        call populated it and every subsequent call — regardless of token —
+        returned the same cached value, producing wrong schema gating for
+        rotated or multi-token deployments.
+        """
+        def _per_token_flags(method, path, token, **_kwargs):
+            # token A: both intents; token B: neither.
+            if token == "tok_a":
+                return {"flags": (1 << 14) | (1 << 18)}
+            return {"flags": 0}
+
+        mock_req.side_effect = _per_token_flags
+
+        caps_a = _detect_capabilities("tok_a")
+        caps_b = _detect_capabilities("tok_b")
+
+        assert caps_a["has_members_intent"] is True
+        assert caps_a["has_message_content"] is True
+        assert caps_b["has_members_intent"] is False
+        assert caps_b["has_message_content"] is False
+        # Each token should hit the endpoint exactly once.
+        assert mock_req.call_count == 2
+
+        # Re-requesting either token serves from its own cache entry.
+        _detect_capabilities("tok_a")
+        _detect_capabilities("tok_b")
         assert mock_req.call_count == 2
 
 

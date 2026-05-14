@@ -23,8 +23,10 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
@@ -53,6 +55,12 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
+const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -60,6 +68,38 @@ function formatOutgoingMessage(message) {
   // self-chat mode where bot and user share the same number.
   if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+}
+
+function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
+  const text = String(message || '');
+  if (!text) return [];
+  if (!Number.isFinite(maxLength) || maxLength < 1 || text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf('\n', maxLength);
+    if (splitAt < Math.floor(maxLength / 2)) {
+      splitAt = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (splitAt < 1) splitAt = maxLength;
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function trackSentMessageId(sent) {
+  if (sent?.key?.id) {
+    recentlySentIds.add(sent.key.id);
+    if (recentlySentIds.size > MAX_RECENT_IDS) {
+      recentlySentIds.delete(recentlySentIds.values().next().value);
+    }
+  }
 }
 
 function normalizeWhatsAppId(value) {
@@ -227,17 +267,34 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-        try {
-          console.log(JSON.stringify({
-            event: 'ignored',
-            reason: 'allowlist_mismatch',
-            chatId,
-            senderId,
-          }));
-        } catch {}
-        continue;
+      // Handle !fromMe messages (from other people) based on mode.
+      // Self-chat mode only responds to the user's own messages to
+      // themselves — stranger DMs / group pings must never reach the
+      // Python gateway, otherwise a pairing-code reply fires in response
+      // to arbitrary incoming messages (#8389).
+      if (!msg.key.fromMe) {
+        if (WHATSAPP_MODE === 'self-chat') {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'self_chat_mode_rejects_non_self',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
+        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'allowlist_mismatch',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
       }
 
       const messageContent = getMessageContent(msg);
@@ -421,17 +478,22 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
-
-    // Track sent message ID to prevent echo-back loops
-    if (sent?.key?.id) {
-      recentlySentIds.add(sent.key.id);
-      if (recentlySentIds.size > MAX_RECENT_IDS) {
-        recentlySentIds.delete(recentlySentIds.values().next().value);
+    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const messageIds = [];
+    for (let i = 0; i < chunks.length; i += 1) {
+      const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+      trackSentMessageId(sent);
+      if (sent?.key?.id) messageIds.push(sent.key.id);
+      if (chunks.length > 1 && i < chunks.length - 1) {
+        await sleep(CHUNK_DELAY_MS);
       }
     }
 
-    res.json({ success: true, messageId: sent?.key?.id });
+    res.json({
+      success: true,
+      messageId: messageIds[messageIds.length - 1],
+      messageIds,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -450,8 +512,22 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
-    res.json({ success: true });
+    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const messageIds = [];
+
+    await sock.sendMessage(chatId, { text: chunks[0], edit: key });
+    if (chunks.length > 1) {
+      for (let i = 1; i < chunks.length; i += 1) {
+        const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+        trackSentMessageId(sent);
+        if (sent?.key?.id) messageIds.push(sent.key.id);
+        if (i < chunks.length - 1) {
+          await sleep(CHUNK_DELAY_MS);
+        }
+      }
+    }
+
+    res.json({ success: true, messageIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -505,8 +581,31 @@ app.post('/send-media', async (req, res) => {
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
       case 'audio': {
-        const audioMime = (ext === 'ogg' || ext === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: buffer, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
+        // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
+        // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
+        // silently convert to ogg/opus via ffmpeg so ptt is always honoured.
+        let audioBuffer = buffer;
+        let audioExt = ext;
+        const needsConversion = !['ogg', 'opus'].includes(ext);
+        let tmpPath = null;
+        if (needsConversion) {
+          tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
+          try {
+            execSync(
+              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+              { timeout: 30000, stdio: 'pipe' }
+            );
+            audioBuffer = readFileSync(tmpPath);
+            audioExt = 'ogg';
+          } catch (convErr) {
+            // ffmpeg not available or conversion failed — fall back to original format
+            console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
+          } finally {
+            try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
+          }
+        }
+        const audioMime = (audioExt === 'ogg' || audioExt === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
+        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: audioExt === 'ogg' || audioExt === 'opus' };
         break;
       }
       case 'document':
@@ -522,13 +621,7 @@ app.post('/send-media', async (req, res) => {
 
     const sent = await sock.sendMessage(chatId, msgPayload);
 
-    // Track sent message ID to prevent echo-back loops
-    if (sent?.key?.id) {
-      recentlySentIds.add(sent.key.id);
-      if (recentlySentIds.size > MAX_RECENT_IDS) {
-        recentlySentIds.delete(recentlySentIds.values().next().value);
-      }
-    }
+    trackSentMessageId(sent);
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
@@ -600,8 +693,12 @@ if (PAIR_ONLY) {
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
+    } else if (WHATSAPP_MODE === 'self-chat') {
+      console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
     } else {
-      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
+      console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
+      console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
+      console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
     startSocket();

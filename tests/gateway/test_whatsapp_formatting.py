@@ -145,6 +145,21 @@ class TestMessageLimits:
         from gateway.platforms.whatsapp import WhatsAppAdapter
         assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
+    def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+
+        assert adapter._outgoing_chunk_limit() == (
+            adapter.MAX_MESSAGE_LENGTH - len(adapter.DEFAULT_REPLY_PREFIX)
+        )
+
+    def test_chunk_limit_does_not_reserve_prefix_in_bot_mode(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("WHATSAPP_MODE", "bot")
+
+        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # send() chunking tests
@@ -179,6 +194,24 @@ class TestSendChunking:
         assert result.success
         # Should have made multiple calls
         assert adapter._http_session.post.call_count > 1
+
+    @pytest.mark.asyncio
+    async def test_chunks_leave_room_for_bridge_prefix(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        long_msg = "a " * 3000
+
+        await adapter.send("chat1", long_msg)
+
+        for call in adapter._http_session.post.call_args_list:
+            payload = call.kwargs.get("json") or call[1].get("json")
+            final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
+            assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
 
     @pytest.mark.asyncio
     async def test_empty_message_no_send(self):

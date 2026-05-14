@@ -17,6 +17,13 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 35, { compact: false, details: false })).toBeGreaterThan(5)
   })
 
+  it('uses compound user prompt width when estimating user message wrapping', () => {
+    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
+
+    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+  })
+
   it('includes detail sections when visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: ['Tool A', 'Tool B'] }
 

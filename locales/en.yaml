@@ -1,0 +1,35 @@
+# Hermes static-message catalog -- English (baseline / source of truth)
+#
+# Only user-facing static messages from the CLI approval prompt and a handful
+# of gateway slash-command replies live here.  Agent-generated output, log
+# lines, error tracebacks, tool outputs, and slash-command descriptions stay
+# in English and are NOT translated -- see agent/i18n.py for scope rationale.
+#
+# Keys are dotted paths; nesting below is purely for readability.  Values may
+# contain {placeholder} tokens for str.format substitution.  When adding a
+# new key, add it to EVERY locale file (en/zh/ja/de/es/fr/tr/uk) in the same commit --
+# tests/agent/test_i18n.py asserts catalog parity.
+
+approval:
+  # CLI approval prompt -- shown when a dangerous command needs user review.
+  dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
+  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
+  choose_short:    "      [o]nce  |  [s]ession  |  [d]eny"
+  prompt_long:     "      Choice [o/s/a/D]: "
+  prompt_short:    "      Choice [o/s/D]: "
+  timeout:         "      ⏱ Timeout - denying command"
+  allowed_once:    "      ✓ Allowed once"
+  allowed_session: "      ✓ Allowed for this session"
+  allowed_always:  "      ✓ Added to permanent allowlist"
+  denied:          "      ✗ Denied"
+  cancelled:       "      ✗ Cancelled"
+  blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
+
+gateway:
+  # Messenger replies to slash commands and implicit state changes.
+  approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+  draining:         "⏳ Draining {count} active agent(s) before restart..."
+  goal_cleared:     "✓ Goal cleared."
+  no_active_goal:   "No active goal."
+  config_read_failed: "⚠️ Could not read config.yaml: {error}"
+  config_save_failed: "⚠️ Could not save config: {error}"

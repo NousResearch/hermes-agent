@@ -139,7 +139,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def _ws_connect(self) -> bool:
         """Establish WebSocket connection and authenticate."""
-        ws_url = self._hass_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_url}/api/websocket"
 
         self._session = aiohttp.ClientSession(

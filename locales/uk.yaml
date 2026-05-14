@@ -1,0 +1,24 @@
+# Каталог статичних повідомлень Hermes -- Українська
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  НЕБЕЗПЕЧНА КОМАНДА: {description}"
+  choose_long:     "      [o]один раз  |  [s]сеанс  |  [a]завжди  |  [d]відхилити"
+  choose_short:    "      [o]один раз  |  [s]сеанс  |  [d]відхилити"
+  prompt_long:     "      Вибір [o/s/a/D]: "
+  prompt_short:    "      Вибір [o/s/D]: "
+  timeout:         "      ⏱ Час очікування вичерпано — команду відхилено"
+  allowed_once:    "      ✓ Дозволено один раз"
+  allowed_session: "      ✓ Дозволено для цього сеансу"
+  allowed_always:  "      ✓ Додано до постійного списку дозволених команд"
+  denied:          "      ✗ Відхилено"
+  cancelled:       "      ✗ Скасовано"
+  blocklist_message: "Ця команда є в безумовному списку блокування, її не можна схвалити."
+
+gateway:
+  approval_expired: "⚠️ Час схвалення минув (агент більше не очікує). Попросіть агента спробувати ще раз."
+  draining:         "⏳ Очікування завершення {count} активних агент(ів) перед перезапуском..."
+  goal_cleared:     "✓ Ціль очищено."
+  no_active_goal:   "Немає активної цілі."
+  config_read_failed: "⚠️ Не вдалося прочитати config.yaml: {error}"
+  config_save_failed: "⚠️ Не вдалося зберегти конфігурацію: {error}"

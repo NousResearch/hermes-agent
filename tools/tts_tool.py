@@ -159,9 +159,9 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MINIMAX_MODEL = "speech-02"
-DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
-DEFAULT_MINIMAX_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
+DEFAULT_MINIMAX_MODEL = "speech-02-hd"
+DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
+DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -990,6 +990,18 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     emotion = mm_config.get("emotion", "neutral")
     sample_rate = mm_config.get("sample_rate", 32000)
     bitrate = mm_config.get("bitrate", 128000)
+
+    # MiniMax accounts scope TTS requests by GroupId.  When present, the docs
+    # show it as a ?GroupId=<id> query param on the t2a_v2 URL.  Accept it
+    # from config or from the MINIMAX_GROUP_ID env var; only attach when the
+    # URL doesn't already carry one.
+    group_id = (
+        str(mm_config.get("group_id") or "").strip()
+        or (get_env_value("MINIMAX_GROUP_ID") or "").strip()
+    )
+    if group_id and "GroupId=" not in base_url:
+        sep = "&" if "?" in base_url else "?"
+        base_url = f"{base_url}{sep}GroupId={group_id}"
 
     headers = {
         "Content-Type": "application/json",

@@ -244,6 +244,40 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_write_pid_file_cleans_stale_pid_from_dead_process(self, tmp_path, monkeypatch):
+        """Stale PID files from dead processes should be cleaned before O_EXCL."""
+        monkeypatch.setattr("gateway.status._get_pid_path", lambda: tmp_path / "gateway.pid")
+
+        # Write a stale PID file pointing to a non-existent process
+        stale_pid = 999999998  # Very unlikely to exist
+        stale_record = json.dumps({"pid": stale_pid, "start_time": 0})
+        (tmp_path / "gateway.pid").write_text(stale_record)
+
+        # write_pid_file should succeed by cleaning the stale file first
+        from gateway.status import write_pid_file
+        write_pid_file()  # Should NOT raise FileExistsError
+
+        # Verify new PID file was written
+        from gateway.status import _read_pid_record
+        record = _read_pid_record(tmp_path / "gateway.pid")
+        assert record is not None
+        assert record["pid"] == os.getpid()
+
+    def test_write_pid_file_preserves_pid_file_for_live_process(self, tmp_path, monkeypatch):
+        """PID file for a live process should NOT be removed; FileExistsError raised."""
+        import pytest
+
+        monkeypatch.setattr("gateway.status._get_pid_path", lambda: tmp_path / "gateway.pid")
+
+        # Write a PID file pointing to the current process (which is alive)
+        import os as _os
+        live_record = json.dumps({"pid": _os.getpid(), "start_time": 0})
+        (tmp_path / "gateway.pid").write_text(live_record)
+
+        from gateway.status import write_pid_file
+        with pytest.raises(FileExistsError):
+            write_pid_file()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

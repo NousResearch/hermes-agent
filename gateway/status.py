@@ -482,10 +482,29 @@ def write_pid_file() -> None:
     Uses atomic O_CREAT | O_EXCL creation so that concurrent --replace
     invocations race: exactly one process wins and the rest get
     FileExistsError.
+
+    Before the atomic create, stale PID files left behind by crashes or
+    SIGKILL are cleaned up so that a restart can succeed.
     """
     path = _get_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     record = json.dumps(_build_pid_record())
+
+    # Pre-check: if PID file exists but the recorded process is dead,
+    # remove it first so the O_EXCL write won't fail on a stale file.
+    if path.exists():
+        existing = _read_pid_record(path)
+        if existing:
+            try:
+                pid = int(existing["pid"])
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError, ValueError, TypeError):
+                # Process is gone - remove stale PID file
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:

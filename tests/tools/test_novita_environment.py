@@ -100,6 +100,8 @@ def novita_sdk(monkeypatch):
 @pytest.fixture()
 def make_env(novita_sdk, monkeypatch):
     """Factory that creates a NovitaEnvironment with a mocked SDK."""
+    lazy_ensure = MagicMock()
+    monkeypatch.setattr("tools.lazy_deps.ensure", lazy_ensure)
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
@@ -123,9 +125,18 @@ def make_env(novita_sdk, monkeypatch):
 
         from tools.environments.novita import NovitaEnvironment
 
-        return NovitaEnvironment(persistent_filesystem=persistent, **kwargs)
+        env = NovitaEnvironment(persistent_filesystem=persistent, **kwargs)
+        env._lazy_ensure = lazy_ensure
+        return env
 
     return _factory
+
+
+class TestLazyDependencies:
+    def test_constructor_ensures_novita_terminal_dependency(self, make_env):
+        env = make_env(persistent=False)
+
+        env._lazy_ensure.assert_called_once_with("terminal.novita", prompt=False)
 
 
 # ---------------------------------------------------------------------------

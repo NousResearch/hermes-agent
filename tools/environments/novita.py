@@ -52,6 +52,14 @@ class NovitaEnvironment(BaseEnvironment):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.novita", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
+
         from novita_sandbox.core import Sandbox, SandboxQuery, CommandExitException
 
         self._persistent = persistent_filesystem

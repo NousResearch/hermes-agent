@@ -144,7 +144,12 @@ class Mem0MemoryProvider(MemoryProvider):
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
-        """Write config to $HERMES_HOME/mem0.json."""
+        """Write config to $HERMES_HOME/mem0.json.
+
+        Secret fields (those with ``secret=True`` in the config schema) are
+        excluded — they belong in ``~/.hermes/.env``, not in a plain-text JSON
+        file that may be committed, shared, or backed up without scrubbing.
+        """
         import json
         from pathlib import Path
         config_path = Path(hermes_home) / "mem0.json"
@@ -154,7 +159,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 existing = json.loads(config_path.read_text())
             except Exception:
                 pass
-        existing.update(values)
+        secret_keys = {f["key"] for f in self.get_config_schema() if f.get("secret")}
+        filtered = {k: v for k, v in values.items() if k not in secret_keys}
+        existing.update(filtered)
+        # Remove any secret keys that were written by older versions
+        for sk in secret_keys:
+            existing.pop(sk, None)
         config_path.write_text(json.dumps(existing, indent=2))
 
     def get_config_schema(self):

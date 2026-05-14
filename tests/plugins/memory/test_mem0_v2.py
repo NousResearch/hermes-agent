@@ -225,3 +225,45 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+# ---------------------------------------------------------------------------
+# save_config secret filtering (#25085)
+# ---------------------------------------------------------------------------
+
+
+class TestMem0SaveConfigSecretFiltering:
+    """save_config must never write secret fields (api_key) to mem0.json."""
+
+    def test_save_config_excludes_api_key(self, tmp_path):
+        provider = Mem0MemoryProvider()
+        provider.save_config(
+            {"api_key": "sk-secret-123", "user_id": "alice", "agent_id": "bot"},
+            str(tmp_path),
+        )
+        saved = json.loads((tmp_path / "mem0.json").read_text())
+        assert "api_key" not in saved
+        assert saved["user_id"] == "alice"
+        assert saved["agent_id"] == "bot"
+
+    def test_save_config_strips_existing_api_key_from_file(self, tmp_path):
+        """Older versions may have written api_key — save_config removes it."""
+        mem0_json = tmp_path / "mem0.json"
+        mem0_json.write_text(json.dumps({
+            "api_key": "old-key", "user_id": "bob", "rerank": True,
+        }))
+        provider = Mem0MemoryProvider()
+        provider.save_config({"user_id": "bob", "agent_id": "hermes"}, str(tmp_path))
+        saved = json.loads(mem0_json.read_text())
+        assert "api_key" not in saved
+        assert saved["user_id"] == "bob"
+        assert saved["rerank"] is True
+
+    def test_save_config_preserves_non_secret_fields(self, tmp_path):
+        provider = Mem0MemoryProvider()
+        provider.save_config(
+            {"user_id": "carol", "agent_id": "alpha", "rerank": False},
+            str(tmp_path),
+        )
+        saved = json.loads((tmp_path / "mem0.json").read_text())
+        assert saved == {"user_id": "carol", "agent_id": "alpha", "rerank": False}

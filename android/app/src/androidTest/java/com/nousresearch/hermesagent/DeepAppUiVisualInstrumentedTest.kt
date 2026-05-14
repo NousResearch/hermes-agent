@@ -221,7 +221,7 @@ class DeepAppUiVisualInstrumentedTest {
         }
 
         val qwenSetupOpened = AtomicBoolean(false)
-        val qwenSetupIntent = providerSetupOpenFor(Uri.parse("https://docs.qwencloud.com/api-reference/preparation/api-key")) {
+        val qwenSetupIntent = providerSetupOpenFor(Uri.parse("https://home.qwencloud.com/api-keys")) {
             qwenSetupOpened.set(true)
         }
         Intents.init()

@@ -271,6 +271,24 @@ async def test_matrix_inbound_handler_keeps_project_a_and_b_distinct():
     assert build_session_key(captured[0].source) != build_session_key(captured[1].source)
 
 
+def test_matrix_project_b_tool_call_cannot_target_project_a_by_default():
+    from gateway.session_context import set_session_vars
+    from tools.matrix_tools import matrix_fetch_history
+
+    adapter = SimpleNamespace(fetch_history=AsyncMock(return_value=[]))
+    runner = SimpleNamespace(adapters={Platform.MATRIX: adapter})
+    tokens = set_session_vars(platform="matrix", chat_id=PROJECT_B_ROOM_ID)
+    try:
+        with patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = matrix_fetch_history({"room_id": PROJECT_A_ROOM_ID})
+    finally:
+        for token in reversed(tokens):
+            token.var.reset(token)
+
+    assert "current room" in result
+    adapter.fetch_history.assert_not_called()
+
+
 def test_matrix_room_scope_group_sessions_per_user_true_separates_users():
     alice = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
     bob = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)

@@ -3600,14 +3600,14 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = (page - 1) * page_size
 
         try:
-            # Total count (exclude cron sessions)
-            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions WHERE source != 'cron'").fetchone()
+            # Total count
+            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
             total = total_row[0] if total_row else 0
 
-            # Paginated query (exclude cron sessions)
+            # Paginated query
             cursor = db._conn.execute(
                 "SELECT id, title, model, started_at, message_count "
-                "FROM sessions WHERE source != 'cron' ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                "FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
                 (page_size, offset),
             )
             rows = cursor.fetchall()

@@ -162,12 +162,18 @@ class TestRunJobProfileContext:
 
         class FakeAgent:
             def __init__(self, **kwargs):
-                observed["hermes_home_during_init"] = os.environ.get("HERMES_HOME")
+                from hermes_constants import get_hermes_home
+
+                observed["env_home_during_init"] = os.environ.get("HERMES_HOME")
+                observed["hermes_home_during_init"] = str(get_hermes_home())
                 observed["scheduler_home_during_init"] = str(sched._get_hermes_home())
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
 
             def run_conversation(self, *_a, **_kw):
-                observed["hermes_home_during_run"] = os.environ.get("HERMES_HOME")
+                from hermes_constants import get_hermes_home
+
+                observed["env_home_during_run"] = os.environ.get("HERMES_HOME")
+                observed["hermes_home_during_run"] = str(get_hermes_home())
                 observed["scheduler_home_during_run"] = str(sched._get_hermes_home())
                 return {"final_response": "done", "messages": []}
 
@@ -229,6 +235,8 @@ class TestRunJobProfileContext:
 
         assert success is True, f"run_job failed: error={error!r} response={response!r}"
         assert observed["dotenv_paths"] == [str(profile_home / ".env")]
+        assert observed["env_home_during_init"] == str(root)
+        assert observed["env_home_during_run"] == str(root)
         assert observed["hermes_home_during_init"] == str(profile_home.resolve())
         assert observed["hermes_home_during_run"] == str(profile_home.resolve())
         assert observed["scheduler_home_during_init"] == str(profile_home.resolve())

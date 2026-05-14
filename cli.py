@@ -6189,6 +6189,7 @@ class HermesCLI:
         ``input()`` when we're off the main thread.
         """
         import threading
+
         result = [None]
 
         def _ask():
@@ -6217,6 +6218,13 @@ class HermesCLI:
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
+        elif not in_main_thread:
+            # Called from a background thread (e.g. process_loop daemon during
+            # /new or /clear confirmation) — run_in_terminal would orphan the
+            # coroutine on the main thread's event loop.  Fall back to blocking
+            # input() on this thread.  Fixes /new hanging indefinitely when
+            # dispatched from the background loop instead of the main TUI thread.
+            _ask()
         else:
             _ask()
         return result[0]

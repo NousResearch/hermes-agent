@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+MIN_INTERVAL_SECONDS = 60       # 1 minute minimum
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -154,14 +155,18 @@ def _parse_interval(token: str) -> Optional[int]:
         return None
     s = token.strip().lower()
     match = re.match(
-        r"^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$",
+        r"^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$",
         s,
     )
     if not match:
+        # Bare number — treat as seconds
+        bare = re.match(r"^(\d+)$", s)
+        if bare:
+            return int(bare.group(1))
         return None
     value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: m, h, or d
-    multipliers = {"m": 60, "h": 3600, "d": 86400}
+    unit = match.group(2)[0]  # First char: s, m, h, or d
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     return value * multipliers[unit]
 
 
@@ -219,9 +224,13 @@ class LoopManager:
         if not prompt:
             raise ValueError("loop prompt is empty")
         self._stop_scheduler()
+        effective_interval = max(
+            int(interval_seconds) if interval_seconds else 300,
+            MIN_INTERVAL_SECONDS,
+        )
         state = LoopState(
             prompt=prompt,
-            interval_seconds=int(interval_seconds) if interval_seconds else 300,
+            interval_seconds=effective_interval,
             status="active",
             last_fired_at=0.0,
             created_at=time.time(),
@@ -384,20 +393,12 @@ class LoopScheduler:
         state.turns_completed += 1
         save_loop(self._session_id, state)
 
-        prompt = f"[Loop check] {state.prompt}"
+        prompt = state.prompt
         try:
             self._pending_input.put(prompt)
         except Exception as exc:
             logger.debug("LoopScheduler: failed to enqueue prompt: %s", exc)
             return
-
-        if self._on_message is not None:
-            try:
-                self._on_message(
-                    f"↻ Loop check ({state.turns_completed}): {state.prompt}"
-                )
-            except Exception:
-                pass
 
 
 __all__ = [

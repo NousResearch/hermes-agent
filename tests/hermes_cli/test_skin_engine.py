@@ -226,7 +226,7 @@ class TestUserSkins:
         assert skin.name == "broken"
         assert skin.get_color("banner_title") == "#FFD700"
         assert skin.get_branding("agent_name") == "Hermes Agent"
-        assert skin.get_spinner_list("waiting_faces") == []
+        assert skin.spinner.get("waiting_faces", []) == []
         assert skin.tool_emojis == {}
         assert skin.tool_prefix == "!"
 

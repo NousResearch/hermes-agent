@@ -439,8 +439,11 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                         thread_id = parsed_thread_id
                 else:
                     chat_id = resolved
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve channel name for platform_key=%r chat_id=%r: %s",
+                platform_key, chat_id, e,
+            )
 
         return {
             "platform": platform_name,

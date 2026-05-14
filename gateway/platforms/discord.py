@@ -1456,6 +1456,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             reference=None,
                         )
                     else:
+                        if message_ids:
+                            return SendResult(
+                                success=False,
+                                error=(
+                                    "Partial Discord send failed after "
+                                    f"{len(message_ids)} chunk(s): {e}"
+                                ),
+                                raw_response={
+                                    "message_ids": list(message_ids),
+                                    "partial_delivery": True,
+                                },
+                            )
                         raise
                 message_ids.append(str(msg.id))
 

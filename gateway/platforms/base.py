@@ -2428,6 +2428,24 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    @staticmethod
+    def _has_partial_delivery(result: Optional["SendResult"]) -> bool:
+        """Return True when a failed send already put some content on screen.
+
+        Retrying a chunked platform send after one or more chunks already
+        landed will duplicate the visible response. Adapters report this via
+        ``raw_response.partial_delivery`` plus the delivered ``message_ids``.
+        """
+        if not result or getattr(result, "success", False):
+            return False
+        raw = getattr(result, "raw_response", None)
+        if not isinstance(raw, dict):
+            return False
+        if raw.get("partial_delivery"):
+            return True
+        message_ids = raw.get("message_ids") or ()
+        return any(message_ids)
+
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
@@ -2480,6 +2498,13 @@ class BasePlatformAdapter(ABC):
 
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
+
+        if self._has_partial_delivery(result):
+            logger.warning(
+                "[%s] Send failed after partial delivery; skipping retry to avoid duplicates",
+                self.name,
+            )
+            return result
 
         # Timeout errors are not safe to retry (message may have been
         # delivered) and not formatting errors — return the failure as-is.

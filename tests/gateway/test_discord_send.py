@@ -160,6 +160,41 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_chunked_send_reports_partial_delivery_after_late_failure():
+    """If a later Discord chunk fails, surface partial delivery so the retry
+    wrapper does not resend the whole response."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 20
+
+    sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        if len(send_calls) <= 2:
+            return sent_msgs[len(send_calls) - 1]
+        raise RuntimeError("Connection reset by peer")
+
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "A" * 60)
+
+    assert result.success is False
+    assert "Partial Discord send failed after 2 chunk(s)" in (result.error or "")
+    assert result.raw_response == {
+        "message_ids": ["1001", "1002"],
+        "partial_delivery": True,
+    }
+    assert channel.send.await_count == 3
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

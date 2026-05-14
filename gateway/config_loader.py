@@ -185,7 +185,7 @@ def _str_keyed(value: Any) -> Any:
 
 
 _TELEGRAM = frozenset({Platform.TELEGRAM})
-_DISCORD_SLACK = frozenset({Platform.DISCORD, Platform.SLACK})
+_DISCORD_SLACK = frozenset({Platform.DISCORD, Platform.SLACK, Platform.MATRIX})
 
 def _plain(*keys: str) -> tuple:
     """Keys copied verbatim into ``extra`` for every platform."""

@@ -130,9 +130,10 @@ class BrowserUseBrowserProvider(BrowserProvider):
         # managed_tool_gateway pulls in the Nous auth stack which can be
         # heavy and is not needed for direct-API-key users.
         from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+        from tools.tool_backend_helpers import prefers_gateway
 
-        # 1. Direct API key path (unless user explicitly prefers gateway).
+        # Direct API key wins unless the user has explicitly opted into the
+        # managed Nous gateway via ``tool_gateway.browser: gateway``.
         api_key = os.environ.get("BROWSER_USE_API_KEY")
         if api_key and not prefers_gateway("browser"):
             return {
@@ -141,15 +142,9 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 "managed_mode": False,
             }
 
-        # 2. Managed Nous gateway path.
         managed = resolve_managed_tool_gateway("browser-use")
         if managed is None:
             return None
-
-        # Hold reference to managed_nous_tools_enabled so static analysis
-        # doesn't flag the import as unused — the helper is consulted by
-        # _get_config() below to compose a more accurate error message.
-        _ = managed_nous_tools_enabled
 
         return {
             "api_key": managed.nous_user_token,

@@ -166,10 +166,10 @@ class BrowserProvider(abc.ABC):
     # and :attr:`name`; they may override ``is_configured`` / ``provider_name``
     # for compatibility with the legacy ABC but it is not required.
 
-    def is_configured(self) -> bool:  # pragma: no cover - trivial delegation
+    def is_configured(self) -> bool:
         """Backward-compat alias for :meth:`is_available`."""
         return self.is_available()
 
-    def provider_name(self) -> str:  # pragma: no cover - trivial delegation
+    def provider_name(self) -> str:
         """Backward-compat alias returning :attr:`display_name`."""
         return self.display_name

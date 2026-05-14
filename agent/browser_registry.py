@@ -99,19 +99,11 @@ def get_provider(name: str) -> Optional[BrowserProvider]:
 # ---------------------------------------------------------------------------
 
 
-# Legacy preference order — preserves behaviour for users who set no
-# ``browser.cloud_provider`` config key. Matches the historic auto-detect
-# order in :func:`tools.browser_tool._get_cloud_provider` (Browser Use first
-# because it covers both managed Nous gateway and direct API key; Browserbase
-# second as the older direct-credentials fallback). Filtered by
-# ``is_available()`` at walk time so we don't surface a provider the user
-# has no credentials for.
-#
-# Note: ``firecrawl`` is intentionally absent. Pre-migration, the auto-detect
-# branch only considered Browser Use → Browserbase; Firecrawl was reachable
-# only via an explicit ``browser.cloud_provider: firecrawl`` config key.
-# Preserving that gate prevents users with a ``FIRECRAWL_API_KEY`` set for
-# web-extract from accidentally getting routed to a (paid) cloud browser.
+# Legacy auto-detect order — used when no ``browser.cloud_provider`` is set.
+# Matches the pre-migration walk in :func:`tools.browser_tool._get_cloud_provider`.
+# Firecrawl is intentionally absent so users with ``FIRECRAWL_API_KEY`` set
+# for web-extract don't get silently routed to a paid cloud browser. See
+# :func:`_resolve` for the full rationale.
 _LEGACY_PREFERENCE = (
     "browser-use",
     "browserbase",
@@ -159,7 +151,10 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
         try:
             return bool(p.is_available())
         except Exception as exc:  # noqa: BLE001
-            logger.debug("provider %s.is_available() raised %s", p.name, exc)
+            logger.warning(
+                "Browser provider %s.is_available() raised %s — treating as unavailable",
+                p.name, exc, exc_info=True,
+            )
             return False
 
     # 1. Explicit "local" short-circuit.

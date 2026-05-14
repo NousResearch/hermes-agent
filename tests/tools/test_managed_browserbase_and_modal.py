@@ -106,7 +106,6 @@ def _install_fake_tools_package():
         BrowserProvider=_StubBrowserProvider,
     )
     sys.modules["agent.browser_registry"] = types.SimpleNamespace(
-        get_active_browser_provider=lambda: None,
         get_provider=lambda name: None,
         list_providers=lambda: [],
         register_provider=lambda provider: None,

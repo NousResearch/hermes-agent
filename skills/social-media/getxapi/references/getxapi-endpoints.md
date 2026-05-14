@@ -1,5 +1,10 @@
 # getxapi Endpoint Reference
 
+> **SECURITY**: All curl examples use `<your-api-key>` and `<your-auth-token>`
+> placeholders. Never paste real credentials into chat or LLM context.
+> Store secrets in `~/.hermes/.env` and reference them via environment variables.
+
+
 Base URL: `https://api.getxapi.com`
 Auth: `Authorization: Bearer <your-api-key>` (all endpoints)
 Post auth: value of the X `auth_token` cookie, passed as an `auth_token` field in the JSON body
@@ -45,7 +50,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
 
 Response fields: `query`, `tweet_count`, `has_more`, `next_cursor`, `tweets` (array of tweet objects).
 
-Response fields: `type`, `id`, `url`, `twitterUrl`, `text`, `source`, like/reply/quote/view counts, `createdAt`, `isReply`, `inReplyToId`, `media[]`, `author{...}`.
+Tweet object fields: `type`, `id`, `url`, `twitterUrl`, `text`, `source`, like/reply/quote/view counts, `createdAt`, `isReply`, `inReplyToId`, `media[]`, `author{...}`.
 
 ### GET /twitter/tweet/detail
 Cost: $0.001. Returns a single tweet with full author and media.

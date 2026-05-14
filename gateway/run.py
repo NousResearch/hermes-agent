@@ -986,6 +986,91 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _iter_channel_model_routes(config: dict | None, platform: str) -> list[tuple[str, dict]]:
+    """Return configured default model routes for a messaging platform.
+
+    Shape intentionally mirrors other per-platform config knobs and keeps the
+    feature narrow: a channel/thread id maps to {model, provider, ...}.
+    Supported locations:
+      discord.channel_model_routes
+      platforms.discord.channel_model_routes
+    """
+    if not isinstance(config, dict):
+        return []
+    candidates = []
+    platform_cfg = config.get(platform)
+    if isinstance(platform_cfg, dict):
+        candidates.append(platform_cfg.get("channel_model_routes"))
+    platforms_cfg = config.get("platforms")
+    if isinstance(platforms_cfg, dict):
+        nested = platforms_cfg.get(platform)
+        if isinstance(nested, dict):
+            candidates.append(nested.get("channel_model_routes"))
+
+    routes: list[tuple[str, dict]] = []
+    for raw in candidates:
+        if isinstance(raw, dict):
+            for channel_id, route in raw.items():
+                if isinstance(route, str):
+                    route = {"model": route}
+                if isinstance(route, dict):
+                    routes.append((str(channel_id).strip(), dict(route)))
+        elif isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                channel_id = str(
+                    item.get("channel_id")
+                    or item.get("chat_id")
+                    or item.get("parent_chat_id")
+                    or ""
+                ).strip()
+                if channel_id:
+                    routes.append((channel_id, dict(item)))
+    return [(channel_id, route) for channel_id, route in routes if channel_id]
+
+
+def _configured_channel_model_route(source: Optional[SessionSource], config: dict | None) -> Optional[dict]:
+    """Return the default model route matching this source, if configured.
+
+    For Discord threads, match both the concrete thread chat_id and its
+    parent_chat_id so a parent channel rule applies to all newly-created
+    thread sessions in that channel.
+    """
+    if source is None or not getattr(source, "platform", None):
+        return None
+    platform = source.platform.value
+    if platform != "discord":
+        return None
+
+    ids = {
+        str(getattr(source, "chat_id", "") or ""),
+        str(getattr(source, "parent_chat_id", "") or ""),
+        str(getattr(source, "thread_id", "") or ""),
+    }
+    ids.discard("")
+    for channel_id, route in _iter_channel_model_routes(config, platform):
+        if channel_id not in ids:
+            continue
+        model = str(route.get("model") or route.get("default") or "").strip()
+        provider = str(route.get("provider") or "").strip()
+        if not model:
+            logger.warning(
+                "Ignoring %s channel_model_routes[%s]: missing model",
+                platform, channel_id,
+            )
+            return None
+        resolved = {"model": model}
+        if provider:
+            resolved["provider"] = provider
+        for key in ("api_key", "base_url", "api_mode"):
+            value = route.get(key)
+            if value is not None:
+                resolved[key] = value
+        return resolved
+    return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -1832,8 +1917,43 @@ class GatewayRunner:
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        cfg = user_config if user_config is not None else _load_gateway_config()
+        model = _resolve_gateway_model(cfg)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        configured_route = None if override else _configured_channel_model_route(source, cfg)
+        if configured_route:
+            route_model = configured_route.get("model") or model
+            route_provider = configured_route.get("provider")
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime_kwargs = resolve_runtime_provider(
+                    requested=route_provider or None,
+                    explicit_api_key=configured_route.get("api_key"),
+                    explicit_base_url=configured_route.get("base_url"),
+                    target_model=route_model,
+                )
+                runtime_model = runtime_kwargs.pop("model", None)
+                if configured_route.get("api_mode") is not None:
+                    runtime_kwargs["api_mode"] = configured_route.get("api_mode")
+                logger.info(
+                    "Configured channel model route: platform=%s chat=%s parent=%s model=%s provider=%s",
+                    getattr(getattr(source, "platform", None), "value", ""),
+                    getattr(source, "chat_id", ""),
+                    getattr(source, "parent_chat_id", ""),
+                    runtime_model or route_model,
+                    route_provider or runtime_kwargs.get("provider"),
+                )
+                return runtime_model or route_model, runtime_kwargs
+            except Exception as exc:
+                logger.warning(
+                    "Configured channel model route failed for session=%s model=%s provider=%s: %s",
+                    resolved_session_key or "",
+                    route_model,
+                    route_provider or "",
+                    exc,
+                )
+
         if override:
             override_model = override.get("model", model)
             override_runtime = {

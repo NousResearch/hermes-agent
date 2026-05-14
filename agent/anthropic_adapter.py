@@ -467,6 +467,25 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+def _is_xiaomi_mimo_endpoint(base_url: str | None, model: str | None = None) -> bool:
+    """Return True for Xiaomi MiMo Anthropic-compatible endpoints/models.
+
+    MiMo's ``/anthropic`` route has the same strict thinking-history contract
+    as Kimi and DeepSeek: when thinking is enabled, unsigned thinking blocks
+    synthesised from ``reasoning_content`` must be replayed on later turns.
+    """
+    if isinstance(model, str) and "mimo" in model.strip().lower():
+        return True
+    for _domain in (
+        "api.xiaomimimo.com",
+        "xiaomimimo.com",
+        "token-plan-cn.xiaomimimo.com",
+    ):
+        if base_url_host_matches(base_url or "", _domain):
+            return True
+    return False
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1483,7 +1502,8 @@ def convert_messages_to_anthropic(
     *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
     synthesised from ``reasoning_content`` are preserved on replayed
     assistant tool-call messages — Kimi requires the field to exist, even
-    if empty.
+    if empty. Xiaomi MiMo's Anthropic-compatible endpoint follows the same
+    strict reasoning replay contract.
     """
     system = None
     result = []
@@ -1754,6 +1774,7 @@ def convert_messages_to_anthropic(
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_xiaomi_mimo_endpoint(base_url, model)
     )
 
     last_assistant_idx = None

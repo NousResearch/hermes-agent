@@ -210,3 +210,53 @@ class TestKimiCodingSkipsAnthropicThinking:
         ]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "planning the tool call"
+
+    def test_xiaomi_mimo_anthropic_endpoint_preserves_unsigned_thinking(self) -> None:
+        """Xiaomi MiMo's Anthropic endpoint also requires reasoning replay.
+
+        The endpoint returns the same 400 as Kimi when an assistant tool-use
+        history turn loses the unsigned thinking block synthesised from
+        reasoning_content.
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "planning the tool call",
+                "content": [
+                    {"type": "text", "text": "I'll inspect that."},
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "search_files",
+                        "input": {"pattern": "reasoning_content"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "ok",
+                    }
+                ],
+            },
+        ]
+        _, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://token-plan-cn.xiaomimimo.com/anthropic",
+            model="mimo-v2.5-pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        thinking_blocks = [
+            b
+            for b in assistant_msg["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == "planning the tool call"

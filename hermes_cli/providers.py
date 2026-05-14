@@ -166,6 +166,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "xai-coding-plan": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "nvidia": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://integrate.api.nvidia.com/v1",
@@ -370,6 +375,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "xai-coding-plan": "xAI Coding Plan",
 }
 
 

@@ -453,6 +453,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "xai-coding-plan": ["grok-build", "grok-4.3", "grok-4.3-latest"],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -945,6 +946,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("xai-coding-plan", "xAI Coding Plan",          "xAI Coding Plan (OAuth — requires grok CLI)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/

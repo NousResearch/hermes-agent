@@ -29,6 +29,25 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
 import { registerSlot, PluginSlot } from "./slots";
+import { LexicalComposer } from "@lexical/react/LexicalComposer";
+import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
+import { ContentEditable } from "@lexical/react/LexicalContentEditable";
+import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
+import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
+import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
+import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
+import { AutoFocusPlugin } from "@lexical/react/LexicalAutoFocusPlugin";
+import { ListPlugin } from "@lexical/react/LexicalListPlugin";
+import { CheckListPlugin } from "@lexical/react/LexicalCheckListPlugin";
+import { TabIndentationPlugin } from "@lexical/react/LexicalTabIndentationPlugin";
+import { $convertFromMarkdownString, $convertToMarkdownString, CHECK_LIST, HEADING, ORDERED_LIST, TRANSFORMERS, UNORDERED_LIST } from "@lexical/markdown";
+import { HeadingNode, QuoteNode, $createHeadingNode, $createQuoteNode } from "@lexical/rich-text";
+import { ListItemNode, ListNode, INSERT_CHECK_LIST_COMMAND, INSERT_UNORDERED_LIST_COMMAND, REMOVE_LIST_COMMAND } from "@lexical/list";
+import { CodeHighlightNode, CodeNode, $createCodeNode } from "@lexical/code";
+import { AutoLinkNode, LinkNode } from "@lexical/link";
+import { $getSelection, $isRangeSelection, $createParagraphNode, FORMAT_TEXT_COMMAND } from "lexical";
+import { $setBlocksType } from "@lexical/selection";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -145,5 +164,55 @@ export function exposePluginSDK() {
 
     // Hooks
     useI18n,
+
+    // Rich text / markdown editor framework for plugins. Expose the host's
+    // Lexical instance so plugin bundles don't ship their own React/Lexical
+    // copies and can still be plain IIFE assets.
+    lexical: {
+      LexicalComposer,
+      RichTextPlugin,
+      ContentEditable,
+      HistoryPlugin,
+      OnChangePlugin,
+      MarkdownShortcutPlugin,
+      LexicalErrorBoundary,
+      AutoFocusPlugin,
+      ListPlugin,
+      CheckListPlugin,
+      TabIndentationPlugin,
+      useLexicalComposerContext,
+      $convertFromMarkdownString,
+      $convertToMarkdownString,
+      TRANSFORMERS,
+      CHECK_LIST,
+      HEADING,
+      ORDERED_LIST,
+      UNORDERED_LIST,
+      nodes: {
+        HeadingNode,
+        QuoteNode,
+        ListNode,
+        ListItemNode,
+        CodeNode,
+        CodeHighlightNode,
+        LinkNode,
+        AutoLinkNode,
+      },
+      commands: {
+        FORMAT_TEXT_COMMAND,
+        INSERT_CHECK_LIST_COMMAND,
+        INSERT_UNORDERED_LIST_COMMAND,
+        REMOVE_LIST_COMMAND,
+      },
+      selection: {
+        $getSelection,
+        $isRangeSelection,
+        $setBlocksType,
+        $createParagraphNode,
+        $createHeadingNode,
+        $createQuoteNode,
+        $createCodeNode,
+      },
+    },
   };
 }

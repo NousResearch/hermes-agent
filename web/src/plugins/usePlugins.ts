@@ -42,23 +42,30 @@ export function usePlugins() {
 
     for (const manifest of manifests) {
       // Inject CSS if specified.
+      const assetVersion = encodeURIComponent(
+        `${manifest.version || "0"}:${manifest.entry || ""}:${manifest.css || ""}`,
+      );
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
+        const cssBaseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = `${cssBaseUrl}?v=${assetVersion}`;
+        if (!document.querySelector(`link[data-hermes-plugin-css="${manifest.name}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
           link.href = cssUrl;
+          link.setAttribute("data-hermes-plugin-css", manifest.name);
           document.head.appendChild(link);
         }
       }
 
-      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
-      // in-memory registry while the browser would otherwise never
-      // re-execute a previously cached <script> URL.
+      // Load JS bundle. Always include the manifest version in the asset URL so
+      // production browsers don't keep executing a stale dashboard plugin after
+      // its dist/index.js changes. In dev, add a timestamp as well so Vite HMR
+      // can clear the in-memory registry while the browser would otherwise
+      // never re-execute a previously cached <script> URL.
       const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
       const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
+        ? `${baseUrl}?v=${assetVersion}&hermes_dv=${Date.now()}`
+        : `${baseUrl}?v=${assetVersion}`;
       if (!import.meta.env.DEV) {
         if (loadedScripts.current.has(baseUrl)) continue;
         loadedScripts.current.add(baseUrl);

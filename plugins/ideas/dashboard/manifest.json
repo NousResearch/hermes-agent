@@ -1,0 +1,14 @@
+{
+  "name": "ideas",
+  "label": "Ideas",
+  "description": "Project-aware markdown idea tracker tied to Kanban boards",
+  "icon": "Lightbulb",
+  "version": "0.2.4",
+  "tab": {
+    "path": "/ideas",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

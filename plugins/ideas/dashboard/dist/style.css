@@ -1,0 +1,685 @@
+.ideas-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: calc(100vh - 9rem);
+}
+
+.ideas-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ideas-header h1 {
+  margin: 0;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.ideas-header p {
+  margin: .35rem 0 0;
+  color: var(--muted-foreground);
+  max-width: 760px;
+}
+
+.ideas-board-picker {
+  min-width: 260px;
+  display: grid;
+  gap: .35rem;
+}
+
+.ideas-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.ideas-sidebar,
+.ideas-editor-card {
+  min-height: 620px;
+}
+
+.ideas-list {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  max-height: calc(100vh - 18rem);
+  overflow: auto;
+  padding-right: .35rem;
+}
+
+.idea-list-item {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  padding: .75rem;
+  background: var(--card);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .15s ease;
+}
+
+.idea-list-item:hover,
+.idea-list-item.selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--card));
+}
+
+.idea-list-item:hover {
+  transform: translateY(-1px);
+}
+
+.idea-list-item strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idea-list-item p {
+  margin: .4rem 0;
+  color: var(--muted-foreground);
+  font-size: .9rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.idea-meta,
+.ideas-editor-meta,
+.ideas-bottom-actions,
+.ideas-actions,
+.ideas-toolbar,
+.ideas-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+.ideas-between {
+  justify-content: space-between;
+}
+
+.idea-meta {
+  color: var(--muted-foreground);
+  font-size: .78rem;
+}
+
+.idea-meta span:not(:last-child) {
+  color: var(--primary);
+}
+
+.ideas-fields {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 160px minmax(220px, .75fr);
+  gap: .75rem;
+  margin-bottom: .75rem;
+}
+
+.idea-summary-field {
+  display: grid;
+  gap: .35rem;
+  margin-bottom: .75rem;
+}
+
+.ideas-editor-meta {
+  color: var(--muted-foreground);
+  font-size: .8rem;
+  margin-bottom: .75rem;
+}
+
+.ideas-toolbar {
+  margin-bottom: .5rem;
+}
+
+.ideas-toolbar button {
+  height: 2rem;
+  padding: 0 .65rem;
+}
+
+.ideas-block-editor {
+  width: 100%;
+  min-height: 430px;
+  max-height: calc(100vh - 23rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  padding: 1rem .75rem;
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* Match the active dashboard theme's normal text color. Avoid --foreground
+     directly here: some skins use that token as dark ink for light controls,
+     while the page's inherited color is the visible cream/green text used by
+     the rest of the Ideas UI. */
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+  caret-color: currentColor !important;
+  background: color-mix(in srgb, var(--card) 88%, black);
+  text-shadow: none !important;
+  opacity: 1 !important;
+  outline: none;
+  user-select: text;
+}
+
+.ideas-block-editor:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.ideas-block {
+  display: grid;
+  grid-template-columns: 1.4rem 1.4rem minmax(0, 1fr);
+  gap: .35rem;
+  align-items: start;
+  min-height: 1.8rem;
+  padding: .08rem .25rem;
+  border-radius: .45rem;
+  user-select: text;
+}
+
+.ideas-block:hover,
+.ideas-block.active,
+.ideas-block.drag-over {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.ideas-block.drag-over {
+  box-shadow: inset 0 2px 0 var(--primary);
+}
+
+.ideas-block-handle {
+  grid-column: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: .75;
+  user-select: none;
+  cursor: grab;
+  text-align: center;
+  line-height: 1.8rem;
+  padding: 0;
+  transition: opacity .12s ease, color .12s ease;
+}
+
+.ideas-block-handle:hover,
+.ideas-block.active .ideas-block-handle {
+  opacity: 1;
+  color: currentColor;
+}
+
+.ideas-block-handle:active {
+  cursor: grabbing;
+}
+
+.ideas-block-checkbox {
+  grid-column: 2;
+  grid-row: 1;
+  margin: .42rem auto 0;
+  accent-color: var(--primary);
+}
+
+.ideas-indent-1 { margin-left: 1.6rem; }
+.ideas-indent-2 { margin-left: 3.2rem; }
+.ideas-indent-3 { margin-left: 4.8rem; }
+.ideas-indent-4 { margin-left: 6.4rem; }
+.ideas-indent-5 { margin-left: 8rem; }
+.ideas-indent-6 { margin-left: 9.6rem; }
+
+.ideas-bullet-marker {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  justify-self: center;
+  width: .72em;
+  height: .72em;
+  margin-top: .42em;
+  color: currentColor;
+  opacity: .9;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.ideas-bullet-marker-0 {
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.ideas-bullet-marker-1 {
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  background: transparent;
+}
+
+.ideas-bullet-marker-2 {
+  border-radius: .08em;
+  background: currentColor;
+}
+
+.ideas-bullet-marker-3 {
+  border-radius: .08em;
+  border: 1.5px solid currentColor;
+  background: transparent;
+}
+
+.ideas-block-content {
+  grid-column: 2 / 4;
+  min-width: 1ch;
+  min-height: 1.55em;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+  caret-color: currentColor !important;
+  user-select: text;
+}
+
+.ideas-block-task .ideas-block-content {
+  grid-column: 3;
+}
+
+.ideas-block-content:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  opacity: .65;
+  pointer-events: none;
+}
+
+.ideas-block-h1 .ideas-block-content,
+.ideas-block-h2 .ideas-block-content,
+.ideas-block-h3 .ideas-block-content {
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.ideas-block-h1 .ideas-block-content {
+  font-size: 1.45rem;
+  line-height: 1.35;
+}
+
+.ideas-block-h2 .ideas-block-content {
+  font-size: 1.2rem;
+  line-height: 1.4;
+}
+
+.ideas-block-h3 .ideas-block-content {
+  font-size: 1.05rem;
+  line-height: 1.45;
+}
+
+.ideas-block-content strong {
+  font-weight: 700;
+}
+
+.ideas-block-content em {
+  font-style: italic;
+}
+
+.ideas-block-content code {
+  border-radius: .25rem;
+  padding: .08rem .28rem;
+  background: rgba(127, 127, 127, .18);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.ideas-block-code .ideas-block-content {
+  grid-column: 2 / 4;
+  min-height: 4.5rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: color-mix(in srgb, var(--card) 84%, black);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+}
+
+.ideas-block-code .ideas-block-content:empty::before {
+  content: attr(data-placeholder);
+}
+
+.ideas-block-bullet .ideas-block-content {
+  grid-column: 3;
+}
+
+.ideas-block-quote {
+  border-left: 2px solid var(--border);
+  margin-left: .35rem;
+}
+
+.ideas-block-quote .ideas-block-content {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.ideas-editor-hint {
+  color: var(--muted-foreground);
+  font-size: .8rem;
+  margin-top: .5rem;
+}
+
+.ideas-md-task input[type="checkbox"] {
+  margin-top: .25rem;
+  accent-color: var(--primary);
+}
+
+.ideas-preview {
+  min-height: 430px;
+  max-height: calc(100vh - 23rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  padding: 1.25rem;
+  background: color-mix(in srgb, var(--card) 94%, black);
+}
+
+.ideas-preview h1,
+.ideas-preview h2,
+.ideas-preview h3,
+.ideas-preview h4 {
+  margin: .9rem 0 .45rem;
+}
+
+.ideas-preview h1:first-child,
+.ideas-preview h2:first-child,
+.ideas-preview p:first-child {
+  margin-top: 0;
+}
+
+.ideas-preview p {
+  margin: .45rem 0;
+  line-height: 1.6;
+}
+
+.ideas-preview ul {
+  margin: .45rem 0 .75rem 1.25rem;
+}
+
+.ideas-preview pre {
+  overflow: auto;
+  border-radius: .65rem;
+  padding: .8rem;
+  background: rgba(0, 0, 0, .35);
+}
+
+.ideas-preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  background: rgba(127, 127, 127, .18);
+  border-radius: .25rem;
+  padding: .08rem .28rem;
+}
+
+.ideas-bottom-actions {
+  margin-top: .85rem;
+  justify-content: flex-end;
+}
+
+.ideas-empty {
+  color: var(--muted-foreground);
+  padding: 1rem;
+  text-align: center;
+}
+
+.ideas-empty.big {
+  padding-top: 10rem;
+  font-size: 1rem;
+}
+
+.ideas-error {
+  border: 1px solid color-mix(in srgb, var(--destructive) 50%, var(--border));
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  border-radius: .75rem;
+  padding: .75rem 1rem;
+}
+
+.ideas-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: transparent;
+}
+
+.ideas-confirm {
+  width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  padding: 1.1rem;
+  /* Use the theme's opaque base colors, not --card/--background, because
+     those tokens may be color-mix() values involving transparent in some
+     dashboard skins. This keeps the dialog theme-aware while guaranteeing
+     that content behind the prompt cannot show through the panel. */
+  background-color: var(--background-base, #041c1c);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--midground-base, #ffe6cb) 6%, var(--background-base, #041c1c)),
+    color-mix(in srgb, var(--midground-base, #ffe6cb) 6%, var(--background-base, #041c1c))
+  );
+  color: inherit;
+  opacity: 1;
+  box-shadow: 0 18px 60px color-mix(in srgb, black 45%, transparent);
+}
+
+.ideas-confirm h3 {
+  margin: 0 0 .55rem;
+}
+
+.ideas-confirm p {
+  margin: .45rem 0;
+  color: var(--muted-foreground);
+}
+
+.ideas-confirm-path {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: .78rem;
+}
+
+.ideas-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: .5rem;
+  margin-top: 1rem;
+}
+
+.ideas-loading {
+  color: var(--muted-foreground);
+  font-size: .9rem;
+}
+
+@media (max-width: 980px) {
+  .ideas-header,
+  .ideas-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .ideas-board-picker,
+  .ideas-sidebar,
+  .ideas-editor-card {
+    width: 100%;
+  }
+  .ideas-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Lexical-backed markdown editor */
+.ideas-lexical-editor {
+  position: relative;
+  width: 100%;
+}
+
+.ideas-lexical-toolbar {
+  margin-bottom: .65rem;
+}
+
+.ideas-lexical-content {
+  width: 100%;
+  min-height: 430px;
+  max-height: calc(100vh - 23rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  padding: 1rem 1.1rem;
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+  caret-color: currentColor !important;
+  background: color-mix(in srgb, var(--card) 88%, black);
+  text-shadow: none !important;
+  opacity: 1 !important;
+  outline: none;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ideas-lexical-content:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.ideas-lexical-placeholder {
+  position: absolute;
+  top: 1rem;
+  left: 1.1rem;
+  color: var(--muted-foreground);
+  opacity: .65;
+  pointer-events: none;
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.ideas-lexical-paragraph {
+  margin: .2rem 0;
+}
+
+.ideas-lexical-h1,
+.ideas-lexical-h2,
+.ideas-lexical-h3 {
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: .02em;
+  margin: .45rem 0 .3rem;
+}
+
+.ideas-lexical-h1 { font-size: 1.45rem; line-height: 1.35; }
+.ideas-lexical-h2 { font-size: 1.2rem; line-height: 1.4; }
+.ideas-lexical-h3 { font-size: 1.05rem; line-height: 1.45; }
+
+.ideas-lexical-bold { font-weight: 700; }
+.ideas-lexical-italic { font-style: italic; }
+
+.ideas-lexical-inline-code {
+  border-radius: .25rem;
+  padding: .08rem .28rem;
+  background: rgba(127, 127, 127, .18);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.ideas-lexical-codeblock {
+  display: block;
+  min-height: 4.5rem;
+  margin: .45rem 0;
+  padding: .7rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: color-mix(in srgb, var(--card) 84%, black);
+  white-space: pre-wrap;
+  tab-size: 2;
+}
+
+.ideas-lexical-quote {
+  margin: .35rem 0;
+  padding-left: .85rem;
+  border-left: 3px solid color-mix(in srgb, var(--primary) 52%, transparent);
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
+
+.ideas-lexical-ul,
+.ideas-lexical-ol,
+.ideas-lexical-checklist {
+  margin: .25rem 0 .25rem 1.4rem;
+  padding-left: 1rem;
+}
+
+.ideas-lexical-ul {
+  list-style: disc outside;
+}
+
+.ideas-lexical-ol {
+  list-style: decimal outside;
+}
+
+.ideas-lexical-checklist {
+  list-style: none;
+  padding-left: .25rem;
+}
+
+.ideas-lexical-li {
+  margin: .15rem 0;
+  display: list-item;
+}
+
+.ideas-lexical-nested-li {
+  list-style: none;
+}
+
+.ideas-lexical-nested-li::marker {
+  content: "";
+}
+
+.ideas-lexical-checked,
+.ideas-lexical-unchecked {
+  position: relative;
+  margin: .15rem 0;
+  padding-left: 1.45rem;
+  list-style: none;
+  display: list-item;
+}
+
+.ideas-lexical-checked::before,
+.ideas-lexical-unchecked::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .32rem;
+  width: .9rem;
+  height: .9rem;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  border-radius: .22rem;
+  background: color-mix(in srgb, var(--card) 90%, black);
+}
+
+.ideas-lexical-checked::before {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.ideas-lexical-checked::after {
+  content: "";
+  position: absolute;
+  left: .3rem;
+  top: .42rem;
+  width: .28rem;
+  height: .55rem;
+  border: solid var(--primary-foreground, white);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.ideas-lexical-checked { text-decoration: line-through; opacity: .72; }
+
+.ideas-lexical-link {
+  color: var(--primary);
+  text-decoration: underline;
+}

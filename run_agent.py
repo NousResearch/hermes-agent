@@ -8042,7 +8042,7 @@ class AIAgent:
                     self._fire_reasoning_delta(reasoning_text)
 
                 # Accumulate text content — fire callback only when no tool calls
-                if delta and delta.content:
+                if delta and getattr(delta, "content", None):
                     content_parts.append(delta.content)
                     if not tool_calls_acc:
                         _fire_first_delta()
@@ -8067,7 +8067,7 @@ class AIAgent:
                             pass
 
                 # Accumulate tool call deltas — notify display on first name
-                if delta and delta.tool_calls:
+                if delta and getattr(delta, "tool_calls", None):
                     for tc_delta in delta.tool_calls:
                         raw_idx = tc_delta.index if tc_delta.index is not None else 0
                         delta_id = tc_delta.id or ""

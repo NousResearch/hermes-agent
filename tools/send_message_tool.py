@@ -1054,6 +1054,18 @@ async def _send_whatsapp(extra, chat_id, message):
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    # Normalize E.164 phone numbers to WhatsApp JID format.
+    # _parse_target_ref accepts "whatsapp:+15551234567" and returns the
+    # E.164 string unchanged (correct for signal-cli, which the parser
+    # comment also covers).  The Baileys bridge, however, calls
+    # sock.sendMessage(chat_id, ...) which expects a JID
+    # ("15551234567@s.whatsapp.net" or similar) and throws
+    # "JID decode failed" on a raw E.164 string.  Convert here so both
+    # raw E.164 and already-formed JIDs (passed through as-is) work.
+    if isinstance(chat_id, str) and chat_id.startswith("+") and "@" not in chat_id:
+        digits = chat_id[1:].strip()
+        if digits.isdigit():
+            chat_id = f"{digits}@s.whatsapp.net"
     try:
         bridge_port = extra.get("bridge_port", 3000)
         async with aiohttp.ClientSession() as session:

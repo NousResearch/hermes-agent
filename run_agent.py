@@ -2266,15 +2266,22 @@ class AIAgent:
 
 
         # Select context engine: config-driven (like memory providers).
-        # 1. Check config.yaml context.engine setting
-        # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
-        # 3. Check general plugin system (user-installed plugins)
-        # 4. Fall back to built-in ContextCompressor
+        # 1. Check agent.context.engine (profile-specific, highest priority)
+        # 2. Check top-level context.engine setting (global default)
+        # 3. Check plugins/context_engine/<name>/ directory (repo-shipped)
+        # 4. Check general plugin system (user-installed plugins)
+        # 5. Fall back to built-in ContextCompressor
         _selected_engine = None
         _engine_name = "compressor"  # default
         try:
-            _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
-            _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
+            # Profile-specific: agent.context.engine takes priority
+            _agent_section = _agent_cfg.get("agent", {}) if isinstance(_agent_cfg, dict) else {}
+            _agent_ctx = _agent_section.get("context", {}) if isinstance(_agent_section, dict) else {}
+            _engine_name = _agent_ctx.get("engine", "") or ""
+            if not _engine_name:
+                # Fallback: top-level context.engine
+                _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+                _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
         except Exception:
             pass
 

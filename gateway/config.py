@@ -845,6 +845,18 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if plat == Platform.SLACK and "channel_toolsets" in platform_cfg:
+                    # Per-channel hard tool gate. Numeric YAML keys (e.g. raw
+                    # 123:) are normalized to strings so the resolver, which
+                    # compares against the string channel_id from the Slack
+                    # event, can match them.
+                    channel_toolsets = platform_cfg["channel_toolsets"]
+                    if isinstance(channel_toolsets, dict):
+                        bridged["channel_toolsets"] = {
+                            str(k): v for k, v in channel_toolsets.items()
+                        }
+                    else:
+                        bridged["channel_toolsets"] = channel_toolsets
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

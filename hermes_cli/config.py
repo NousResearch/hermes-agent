@@ -1242,6 +1242,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "channel_toolsets": {},        # Per-channel hard toolset overrides
     },
 
     # Discord platform settings (gateway mode)

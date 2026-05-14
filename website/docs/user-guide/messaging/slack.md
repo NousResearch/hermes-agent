@@ -566,6 +566,27 @@ Notes:
 - The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 
+## Per-Channel Toolsets
+
+Restrict which toolsets are exposed to the agent in specific Slack channels. This is a hard tool-schema gate for the matching channel: if a channel override is present, Hermes constructs that turn's agent with the configured toolsets instead of the platform-wide `platform_toolsets.slack` default.
+
+This is useful for shared company workspaces where everyone should benefit from the same domain context and skills, but not every channel should have the same operational permissions. For example, a business-facing channel can stay read-only/safe while an engineering or ops channel can explicitly opt into stronger tools such as `terminal` or infrastructure-facing MCP tools.
+
+```yaml
+slack:
+  channel_toolsets:
+    # Business-facing channel — no command execution tools
+    "C01BUSINESS": [web, skills, todo]
+    # Engineering/ops channel — explicitly opt into stronger tools
+    "C02OPS": [terminal, file, web, skills, todo]
+```
+
+Notes:
+- Keys are Slack channel IDs. Thread replies inherit the parent channel's binding because Slack threads share the same channel ID.
+- If a channel has no `channel_toolsets` entry, Hermes falls back to `platform_toolsets.slack` as before.
+- An explicit empty list (`"C01LOCKED": []`) is a hard "no tools" override, not a fallback.
+- `channel_prompts` can request behavior, but `channel_toolsets` controls which tool schemas are actually exposed to the model for the channel.
+
 ## Troubleshooting
 
 | Problem | Solution |

@@ -955,6 +955,13 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Per-channel hard toolset gate (e.g. Slack channel_toolsets). When set,
+    # overrides the platform-level ``platform_toolsets`` default for this
+    # event's agent run only. Thread replies inherit the parent channel's
+    # binding via the resolver's parent_id fallback. None preserves existing
+    # behavior — use _get_platform_tools(user_config, platform_key).
+    channel_toolsets: Optional[List[str]] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -1253,6 +1260,56 @@ def resolve_channel_skills(
                     if nm and nm not in seen:
                         seen.append(nm)
                 return seen or None
+    return None
+
+
+def resolve_channel_toolsets(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> list[str] | None:
+    """Resolve a per-channel enabled-toolset list from platform config.
+
+    Looks up ``channel_toolsets`` in the adapter's ``config.extra`` dict.
+    Used by the Slack adapter to apply a per-channel hard tool gate that
+    overrides ``platform_toolsets.slack`` for the matching channel.
+
+    Config format::
+
+        channel_toolsets:
+          "C01SAFE": [web, skills, todo]   # business-facing channel
+          "C02OPS":  [terminal, file, mcp, skills]
+          "C03ONLY": skills                # single string also accepted
+
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (Slack thread replies inheriting the parent channel's binding).
+
+    Returns a deduplicated, blank-filtered list of toolset names (order
+    preserved), or None when no binding applies. An explicit empty/blank
+    binding returns [] so callers can enforce a "no tools" hard gate.
+    """
+    mapping = config_extra.get("channel_toolsets") or {}
+    if not isinstance(mapping, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        value = mapping.get(str(key))
+        if value is None:
+            continue
+        if isinstance(value, str):
+            v = value.strip()
+            return [v] if v else []
+        if isinstance(value, list):
+            seen: list[str] = []
+            for name in value:
+                if not isinstance(name, str):
+                    continue
+                nm = name.strip()
+                if nm and nm not in seen:
+                    seen.append(nm)
+            return seen
     return None
 
 

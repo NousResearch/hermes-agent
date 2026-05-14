@@ -2189,12 +2189,21 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
 
-        # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
+        # Per-channel ephemeral prompt + auto-skill(s) + hard tool gate.
+        # Thread replies share the parent's channel_id in Slack, so they
+        # inherit the binding without needing an explicit parent lookup.
+        from gateway.platforms.base import (
+            resolve_channel_prompt,
+            resolve_channel_skills,
+            resolve_channel_toolsets,
+        )
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
         )
         _auto_skill = resolve_channel_skills(
+            self.config.extra, channel_id, None,
+        )
+        _channel_toolsets = resolve_channel_toolsets(
             self.config.extra, channel_id, None,
         )
 
@@ -2226,6 +2235,7 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
+            channel_toolsets=_channel_toolsets,
         )
 
         # Only react when bot is directly addressed (DM or @mention).
@@ -2808,12 +2818,20 @@ class SlackAdapter(BasePlatformAdapter):
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
         )
+        from gateway.platforms.base import resolve_channel_toolsets
+
+        channel_toolsets = resolve_channel_toolsets(
+            self.config.extra,
+            channel_id,
+            None,
+        )
 
         event = MessageEvent(
             text=text,
             message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
             source=source,
             raw_message=command,
+            channel_toolsets=channel_toolsets,
         )
 
         # Stash the Slack response_url so the first reply for this

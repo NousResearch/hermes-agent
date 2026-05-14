@@ -804,6 +804,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -829,7 +830,28 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        base_enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is not None:
+            _override_cfg = dict(user_config)
+            _existing_platform_toolsets = dict(_override_cfg.get("platform_toolsets") or {})
+            _existing_platform_toolsets["api_server"] = list(enabled_toolsets_override)
+            _override_cfg["platform_toolsets"] = _existing_platform_toolsets
+            requested_toolsets = _get_platform_tools(
+                _override_cfg,
+                "api_server",
+                include_default_mcp_servers=False,
+            )
+            explicit_request = {str(name) for name in enabled_toolsets_override}
+            explicit_request.discard("no_mcp")
+            # Request-scoped overrides are a restriction, not an escalation path:
+            # they may narrow the API server's configured/default tools but cannot
+            # enable toolsets the remote server would not otherwise expose.  Also
+            # strip resolver-added defaults so the request is a hard explicit gate.
+            enabled_toolsets = sorted(
+                requested_toolsets & set(base_enabled_toolsets) & explicit_request
+            )
+        else:
+            enabled_toolsets = base_enabled_toolsets
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -987,6 +1009,18 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+        enabled_toolsets_override = body.get("enabled_toolsets")
+        if enabled_toolsets_override is not None:
+            if not isinstance(enabled_toolsets_override, list) or not all(
+                isinstance(name, str) for name in enabled_toolsets_override
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "'enabled_toolsets' must be a list of toolset names",
+                        param="enabled_toolsets",
+                    ),
+                    status=400,
+                )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1167,6 +1201,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                enabled_toolsets_override=enabled_toolsets_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1186,11 +1221,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                enabled_toolsets_override=enabled_toolsets_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "enabled_toolsets"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2690,6 +2729,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2713,6 +2753,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                enabled_toolsets_override=enabled_toolsets_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

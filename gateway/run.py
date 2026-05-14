@@ -1700,6 +1700,37 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _resolve_channel_toolsets_for_source(
+        self,
+        source: SessionSource,
+    ) -> Optional[List[str]]:
+        """Resolve event-scoped toolsets for synthetic Slack turns.
+
+        Normal Slack inbound events get ``channel_toolsets`` from the adapter.
+        Runner-created synthetic events bypass the adapter parser, so they must
+        resolve the same hard gate here before entering the normal agent path.
+        ``None`` means no binding/fallback to platform defaults; ``[]`` is an
+        explicit no-tools restriction and must be preserved.
+        """
+        if source.platform != Platform.SLACK:
+            return None
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return None
+        try:
+            from gateway.platforms.base import resolve_channel_toolsets
+
+            adapter_cfg = getattr(adapter, "config", None)
+            extra = getattr(adapter_cfg, "extra", {}) or {}
+            return resolve_channel_toolsets(
+                extra,
+                getattr(source, "chat_id", "") or "",
+                getattr(source, "parent_chat_id", None),
+            )
+        except Exception as exc:
+            logger.debug("Failed to resolve Slack channel_toolsets: %s", exc)
+            return None
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -3213,6 +3244,7 @@ class GatewayRunner:
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                channel_toolsets=self._resolve_channel_toolsets_for_source(source),
             )
             task = asyncio.create_task(adapter.handle_message(event))
             self._background_tasks.add(task)
@@ -3927,6 +3959,7 @@ class GatewayRunner:
             text=synthetic_text,
             source=dest_source,
             internal=True,
+            channel_toolsets=self._resolve_channel_toolsets_for_source(dest_source),
         )
 
         logger.info(
@@ -6071,6 +6104,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_toolsets=getattr(event, "channel_toolsets", None),
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -6098,6 +6132,7 @@ class GatewayRunner:
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            channel_toolsets=getattr(event, "channel_toolsets", None),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -6120,6 +6155,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_toolsets=getattr(event, "channel_toolsets", None),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -7610,6 +7646,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                channel_toolsets=getattr(event, "channel_toolsets", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9405,6 +9442,7 @@ class GatewayRunner:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            channel_toolsets=getattr(event, "channel_toolsets", None),
         )
         
         # Let the normal message handler process it
@@ -9526,6 +9564,7 @@ class GatewayRunner:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    channel_toolsets=getattr(event, "channel_toolsets", None),
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:
@@ -9703,6 +9742,7 @@ class GatewayRunner:
         try:
             adapter = self.adapters.get(source.platform)
             _quick_key = self._session_key_for_source(source)
+            _channel_toolsets = self._resolve_channel_toolsets_for_source(source)
             if adapter and _quick_key:
                 cont_event = MessageEvent(
                     text=prompt,
@@ -9710,6 +9750,7 @@ class GatewayRunner:
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    channel_toolsets=_channel_toolsets,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
@@ -13352,6 +13393,7 @@ class GatewayRunner:
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                channel_toolsets=self._resolve_channel_toolsets_for_source(source),
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -13456,6 +13498,7 @@ class GatewayRunner:
                                 message_type=MessageType.TEXT,
                                 source=source,
                                 internal=True,
+                                channel_toolsets=self._resolve_channel_toolsets_for_source(source),
                             )
                             logger.info(
                                 "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
@@ -14010,6 +14053,7 @@ class GatewayRunner:
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        channel_toolsets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -14085,6 +14129,8 @@ class GatewayRunner:
             "messages": api_messages,
             "stream": True,
         }
+        if channel_toolsets is not None:
+            body["enabled_toolsets"] = list(channel_toolsets)
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -14298,6 +14344,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        channel_toolsets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14322,6 +14369,7 @@ class GatewayRunner:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                channel_toolsets=channel_toolsets,
             )
 
         from run_agent import AIAgent
@@ -14336,7 +14384,30 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        # Per-channel toolsets (Slack channel_toolsets) override the platform
+        # default for this event only. We re-route the override through
+        # _get_platform_tools so subset inference, MCP allowlisting, plugin
+        # handling, and default-off rules stay consistent with the platform-
+        # level config path.
+        if channel_toolsets is not None:
+            _override_cfg = dict(user_config)
+            _existing_platform_toolsets = dict(_override_cfg.get("platform_toolsets") or {})
+            _existing_platform_toolsets[platform_key] = list(channel_toolsets)
+            _override_cfg["platform_toolsets"] = _existing_platform_toolsets
+            enabled_toolsets = sorted(
+                _get_platform_tools(
+                    _override_cfg,
+                    platform_key,
+                    include_default_mcp_servers=False,
+                )
+            )
+            _explicit_channel_toolsets = {str(name) for name in channel_toolsets}
+            _explicit_channel_toolsets.discard("no_mcp")
+            enabled_toolsets = [
+                name for name in enabled_toolsets if name in _explicit_channel_toolsets
+            ]
+        else:
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -16157,6 +16228,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_channel_toolsets = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -16174,6 +16246,7 @@ class GatewayRunner:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_channel_toolsets = getattr(pending_event, "channel_toolsets", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -16199,6 +16272,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    channel_toolsets=next_channel_toolsets,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

@@ -210,10 +210,12 @@ class LoopManager:
         self._state: Optional[LoopState] = load_loop(session_id)
         self._scheduler: Optional[LoopScheduler] = None
 
-        # Auto-resume scheduler if a persisted active loop exists
-        if (self._state is not None
-                and self._state.status == "active"
-                and dispatch is not None):
+        # Always start scheduler when dispatch is available — it polls
+        # SessionDB every tick and picks up loops persisted by the
+        # slash_worker (which runs with dispatch=None).  Without this,
+        # the gateway's LoopManager sleeps forever if the slash_worker
+        # was the one who set the loop.
+        if dispatch is not None:
             self._start_scheduler()
 
     # --- introspection ------------------------------------------------
@@ -398,10 +400,12 @@ class LoopScheduler:
 
         Equivalent: the ``v()`` function in Claude Code's ``createCronScheduler``.
         """
-        # 1. Reload state from DB — might have been modified externally
+        # 1. Reload state from DB — might have been modified externally,
+        #    or a loop was set after the scheduler started (slash_worker
+        #    persisted it while this scheduler was already ticking).
         state = load_loop(self._session_id)
         if state is None:
-            self._running = False
+            # No loop yet — keep ticking in case one appears later
             return
         if state.status != "active":
             return

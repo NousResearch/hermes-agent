@@ -165,6 +165,52 @@ def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
     assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
 
 
+class TestEnableFaulthandler:
+    """#25666: gateway must enable faulthandler so the next C-extension
+    crash surfaces a usable Python+C traceback to stderr."""
+
+    def test_enable_returns_true_when_module_available(self, monkeypatch):
+        # Ensure no opt-out is set
+        monkeypatch.delenv("HERMES_DISABLE_FAULTHANDLER", raising=False)
+        import faulthandler
+        # Some test runners pre-enable faulthandler; record state to restore.
+        was_enabled = faulthandler.is_enabled()
+        if was_enabled:
+            faulthandler.disable()
+        try:
+            assert gateway._enable_faulthandler_for_gateway() is True
+            assert faulthandler.is_enabled() is True
+        finally:
+            if not was_enabled:
+                faulthandler.disable()
+
+    def test_opt_out_skips_enable(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DISABLE_FAULTHANDLER", "1")
+        import faulthandler
+        was_enabled = faulthandler.is_enabled()
+        if was_enabled:
+            faulthandler.disable()
+        try:
+            assert gateway._enable_faulthandler_for_gateway() is False
+            assert faulthandler.is_enabled() is False
+        finally:
+            if was_enabled:
+                faulthandler.enable(all_threads=True)
+
+    def test_opt_out_accepts_common_truthy_values(self, monkeypatch):
+        for value in ("true", "TRUE", "yes", "Yes", "1"):
+            monkeypatch.setenv("HERMES_DISABLE_FAULTHANDLER", value)
+            import faulthandler
+            was_enabled = faulthandler.is_enabled()
+            if was_enabled:
+                faulthandler.disable()
+            try:
+                assert gateway._enable_faulthandler_for_gateway() is False
+            finally:
+                if was_enabled:
+                    faulthandler.enable(all_threads=True)
+
+
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)

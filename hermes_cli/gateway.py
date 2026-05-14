@@ -3099,6 +3099,38 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
+def _enable_faulthandler_for_gateway() -> bool:
+    """Enable Python's native fault handler for the gateway process.
+
+    Surfaces a Python+C traceback to stderr on SIGSEGV / SIGFPE /
+    SIGABRT / SIGBUS / SIGILL inside a C extension (httpx, openssl,
+    grpc, cryptography on ARM, etc.) instead of leaving operators with
+    just ``status=11/SEGV`` in journald and no clue which call frame
+    triggered the crash. Particularly relevant on ARM/aarch64 hosts
+    (Raspberry Pi) where C-extension crashes have been observed in
+    Telegram reconnect paths (#25666).
+
+    Returns ``True`` if faulthandler is enabled after this call,
+    ``False`` if disabled by env var or skipped due to an exception.
+
+    Opt-out via ``HERMES_DISABLE_FAULTHANDLER=1`` for platforms where
+    faulthandler itself is unstable. Best-effort: any exception during
+    ``enable()`` is silently swallowed so an environment without
+    writable stderr can't break gateway startup.
+    """
+    if os.environ.get(
+        "HERMES_DISABLE_FAULTHANDLER", ""
+    ).strip().lower() in ("1", "true", "yes"):
+        return False
+    try:
+        import faulthandler
+        if not faulthandler.is_enabled():
+            faulthandler.enable(all_threads=True)
+        return faulthandler.is_enabled()
+    except Exception:
+        return False
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
@@ -3111,6 +3143,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
+
+    # Surface a Python+C traceback on any C-extension crash (#25666).
+    _enable_faulthandler_for_gateway()
 
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still

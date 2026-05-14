@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import time
 from typing import Any
 
 
@@ -115,7 +116,10 @@ class EntityStateTracker:
 
     def get_current_state(self, entity_key: str) -> Any:
         """Get current state of a tracked entity."""
-        return copy.deepcopy(self._entity_state.get(entity_key))
+        state = self._entity_state.get(entity_key)
+        if state is None:
+            return None
+        return copy.deepcopy(state)
 
     def clear(self) -> None:
         """Reset all tracked state."""
@@ -142,7 +146,6 @@ class EntityStateTracker:
 
 
 def _now() -> float:
-    import time
     return time.time()
 
 

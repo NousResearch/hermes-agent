@@ -1374,6 +1374,132 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return compress_start < compress_end
 
     # ------------------------------------------------------------------
+    # Entity state tracking helpers
+    # ------------------------------------------------------------------
+
+    def _record_entities_from_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Extract and record trackable entities from a list of messages.
+
+        Walks through messages and extracts file paths, commands, search
+        queries, and other valuable state that should be tracked across
+        compression.  Uses semantic keys (e.g. ``file.write:<path>``) so
+        that pre- and post-compression scans produce comparable keys.
+
+        Entity types tracked:
+          - file.write:<path>  — file path written
+          - file.read:<path>   — file path read
+          - file.patch:<path>  — file path patched
+          - search:<pattern>@<path>  — search_files query
+          - web_search:<query>
+          - browser:<url>
+          - terminal:<cmd_hash>
+          - goal:<goal_hash>
+          - tool_result:<call_id>  — tool result content hash
+        """
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            # Extract tool calls from assistant messages
+            if role == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    args_str = fn.get("arguments", "")
+                    if not args_str:
+                        continue
+                    try:
+                        args = json.loads(args_str)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                    if name == "write_file":
+                        path = args.get("path", "")
+                        if path:
+                            content_val = args.get("content", "")
+                            self._entity_tracker.record(
+                                f"file.write:{path}", {"path": path, "content_len": len(content_val)})
+
+                    elif name == "read_file":
+                        path = args.get("path", "")
+                        if path:
+                            self._entity_tracker.record(
+                                f"file.read:{path}", {"path": path, "offset": args.get("offset", 1)})
+
+                    elif name == "patch":
+                        path = args.get("path", "")
+                        if path:
+                            self._entity_tracker.record(
+                                f"file.patch:{path}", {"path": path, "mode": args.get("mode", "replace")})
+
+                    elif name == "terminal":
+                        cmd = args.get("command", "")
+                        if cmd:
+                            cmd_key = cmd[:200] if len(cmd) <= 200 else cmd[:197] + "..."
+                            cmd_hash = hashlib.md5(cmd_key.encode()).hexdigest()[:16]
+                            self._entity_tracker.record(
+                                f"terminal:{cmd_hash}", {"command": cmd_key})
+
+                    elif name == "search_files":
+                        pattern = args.get("pattern", "")
+                        search_path = args.get("path", ".")
+                        if pattern:
+                            self._entity_tracker.record(
+                                f"search:{pattern}@{search_path}",
+                                {"pattern": pattern, "path": search_path})
+
+                    elif name == "web_search":
+                        query = args.get("query", "")
+                        if query:
+                            self._entity_tracker.record(
+                                f"web_search:{query}", {"query": query})
+
+                    elif name == "browser_navigate":
+                        url = args.get("url", "")
+                        if url:
+                            self._entity_tracker.record(
+                                f"browser:{url}", {"url": url})
+
+                    elif name == "delegate_task":
+                        goal = args.get("goal", "")
+                        if goal:
+                            goal_hash = hashlib.md5(goal.encode()).hexdigest()[:16]
+                            self._entity_tracker.record(
+                                f"goal:{goal_hash}", {"goal": goal[:200]})
+
+                    elif name == "memory":
+                        action = args.get("action", "")
+                        target = args.get("target", "")
+                        if action and target:
+                            self._entity_tracker.record(
+                                f"memory:{action}:{target}",
+                                {"action": action, "target": target})
+
+            # Extract result metadata from tool messages
+            elif role == "tool":
+                call_id = msg.get("tool_call_id", "")
+                if not call_id:
+                    continue
+                content_str = content if isinstance(content, str) else str(content)[:200]
+                content_hash = hashlib.md5(
+                    content_str.encode("utf-8", errors="replace")
+                ).hexdigest()[:12] if content_str else ""
+                # Record whether this tool result contains substantial content
+                # (vs. a pruned/summarized placeholder).
+                is_pruned = (
+                    content_str.startswith("[Old tool output cleared")
+                    or content_str.startswith("[Duplicate tool output")
+                    or (isinstance(content, str) and len(content) < 100
+                        and not content_str.startswith("{"))
+                )
+                self._entity_tracker.record(
+                    f"tool_result:{call_id}",
+                    {"call_id": call_id, "content_hash": content_hash,
+                     "content_len": len(content_str), "is_pruned": is_pruned})
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
@@ -1468,8 +1594,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
+        # Record entities from messages about to be compressed so we can
+        # detect what gets lost.
+        self._entity_tracker.clear()
+        self._record_entities_from_messages(turns_to_summarize)
         # Snapshot entity state before compression for conflict detection
         self._entity_tracker.snapshot_all()
+        # Clear live state after snapshot so post-compression recording
+        # starts fresh.  Only entities that survive compression will be
+        # re-recorded; lost entities will show up as conflicts.
+        self._entity_tracker._entity_state.clear()
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # Phase 4: Assemble compressed message list
@@ -1580,7 +1714,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
             logger.info("Compression #%d complete", self.compression_count)
 
-        # Check for entity state conflicts after compression
+        # Check for entity state conflicts after compression.
+        # Re-record entities from the compressed messages using the same
+        # semantic keys.  check_conflicts() compares current entity state
+        # against the pre-compression snapshot to detect entities that were
+        # lost or altered during compression.
+        self._record_entities_from_messages(compressed)
         conflicts = self._entity_tracker.check_conflicts()
         if conflicts and not self.quiet_mode:
             warnings = self._entity_tracker.get_warnings()

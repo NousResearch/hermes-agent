@@ -159,6 +159,50 @@ from hermes_cli.cli_output import (  # noqa: E402
     print_warning,
 )
 
+_SETUP_TRANSLATIONS = [
+    ("Hermes Setup — Non-interactive mode", "Hermes 配置向导 —— 非交互模式"),
+    ("The interactive wizard cannot be used here.", "当前环境无法使用交互式配置向导。"),
+    ("Configure Hermes using environment variables or config commands:", "你可以通过环境变量或配置命令来设置 Hermes："),
+    ("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.", "或者在环境变量中设置 OPENROUTER_API_KEY / OPENAI_API_KEY。"),
+    ("Run 'hermes setup' in an interactive terminal to use the full wizard.", "如需完整向导，请在交互式终端中运行：hermes setup"),
+    ("  Skipped (keeping current)", "  已跳过（保留当前设置）"),
+    ("  Enter for default", "  直接回车使用默认项"),
+    ("Ctrl+C to exit", "Ctrl+C 退出"),
+    ("  Select [", "  请选择 ["),
+    ("Please enter a number between", "请输入一个数字，范围："),
+    ("Please enter a number", "请输入数字"),
+    ("Please enter 'y' or 'n'", "请输入 y 或 n"),
+    ("Launch hermes chat now?", "现在立即启动 hermes 聊天吗？"),
+    ("Connect a messaging platform? (Telegram, Discord, etc.)", "现在连接消息平台吗？（Telegram、Discord 等）"),
+    ("Set up messaging now (recommended)", "现在配置消息平台（推荐）"),
+    ("Skip — set up later with 'hermes setup gateway'", "先跳过，之后可通过 'hermes setup gateway' 配置"),
+]
+
+def _translate_setup_text(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    translated = text
+    for old, new in _SETUP_TRANSLATIONS:
+        translated = translated.replace(old, new)
+    return translated
+
+_orig_print_error = print_error
+_orig_print_info = print_info
+_orig_print_success = print_success
+_orig_print_warning = print_warning
+
+def print_error(message):
+    _orig_print_error(_translate_setup_text(message))
+
+def print_info(message):
+    _orig_print_info(_translate_setup_text(message))
+
+def print_success(message):
+    _orig_print_success(_translate_setup_text(message))
+
+def print_warning(message):
+    _orig_print_warning(_translate_setup_text(message))
+
 
 def is_interactive_stdin() -> bool:
     """Return True when stdin looks like a usable interactive TTY."""
@@ -174,24 +218,25 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color("⚕ Hermes 配置向导 —— 非交互模式", Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
-    print_info("The interactive wizard cannot be used here.")
+    print_info("当前环境无法使用交互式配置向导。")
     print()
-    print_info("Configure Hermes using environment variables or config commands:")
+    print_info("你可以通过环境变量或配置命令来设置 Hermes：")
     print_info("  hermes config set model.provider custom")
     print_info("  hermes config set model.base_url http://localhost:8080/v1")
     print_info("  hermes config set model.default your-model-name")
     print()
-    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-    print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
+    print_info("或者在环境变量中设置 OPENROUTER_API_KEY / OPENAI_API_KEY。")
+    print_info("如需完整向导，请在交互式终端中运行：hermes setup")
     print()
 
 
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
+    question = _translate_setup_text(question)
     if default:
         display = f"{question} [{default}]: "
     else:
@@ -263,7 +308,8 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
     """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
-    default_str = "Y/n" if default else "y/N"
+    question = _translate_setup_text(question)
+    default_str = "Y/n（回车默认是）" if default else "y/N（回车默认否）"
 
     while True:
         try:
@@ -278,11 +324,11 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 
         if not value:
             return default
-        if value in ("y", "yes"):
+        if value in ("y", "yes", "是"):
             return True
-        if value in ("n", "no"):
+        if value in ("n", "no", "否"):
             return False
-        print_error("Please enter 'y' or 'n'")
+        print_error("请输入 y 或 n")
 
 
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
@@ -3106,6 +3152,10 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
 
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
+    if os.environ.get("HERMES_SKIP_AUTO_LAUNCH_CHAT") == "1":
+        print_info("镜像安装器将跳过自动启动聊天。准备好后请在新终端中运行：hermes")
+        return
+
     print()
     if not prompt_yes_no("Launch hermes chat now?", True):
         return

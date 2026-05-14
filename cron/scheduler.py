@@ -40,6 +40,12 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# Skill content cache for cron job preloading optimization.
+# Avoids repeated IPC calls for the same skill within a short window.
+# Key: lowercase normalized skill name -> (timestamp, content)
+_SKILL_CACHE: dict[str, tuple[float, str]] = {}
+_SKILL_CACHE_TTL_SECONDS = 300  # 5 minutes
+
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
@@ -693,19 +699,46 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if not skill_names:
         return prompt
 
+    import time
     from tools.skills_tool import skill_view
+
+    # Load skills with caching to avoid repeated IPC calls.
+    # Parallel loading via ThreadPoolExecutor for multiple skills.
+    def _load_skill_cached(name: str) -> tuple[str, str | None]:
+        """Load skill content with in-process cache. Returns (name, content or None)."""
+        cache_key = name.lower().strip()
+        now = time.monotonic()
+        # Check cache
+        if cache_key in _SKILL_CACHE:
+            ts, cached_content = _SKILL_CACHE[cache_key]
+            if now - ts < _SKILL_CACHE_TTL_SECONDS:
+                return name, cached_content
+        # Load via IPC
+        try:
+            loaded = json.loads(skill_view(name))
+            if loaded.get("success"):
+                content = str(loaded.get("content") or "").strip()
+                _SKILL_CACHE[cache_key] = (now, content)
+                return name, content
+        except Exception as exc:
+            logger.debug("Skill load failed for '%s': %s", name, exc)
+        return name, None
+
+    # Parallel load for multiple skills, sequential for single skill (no overhead)
+    if len(skill_names) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(skill_names), 4)) as executor:
+            loaded_skills = list(executor.map(_load_skill_cached, skill_names))
+    else:
+        loaded_skills = [_load_skill_cached(skill_names[0])] if skill_names else []
 
     parts = []
     skipped: list[str] = []
-    for skill_name in skill_names:
-        loaded = json.loads(skill_view(skill_name))
-        if not loaded.get("success"):
-            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+    for skill_name, content in loaded_skills:
+        if content is None:
+            logger.warning("Cron job '%s': skill not found, skipping — '%s'", job.get("name", job.get("id")), skill_name)
             skipped.append(skill_name)
             continue
 
-        content = str(loaded.get("content") or "").strip()
         if parts:
             parts.append("")
         parts.extend(

@@ -127,7 +127,15 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
-    "matrix":          _TIER_MEDIUM,
+    # Matrix clients commonly treat edits/replacements as read-relevant events.
+    # Keep Matrix quiet by default; operators can opt back into live progress or
+    # streaming with display.platforms.matrix.* when their client behaves well.
+    "matrix": {
+        **_TIER_MEDIUM,
+        "tool_progress": "off",
+        "streaming": False,
+        "tool_preview_length": 160,
+    },
     "feishu":          _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent

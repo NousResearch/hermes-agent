@@ -11581,6 +11581,34 @@ class AIAgent:
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
+        # Enforce max_history_depth from config.yaml context section.
+        # Previously this config key was defined but never applied (issue #25538).
+        try:
+            _ctx_section = {}
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _live_cfg = _load_cfg()
+                _ctx_section = (_live_cfg.get("agent") or {}).get("context", {}) or {}
+            except Exception:
+                pass
+            _max_depth = _ctx_section.get("max_history_depth")
+            if _max_depth is not None:
+                _max_depth = int(_max_depth)
+                if _max_depth > 0 and len(messages) > _max_depth:
+                    # Keep the most recent max_depth messages.
+                    # Always preserve system messages by keeping them out of the count.
+                    _system_msgs = [m for m in messages if m.get("role") == "system"]
+                    _non_system = [m for m in messages if m.get("role") != "system"]
+                    if len(_non_system) > _max_depth:
+                        _non_system = _non_system[-_max_depth:]
+                    messages = _system_msgs + _non_system
+                    logger.debug(
+                        "max_history_depth=%d applied: history pruned to %d messages",
+                        _max_depth, len(messages),
+                    )
+        except Exception as _mhd_err:
+            logger.debug("max_history_depth enforcement failed: %s", _mhd_err)
+
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)

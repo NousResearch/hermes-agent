@@ -73,7 +73,18 @@ run_step() {
   "$@"
 }
 
-run_step "git diff --check" git diff --check
+run_step "git diff --check (worktree)" git diff --check
+
+BASE_REF="${HERMES_CHECK_BASE_REF:-origin/main}"
+if git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null; then
+  MERGE_BASE="$(git merge-base "$BASE_REF" HEAD)"
+  run_step "git diff --check ($BASE_REF...HEAD)" git diff --check "$MERGE_BASE" HEAD
+else
+  echo
+  echo "error: cannot verify committed diff; base ref '$BASE_REF' was not found" >&2
+  echo "  fetch the base branch or set HERMES_CHECK_BASE_REF to a local commit/ref" >&2
+  exit 1
+fi
 
 if command -v uv >/dev/null 2>&1; then
   run_step "uv lock --check" uv lock --check

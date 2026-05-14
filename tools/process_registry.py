@@ -585,7 +585,7 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX-only, guarded by `if not _IS_WINDOWS` above
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:

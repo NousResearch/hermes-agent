@@ -216,8 +216,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
-    # Disable destructive-slash confirmation gate so /new, /reset, etc.
-    # execute immediately in tests rather than waiting for a confirm reply.
+    # Bypass the destructive-slash confirmation gate so /new, /reset, etc.
+    # execute their handlers synchronously in tests instead of returning a
+    # confirmation prompt that the e2e flow never replies to.
     runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False

@@ -7968,7 +7968,7 @@ class HermesCLI:
         print("  Available: list, add, edit, pause, resume, run, remove")
 
     def _handle_loop_command(self, cmd: str) -> None:
-        """Dispatch /loop subcommands: set / status / pause / resume / clear."""
+        """Dispatch /loop subcommands via unified _parse_loop_command parser."""
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -7977,71 +7977,76 @@ class HermesCLI:
             _cprint(f"  {_DIM}Loop unavailable (no active session).{_RST}")
             return
 
-        lower = arg.lower()
+        from hermes_cli.loop import _parse_loop_command
 
-        # Bare /loop or /loop status → show current state
-        if not arg or lower == "status":
+        parsed = _parse_loop_command(arg)
+        action = parsed["action"]
+
+        if action == "status":
             _cprint(f"  {mgr.status_line()}")
             return
 
-        if lower == "pause":
-            state = mgr.pause(reason="user-paused")
-            if state is None:
-                _cprint(f"  {_DIM}No loop set.{_RST}")
+        if action == "pause_all":
+            paused = mgr.pause()
+            if not paused:
+                _cprint(f"  {_DIM}No active loops.{_RST}")
             else:
-                _cprint(f"  ⏸ Loop paused: {state.prompt}")
+                ids = ", ".join(f"#{s.id}" for s in paused)
+                _cprint(f"  ⏸ Paused: {ids}")
             return
 
-        if lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                _cprint(f"  {_DIM}No loop to resume.{_RST}")
+        if action == "pause":
+            paused = mgr.pause(uid=parsed["uid"])
+            if not paused:
+                _cprint(f"  {_DIM}No loop #{parsed['uid']}.{_RST}")
             else:
-                _cprint(f"  ▶ Loop resumed: {state.prompt}")
+                _cprint(f"  ⏸ Loop #{parsed['uid']} paused: {paused[0].prompt}")
             return
 
-        if lower in {"clear", "stop", "done"}:
-            had = mgr.is_active() or (mgr.state is not None)
-            mgr.clear()
-            if had:
-                _cprint("  ✓ Loop cleared.")
+        if action == "resume_all":
+            resumed = mgr.resume()
+            if not resumed:
+                _cprint(f"  {_DIM}No paused loops.{_RST}")
             else:
-                _cprint(f"  {_DIM}No active loop.{_RST}")
+                ids = ", ".join(f"#{s.id}" for s in resumed)
+                _cprint(f"  ▶ Resumed: {ids}")
             return
 
-        # Otherwise treat the arg as the loop prompt.
-        # Parse optional interval prefix: "5m <prompt>" or "every 5m <prompt>"
-        interval_seconds = 300  # default 5 minutes
-        prompt = arg
-
-        tokens = arg.split(None, 2)
-        if len(tokens) >= 2 and tokens[0].lower() == "every":
-            # "every 5m check deployment" → interval=5m, prompt="check deployment"
-            from hermes_cli.loop import _parse_interval
-            parsed_interval = _parse_interval(tokens[1])
-            if parsed_interval is not None:
-                interval_seconds = parsed_interval
-                prompt = tokens[2] if len(tokens) > 2 else ""
-        elif len(tokens) >= 1:
-            from hermes_cli.loop import _parse_interval
-            parsed_interval = _parse_interval(tokens[0])
-            if parsed_interval is not None:
-                interval_seconds = parsed_interval
-                prompt = " ".join(tokens[1:]) if len(tokens) > 1 else ""
-
-        if not prompt:
-            _cprint("  (._.) Usage: /loop <prompt>")
-            _cprint("  Or: /loop <interval> <prompt>  e.g. /loop 5m check deployment")
-            _cprint("  Subcommands: status, pause, resume, clear")
+        if action == "resume":
+            resumed = mgr.resume(uid=parsed["uid"])
+            if not resumed:
+                _cprint(f"  {_DIM}No loop #{parsed['uid']}.{_RST}")
+            else:
+                _cprint(f"  ▶ Loop #{parsed['uid']} resumed: {resumed[0].prompt}")
             return
 
-        try:
-            state = mgr.set(prompt, interval_seconds=interval_seconds)
-        except ValueError as exc:
-            _cprint(f"  Invalid loop: {exc}")
+        if action == "clear_all":
+            count = mgr.clear()
+            if count:
+                _cprint(f"  ✓ {count} loop(s) cleared.")
+            else:
+                _cprint(f"  {_DIM}No active loops.{_RST}")
             return
 
-        _cprint(f"  ⊙ Loop set: every {state.interval_seconds}s → {state.prompt}")
+        if action == "clear":
+            count = mgr.clear(uid=parsed["uid"])
+            if count:
+                _cprint(f"  ✓ Loop #{parsed['uid']} cleared.")
+            else:
+                _cprint(f"  {_DIM}No loop #{parsed['uid']}.{_RST}")
+            return
+
+        if action == "set":
+            try:
+                state = mgr.add(
+                    parsed["prompt"],
+                    interval_seconds=parsed["interval"],
+                )
+            except ValueError as exc:
+                _cprint(f"  Invalid loop: {exc}")
+                return
+            _cprint(f"  ⊙ Loop #{state.id} set: every {state.interval_seconds}s → {state.prompt}")
+            return
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

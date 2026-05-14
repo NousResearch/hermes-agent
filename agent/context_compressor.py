@@ -1504,28 +1504,54 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Always pick a role that creates alternation with both neighbors.
-        # When head and tail have the same role, flip to the opposite.
-        # When they differ, use the head role — this always creates alternation.
-        # Drop-in replacement for the previous 3-way logic (flip-or-merge) that
-        # could silently merge into the tail message in the assistant|user case,
-        # causing the model to misinterpret the summary as user input.
-        if last_head_role == first_tail_role:
-            summary_role = "assistant" if last_head_role == "user" else "user"
+        # Pick a role that avoids consecutive same-role with both neighbors.
+        # Priority: pick based on head, then flip if collides with tail.
+        # Only use merge-into-tail as last resort when even flipping collides.
+        _merge_summary_into_tail = False
+        if last_head_role in {"assistant", "tool"}:
+            summary_role = "user"
         else:
-            summary_role = last_head_role
+            summary_role = "assistant"
+        # If the chosen role collides with the tail AND flipping wouldn't
+        # collide with the head, flip it.
+        if summary_role == first_tail_role:
+            flipped = "assistant" if summary_role == "user" else "user"
+            if flipped != last_head_role:
+                summary_role = flipped
+            else:
+                # Both roles would create consecutive same-role messages
+                # (e.g. head=assistant, tail=user). Merge into tail instead.
+                _merge_summary_into_tail = True
 
-        # Append an explicit end-of-summary marker so weak models do not
-        # interpret the ## Active Task quote as fresh user input (#11475, #14521).
-        summary = (
-            summary
-            + "\n\n--- END OF CONTEXT SUMMARY — "
-            "respond to the message below, not the summary above ---"
-        )
-        compressed.append({"role": summary_role, "content": summary})
+        # When the summary lands as a standalone role="user" message,
+        # weak models read the verbatim "## Active Task" quote of a past
+        # user request as fresh input (#11475, #14521). Append the explicit
+        # end marker — the same one used in the merge-into-tail path — so
+        # the model has a clear "summary above, not new input" signal.
+        if not _merge_summary_into_tail and summary_role == "user":
+            summary = (
+                summary
+                + "\n\n--- END OF CONTEXT SUMMARY — "
+                "respond to the message below, not the summary above ---"
+            )
+
+        if not _merge_summary_into_tail:
+            compressed.append({"role": summary_role, "content": summary})
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
+            if _merge_summary_into_tail and i == compress_end:
+                merged_prefix = (
+                    summary
+                    + "\n\n--- END OF CONTEXT SUMMARY — "
+                    "respond to the message below, not the summary above ---\n\n"
+                )
+                msg["content"] = _append_text_to_content(
+                    msg.get("content"),
+                    merged_prefix,
+                    prepend=True,
+                )
+                _merge_summary_into_tail = False
             compressed.append(msg)
 
         self.compression_count += 1

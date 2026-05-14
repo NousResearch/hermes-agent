@@ -4373,6 +4373,20 @@ class AIAgent:
                     finally:
                         clear_thread_tool_whitelist()
 
+                    # Tear down memory providers while stdout is still
+                    # redirected so background thread teardown (Honcho flush,
+                    # Hindsight sync, etc.) stays silent.  The finally block
+                    # below is a safety net for the exception path.
+                    try:
+                        review_agent.shutdown_memory_provider()
+                    except Exception:
+                        pass
+                    try:
+                        review_agent.close()
+                    except Exception:
+                        pass
+                    review_agent = None
+
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages
                 # already present in messages_snapshot must be skipped, since
@@ -4402,21 +4416,24 @@ class AIAgent:
                 logger.warning("Background memory/skill review failed: %s", e)
                 self._emit_auxiliary_failure("background review", e)
             finally:
-                # Background review agents can initialize memory providers
-                # (for example Hindsight) that own their own network clients.
-                # Explicitly stop those providers before closing the agent so
-                # their aiohttp sessions do not leak until GC/process exit.
-                # Then close all remaining resources (httpx client,
-                # subprocesses, etc.) so GC doesn't try to clean them up on a
-                # dead asyncio event loop (which produces "Event loop is
-                # closed" errors).
+                # Safety-net cleanup for the exception path.  Normal
+                # completion already shut down inside redirect_stdout above.
+                # Re-open devnull here so any teardown output (Honcho flush,
+                # Hindsight sync, background thread joins) stays silent even
+                # on the exception path where redirect_stdout already exited.
                 if review_agent is not None:
                     try:
-                        review_agent.shutdown_memory_provider()
-                    except Exception:
-                        pass
-                    try:
-                        review_agent.close()
+                        with open(os.devnull, "w", encoding="utf-8") as _fn, \
+                             contextlib.redirect_stdout(_fn), \
+                             contextlib.redirect_stderr(_fn):
+                            try:
+                                review_agent.shutdown_memory_provider()
+                            except Exception:
+                                pass
+                            try:
+                                review_agent.close()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Clear the approval callback on this bg-review thread so a

@@ -1,14 +1,14 @@
 ---
-title: "Evm"
+title: "Evm — Read-only EVM client: wallets, tokens, gas across 8 chains"
 sidebar_label: "Evm"
-description: "Query EVM blockchain data across 8 chains — wallet portfolios, ERC-20 tokens, transactions, gas tracker, whale detection, multi-chain scan, ENS resolution, a..."
+description: "Read-only EVM client: wallets, tokens, gas across 8 chains"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Evm
 
-Query EVM blockchain data across 8 chains — wallet portfolios, ERC-20 tokens, transactions, gas tracker, whale detection, multi-chain scan, ENS resolution, allowance checker, contract inspection, and tx decoder. Supports Ethereum, BNB Chain, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync. Uses public RPCs + CoinGecko. No API key required.
+Read-only EVM client: wallets, tokens, gas across 8 chains.
 
 ## Skill metadata
 
@@ -17,8 +17,9 @@ Query EVM blockchain data across 8 chains — wallet portfolios, ERC-20 tokens, 
 | Source | Optional — install with `hermes skills install official/blockchain/evm` |
 | Path | `optional-skills/blockchain/evm` |
 | Version | `1.0.0` |
-| Author | Mibayy |
+| Author | Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `EVM`, `Ethereum`, `BNB`, `BSC`, `Base`, `Arbitrum`, `Polygon`, `Optimism`, `Avalanche`, `zkSync`, `Blockchain`, `Crypto`, `Web3`, `DeFi`, `NFT`, `ENS`, `Whale`, `Security` |
 | Related skills | [`solana`](/docs/user-guide/skills/optional/blockchain/blockchain-solana) |
 

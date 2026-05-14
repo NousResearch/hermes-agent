@@ -20,6 +20,7 @@ from agent.transports.codex_app_server_session import (
     TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
+    _coerce_turn_input_text,
 )
 
 
@@ -128,6 +129,15 @@ class TestApprovalChoiceMapping:
         assert _approval_choice_to_codex_decision(choice) == expected
 
 
+class TestTurnInputCoercion:
+    def test_list_content_keeps_text_and_marks_images(self):
+        text = _coerce_turn_input_text([
+            {"type": "text", "text": "caption"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ])
+        assert text == "caption\n\n[image attached]"
+
+
 # ---- lifecycle ----
 
 class TestLifecycle:
@@ -187,6 +197,35 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    def test_rich_content_turn_is_collapsed_to_text_payload(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            [
+                {
+                    "type": "text",
+                    "text": "look at this\n\n[Image attached at: /tmp/a.png]",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+            ],
+            turn_timeout=2.0,
+        )
+        assert r.error is None
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        text = params["input"][0]["text"]
+        assert isinstance(text, str)
+        assert "[Image attached at: /tmp/a.png]" in text
+        assert "[image attached]" in text
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()

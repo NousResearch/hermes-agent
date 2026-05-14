@@ -332,6 +332,13 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Telegram's edit_message applies MarkdownV2 formatting only on the
+    # finalize=True path.  Without this flag, stream_consumer._send_or_edit
+    # short-circuits when the raw text is unchanged between the last streamed
+    # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
+    # Fixes #25710.
+    REQUIRES_EDIT_FINALIZE: bool = True
+
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
     # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024

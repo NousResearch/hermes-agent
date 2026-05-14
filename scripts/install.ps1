@@ -813,7 +813,7 @@ function Install-Dependencies {
         #                  needs `make` to build from sdist) and the
         #                  install fails.
         #   --extra all  = just the [all] extra's contents (curated).
-        & $UvCmd sync --extra all --locked
+        & $UvCmd sync --extra all --locked --python $PythonVersion
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
@@ -888,7 +888,7 @@ except Exception:
     if (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
-        & $UvCmd pip install -e $tier.Spec
+        & $UvCmd pip install -e $tier.Spec --python $PythonVersion
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed ($($tier.Name))"
             $script:InstalledTier = $tier.Name
@@ -916,7 +916,7 @@ except Exception:
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable — `hermes dashboard` will not work."
             Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
+            & $UvCmd pip install -e ".[web]" --python $PythonVersion
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "[web] extra installed; `hermes dashboard` should now work."
             } else {

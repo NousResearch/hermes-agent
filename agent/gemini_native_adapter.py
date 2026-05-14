@@ -220,6 +220,10 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
 
 
 def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
+    direct = tool_call.get("thought_signature") or tool_call.get("thoughtSignature")
+    if isinstance(direct, str) and direct:
+        return direct
+
     extra = tool_call.get("extra_content") or {}
     if not isinstance(extra, dict):
         return None

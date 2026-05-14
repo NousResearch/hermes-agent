@@ -10,7 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -115,6 +115,22 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _tool_call_thought_signature(tool_call: Any) -> Optional[str]:
+    for attr in ("thought_signature", "thoughtSignature"):
+        sig = getattr(tool_call, attr, None)
+        if isinstance(sig, str) and sig:
+            return sig
+
+    model_extra = getattr(tool_call, "model_extra", None) or {}
+    if isinstance(model_extra, dict):
+        for key in ("thought_signature", "thoughtSignature"):
+            sig = model_extra.get(key)
+            if isinstance(sig, str) and sig:
+                return sig
+
+    return None
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -135,10 +151,10 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
-        - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
+        - ``extra_content`` / direct ``thought_signature`` on ``tool_calls`` —
           stripped unless the outgoing ``model`` is itself Gemini-family.
-          Gemini 3 thinking models attach it for replay, but strict providers
-          (Fireworks, Mistral) reject any payload containing it with
+          Gemini 3 thinking models attach signatures for replay, but strict
+          providers (Fireworks, Mistral) reject any payload containing it with
           ``Extra inputs are not permitted, field: 'messages[N].tool_calls[M].extra_content'``.
           It must be kept for Gemini targets (replay required) and dropped for
           everyone else, including non-Gemini models that inherited stale
@@ -184,7 +200,14 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict) and (
                         "call_id" in tc
                         or "response_item_id" in tc
-                        or (strip_extra_content and "extra_content" in tc)
+                        or (
+                            strip_extra_content
+                            and (
+                                "extra_content" in tc
+                                or "thought_signature" in tc
+                                or "thoughtSignature" in tc
+                            )
+                        )
                     ):
                         needs_sanitize = True
                         break
@@ -214,6 +237,8 @@ class ChatCompletionsTransport(ProviderTransport):
                         tc.pop("response_item_id", None)
                         if strip_extra_content:
                             tc.pop("extra_content", None)
+                            tc.pop("thought_signature", None)
+                            tc.pop("thoughtSignature", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -628,6 +653,9 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
+                thought_signature = _tool_call_thought_signature(tc)
+                if thought_signature:
+                    tc_provider_data["thought_signature"] = thought_signature
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,

@@ -52,6 +52,92 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_build_native_request_preserves_direct_thought_signature_on_tool_replay():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}',
+                        },
+                        "thought_signature": "sig-direct",
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0]["thoughtSignature"] == "sig-direct"
+
+
+def test_build_native_request_omits_thought_signature_when_absent():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert "thoughtSignature" not in parts[0]
+
+
+def test_build_native_request_preserves_parallel_direct_thought_signatures():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"a"}'},
+                        "thought_signature": "sig-a",
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"b"}'},
+                        "thought_signature": "sig-b",
+                    },
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert [part["thoughtSignature"] for part in parts] == ["sig-a", "sig-b"]
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

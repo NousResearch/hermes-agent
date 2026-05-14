@@ -72,6 +72,24 @@ class TestChatCompletionsBasic:
         result = transport.convert_messages(msgs)
         assert "extra_content" not in result[0]["tool_calls"][0]
 
+    def test_convert_messages_strips_direct_thought_signature_for_strict_provider(self, transport):
+        """Direct Gemini signatures need the same sanitizer parity as
+        extra_content after a mixed-provider model switch.
+        """
+        msgs = [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "thought_signature": "SIG_DIRECT",
+                             "thoughtSignature": "SIG_CAMEL",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+        result = transport.convert_messages(
+            msgs, model="accounts/fireworks/models/llama-v3p1-70b"
+        )
+        assert "thought_signature" not in result[0]["tool_calls"][0]
+        assert "thoughtSignature" not in result[0]["tool_calls"][0]
+        assert msgs[0]["tool_calls"][0]["thought_signature"] == "SIG_DIRECT"
+
     def test_convert_messages_keeps_extra_content_for_gemini(self, transport):
         """Gemini 3 thinking models require the thought_signature replayed on
         every turn — stripping it would 400. Keep extra_content for Gemini
@@ -83,6 +101,16 @@ class TestChatCompletionsBasic:
             assert result[0]["tool_calls"][0]["extra_content"] == {
                 "google": {"thought_signature": "SIG_123"}
             }, model
+
+    def test_convert_messages_keeps_direct_thought_signature_for_gemini(self, transport):
+        msgs = [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "thought_signature": "SIG_DIRECT",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+        result = transport.convert_messages(msgs, model="gemini-3-pro")
+        assert result[0]["tool_calls"][0]["thought_signature"] == "SIG_DIRECT"
 
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is
@@ -788,6 +816,50 @@ class TestChatCompletionsNormalize:
         assert nr.tool_calls[0].provider_data == {
             "extra_content": {"google": {"thought_signature": "SIG_ABC123"}}
         }
+
+    def test_tool_call_direct_thought_signature_preserved(self, transport):
+        """Gemini OpenAI-compatible responses may attach thought_signature
+        directly on the tool_call rather than under extra_content."""
+        tc = SimpleNamespace(
+            id="call_gem",
+            function=SimpleNamespace(name="terminal", arguments='{"command": "ls"}'),
+            thought_signature="SIG_DIRECT",
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc], reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].provider_data["thought_signature"] == "SIG_DIRECT"
+
+    def test_parallel_tool_call_direct_thought_signatures_preserved(self, transport):
+        calls = [
+            SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="read_file", arguments='{"path":"a"}'),
+                thought_signature="SIG_A",
+            ),
+            SimpleNamespace(
+                id="call_2",
+                function=SimpleNamespace(name="read_file", arguments='{"path":"b"}'),
+                model_extra={"thoughtSignature": "SIG_B"},
+            ),
+        ]
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=calls, reasoning_content=None),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert [tc.provider_data["thought_signature"] for tc in nr.tool_calls] == [
+            "SIG_A",
+            "SIG_B",
+        ]
 
     def test_reasoning_content_preserved_separately(self, transport):
         """DeepSeek/Moonshot use reasoning_content distinct from reasoning.

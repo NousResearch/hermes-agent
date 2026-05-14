@@ -610,6 +610,37 @@ class TestBuildGeminiRequest:
         fc_part = next(p for p in model_turn["parts"] if "functionCall" in p)
         assert fc_part["functionCall"]["name"] == "get_weather"
         assert fc_part["functionCall"]["args"] == {"city": "SF"}
+        assert "thoughtSignature" not in fc_part
+
+    def test_tool_call_translation_preserves_thought_signature(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "read these"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "a"}'},
+                        "thought_signature": "sig-a",
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "b"}'},
+                        "extra_content": {
+                            "google": {"thought_signature": "sig-b"},
+                        },
+                    },
+                ],
+            },
+        ])
+
+        parts = req["contents"][1]["parts"]
+        assert [part["thoughtSignature"] for part in parts] == ["sig-a", "sig-b"]
 
     def test_tool_result_translation(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request

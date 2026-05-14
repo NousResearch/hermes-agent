@@ -83,6 +83,21 @@ def _coerce_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _tool_call_thought_signature(tool_call: Dict[str, Any]) -> Optional[str]:
+    direct = tool_call.get("thought_signature") or tool_call.get("thoughtSignature")
+    if isinstance(direct, str) and direct:
+        return direct
+
+    extra = tool_call.get("extra_content") or {}
+    if not isinstance(extra, dict):
+        return None
+    google = extra.get("google") or extra.get("thought_signature")
+    if isinstance(google, dict):
+        sig = google.get("thought_signature") or google.get("thoughtSignature")
+        return sig if isinstance(sig, str) and sig else None
+    return google if isinstance(google, str) and google else None
+
+
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     """OpenAI tool_call -> Gemini functionCall part."""
     fn = tool_call.get("function") or {}
@@ -93,16 +108,16 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         args = {"_raw": args_raw}
     if not isinstance(args, dict):
         args = {"_value": args}
-    return {
+    part = {
         "functionCall": {
             "name": fn.get("name") or "",
             "args": args,
-        },
-        # Sentinel signature — matches opencode-gemini-auth's approach.
-        # Without this, Code Assist rejects function calls that originated
-        # outside its own chain.
-        "thoughtSignature": "skip_thought_signature_validator",
+        }
     }
+    thought_signature = _tool_call_thought_signature(tool_call)
+    if thought_signature:
+        part["thoughtSignature"] = thought_signature
+    return part
 
 
 def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:

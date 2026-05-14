@@ -1949,6 +1949,17 @@ class TestBuildAssistantMessage:
             "google": {"thought_signature": "abc123"}
         }
 
+    def test_tool_call_direct_thought_signature_preserved(self, agent):
+        """Gemini 3 OpenAI-compatible tool_call signatures are opaque replay
+        metadata and must survive on the stored assistant message."""
+        tc = _mock_tool_call(
+            name="get_weather", arguments='{"city":"NYC"}', call_id="c2"
+        )
+        tc.thought_signature = "sig-direct"
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert result["tool_calls"][0]["thought_signature"] == "sig-direct"
+
     def test_tool_call_without_extra_content(self, agent):
         """Standard tool calls (no thinking model) should not have extra_content."""
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c3")

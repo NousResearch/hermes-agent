@@ -75,6 +75,12 @@ class ToolCall:
         """
         return (self.provider_data or {}).get("extra_content")
 
+    @property
+    def thought_signature(self) -> str | None:
+        """Gemini OpenAI-compatible thought signature from provider_data."""
+        sig = (self.provider_data or {}).get("thought_signature")
+        return sig if isinstance(sig, str) and sig else None
+
 
 @dataclass
 class Usage:

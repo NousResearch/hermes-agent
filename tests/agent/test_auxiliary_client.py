@@ -2480,9 +2480,41 @@ class TestOpenRouterExplicitApiKey:
             # Verify the env var fallback was used
             mock_openai.assert_called_once()
             call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "env-fallback-key", (
-                f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
-            )
+        assert call_kwargs["api_key"] == "env-fallback-key", (
+            f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
+        )
+
+
+class TestOpenAIProxyClientConstruction:
+    """OpenAI wrapper should disable environment proxy lookup for localhost endpoints."""
+
+    def test_localhost_base_url_uses_http_client_with_trust_env_false(self, monkeypatch):
+        mock_class = MagicMock(return_value=MagicMock())
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=mock_class):
+            aux_client = None
+            with patch("agent.auxiliary_client.base_url_hostname", return_value="localhost"):
+                from agent.auxiliary_client import OpenAI
+
+                aux_client = OpenAI(api_key="dummy", base_url="http://localhost:20128/v1")
+        assert aux_client is not None
+        assert mock_class.call_count == 1
+        call_kwargs = mock_class.call_args.kwargs
+        assert "http_client" in call_kwargs
+        http_client = call_kwargs["http_client"]
+        assert http_client.trust_env is False
+        http_client.close()
+        assert call_kwargs["base_url"] == "http://localhost:20128/v1"
+
+    def test_remote_base_url_does_not_inject_http_client(self, monkeypatch):
+        mock_class = MagicMock(return_value=MagicMock())
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=mock_class):
+            from agent.auxiliary_client import OpenAI
+
+            OpenAI(api_key="dummy", base_url="https://api.openai.com/v1")
+        assert mock_class.call_count == 1
+        call_kwargs = mock_class.call_args.kwargs
+        assert "http_client" not in call_kwargs
+        assert call_kwargs["base_url"] == "https://api.openai.com/v1"
 
 
 class TestAnthropicExplicitApiKey:

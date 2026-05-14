@@ -88,6 +88,9 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        if "base_url" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs.update(_build_openai_client_kwargs(kwargs.get("base_url"), kwargs))
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):
@@ -113,6 +116,19 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
         return isinstance(obj, maybe_type)
     except TypeError:
         return False
+
+
+def _build_openai_client_kwargs(base_url: Optional[str], extra: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Build OpenAI kwargs and disable env-derived proxy config for localhost."""
+    kwargs: Dict[str, Any] = dict(extra or {})
+    try:
+        hostname = base_url_hostname(base_url or "").lower().rstrip(".")
+        if hostname in {"localhost", "127.0.0.1", "::1"} and "http_client" not in kwargs:
+            import httpx
+            kwargs["http_client"] = httpx.Client(trust_env=False)
+    except Exception:
+        pass
+    return kwargs
 
 
 def _extract_url_query_params(url: str):

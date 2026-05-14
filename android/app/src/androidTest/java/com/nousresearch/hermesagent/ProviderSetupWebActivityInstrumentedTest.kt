@@ -5,7 +5,6 @@ import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -51,21 +50,8 @@ class ProviderSetupWebActivityInstrumentedTest {
         )
 
         val qwenDocsOpened = AtomicBoolean(false)
-        val qwenDocsIntent = object : TypeSafeMatcher<Intent>() {
-            override fun describeTo(description: Description) {
-                description.appendText("Qwen Cloud setup browser intent")
-            }
-
-            override fun matchesSafely(intent: Intent): Boolean {
-                val targetIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                val targetUri = intent.data ?: targetIntent?.data ?: return false
-                val matches = intent.action in setOf(Intent.ACTION_VIEW, Intent.ACTION_CHOOSER) &&
-                    targetUri == uri
-                if (matches) {
-                    qwenDocsOpened.set(true)
-                }
-                return matches
-            }
+        val qwenDocsIntent = providerSetupChooserFor(uri) {
+            qwenDocsOpened.set(true)
         }
 
         Intents.init()
@@ -82,7 +68,7 @@ class ProviderSetupWebActivityInstrumentedTest {
     }
 
     @Test
-    fun providerSetupOpenHandsOffCurrentQwenSetupTargetToRealBrowser() {
+    fun providerSetupOpenUsesUnpinnedChooserForCurrentQwenSetupTarget() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val target = requireNotNull(ProviderPresets.setupTarget("alibaba", 0))
         val uri = Uri.parse(target.url)
@@ -94,14 +80,21 @@ class ProviderSetupWebActivityInstrumentedTest {
             resolved?.packageName != context.packageName,
         )
 
-        val result = HermesProviderSetupWebActivity.open(context, uri, "Open Qwen setup")
+        val qwenDocsOpened = AtomicBoolean(false)
+        val qwenDocsIntent = providerSetupChooserFor(uri) {
+            qwenDocsOpened.set(true)
+        }
+        Intents.init()
+        try {
+            intending(qwenDocsIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
 
-        assertTrue(result.toString(), result.success)
-        val foregroundPackage = waitForForegroundPackage(expectedPackage = resolved!!.packageName)
-        assertTrue(
-            "Expected provider setup to focus the external browser ${resolved.packageName}, got '$foregroundPackage'",
-            foregroundPackage == resolved.packageName,
-        )
+            val result = HermesProviderSetupWebActivity.open(context, uri, "Open Qwen setup")
+
+            assertTrue(result.toString(), result.success)
+            assertTrue("Expected provider setup to launch an unpinned chooser", qwenDocsOpened.get())
+        } finally {
+            Intents.release()
+        }
     }
 
     @Test
@@ -200,37 +193,30 @@ class ProviderSetupWebActivityInstrumentedTest {
         }
     }
 
+    private fun providerSetupChooserFor(uri: Uri, onMatch: (() -> Unit)? = null): TypeSafeMatcher<Intent> {
+        return object : TypeSafeMatcher<Intent>() {
+            override fun describeTo(description: Description) {
+                description.appendText("provider setup chooser for ").appendValue(uri)
+            }
+
+            override fun matchesSafely(intent: Intent): Boolean {
+                val targetIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                val matches = intent.action == Intent.ACTION_CHOOSER &&
+                    targetIntent?.action == Intent.ACTION_VIEW &&
+                    targetIntent.data == uri &&
+                    targetIntent.`package` == null
+                if (matches) {
+                    onMatch?.invoke()
+                }
+                return matches
+            }
+        }
+    }
+
     private fun shellOutput(command: String): String {
         val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
         return descriptor.use { fd ->
             FileInputStream(fd.fileDescriptor).bufferedReader().use { it.readText() }
         }
     }
-
-    private fun waitForForegroundPackage(expectedPackage: String): String {
-        val deadline = SystemClock.elapsedRealtime() + 15_000L
-        var lastPackage = currentForegroundPackage()
-        while (SystemClock.elapsedRealtime() < deadline) {
-            if (lastPackage == expectedPackage) {
-                return lastPackage
-            }
-            SystemClock.sleep(250L)
-            lastPackage = currentForegroundPackage()
-        }
-        return lastPackage
-    }
-
-    private fun currentForegroundPackage(): String {
-        val output = shellOutput("dumpsys window")
-        return FOCUS_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
-            .ifBlank {
-                FOCUSED_APP_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
-            }
-    }
-
-    companion object {
-        private val FOCUS_PACKAGE_REGEX = Regex("""mCurrentFocus=Window\{[^ ]+ u\d+ ([^/\s]+)/""")
-        private val FOCUSED_APP_PACKAGE_REGEX = Regex("""mFocusedApp=ActivityRecord\{[^ ]+ u\d+ ([^/\s]+)/""")
-    }
-
 }

@@ -159,9 +159,11 @@ class DeepAppUiVisualInstrumentedTest {
 
             override fun matchesSafely(intent: Intent): Boolean {
                 val chooserTarget = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                val uri = intent.data ?: chooserTarget?.data ?: return false
+                val uri = chooserTarget?.data ?: return false
                 val callbackUrl = Uri.parse(uri.getQueryParameter("callback_url").orEmpty())
-                val matches = intent.action in setOf(Intent.ACTION_VIEW, Intent.ACTION_CHOOSER) &&
+                val matches = intent.action == Intent.ACTION_CHOOSER &&
+                    chooserTarget.action == Intent.ACTION_VIEW &&
+                    chooserTarget.`package` == null &&
                     uri.scheme == "https" &&
                     uri.host == "openrouter.ai" &&
                     uri.path == "/auth" &&
@@ -405,8 +407,12 @@ class DeepAppUiVisualInstrumentedTest {
 
             override fun matchesSafely(intent: Intent): Boolean {
                 val chooserTarget = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                val matches = (intent.action == Intent.ACTION_VIEW && intent.data == uri) ||
-                    (intent.action == Intent.ACTION_CHOOSER && chooserTarget?.data == uri) ||
+                val matches = (
+                    intent.action == Intent.ACTION_CHOOSER &&
+                        chooserTarget?.action == Intent.ACTION_VIEW &&
+                        chooserTarget.data == uri &&
+                        chooserTarget.`package` == null
+                    ) ||
                     (
                         intent.component?.className == HermesProviderSetupWebActivity::class.java.name &&
                             intent.getStringExtra(PROVIDER_SETUP_URL_EXTRA) == uri.toString()

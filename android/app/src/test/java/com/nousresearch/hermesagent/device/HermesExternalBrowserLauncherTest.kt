@@ -77,6 +77,29 @@ class HermesExternalBrowserLauncherTest {
     }
 
     @Test
+    @Suppress("DEPRECATION")
+    fun openCanForceChooserForProviderAuthLinks() {
+        val context = RuntimeEnvironment.getApplication()
+        registerBrowser(context, "com.brave.browser_nightly")
+        val uri = Uri.parse("https://openrouter.ai/auth")
+
+        val result = HermesExternalBrowserLauncher.open(
+            context = context,
+            uri = uri,
+            title = "Open OpenRouter sign-in",
+            forceChooser = true,
+        )
+        val started = Shadows.shadowOf(context).nextStartedActivity
+        val wrapped = started.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+
+        assertTrue(result.success)
+        assertEquals(Intent.ACTION_CHOOSER, started.action)
+        assertEquals(Intent.ACTION_VIEW, wrapped?.action)
+        assertEquals(uri, wrapped?.data)
+        assertNull(wrapped?.`package`)
+    }
+
+    @Test
     fun openRejectsUnsupportedSchemes() {
         val context = RuntimeEnvironment.getApplication()
 

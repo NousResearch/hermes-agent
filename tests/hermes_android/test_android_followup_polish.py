@@ -327,7 +327,7 @@ def test_provider_setup_webview_errors_show_browser_copy_fallback():
     assert 'providerSetupOpenUsesExternalBrowserForQwenCloudWhenAvailable' in activity_test
     assert 'HermesExternalBrowserLauncher.createBrowserIntent' in activity_test
     assert 'Intents.init()' in activity_test
-    assert 'Qwen Cloud setup browser intent' in activity_test
+    assert 'provider setup chooser for ' in activity_test
     assert 'qwenDocsOpened.get()' in activity_test
 
 

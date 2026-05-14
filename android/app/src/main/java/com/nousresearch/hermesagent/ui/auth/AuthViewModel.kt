@@ -318,6 +318,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             context = getApplication(),
             uri = uri,
             title = title,
+            forceChooser = true,
         )
     }
 

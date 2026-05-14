@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -32,17 +33,21 @@ class HermesProviderSetupWebActivityTest {
     }
 
     @Test
-    fun openStartsExternalBrowserForHttpProviderSetupUrl() {
+    @Suppress("DEPRECATION")
+    fun openStartsBrowserChooserForHttpProviderSetupUrl() {
         val context = RuntimeEnvironment.getApplication()
         val uri = Uri.parse("https://modelstudio.console.alibabacloud.com/?tab=playground")
 
         val result = HermesProviderSetupWebActivity.open(context, uri, "Open Qwen setup")
         val started = Shadows.shadowOf(context).nextStartedActivity
+        val wrapped = started.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
 
         assertTrue(result.success)
-        assertEquals(Intent.ACTION_VIEW, started.action)
-        assertEquals(uri, started.data)
-        assertTrue(started.categories.orEmpty().contains(Intent.CATEGORY_BROWSABLE))
+        assertEquals(Intent.ACTION_CHOOSER, started.action)
+        assertEquals(Intent.ACTION_VIEW, wrapped?.action)
+        assertEquals(uri, wrapped?.data)
+        assertTrue(wrapped?.categories.orEmpty().contains(Intent.CATEGORY_BROWSABLE))
+        assertNull(wrapped?.`package`)
     }
 
     @Test

@@ -262,6 +262,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
     assert "HermesProviderSetupWebActivity.open" in auth_view_model
+    assert "forceChooser = true" in auth_view_model
     assert "OpenRouterLoopbackOAuthServer.callbackUrlForState(state)" in auth_view_model
     assert "OpenRouterLoopbackOAuthServer.start" in auth_view_model
     assert "callbackUrl = callbackUrl" in auth_view_model
@@ -320,6 +321,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "class HermesProviderSetupWebActivity" in provider_setup_web_activity
     assert "WebView(this)" in provider_setup_web_activity
     assert "HermesExternalBrowserLauncher.open" in provider_setup_web_activity
+    assert "forceChooser = true" in provider_setup_web_activity
     assert "Intent.createChooser" in browser_launcher
     assert "putExtra(Browser.EXTRA_APPLICATION_ID" in browser_launcher
     assert "ClipboardManager" in settings_view_model

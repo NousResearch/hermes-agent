@@ -34,7 +34,12 @@ object HermesExternalBrowserLauncher {
         }
     }
 
-    fun open(context: Context, uri: Uri, title: String): BrowserLaunchResult {
+    fun open(
+        context: Context,
+        uri: Uri,
+        title: String,
+        forceChooser: Boolean = false,
+    ): BrowserLaunchResult {
         val scheme = uri.scheme?.lowercase().orEmpty()
         if (scheme !in BROWSABLE_URI_SCHEMES) {
             return BrowserLaunchResult(
@@ -43,6 +48,14 @@ object HermesExternalBrowserLauncher {
             )
         }
         val appContext = context.applicationContext
+        if (forceChooser) {
+            return runCatching {
+                appContext.startActivity(createChooserIntent(appContext, uri, title))
+                BrowserLaunchResult(success = true)
+            }.getOrElse { chooserError ->
+                BrowserLaunchResult(success = false, errorName = chooserError::class.java.simpleName)
+            }
+        }
         val directIntent = createBrowserIntent(appContext, uri)
         runCatching {
             appContext.startActivity(directIntent)

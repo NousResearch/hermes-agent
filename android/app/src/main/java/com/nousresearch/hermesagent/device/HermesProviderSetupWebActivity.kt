@@ -296,6 +296,7 @@ class HermesProviderSetupWebActivity : Activity() {
             context = this,
             uri = targetUri,
             title = "Open provider setup page",
+            forceChooser = true,
         )
         if (!result.success) {
             copyToClipboard(url)
@@ -334,7 +335,12 @@ class HermesProviderSetupWebActivity : Activity() {
             if (!canOpen(uri)) {
                 return BrowserLaunchResult(success = false, errorName = "UnsupportedScheme")
             }
-            val external = HermesExternalBrowserLauncher.open(context, uri, title)
+            val external = HermesExternalBrowserLauncher.open(
+                context = context,
+                uri = uri,
+                title = title,
+                forceChooser = true,
+            )
             if (external.success) {
                 return external
             }

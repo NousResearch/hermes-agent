@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -143,6 +144,49 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile.  While active,
+    HERMES_HOME and the scheduler's test/override hook both point at the
+    resolved profile directory so _get_hermes_home(), .env/config loading, script
+    resolution, AIAgent construction, and downstream get_hermes_home() callers
+    agree on the same home.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_env = os.environ.get("HERMES_HOME", "_UNSET_")
+    prior_override = _hermes_home
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+
+    try:
+        os.environ["HERMES_HOME"] = str(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if prior_env == "_UNSET_":
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = prior_env
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1022,6 +1066,13 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job, applying any per-job profile override."""
+    job_id = job["id"]
+    with _job_profile_context(job_id, job.get("profile")):
+        return _run_job_impl(job)
+
+
+def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -1258,8 +1309,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() serializes workdir-jobs outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
+    # tick() serializes jobs that mutate process-global runtime state (workdir
+    # and/or profile jobs) outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs. For workdir-less
     # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
@@ -1781,17 +1833,24 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: jobs with a per-job workdir and/or profile mutate
+        # process-global runtime state inside run_job (TERMINAL_CWD,
+        # HERMES_HOME, and the scheduler's _hermes_home hook), so they MUST run
+        # sequentially to avoid corrupting each other. Jobs without either field
+        # leave those env overrides untouched and stay parallel-safe.
+        sequential_jobs = [
+            j for j in due_jobs
+            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+        ]
+        parallel_jobs = [
+            j for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+        ]
 
         _results: list = []
 
-        # Sequential pass for workdir jobs.
-        for job in workdir_jobs:
+        # Sequential pass for env-mutating jobs.
+        for job in sequential_jobs:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 

@@ -281,6 +281,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -303,6 +305,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -369,6 +372,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
+                profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
             )
             return json.dumps(
@@ -503,6 +507,10 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if profile is not None:
+                # Empty string clears the field (restores old behaviour);
+                # otherwise pass raw — update_job() validates / normalizes.
+                updates["profile"] = _normalize_optional_job_value(profile) or None
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -656,6 +664,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "profile": {
+                "type": "string",
+                "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile and temporarily sets HERMES_HOME before loading .env/config.yaml and running the job. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep process-global profile state isolated."
+            },
         },
         "required": ["action"]
     }
@@ -710,6 +722,7 @@ registry.register(
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
+        profile=args.get("profile"),
         no_agent=args.get("no_agent"),
         task_id=kw.get("task_id"),
     ))(),

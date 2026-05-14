@@ -313,6 +313,63 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# Common DNS suffixes for private/LAN/mDNS hostnames. Hosts whose name
+# ends in one of these are treated as local without needing DNS
+# resolution (which is unreliable in containers/CI/sandboxed runtimes).
+# RFC 6762 (mDNS) reserves ``.local``; ``.lan``/``.home``/``.internal``/
+# ``.localdomain`` are widely used by consumer routers (OpenWrt, Synology,
+# UDM, etc.). RFC 8375 reserves ``.home.arpa`` for residential homenet.
+_PRIVATE_DNS_SUFFIXES = (
+    ".local",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".internal",
+    ".intranet",
+    ".localdomain",
+    ".private",
+)
+# Treat short, unqualified hostnames (no dots) as private — those are
+# typically resolved by /etc/hosts, NetBIOS/SMB, or local DHCP, never by
+# public DNS. Examples: ``homeassistant``, ``nas``, ``ollama-box``.
+def _is_unqualified_hostname(host: str) -> bool:
+    return bool(host) and "." not in host and ":" not in host
+
+
+def _resolves_to_private_address(host: str) -> bool:
+    """Return True if ``host`` resolves to an RFC-1918 / loopback /
+    link-local / Tailscale-CGNAT address.
+
+    DNS resolution is opt-in via ``HERMES_LOCAL_ENDPOINT_RESOLVE_DNS=1``
+    so that callers running offline or in restricted sandboxes don't
+    silently pay a name-resolution cost.  Resolution is wrapped in a
+    short timeout via ``socket.setdefaulttimeout`` is intentionally
+    avoided (it would mutate global state); we instead rely on
+    ``socket.getaddrinfo`` returning quickly for negative cache hits.
+    """
+    if os.getenv("HERMES_LOCAL_ENDPOINT_RESOLVE_DNS", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, OSError, UnicodeError):
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = sockaddr[0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            return True
+        if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
+            return True
+    return False
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -406,12 +463,29 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 def is_local_endpoint(base_url: str) -> bool:
     """Return True if base_url points to a local machine.
 
-    Recognises loopback (``localhost``, ``127.0.0.0/8``, ``::1``),
-    container-internal DNS names (``host.docker.internal`` et al.),
-    RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
-    link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale CGNAT
-    is included so remote-but-trusted Ollama boxes reached over a
-    Tailscale mesh get the same timeout auto-bumps as localhost Ollama.
+    Recognises:
+
+    * Loopback (``localhost``, ``127.0.0.0/8``, ``::1``)
+    * Container-internal DNS names (``host.docker.internal`` et al.)
+    * RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
+      link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale
+      CGNAT is included so remote-but-trusted Ollama boxes reached over
+      a Tailscale mesh get the same timeout auto-bumps as localhost
+      Ollama.
+    * Private/LAN/mDNS DNS suffixes (``.local``, ``.lan``, ``.home``,
+      ``.home.arpa``, ``.internal``, ``.intranet``, ``.localdomain``,
+      ``.private``). These are reserved or de-facto reserved for
+      residential and small-business networks and never resolve via
+      public DNS (RFC 6762, RFC 8375). #20346.
+    * Unqualified hostnames with no dots (e.g. ``homeassistant``,
+      ``nas``, ``ollama-box``). Those resolve via ``/etc/hosts``,
+      NetBIOS/SMB, or local DHCP, never via public DNS. #20346.
+
+    Optionally, when ``HERMES_LOCAL_ENDPOINT_RESOLVE_DNS=1`` is set,
+    falls back to a DNS lookup and treats the host as local if it
+    resolves to an RFC-1918 / loopback / link-local / CGNAT address.
+    Disabled by default to avoid surprising network calls inside
+    sandboxed runtimes.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized:
@@ -452,6 +526,17 @@ def is_local_endpoint(base_url: str) -> bool:
                 return True
         except ValueError:
             pass
+    # Private DNS suffixes (``.local`` mDNS, ``.lan``, ``.home``, etc.).
+    host_lower = host.lower()
+    if any(host_lower.endswith(suffix) for suffix in _PRIVATE_DNS_SUFFIXES):
+        return True
+    # Unqualified hostnames typically resolve via /etc/hosts or LAN DHCP.
+    if _is_unqualified_hostname(host_lower):
+        return True
+    # Last resort: if the operator opted into DNS resolution, look the
+    # hostname up and see if it resolves to a private address.
+    if _resolves_to_private_address(host_lower):
+        return True
     return False
 
 

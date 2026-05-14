@@ -1940,7 +1940,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if not cmd:
             await next_fn()
             return
-        
+
         from hermes_cli.commands import is_gateway_known_command
         if not is_gateway_known_command(cmd.lstrip("/")):
             await next_fn()

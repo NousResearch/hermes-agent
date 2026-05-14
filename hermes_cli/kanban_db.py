@@ -90,7 +90,7 @@ from toolsets import get_toolset_names
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived", "qc_review"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
@@ -606,6 +606,12 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # --- QC / verifier gate fields ---
+    require_qc: bool = False
+    qc_threshold: Optional[float] = None
+    qc_score: Optional[float] = None
+    rework_count: int = 0
+    last_qc_feedback: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -669,6 +675,15 @@ class Task:
             skills=skills_value,
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            require_qc=bool(row["require_qc"]) if "require_qc" in keys else False,
+            qc_threshold=row["qc_threshold"] if "qc_threshold" in keys else None,
+            qc_score=row["qc_score"] if "qc_score" in keys else None,
+            rework_count=(
+                row["rework_count"] if "rework_count" in keys else 0
+            ),
+            last_qc_feedback=(
+                row["last_qc_feedback"] if "last_qc_feedback" in keys else None
             ),
         )
 
@@ -1076,6 +1091,30 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
+    # --- QC/verifier columns (kanban-review gate) ---
+    if "require_qc" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "require_qc", "require_qc INTEGER NOT NULL DEFAULT 0"
+        )
+    if "qc_threshold" not in cols:
+        # Minimum acceptable quality score (0.0 – 1.0). NULL = default 0.7.
+        _add_column_if_missing(
+            conn, "tasks", "qc_threshold", "qc_threshold REAL"
+        )
+    if "qc_score" not in cols:
+        # Score assigned by the QC reviewer (agent or human).
+        _add_column_if_missing(conn, "tasks", "qc_score", "qc_score REAL")
+    if "rework_count" not in cols:
+        # How many times this task was returned for rework.
+        _add_column_if_missing(
+            conn, "tasks", "rework_count", "rework_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_qc_feedback" not in cols:
+        # Most recent QC rejection feedback text.
+        _add_column_if_missing(
+            conn, "tasks", "last_qc_feedback", "last_qc_feedback TEXT"
+        )
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1244,6 +1283,8 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    require_qc: bool = False,
+    qc_threshold: Optional[float] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1377,8 +1418,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, require_qc, qc_threshold
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1396,6 +1437,8 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        1 if require_qc else 0,
+                        float(qc_threshold) if qc_threshold is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1413,6 +1456,8 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "require_qc": require_qc,
+                        "qc_threshold": qc_threshold,
                     },
                 )
             return task_id
@@ -2388,6 +2433,20 @@ def complete_task(
     """
     now = int(time.time())
 
+    # Read QC gate: if the task requires QC, transition to qc_review
+    # instead of done so a verifier agent or human can approve/reject.
+    target_status = "done"
+    new_event_kind = "completed"
+    qc_threshold_val: Optional[float] = None
+    row = conn.execute(
+        "SELECT require_qc, qc_threshold FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is not None and row["require_qc"]:
+        target_status = "qc_review"
+        new_event_kind = "completed_awaiting_qc"
+        qc_threshold_val = row["qc_threshold"]
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
@@ -2420,7 +2479,7 @@ def complete_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
@@ -2429,13 +2488,13 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (target_status, result, now, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
@@ -2445,7 +2504,7 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (target_status, result, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -2478,8 +2537,10 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        if qc_threshold_val is not None:
+            completed_payload["qc_threshold"] = qc_threshold_val
         _append_event(
-            conn, task_id, "completed",
+            conn, task_id, new_event_kind,
             completed_payload,
             run_id=run_id,
         )
@@ -2511,6 +2572,111 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
+    return True
+
+
+MAX_REWORK_LIMIT = 3
+
+
+def qc_approve(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    score: float,
+    feedback: Optional[str] = None,
+) -> bool:
+    """Approve a QC review — transition ``qc_review → done``.
+
+    Records the score and optional feedback on the task and emits
+    a ``qc_approved`` event. The task is marked done and becomes
+    available as a dependency for any children waiting on it.
+
+    Returns ``True`` on success, ``False`` if the task is not in
+    ``qc_review`` state.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status       = 'done',
+                   qc_score     = ?,
+                   last_qc_feedback = ?,
+                   completed_at = ?
+             WHERE id = ?
+               AND status = 'qc_review'
+            """,
+            (float(score), feedback, int(time.time()), task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, task_id, "qc_approved",
+            {"score": score, "feedback": feedback},
+        )
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    return True
+
+
+def qc_reject(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    score: float,
+    feedback: str,
+) -> bool:
+    """Reject a QC review — transition ``qc_review → ready``.
+
+    Increments the rework counter. If ``rework_count`` exceeds
+    ``MAX_REWORK_LIMIT`` (3), the task is moved to ``blocked``
+    instead of ``ready`` so a human can intervene.
+
+    ``feedback`` is required — the assignee needs to know what
+    to fix. The previous result and completed_at are preserved
+    on the task row (the worker was not wrong to complete; it
+    just needs to iterate). Returns ``True`` on success.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET qc_score        = ?,
+                   last_qc_feedback = ?,
+                   rework_count    = rework_count + 1
+             WHERE id = ?
+               AND status = 'qc_review'
+            """,
+            (float(score), feedback, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+
+        row = conn.execute(
+            "SELECT rework_count FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        rework = row["rework_count"] if row else 1
+
+        if rework > MAX_REWORK_LIMIT:
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked' WHERE id = ? AND status = 'qc_review'",
+                (task_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'qc_review'",
+                (task_id,),
+            )
+
+        _append_event(
+            conn, task_id, "qc_rejected",
+            {
+                "score": score,
+                "feedback": feedback,
+                "rework_count": rework,
+                "exceeded_limit": rework > MAX_REWORK_LIMIT,
+            },
+        )
     return True
 
 

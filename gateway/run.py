@@ -4161,7 +4161,7 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "completed_awaiting_qc")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4372,6 +4372,24 @@ class GatewayRunner:
                             msg = (
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
+                            )
+                        elif kind == "completed_awaiting_qc":
+                            threshold = ""
+                            if ev.payload and ev.payload.get("qc_threshold"):
+                                threshold = f" (threshold: {ev.payload['qc_threshold']})"
+                            handoff = ""
+                            payload_summary = None
+                            if ev.payload and ev.payload.get("summary"):
+                                payload_summary = str(ev.payload["summary"])
+                            if payload_summary:
+                                h = payload_summary.strip().splitlines()[0][:200]
+                                handoff = f"\n{h}"
+                            elif task and task.result:
+                                r = task.result.strip().splitlines()[0][:160]
+                                handoff = f"\n{r}"
+                            msg = (
+                                f"🔍 {tag}Kanban {sub['task_id']} done — "
+                                f"awaiting QC review{threshold}{handoff}"
                             )
                         else:
                             continue

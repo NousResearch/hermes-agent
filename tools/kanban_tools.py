@@ -219,6 +219,10 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
+        "require_qc": bool(task.require_qc),
+        "qc_score": task.qc_score,
+        "qc_threshold": task.qc_threshold,
+        "rework_count": task.rework_count,
     }
 
 
@@ -258,6 +262,11 @@ def _handle_show(args: dict, **kw) -> str:
                     "completed_at": t.completed_at,
                     "result": t.result,
                     "current_run_id": t.current_run_id,
+                    "require_qc": bool(t.require_qc),
+                    "qc_score": t.qc_score,
+                    "qc_threshold": t.qc_threshold,
+                    "rework_count": t.rework_count,
+                    "last_qc_feedback": t.last_qc_feedback,
                 }
 
             def _run_dict(r):
@@ -427,7 +436,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            # Check whether the task entered QC review instead of done.
+            task = kb.get_task(conn, tid)
+            qc_info = {}
+            if task and task.status == "qc_review":
+                qc_info["status"] = "qc_review"
+                qc_info["qc_threshold"] = task.qc_threshold
+            return _ok(task_id=tid, run_id=run.id if run else None, **qc_info)
         finally:
             conn.close()
     except Exception as e:
@@ -591,6 +606,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    require_qc, bool_error = _parse_bool_arg(args, "require_qc")
+    if bool_error:
+        return tool_error(bool_error)
+    qc_threshold = args.get("qc_threshold")
     try:
         kb, conn = _connect()
         try:
@@ -611,6 +630,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                require_qc=require_qc,
+                qc_threshold=(
+                    float(qc_threshold) if qc_threshold is not None else None
+                ),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
@@ -673,6 +696,65 @@ def _handle_link(args: dict, **kw) -> str:
         return tool_error(f"kanban_link: {e}")
 
 
+def _handle_review(args: dict, **kw) -> str:
+    """Approve or reject a QC review."""
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    approve = args.get("approve")
+    if not isinstance(approve, bool):
+        return tool_error("approve must be a boolean (true/false)")
+    score = args.get("score")
+    if score is None:
+        return tool_error("score is required")
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return tool_error("score must be a number (0.0 – 1.0)")
+    if score < 0.0 or score > 1.0:
+        return tool_error("score must be between 0.0 and 1.0")
+    feedback = args.get("feedback") or ""
+    try:
+        kb, conn = _connect()
+        try:
+            if approve:
+                ok = kb.qc_approve(
+                    conn, tid, score=score,
+                    feedback=feedback if feedback else None,
+                )
+                if not ok:
+                    return tool_error(
+                        f"could not approve {tid}: not in qc_review state"
+                    )
+                return _ok(
+                    task_id=tid, status="done",
+                    qc_score=score,
+                )
+            else:
+                if not feedback:
+                    return tool_error(
+                        "feedback is required when rejecting a QC review"
+                    )
+                ok = kb.qc_reject(
+                    conn, tid, score=score, feedback=feedback,
+                )
+                if not ok:
+                    return tool_error(
+                        f"could not reject {tid}: not in qc_review state"
+                    )
+                task = kb.get_task(conn, tid)
+                target = task.status if task else "ready"
+                return _ok(
+                    task_id=tid, status=target,
+                    qc_score=score,
+                )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -727,7 +809,7 @@ KANBAN_LIST_SCHEMA = {
                 "type": "string",
                 "enum": [
                     "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "blocked", "done", "archived", "qc_review",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -1011,6 +1093,23 @@ KANBAN_CREATE_SCHEMA = {
                     "assignee's profile."
                 ),
             },
+            "require_qc": {
+                "type": "boolean",
+                "description": (
+                    "If true, the task enters 'qc_review' after the "
+                    "worker completes, instead of going straight to "
+                    "'done'. A verifier must call kanban_review to "
+                    "approve or reject the deliverable. Default: false."
+                ),
+            },
+            "qc_threshold": {
+                "type": "number",
+                "description": (
+                    "Minimum acceptable quality score (0.0 – 1.0) for "
+                    "QC review. The verifier's pass/fail decision is "
+                    "based on this threshold. Default: 0.7."
+                ),
+            },
         },
         "required": ["title", "assignee"],
     },
@@ -1049,6 +1148,53 @@ KANBAN_LINK_SCHEMA = {
             "child_id":  {"type": "string", "description": "Child task id."},
         },
         "required": ["parent_id", "child_id"],
+    },
+}
+
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Approve or reject a task that is awaiting QC review. Only "
+        "visible when the kanban toolset is enabled OR when dispatched "
+        "to a task that is in 'qc_review' status. "
+        "``approve=True`` moves the task to 'done' with a quality score. "
+        "``approve=False`` sends the task back to 'ready' for rework "
+        "with detailed feedback; after 3 rework cycles the task is "
+        "automatically blocked for human intervention."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to review.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": (
+                    "True to approve (task → done), False to reject "
+                    "(task → ready or blocked for rework)."
+                ),
+            },
+            "score": {
+                "type": "number",
+                "description": (
+                    "Quality score (0.0 – 1.0). When approve=True, "
+                    "scores below qc_threshold should typically result "
+                    "in rejection, but the final decision is yours. "
+                    "Required."
+                ),
+            },
+            "feedback": {
+                "type": "string",
+                "description": (
+                    "Detailed feedback. Required when approve=False; "
+                    "optional when approve=True. Explains what passed "
+                    "or what needs improvement."
+                ),
+            },
+        },
+        "required": ["task_id", "approve", "score"],
     },
 }
 
@@ -1136,4 +1282,13 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔍",
 )

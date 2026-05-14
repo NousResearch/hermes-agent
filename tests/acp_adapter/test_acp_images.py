@@ -10,7 +10,11 @@ from acp.schema import (
     TextResourceContents,
 )
 
-from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
+from acp_adapter.server import (
+    HermesACPAgent,
+    _content_blocks_to_openai_user_content,
+    _extract_text,
+)
 
 
 def test_acp_image_blocks_convert_to_openai_multimodal_content():
@@ -157,3 +161,100 @@ def test_acp_embedded_blob_image_is_inlined_as_image_url():
         "type": "image_url",
         "image_url": {"url": f"data:image/png;base64,{b64}"},
     }
+
+
+@pytest.mark.asyncio
+async def test_initialize_advertises_embedded_context_capability():
+    response = await HermesACPAgent().initialize()
+
+    assert response.agent_capabilities is not None
+    assert response.agent_capabilities.prompt_capabilities is not None
+    assert response.agent_capabilities.prompt_capabilities.embedded_context is True
+
+
+@pytest.mark.asyncio
+async def test_initialize_capabilities_wire_format_embedded_context():
+    """Verify the JSON wire format uses correct alias for embeddedContext."""
+    response = await HermesACPAgent().initialize()
+    caps = response.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
+    assert caps["promptCapabilities"]["embeddedContext"] is True
+
+
+# ---- _extract_text with resource blocks -------------------------------------
+
+
+def test_extract_text_from_text_blocks_only():
+    text = _extract_text([
+        TextContentBlock(type="text", text="hello"),
+        TextContentBlock(type="text", text="world"),
+    ])
+    assert text == "hello\nworld"
+
+
+def test_extract_text_from_embedded_text_resource():
+    text = _extract_text([
+        TextContentBlock(type="text", text="Read this:"),
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=TextResourceContents(
+                uri="file:///workspace/src/main.rs",
+                mimeType="text/plain",
+                text="fn main() {}",
+            ),
+        ),
+    ])
+    assert "Read this:" in text
+    assert "fn main() {}" in text
+
+
+def test_extract_text_from_resource_link():
+    text = _extract_text([
+        ResourceContentBlock(
+            type="resource_link",
+            name="notes.md",
+            uri="file:///workspace/notes.md",
+        ),
+    ])
+    assert "[Resource: file:///workspace/notes.md]" in text
+
+
+def test_extract_text_embedded_blob_is_excluded():
+    """BlobResourceContents are binary, so _extract_text should not include them."""
+    text = _extract_text([
+        TextContentBlock(type="text", text="Check the image"),
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=BlobResourceContents(
+                uri="file:///tmp/shot.png",
+                mimeType="image/png",
+                blob="aGVsbG8=",
+            ),
+        ),
+    ])
+    assert "Check the image" in text
+    # Blob content should not appear in plain-text extraction
+    assert "aGVsbG8=" not in text
+
+
+def test_extract_text_mixed_blocks():
+    text = _extract_text([
+        TextContentBlock(type="text", text="Part 1"),
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=TextResourceContents(
+                uri="file:///a.txt",
+                text="Embedded content",
+            ),
+        ),
+        ResourceContentBlock(
+            type="resource_link",
+            name="b.txt",
+            uri="file:///b.txt",
+        ),
+        TextContentBlock(type="text", text="Part 2"),
+    ])
+    lines = text.split("\n")
+    assert "Part 1" in lines
+    assert "Embedded content" in lines
+    assert "[Resource: file:///b.txt]" in lines
+    assert "Part 2" in lines

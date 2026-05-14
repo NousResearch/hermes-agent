@@ -5029,7 +5029,7 @@ class AIAgent:
         retries are not useful.
         """
         try:
-            body = api_kwargs.copy()
+            body = copy.deepcopy(api_kwargs)
             body.pop("timeout", None)
             body = {k: v for k, v in body.items() if v is not None}
 

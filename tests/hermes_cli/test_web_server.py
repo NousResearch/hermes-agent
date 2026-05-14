@@ -218,6 +218,131 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_setup_codex_state_is_read_only_and_sanitized(self, monkeypatch):
+        """GET /api/setup-codex/state returns guide-ready state without secret values."""
+        import hermes_cli.web_server as web_server
+
+        config_secret = "sk-" + "test-config-secret-should-not-leak"
+        env_secret = "telegram-secret-should-not-leak"
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {
+                    "provider": "openai-codex",
+                    "default": "gpt-5.5",
+                    "api_key": config_secret,
+                    "base_url": "https://api.example.test/v1",
+                },
+                "delegation": {"max_spawn_depth": 1, "max_concurrent_children": 3},
+                "platforms": {
+                    "telegram": {"enabled": True, "token": "telegram-config-secret"},
+                    "feishu": {"enabled": False, "app_secret": "feishu-config-secret"},
+                },
+                "platform_toolsets": {
+                    "telegram": ["safe", "skills"],
+                    "feishu": ["safe"],
+                },
+                "agent": {"disabled_toolsets": ["terminal"]},
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "load_env",
+            lambda: {
+                "TELEGRAM_BOT_TOKEN": env_secret,
+                "FEISHU_APP_SECRET": "feishu-env-secret-should-not-leak",
+            },
+        )
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 4242)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "platforms": {"telegram": {"state": "connected"}},
+            },
+        )
+
+        resp = self.client.get("/api/setup-codex/state")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["read_only"] is True
+        assert data["model"] == {
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "base_url_configured": True,
+            "api_key_configured": True,
+            "context_length_configured": False,
+        }
+        assert data["platforms"]["telegram"]["configured"] is True
+        assert data["platforms"]["telegram"]["credential_configured"] is True
+        assert data["platforms"]["telegram"]["runtime_state"] == "connected"
+        assert data["toolsets"]["platform_toolsets"]["telegram"] == ["safe", "skills"]
+        assert data["toolsets"]["disabled_toolsets"] == ["terminal"]
+        assert data["gateway"]["running"] is True
+
+        dumped = json.dumps(data, ensure_ascii=False)
+        assert config_secret not in dumped
+        assert env_secret not in dumped
+        assert "telegram-config-secret" not in dumped
+        assert "feishu-config-secret" not in dumped
+        assert "feishu-env-secret-should-not-leak" not in dumped
+
+    def test_setup_codex_state_is_publicly_safe_without_session_token(self, monkeypatch):
+        """The read-only guide state is safe for the SPA bootstrap allowlist."""
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"model": "anthropic/claude"})
+        monkeypatch.setattr(web_server, "load_env", lambda: {"OPENAI_API_KEY": "secret-should-not-leak"})
+
+        resp = TestClient(web_server.app).get("/api/setup-codex/state")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"]["model"] == "anthropic/claude"
+        assert "secret-should-not-leak" not in json.dumps(data)
+
+    def test_setup_codex_state_never_emits_common_secret_shapes(self, monkeypatch):
+        """Setup Codex exposes presence and key names, never secret-looking values."""
+        import hermes_cli.web_server as web_server
+
+        raw_values = {
+            "OPENAI_API_KEY": "sk-" + "unit-test-value-that-must-not-leak",
+            "GITHUB_TOKEN": "ghp_" + "unitTestValueThatMustNotLeak",
+            "GITHUB_FINE_GRAINED_PAT": "github" + "_pat_" + "unitTestValueThatMustNotLeak",
+            "TELEGRAM_BOT_TOKEN": "1234567890:unit-test-bot-token-must-not-leak",
+            "OAUTH_REFRESH_TOKEN": "refresh-token-value-must-not-leak",
+            "DATABASE_URL": "postgres://user:password@db.example.test:5432/hermes",
+            "SSH_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\\nunit-test-key\\n-----END PRIVATE KEY-----",
+        }
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "anthropic/claude", "api_key": raw_values["OPENAI_API_KEY"]},
+                "platforms": {"telegram": {"enabled": True, "token": raw_values["TELEGRAM_BOT_TOKEN"]}},
+            },
+        )
+        monkeypatch.setattr(web_server, "load_env", lambda: raw_values)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda: {})
+
+        resp = self.client.get("/api/setup-codex/state")
+
+        assert resp.status_code == 200
+        dumped = json.dumps(resp.json(), ensure_ascii=False)
+        for value in raw_values.values():
+            assert value not in dumped
+        assert "sk-unit-test" not in dumped
+        assert "ghp_unitTest" not in dumped
+        assert "github_pat_unitTest" not in dumped
+        assert "-----BEGIN " + "PRIVATE KEY-----" not in dumped
+        assert "postgres://user:" + "password@" not in dumped
+        assert resp.json()["secrets"]["values_redacted"] is True
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value

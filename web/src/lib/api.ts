@@ -91,6 +91,7 @@ export const api = {
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
+  getSetupCodexState: () => fetchJSON<SetupCodexState>("/api/setup-codex/state"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
   setModelAssignment: (body: ModelAssignmentRequest) =>
@@ -593,6 +594,69 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+// ── Setup Codex types ─────────────────────────────────────────────────
+
+export interface SetupCodexPlatformState {
+  configured: boolean;
+  enabled: boolean;
+  credential_configured: boolean;
+  env_credentials_configured: boolean;
+  config_credentials_configured: boolean;
+  runtime_state: string;
+}
+
+export interface SetupCodexState {
+  read_only: boolean;
+  title: string;
+  route: string;
+  paths: {
+    hermes_home: string;
+    config_path: string;
+    env_path: string;
+  };
+  model: {
+    provider: string;
+    model: string;
+    base_url_configured: boolean;
+    api_key_configured: boolean;
+    context_length_configured: boolean;
+  };
+  delegation: {
+    configured: boolean;
+    model_override_configured: boolean;
+    provider_override_configured: boolean;
+    max_concurrent_children?: number | null;
+    max_spawn_depth?: number | null;
+    orchestrator_enabled: boolean;
+  };
+  gateway: {
+    running: boolean;
+    pid?: number | null;
+    state?: string | null;
+    updated_at?: string | null;
+    platforms: Record<string, { state: string }>;
+  };
+  platforms: Record<string, SetupCodexPlatformState>;
+  toolsets: {
+    enabled_toolsets: string[];
+    disabled_toolsets: string[];
+    platform_toolsets: Record<string, string[]>;
+    custom_toolsets: string[];
+  };
+  secrets: {
+    env_secret_keys_configured_count: number;
+    env_secret_key_names: string[];
+    values_redacted: boolean;
+  };
+  safety: {
+    can_write_config: boolean;
+    can_write_env: boolean;
+    can_execute_commands: boolean;
+    can_restart_gateway: boolean;
+    requires_manual_copy: boolean;
+  };
 }
 
 // ── Model info types ──────────────────────────────────────────────────

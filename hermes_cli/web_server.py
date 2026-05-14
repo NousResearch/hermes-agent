@@ -116,6 +116,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
+    "/api/setup-codex/state",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
@@ -874,6 +875,216 @@ async def get_defaults():
 @app.get("/api/config/schema")
 async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+
+
+_SETUP_CODEX_PLATFORMS: Tuple[str, ...] = ("telegram", "feishu", "api_server", "discord", "slack")
+_SETUP_CODEX_PLATFORM_ENV_KEYS: Dict[str, Tuple[str, ...]] = {
+    "telegram": ("TELEGRAM_BOT_TOKEN",),
+    "feishu": ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_APP_TOKEN", "LARK_APP_ID", "LARK_APP_SECRET"),
+    "api_server": ("HERMES_API_KEY",),
+    "discord": ("DISCORD_BOT_TOKEN",),
+    "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+}
+_SETUP_CODEX_SECRET_KEY_PARTS: Tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "cookie",
+    "credential",
+    "private_key",
+    "connection_string",
+    "dsn",
+)
+
+
+def _setup_codex_str(value: Any) -> str:
+    return str(value or "")
+
+
+def _setup_codex_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off", "none"}
+    return bool(value)
+
+
+def _setup_codex_list(value: Any) -> List[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if isinstance(v, (str, int, float, bool))]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _setup_codex_is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _SETUP_CODEX_SECRET_KEY_PARTS)
+
+
+def _setup_codex_has_secret_value(mapping: Any) -> bool:
+    if not isinstance(mapping, dict):
+        return False
+    for key, value in mapping.items():
+        if _setup_codex_is_secret_key(str(key)) and _setup_codex_bool(value):
+            return True
+    return False
+
+
+def _setup_codex_model_summary(config: Dict[str, Any]) -> Dict[str, Any]:
+    model_cfg = config.get("model", "")
+    if isinstance(model_cfg, dict):
+        model_name = _setup_codex_str(model_cfg.get("default", model_cfg.get("name", "")))
+        provider = _setup_codex_str(model_cfg.get("provider", ""))
+        base_url_configured = _setup_codex_bool(model_cfg.get("base_url"))
+        api_key_configured = _setup_codex_bool(model_cfg.get("api_key"))
+        context_length_configured = isinstance(model_cfg.get("context_length"), int) and model_cfg.get("context_length", 0) > 0
+    else:
+        model_name = _setup_codex_str(model_cfg)
+        provider = ""
+        base_url_configured = False
+        api_key_configured = False
+        context_length_configured = False
+    return {
+        "provider": provider,
+        "model": model_name,
+        "base_url_configured": base_url_configured,
+        "api_key_configured": api_key_configured,
+        "context_length_configured": context_length_configured,
+    }
+
+
+def _setup_codex_platform_summary(
+    platform: str,
+    config: Dict[str, Any],
+    env_on_disk: Dict[str, str],
+    runtime_platforms: Dict[str, Any],
+) -> Dict[str, Any]:
+    platforms_cfg = config.get("platforms") if isinstance(config.get("platforms"), dict) else {}
+    platform_cfg = platforms_cfg.get(platform) if isinstance(platforms_cfg.get(platform), dict) else {}
+    env_keys = _SETUP_CODEX_PLATFORM_ENV_KEYS.get(platform, ())
+    env_configured = any(_setup_codex_bool(env_on_disk.get(key)) for key in env_keys)
+    config_credential_configured = _setup_codex_has_secret_value(platform_cfg)
+    explicit_enabled = platform_cfg.get("enabled") if isinstance(platform_cfg, dict) else None
+    runtime = runtime_platforms.get(platform) if isinstance(runtime_platforms.get(platform), dict) else {}
+    runtime_state = _setup_codex_str(runtime.get("state")) if runtime else ""
+    return {
+        "configured": _setup_codex_bool(explicit_enabled) or env_configured or config_credential_configured or bool(runtime_state),
+        "enabled": _setup_codex_bool(explicit_enabled),
+        "credential_configured": env_configured or config_credential_configured,
+        "env_credentials_configured": env_configured,
+        "config_credentials_configured": config_credential_configured,
+        "runtime_state": runtime_state,
+    }
+
+
+def _setup_codex_toolsets_summary(config: Dict[str, Any]) -> Dict[str, Any]:
+    platform_toolsets_cfg = config.get("platform_toolsets") if isinstance(config.get("platform_toolsets"), dict) else {}
+    platform_toolsets = {
+        str(platform): _setup_codex_list(toolsets)
+        for platform, toolsets in platform_toolsets_cfg.items()
+        if isinstance(platform, str)
+    }
+    agent_cfg = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    disabled_toolsets = _setup_codex_list(agent_cfg.get("disabled_toolsets"))
+    enabled_toolsets = _setup_codex_list(agent_cfg.get("enabled_toolsets"))
+    custom_toolsets_cfg = config.get("custom_toolsets")
+    custom_toolsets: List[str] = []
+    if isinstance(custom_toolsets_cfg, dict):
+        custom_toolsets = [str(k) for k in custom_toolsets_cfg.keys()]
+    elif isinstance(custom_toolsets_cfg, list):
+        custom_toolsets = [str(item.get("name")) for item in custom_toolsets_cfg if isinstance(item, dict) and item.get("name")]
+    return {
+        "enabled_toolsets": enabled_toolsets,
+        "disabled_toolsets": disabled_toolsets,
+        "platform_toolsets": platform_toolsets,
+        "custom_toolsets": custom_toolsets,
+    }
+
+
+def _setup_codex_delegation_summary(config: Dict[str, Any]) -> Dict[str, Any]:
+    delegation = config.get("delegation") if isinstance(config.get("delegation"), dict) else {}
+    return {
+        "configured": bool(delegation),
+        "model_override_configured": _setup_codex_bool(delegation.get("model")),
+        "provider_override_configured": _setup_codex_bool(delegation.get("provider")),
+        "max_concurrent_children": delegation.get("max_concurrent_children"),
+        "max_spawn_depth": delegation.get("max_spawn_depth"),
+        "orchestrator_enabled": _setup_codex_bool(delegation.get("orchestrator_enabled")),
+    }
+
+
+@app.get("/api/setup-codex/state")
+def get_setup_codex_state():
+    """Read-only, secret-safe state for the Setup Codex dashboard guide.
+
+    This endpoint intentionally returns configuration *presence* and status
+    only. It must never return API keys, tokens, OAuth values, passwords,
+    private keys, or connection strings.
+    """
+    try:
+        config = load_config()
+        env_on_disk = load_env()
+        runtime = read_runtime_status() or {}
+        runtime_platforms = runtime.get("platforms") if isinstance(runtime.get("platforms"), dict) else {}
+        gateway_pid = get_running_pid()
+        gateway_running = gateway_pid is not None
+        gateway_state = runtime.get("gateway_state")
+        if gateway_running and not gateway_state:
+            gateway_state = "running"
+
+        env_secret_keys = [
+            key for key, value in env_on_disk.items()
+            if _setup_codex_is_secret_key(key) and _setup_codex_bool(value)
+        ]
+
+        return {
+            "read_only": True,
+            "title": "Hermes配置宝典",
+            "route": "/setup-codex",
+            "paths": {
+                "hermes_home": str(get_hermes_home()),
+                "config_path": str(get_config_path()),
+                "env_path": str(get_env_path()),
+            },
+            "model": _setup_codex_model_summary(config),
+            "delegation": _setup_codex_delegation_summary(config),
+            "gateway": {
+                "running": gateway_running,
+                "pid": gateway_pid,
+                "state": gateway_state,
+                "updated_at": runtime.get("updated_at"),
+                "platforms": {
+                    str(name): {"state": _setup_codex_str(value.get("state"))}
+                    for name, value in runtime_platforms.items()
+                    if isinstance(name, str) and isinstance(value, dict)
+                },
+            },
+            "platforms": {
+                platform: _setup_codex_platform_summary(platform, config, env_on_disk, runtime_platforms)
+                for platform in _SETUP_CODEX_PLATFORMS
+            },
+            "toolsets": _setup_codex_toolsets_summary(config),
+            "secrets": {
+                "env_secret_keys_configured_count": len(env_secret_keys),
+                "env_secret_key_names": sorted(env_secret_keys),
+                "values_redacted": True,
+            },
+            "safety": {
+                "can_write_config": False,
+                "can_write_env": False,
+                "can_execute_commands": False,
+                "can_restart_gateway": False,
+                "requires_manual_copy": True,
+            },
+        }
+    except Exception:
+        _log.exception("GET /api/setup-codex/state failed")
+        raise HTTPException(status_code=500, detail="Failed to build setup codex state")
 
 
 _EMPTY_MODEL_INFO: dict = {

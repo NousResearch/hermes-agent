@@ -26,6 +26,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
+        'user-guide/setup-codex',
         'user-guide/configuring-models',
         'user-guide/sessions',
         'user-guide/profiles',

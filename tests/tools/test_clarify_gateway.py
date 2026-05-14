@@ -177,6 +177,29 @@ class TestClarifyPrimitive:
         assert isinstance(timeout, int)
         assert timeout > 0
 
+    def test_interrupt_unblocks_wait_immediately(self):
+        """wait_for_response returns None when the thread is interrupted."""
+        from tools import clarify_gateway as cm
+        from tools.interrupt import set_interrupt
+
+        tid_holder = [None]
+        barrier = threading.Barrier(2, timeout=2.0)
+
+        def waiter():
+            tid_holder[0] = threading.current_thread().ident
+            barrier.wait()
+            return cm.wait_for_response("id-int", timeout=10.0)
+
+        cm.register("id-int", "sk-int", "Q?", ["A"])
+
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(waiter)
+            barrier.wait()  # waiter thread is now blocked in wait_for_response
+            set_interrupt(True, tid_holder[0])
+            result = fut.result(timeout=2.0)
+            assert result is None
+            set_interrupt(False, tid_holder[0])
+
 
 class TestGatewayTextIntercept:
     """The gateway's _handle_message intercepts text replies to pending clarifies."""

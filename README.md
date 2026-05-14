@@ -152,6 +152,41 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ---
 
+## Repository Orientation
+
+For contributors and agent-driven development, the main code paths are:
+
+| Path | Purpose |
+| --- | --- |
+| `run_agent.py` | Core agent conversation loop and tool-call orchestration. Large legacy entrypoint; refactor incrementally. |
+| `cli.py` | Interactive terminal UI and in-session command handling. Large legacy entrypoint; refactor incrementally. |
+| `agent/` | Prompt building, memory, compression, model routing, credentials, and skill dispatch support. |
+| `hermes_cli/` | CLI subcommands, configuration, setup flows, slash-command registry, and command-line entrypoint code. |
+| `tools/` | Tool implementations and central registry. |
+| `gateway/` | Messaging gateway and platform adapters. |
+| `cron/` | Scheduled job model and scheduler. |
+| `plugins/` | Optional plugin integrations. |
+| `skills/` | Bundled skills available as part of the default skill set. |
+| `optional-skills/` | Official skills that ship with the repository but are not activated by default. See `optional-skills/DESCRIPTION.md`. |
+| `tests/` | Pytest suite and shared hermetic fixtures. |
+| `website/` | Docusaurus documentation site. |
+| `plans/` | Shared or reviewed implementation plans. See `plans/README.md`. |
+| `.plans/` | Local, exploratory, or work-in-progress plans. See `.plans/README.md`. |
+
+### Planning documents
+
+Use planning documents for non-trivial changes before implementation:
+
+- Put reviewed, shared, or user-facing implementation plans in `plans/`.
+- Put local drafts, experiments, and work-in-progress plans in `.plans/`.
+- Promote a `.plans/` draft to `plans/` when it becomes the agreed implementation plan.
+
+### Test harness notes
+
+The test suite is designed to be hermetic. Shared fixtures redirect `HERMES_HOME` to a per-test temporary directory, remove credential-shaped environment variables, clear behavioral `HERMES_*` variables, pin deterministic runtime settings, and reset module-level state between tests. Integration tests are excluded by default through `pyproject.toml`.
+
+---
+
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.

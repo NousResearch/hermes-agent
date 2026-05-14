@@ -1299,7 +1299,16 @@ def check_all_command_guards(command: str, env_type: str,
             )
 
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                if not resolved:
+                    reason = "timed out"
+                elif choice is None:
+                    # The approval was cancelled (session ended, notify
+                    # callback unregistered, or agent interrupted) without
+                    # the user ever responding — distinct from an explicit
+                    # deny.  (Issue #22992)
+                    reason = "approval cancelled (prompt not delivered or session ended)"
+                else:
+                    reason = "denied by user"
                 return {
                     "approved": False,
                     "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",

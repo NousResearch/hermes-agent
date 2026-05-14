@@ -197,6 +197,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "cli-shim": ProviderConfig(
+        id="cli-shim",
+        name="Local CLI Shim",
+        auth_type="external_process",
+        inference_base_url="cli://shim",
+        base_url_env_var="CLI_SHIM_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -4122,6 +4129,19 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
+
+    # cli-shim doesn't need a specific command resolved up front — the
+    # client dispatches to claude/codex/gemini per-request based on the
+    # model field. Just return the marker base_url + a sentinel command.
+    if provider_id == "cli-shim":
+        return {
+            "provider": provider_id,
+            "api_key": "cli-shim",
+            "base_url": base_url.rstrip("/"),
+            "command": "cli-shim",
+            "args": [],
+            "source": "process",
+        }
 
     command = (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()

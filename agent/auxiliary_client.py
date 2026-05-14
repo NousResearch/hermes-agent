@@ -3141,6 +3141,21 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
+        elif provider == "cli-shim":
+            # Local CLI shim — uses OAuth subscriptions on the host
+            # (claude/codex/gemini). No API key needed.
+            if not final_model:
+                final_model = "claude-sonnet-cli"
+            from agent.cli_shim_client import CliShimClient, CLI_SHIM_BASE_URL
+
+            client = CliShimClient(
+                api_key="cli-shim",
+                base_url=CLI_SHIM_BASE_URL,
+                model=final_model,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         logger.warning("resolve_provider_client: external-process provider %s not "
                        "directly supported", provider)
         return None, None

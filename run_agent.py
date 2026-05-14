@@ -6523,6 +6523,21 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "cli-shim" or str(client_kwargs.get("base_url", "")).startswith("cli://shim"):
+            from agent.cli_shim_client import CliShimClient
+
+            # CliShimClient ignores api_key/base_url for routing; pass model
+            # through so per-request dispatch lands on the right CLI.
+            shim_kwargs = dict(client_kwargs)
+            shim_kwargs.setdefault("model", getattr(self, "model", None) or "claude-sonnet-cli")
+            client = CliShimClient(**shim_kwargs)
+            logger.info(
+                "CLI shim client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
             from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 

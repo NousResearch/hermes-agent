@@ -152,10 +152,11 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
 
     Cron jobs are stored and scheduled by the profile running the scheduler, but
     an individual job can opt into a different runtime profile.  While active,
-    HERMES_HOME and the scheduler's test/override hook both point at the
-    resolved profile directory so _get_hermes_home(), .env/config loading, script
-    resolution, AIAgent construction, and downstream get_hermes_home() callers
-    agree on the same home.
+    The scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home without mutating the
+    process-wide environment seen by other threads.
     """
     raw_profile = str(profile or "").strip()
     if not raw_profile:
@@ -163,16 +164,17 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         return
 
     global _hermes_home
-    prior_env = os.environ.get("HERMES_HOME", "_UNSET_")
     prior_override = _hermes_home
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     normalized_profile = normalize_profile_name(raw_profile)
     profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
 
+    override_token = None
     try:
-        os.environ["HERMES_HOME"] = str(profile_home)
+        override_token = set_hermes_home_override(profile_home)
         _hermes_home = profile_home
         logger.info(
             "Job '%s': using Hermes profile '%s' (%s)",
@@ -183,10 +185,8 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         yield normalized_profile
     finally:
         _hermes_home = prior_override
-        if prior_env == "_UNSET_":
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = prior_env
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -776,8 +776,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    from hermes_constants import get_hermes_home
-
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -829,6 +827,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     else:
         argv = [sys.executable, str(path)]
 
+    run_env = os.environ.copy()
+    run_env["HERMES_HOME"] = str(_get_hermes_home())
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            run_env["HOME"] = profile_home
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
             argv,
@@ -836,6 +845,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=run_env,
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()

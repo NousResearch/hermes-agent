@@ -104,8 +104,10 @@ TLON_SCHEMA = {
                     "message_get",
                     "post_react",
                     "post_unreact",
+                    "post_create",
                     "post_edit",
                     "post_delete",
+                    "gallery_post",
                     "dm_accept",
                     "dm_decline",
                     "dm_react",
@@ -188,8 +190,10 @@ TLON_SCHEMA = {
             "post_id": {"type": "string", "description": "Post id, dotted or bare @ud. For DMs, include ~author/id when possible."},
             "parent_id": {"type": "string", "description": "Parent post id for reply operations."},
             "author_id": {"type": "string", "description": "Author ship for DM/post operations when needed."},
-            "message": {"type": "string", "description": "Text/markdown for post_edit."},
-            "source": {"type": "string", "description": "Inline hook source, notebook Story JSON, or upload URL depending on action."},
+            "message": {"type": "string", "description": "Text/markdown for posts. For gallery_post this is the caption."},
+            "source": {"type": "string", "description": "Inline hook source, notebook Story JSON, or media URL/local path to upload for gallery_post/upload_file."},
+            "url": {"type": "string", "description": "Remote media URL for gallery_post or upload_file when source is not used."},
+            "alt": {"type": "string", "description": "Alt text for gallery_post image blocks."},
             "hook_id": {"type": "string", "description": "Hook id for hook_* actions."},
             "hook_ids": {"type": "array", "items": {"type": "string"}, "description": "Ordered hook id list for hook_order."},
             "schedule": {"type": "string", "description": "Hook cron schedule in @dr format, e.g. ~h1 or ~m30."},
@@ -417,7 +421,7 @@ async def _tlon_tool_async(args: Dict[str, Any]) -> Dict[str, Any]:
             return await groups.handle(action, args)
         if action.startswith("channel_") or action == "channels_list":
             return await channels.handle(action, args)
-        if action.startswith("message") or action.startswith("post_") or action.startswith("dm_") or action == "notebook_post":
+        if action.startswith("message") or action.startswith("post_") or action.startswith("dm_") or action in {"notebook_post", "gallery_post"}:
             return await messages.handle(action, args)
         if action.startswith("hook_"):
             return await hooks.handle(action, args)
@@ -935,6 +939,15 @@ class TlonMessages:
             return await self._react(args, add=True, dm=False)
         if action == "post_unreact":
             return await self._react(args, add=False, dm=False)
+        if action == "post_create":
+            channel_id = _required(args, "channel_id")
+            if not _is_group_channel(channel_id):
+                raise TlonToolError("post_create requires a group channel_id; use send_message for DMs")
+            content = _story_from_args(args)
+            sent_at = await self._add_channel_post(channel_id, content, meta=_post_meta(args))
+            return _ok(action, channel_id=channel_id, kind=_kind_for_channel(channel_id), sent_at=sent_at)
+        if action == "gallery_post":
+            return await self._gallery_post(args)
         if action == "post_edit":
             channel_id = _required(args, "channel_id")
             post_id = _format_post_id(_required(args, "post_id"))
@@ -1000,36 +1013,89 @@ class TlonMessages:
             if not channel_id.startswith("diary/"):
                 raise TlonToolError("notebook_post requires a diary channel_id")
             title = _required(args, "title")
-            sent_at = int(time.time() * 1000)
             content = _story_from_args(args)
-            await self.client.poke(
-                "channels",
-                os.getenv("TLON_CHANNEL_ACTION_MARK", "channel-action-1"),
-                {
-                    "channel": {
-                        "nest": channel_id,
-                        "action": {
-                            "post": {
-                                "add": {
-                                    "content": content,
-                                    "author": self.client.ship_name,
-                                    "sent": sent_at,
-                                    "kind": "/diary",
-                                    "meta": {
-                                        "title": title,
-                                        "description": str(args.get("description") or ""),
-                                        "image": str(args.get("image") or ""),
-                                        "cover": str(args.get("cover") or ""),
-                                    },
-                                    "blob": None,
-                                }
-                            }
-                        },
-                    }
+            sent_at = await self._add_channel_post(
+                channel_id,
+                content,
+                kind="/diary",
+                meta={
+                    "title": title,
+                    "description": str(args.get("description") or ""),
+                    "image": str(args.get("image") or ""),
+                    "cover": str(args.get("cover") or ""),
                 },
             )
             return _ok(action, channel_id=channel_id, title=title, sent_at=sent_at)
         raise TlonToolError(f"Unsupported message action: {action}")
+
+    async def _gallery_post(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        channel_id = _required(args, "channel_id")
+        if not channel_id.startswith("heap/"):
+            raise TlonToolError("gallery_post requires a heap channel_id")
+
+        media_source = _media_source_from_args(args)
+        image_url = str(args.get("image") or "").strip()
+        uploaded: Optional[Dict[str, Any]] = None
+        content: List[Any]
+
+        if media_source and not _looks_like_json(media_source):
+            upload_args = dict(args)
+            upload_args["source"] = media_source
+            uploaded = await TlonMisc(self.client).upload_file(upload_args)
+            image_url = str(uploaded.get("url") or image_url).strip()
+
+        if image_url:
+            content = _gallery_image_story(
+                image_url,
+                caption=str(args.get("message") or ""),
+                alt=str(args.get("alt") or args.get("title") or "image"),
+            )
+            meta = _gallery_meta(args, image_url)
+        else:
+            content = _story_from_args(args)
+            meta = _post_meta(args)
+
+        sent_at = await self._add_channel_post(channel_id, content, kind="/heap", meta=meta)
+        return _ok(
+            "gallery_post",
+            channel_id=channel_id,
+            sent_at=sent_at,
+            image=image_url,
+            uploaded=uploaded,
+        )
+
+    async def _add_channel_post(
+        self,
+        channel_id: str,
+        content: List[Any],
+        *,
+        kind: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
+        blob: Any = None,
+    ) -> int:
+        sent_at = int(time.time() * 1000)
+        await self.client.poke(
+            "channels",
+            os.getenv("TLON_CHANNEL_ACTION_MARK", "channel-action-1"),
+            {
+                "channel": {
+                    "nest": channel_id,
+                    "action": {
+                        "post": {
+                            "add": {
+                                "content": content,
+                                "author": self.client.ship_name,
+                                "sent": sent_at,
+                                "kind": kind or _kind_for_channel(channel_id),
+                                "meta": meta,
+                                "blob": blob,
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        return sent_at
 
     async def _posts(self, channel_id: str, *, mode: str = "newest", cursor: Optional[str] = None, count: int = 20, include_replies: bool = True) -> Any:
         if _is_group_channel(channel_id):
@@ -1957,6 +2023,32 @@ def _post_meta(args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _gallery_meta(args: Dict[str, Any], image_url: str) -> Dict[str, Any]:
+    return {
+        "title": str(args.get("title") or ""),
+        "description": str(args.get("description") or ""),
+        "image": image_url,
+        "cover": str(args.get("cover") or ""),
+    }
+
+
+def _gallery_image_story(image_url: str, *, caption: str = "", alt: str = "image") -> List[Any]:
+    story = _text_to_story(caption.strip()) if caption and caption.strip() else []
+    story.append(
+        {
+            "block": {
+                "image": {
+                    "src": image_url,
+                    "alt": alt or "image",
+                    "width": 0,
+                    "height": 0,
+                }
+            }
+        }
+    )
+    return story
+
+
 def _story_from_args(args: Dict[str, Any]) -> List[Any]:
     value = args.get("json")
     if isinstance(value, list):
@@ -1979,6 +2071,19 @@ def _story_from_args(args: Dict[str, Any]) -> List[Any]:
                     pass
             return _text_to_story(raw)
     return _text_to_story(str(args.get("message") or ""))
+
+
+def _looks_like_json(value: str) -> bool:
+    stripped = value.strip()
+    return stripped.startswith("[") or stripped.startswith("{")
+
+
+def _media_source_from_args(args: Dict[str, Any]) -> str:
+    for key in ("source", "path", "url"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _source_from_args(args: Dict[str, Any], default: str = "") -> str:
@@ -2112,9 +2217,9 @@ def _format_cite(cite: Any) -> str:
 
 
 async def _read_upload_input(args: Dict[str, Any]) -> tuple[bytes, str, str]:
-    source = str(args.get("source") or args.get("path") or "").strip()
+    source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
     if not source:
-        raise TlonToolError("upload_file requires source or path")
+        raise TlonToolError("upload_file requires source, path, or url")
     if source.startswith(("http://", "https://")):
         import aiohttp
 

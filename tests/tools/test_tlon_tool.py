@@ -2,6 +2,7 @@ import pytest
 
 from tools.tlon_tool import (
     TlonHttpError,
+    TlonToolError,
     TlonGroups,
     TlonHooks,
     TlonMessages,
@@ -208,6 +209,72 @@ async def test_notebook_post_uses_diary_metadata():
     assert post["kind"] == "/diary"
     assert post["meta"]["title"] == "Notebook Title"
     assert post["meta"]["image"] == "https://example.com/cover.png"
+
+
+@pytest.mark.asyncio
+async def test_gallery_post_uploads_media_and_posts_heap_image(monkeypatch):
+    async def fake_upload(self, args):
+        assert args["source"] == "https://example.com/cat.jpg"
+        return {
+            "url": "https://memex.tlon.network/v1/bot-palnet/cat.jpg",
+            "file_name": "cat.jpg",
+            "content_type": "image/jpeg",
+            "size": 123,
+        }
+
+    monkeypatch.setattr("tools.tlon_tool.TlonMisc.upload_file", fake_upload)
+    client = FakeTlonClient()
+    messages = TlonMessages(client)
+
+    result = await messages.handle(
+        "gallery_post",
+        {
+            "channel_id": "heap/~bot-palnet/gallery",
+            "url": "https://example.com/cat.jpg",
+            "message": "Cat caption",
+            "title": "Cat",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["image"] == "https://memex.tlon.network/v1/bot-palnet/cat.jpg"
+    poke = client.pokes[0]
+    assert poke["app"] == "channels"
+    assert poke["mark"] == "channel-action-1"
+    assert poke["json"]["channel"]["nest"] == "heap/~bot-palnet/gallery"
+    post = poke["json"]["channel"]["action"]["post"]["add"]
+    assert post["kind"] == "/heap"
+    assert post["meta"] == {
+        "title": "Cat",
+        "description": "",
+        "image": "https://memex.tlon.network/v1/bot-palnet/cat.jpg",
+        "cover": "",
+    }
+    assert post["content"][-1] == {
+        "block": {
+            "image": {
+                "src": "https://memex.tlon.network/v1/bot-palnet/cat.jpg",
+                "alt": "Cat",
+                "width": 0,
+                "height": 0,
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_gallery_post_requires_heap_channel():
+    client = FakeTlonClient()
+    messages = TlonMessages(client)
+
+    with pytest.raises(TlonToolError, match="heap channel_id"):
+        await messages.handle(
+            "gallery_post",
+            {
+                "channel_id": "chat/~bot-palnet/general",
+                "image": "https://example.com/cat.jpg",
+            },
+        )
 
 
 @pytest.mark.asyncio

@@ -466,8 +466,10 @@ PLATFORM_HINTS = {
         "You can manage Tlon with the tlon tool: create groups and channels, "
         "invite ships, assign admin roles, inspect history, manage contacts, "
         "update Tlon/OpenClaw settings, expose posts, manage hooks, upload files, "
-        "and create notebook posts. Do not tell the user to create groups or "
-        "channels manually when the tlon tool is available."
+        "create notebook posts, and post images/media to gallery channels with "
+        "gallery_post. Use gallery_post for heap/gallery channels instead of "
+        "ordinary chat sends. Do not tell the user to create groups or channels "
+        "manually when the tlon tool is available."
     ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "

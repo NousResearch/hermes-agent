@@ -171,7 +171,7 @@ TOOLSETS = {
     },
 
     "tlon": {
-        "description": "Tlon/Urbit management: groups, channels, invites, roles, contacts, settings, history, activity, expose, hooks, notebook posts, uploads, and raw scry/poke/thread",
+        "description": "Tlon/Urbit management: groups, channels, invites, roles, contacts, settings, history, activity, expose, hooks, notebook posts, gallery posts, uploads, and raw scry/poke/thread",
         "tools": ["tlon"],
         "includes": []
     },

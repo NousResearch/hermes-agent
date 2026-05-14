@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +571,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_ctx.add_argument("task_id")
 
+    # --- metrics ---
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="Compute read-only duration/throughput metrics for the Kanban board",
+        description=(
+            "Read the Kanban SQLite DB in read-only mode and emit deterministic "
+            "JSON and/or concise markdown flow metrics for shepherd/human use."
+        ),
+    )
+    p_metrics.add_argument("--db", default=None,
+                           help="Path to kanban SQLite DB. Defaults to the selected board DB; opened read-only.")
+    p_metrics.add_argument("--window", default="7d",
+                           help="Recent aggregation window, e.g. 24h, 7d, 30d (default: 7d)")
+    p_metrics.add_argument("--format", choices=["json", "markdown", "both"], default="both")
+    p_metrics.add_argument("--json-out", default=None,
+                           help="Write JSON to this file instead of stdout")
+    p_metrics.add_argument("--markdown-out", default=None,
+                           help="Write markdown to this file instead of stdout")
+    p_metrics.add_argument("--generated-at", type=int, default=None,
+                           help="Fixed Unix timestamp for deterministic snapshots/tests")
+    p_metrics.add_argument("--immutable", action="store_true",
+                           help="Use SQLite immutable=1; appropriate for copied fixtures")
+    p_metrics.add_argument("--reserve-priority-threshold", type=int, default=0,
+                           help="Maximum priority considered low-priority reserve backlog (default: 0)")
+    p_metrics.add_argument("--reserve-default-minutes", type=int, default=15,
+                           help="Fallback estimate per reserve task when no p50/runtime is known")
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -637,6 +665,13 @@ def kanban_command(args: argparse.Namespace) -> int:
     # `hermes kanban boards create …`.
     if action == "boards":
         return _dispatch_boards(args)
+
+    # Metrics must stay read-only: dispatch before kb.init_db(), because init_db()
+    # creates/migrates schema and writes WAL pragmas.
+    if action == "metrics":
+        if not getattr(args, "db", None):
+            args.db = str(kb.kanban_db_path(board=getattr(args, "board", None)))
+        return kanban_metrics.run_metrics_command(args)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one

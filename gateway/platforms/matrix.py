@@ -64,6 +64,7 @@ except ImportError:
         REACTION = "m.reaction"
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
+        ROOM_TOPIC = "m.room.topic"
 
     EventType = _EventTypeStub  # type: ignore[misc,assignment]
 
@@ -1022,6 +1023,39 @@ class MatrixAdapter(BasePlatformAdapter):
         return {"name": name, "type": chat_type}
 
     # ------------------------------------------------------------------
+    # Channel prompts / skills / topic
+    # ------------------------------------------------------------------
+
+    def _resolve_channel_prompt(
+        self, channel_id: str, parent_id: str | None = None
+    ) -> str | None:
+        from gateway.platforms.base import resolve_channel_prompt
+
+        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+    def _resolve_channel_skills(
+        self, channel_id: str, parent_id: str | None = None
+    ) -> list[str] | None:
+        from gateway.platforms.base import resolve_channel_skills
+
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
+
+    async def _get_room_topic(self, room_id: str) -> str | None:
+        """Fetch the ``m.room.topic`` state event for *room_id*."""
+        if not self._client:
+            return None
+        try:
+            evt = await self._client.get_state_event(
+                RoomID(room_id),
+                EventType.ROOM_TOPIC,
+            )
+            if evt and hasattr(evt, "topic") and evt.topic:
+                return evt.topic.strip() or None
+        except Exception:
+            pass
+        return None
+
+    # ------------------------------------------------------------------
     # Optional overrides
     # ------------------------------------------------------------------
 
@@ -1598,7 +1632,8 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> Optional[tuple]:
         """Shared mention/thread/DM gating for text and media handlers.
 
-        Returns (body, is_dm, chat_type, thread_id, display_name, source)
+        Returns (body, is_dm, chat_type, thread_id, display_name, source,
+        channel_prompt, auto_skill)
         or None if the message should be dropped (mention gating).
         """
         is_dm = await self._is_dm_room(room_id)
@@ -1657,12 +1692,26 @@ class MatrixAdapter(BasePlatformAdapter):
             self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
+
+        # Channel prompt: config-based lookup, with optional room topic
+        # fallback when ``topic_as_prompt`` is enabled.
+        _channel_prompt = self._resolve_channel_prompt(room_id)
+        _auto_skill = self._resolve_channel_skills(room_id)
+
+        # Fetch room topic for session context (chat_topic) and optional
+        # fallback channel prompt.
+        _room_topic = await self._get_room_topic(room_id)
+        _topic_as_prompt = (self.config.extra or {}).get("topic_as_prompt", False)
+        if not _channel_prompt and _topic_as_prompt and _room_topic:
+            _channel_prompt = _room_topic
+
         source = self.build_source(
             chat_id=room_id,
             chat_type=chat_type,
             user_id=sender,
             user_name=display_name,
             thread_id=thread_id,
+            chat_topic=_room_topic,
         )
 
         if thread_id:
@@ -1670,7 +1719,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._background_read_receipt(room_id, event_id)
 
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, source, _channel_prompt, _auto_skill
 
     async def _handle_text_message(
         self,
@@ -1696,7 +1745,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, _channel_prompt, _auto_skill = ctx
 
         # Reply-to detection.
         reply_to = None
@@ -1731,6 +1780,8 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            auto_skill=_auto_skill,
+            channel_prompt=_channel_prompt,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -1892,7 +1943,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, _channel_prompt, _auto_skill = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -1913,6 +1964,8 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            auto_skill=_auto_skill,
+            channel_prompt=_channel_prompt,
         )
 
         await self.handle_message(msg_event)

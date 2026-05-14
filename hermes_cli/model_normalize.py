@@ -68,6 +68,7 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
     "ai-gateway",
+    "cloudflare-ai-gateway",
     "kilocode",
 })
 

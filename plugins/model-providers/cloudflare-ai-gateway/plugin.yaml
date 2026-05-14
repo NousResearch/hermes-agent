@@ -1,0 +1,5 @@
+name: cloudflare-ai-gateway-provider
+kind: model-provider
+version: 1.0.0
+description: Cloudflare AI Gateway
+author: Nous Research

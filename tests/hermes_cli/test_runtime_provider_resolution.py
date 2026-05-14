@@ -240,6 +240,36 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["requested_provider"] == "ai-gateway"
 
 
+def test_resolve_runtime_provider_cloudflare_ai_gateway(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cloudflare-ai-gateway")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "cloudflare-ai-gateway",
+            "base_url": "https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+        },
+    )
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "test-cf-token")
+
+    resolved = rp.resolve_runtime_provider(requested="cloudflare-ai-gateway")
+
+    assert resolved["provider"] == "cloudflare-ai-gateway"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://gateway.ai.cloudflare.com/v1/acct/gw/compat"
+    assert resolved["api_key"] == "test-cf-token"
+    assert resolved["requested_provider"] == "cloudflare-ai-gateway"
+
+
+def test_resolve_runtime_provider_cloudflare_requires_compat_base_url(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cloudflare-ai-gateway")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "test-cf-token")
+
+    with pytest.raises(rp.AuthError, match="requires a /compat base URL"):
+        rp.resolve_runtime_provider(requested="cloudflare-ai-gateway")
+
+
 def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
     monkeypatch.setattr(

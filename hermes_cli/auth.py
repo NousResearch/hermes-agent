@@ -42,7 +42,7 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import CLOUDFLARE_AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -337,6 +337,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
         base_url_env_var="AI_GATEWAY_BASE_URL",
+    ),
+    "cloudflare-ai-gateway": ProviderConfig(
+        id="cloudflare-ai-gateway",
+        name="Cloudflare AI Gateway",
+        auth_type="api_key",
+        inference_base_url=CLOUDFLARE_AI_GATEWAY_BASE_URL,
+        api_key_env_vars=("CLOUDFLARE_AI_GATEWAY_TOKEN", "CF_AIG_TOKEN"),
+        base_url_env_var="CLOUDFLARE_AI_GATEWAY_BASE_URL",
     ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
@@ -1378,6 +1386,8 @@ def resolve_provider(
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
+        "cloudflare": "cloudflare-ai-gateway", "cf-ai-gateway": "cloudflare-ai-gateway",
+        "cf-aig": "cloudflare-ai-gateway", "cloudflare-aig": "cloudflare-ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -1449,8 +1459,9 @@ def resolve_provider(
         # Copilot/GitHub Models as the provider. LM Studio is a local server
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
-        # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        # also requires explicit selection. Cloudflare AI Gateway additionally
+        # requires account/gateway routing, so the token alone is insufficient.
+        if pid in {"copilot", "lmstudio", "cloudflare-ai-gateway"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):

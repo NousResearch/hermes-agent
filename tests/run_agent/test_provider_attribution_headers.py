@@ -48,6 +48,28 @@ def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_cloudflare_ai_gateway_base_url_applies_auth_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="cf-token",
+        base_url="https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+        model="workers-ai/@cf/moonshotai/kimi-k2.6",
+        provider="cloudflare-ai-gateway",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url(
+        "https://gateway.ai.cloudflare.com/v1/acct/gw/compat"
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"].startswith("HermesAgent/")
+    assert "cf-aig-authorization" not in headers
+
+
+@patch("run_agent.OpenAI")
 def test_routermint_base_url_applies_user_agent_header(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

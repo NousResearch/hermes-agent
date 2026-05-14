@@ -277,6 +277,8 @@ def run_dump(args):
         ("HF_TOKEN", "huggingface"),
         ("NVIDIA_API_KEY", "nvidia"),
         ("AI_GATEWAY_API_KEY", "ai_gateway"),
+        ("CLOUDFLARE_AI_GATEWAY_TOKEN", "cloudflare_ai_gateway"),
+        ("CF_AIG_TOKEN", "cf_aig"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
         ("KILOCODE_API_KEY", "kilocode"),

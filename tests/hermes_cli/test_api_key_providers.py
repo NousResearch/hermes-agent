@@ -41,6 +41,7 @@ class TestProviderRegistry:
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
+        ("cloudflare-ai-gateway", "Cloudflare AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
     ])
@@ -102,6 +103,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_cloudflare_ai_gateway_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["cloudflare-ai-gateway"]
+        assert pconfig.api_key_env_vars == ("CLOUDFLARE_AI_GATEWAY_TOKEN", "CF_AIG_TOKEN")
+        assert pconfig.base_url_env_var == "CLOUDFLARE_AI_GATEWAY_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -126,6 +132,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
+        assert PROVIDER_REGISTRY["cloudflare-ai-gateway"].inference_base_url == "https://gateway.ai.cloudflare.com/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -150,6 +157,7 @@ PROVIDER_ENV_VARS = (
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
+    "CLOUDFLARE_AI_GATEWAY_TOKEN", "CF_AIG_TOKEN", "CLOUDFLARE_AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -187,6 +195,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_cloudflare_ai_gateway(self):
+        assert resolve_provider("cloudflare-ai-gateway") == "cloudflare-ai-gateway"
+
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
 
@@ -216,6 +227,11 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_cloudflare_ai_gateway(self):
+        assert resolve_provider("cloudflare") == "cloudflare-ai-gateway"
+        assert resolve_provider("cf-ai-gateway") == "cloudflare-ai-gateway"
+        assert resolve_provider("cf-aig") == "cloudflare-ai-gateway"
 
     def test_alias_gmi_cloud(self):
         assert resolve_provider("gmi-cloud") == "gmi"
@@ -294,6 +310,11 @@ class TestResolveProvider:
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_does_not_detect_cloudflare_token_without_route(self, monkeypatch):
+        monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "cf-aig-token")
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto")
 
     def test_auto_detects_gmi_key(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
@@ -531,6 +552,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["provider"] == "ai-gateway"
         assert creds["api_key"] == "gw-secret-key"
         assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
+
+    def test_resolve_cloudflare_ai_gateway_with_token(self, monkeypatch):
+        monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "cf-secret-token")
+        creds = resolve_api_key_provider_credentials("cloudflare-ai-gateway")
+        assert creds["provider"] == "cloudflare-ai-gateway"
+        assert creds["api_key"] == "cf-secret-token"
+        assert creds["base_url"] == "https://gateway.ai.cloudflare.com/v1"
+
+    def test_resolve_cloudflare_ai_gateway_token_alias(self, monkeypatch):
+        monkeypatch.setenv("CF_AIG_TOKEN", "cf-alias-token")
+        creds = resolve_api_key_provider_credentials("cloudflare-ai-gateway")
+        assert creds["api_key"] == "cf-alias-token"
+        assert creds["source"] == "CF_AIG_TOKEN"
 
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")

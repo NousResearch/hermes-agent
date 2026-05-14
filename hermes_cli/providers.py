@@ -136,6 +136,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         is_aggregator=True,
     ),
+    "cloudflare-ai-gateway": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("CLOUDFLARE_AI_GATEWAY_TOKEN", "CF_AIG_TOKEN"),
+        base_url_override="https://gateway.ai.cloudflare.com/v1",
+        base_url_env_var="CLOUDFLARE_AI_GATEWAY_BASE_URL",
+    ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -278,6 +285,12 @@ ALIASES: Dict[str, str] = {
     "ai-gateway": "vercel",
     "aigateway": "vercel",
     "vercel-ai-gateway": "vercel",
+
+    # Cloudflare AI Gateway
+    "cloudflare": "cloudflare-ai-gateway",
+    "cf-ai-gateway": "cloudflare-ai-gateway",
+    "cf-aig": "cloudflare-ai-gateway",
+    "cloudflare-aig": "cloudflare-ai-gateway",
 
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",

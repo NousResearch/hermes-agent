@@ -341,6 +341,34 @@ class TestBuildApiKwargsAIGateway:
         assert "web_search" in tool_names
 
 
+class TestBuildApiKwargsCloudflareAIGateway:
+    def test_uses_chat_completions_format(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "cloudflare-ai-gateway",
+            base_url="https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+            model="workers-ai/@cf/moonshotai/kimi-k2.6",
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "messages" in kwargs
+        assert "model" in kwargs
+        assert kwargs["messages"][-1]["content"] == "hi"
+
+    def test_no_responses_api_fields(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "cloudflare-ai-gateway",
+            base_url="https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+            model="workers-ai/@cf/moonshotai/kimi-k2.6",
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "input" not in kwargs
+        assert "instructions" not in kwargs
+        assert "store" not in kwargs
+
+
 class TestBuildApiKwargsNousPortal:
     def test_includes_nous_product_tags(self, monkeypatch):
         from agent.portal_tags import nous_portal_tags

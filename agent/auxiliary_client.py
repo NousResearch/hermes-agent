@@ -159,6 +159,10 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "cloudflare": "cloudflare-ai-gateway",
+    "cf-ai-gateway": "cloudflare-ai-gateway",
+    "cf-aig": "cloudflare-ai-gateway",
+    "cloudflare-aig": "cloudflare-ai-gateway",
 }
 
 
@@ -378,6 +382,11 @@ _AI_GATEWAY_HEADERS = {
     "X-Title": "Hermes Agent",
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
+
+
+def cloudflare_ai_gateway_headers(api_key: str = "") -> Dict[str, str]:
+    """Return default headers for Cloudflare AI Gateway BYOK traffic."""
+    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
 
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
@@ -1312,6 +1321,11 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
+        if provider_id == "cloudflare-ai-gateway":
+            # Token alone is insufficient; Cloudflare also needs the saved
+            # account/gateway /compat route. Explicit provider selection uses
+            # resolve_provider_client() below, which reads that runtime config.
+            continue
         if provider_id == "anthropic":
             # Only try anthropic when the user has explicitly configured it.
             # Without this gate, Claude Code credentials get silently used
@@ -1344,6 +1358,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            elif base_url_host_matches(base_url, "gateway.ai.cloudflare.com"):
+                extra["default_headers"] = cloudflare_ai_gateway_headers(api_key)
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
@@ -1379,6 +1395,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        elif base_url_host_matches(base_url, "gateway.ai.cloudflare.com"):
+            extra["default_headers"] = cloudflare_ai_gateway_headers(api_key)
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
@@ -2619,6 +2637,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
+    elif base_url_host_matches(sync_base_url, "gateway.ai.cloudflare.com"):
+        async_kwargs["default_headers"] = cloudflare_ai_gateway_headers(str(sync_client.api_key))
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
         from hermes_cli.copilot_auth import copilot_request_headers
 
@@ -3019,6 +3039,34 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
+        if provider == "cloudflare-ai-gateway":
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=provider,
+                    explicit_api_key=explicit_api_key,
+                    explicit_base_url=explicit_base_url,
+                )
+            except Exception as exc:
+                logger.debug("resolve_provider_client: %s runtime unavailable: %s", provider, exc)
+                return None, None
+            api_key = str(runtime.get("api_key") or "").strip()
+            base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+            final_model = _normalize_resolved_model(
+                model or _get_aux_model_for_provider(provider), provider
+            )
+            if not api_key or not base_url or not final_model:
+                return None, None
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=cloudflare_ai_gateway_headers(api_key),
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
         # Honour an explicit api_key override (e.g. from a fallback_model entry
@@ -3060,6 +3108,8 @@ def resolve_provider_client(
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
+        elif base_url_host_matches(base_url, "gateway.ai.cloudflare.com"):
+            headers.update(cloudflare_ai_gateway_headers(api_key))
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.copilot_auth import copilot_request_headers
 

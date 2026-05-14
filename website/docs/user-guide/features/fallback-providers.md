@@ -47,7 +47,8 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 
 | Provider | Value | Requirements |
 |----------|-------|-------------|
-| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
+| Vercel AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
+| Cloudflare AI Gateway | `cloudflare-ai-gateway` | `CLOUDFLARE_AI_GATEWAY_TOKEN` + configured `/compat` base URL |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes auth` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |

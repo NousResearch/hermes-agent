@@ -93,18 +93,23 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 - ACP editor sessions
 - auxiliary model tasks
 
-## AI Gateway
+## Vercel AI Gateway
 
 Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
 
+## Cloudflare AI Gateway
+
+Set `CLOUDFLARE_AI_GATEWAY_TOKEN` in `~/.hermes/.env` and run `hermes model` to choose Cloudflare AI Gateway. Hermes stores the resolved `/compat` base URL in `config.yaml`, fetches the live model list from that gateway's authenticated `/models` endpoint when available, and uses Cloudflare's BYOK / Unified Billing mode; provider keys are not stored locally by Hermes for this provider.
+
 ## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
 
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, `CLOUDFLARE_AI_GATEWAY_TOKEN`, and `OPENAI_API_KEY`).
 
 Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
 - `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
+- `CLOUDFLARE_AI_GATEWAY_TOKEN` is only sent to `gateway.ai.cloudflare.com` endpoints
 - `OPENAI_API_KEY` is used for custom endpoints and as a fallback
 
 Hermes also distinguishes between:

@@ -804,6 +804,67 @@ def _resolve_azure_foundry_runtime(
     }
 
 
+def _resolve_cloudflare_ai_gateway_runtime(
+    *,
+    requested_provider: str,
+    model_cfg: Dict[str, Any],
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve Cloudflare AI Gateway in BYOK / Unified Billing mode.
+
+    The token is a secret, but account/gateway routing is not. The setup flow
+    stores the fully resolved /compat base URL in config.yaml so runtime never
+    has to infer it from secret env vars.
+    """
+    provider = "cloudflare-ai-gateway"
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    explicit_api_key = str(explicit_api_key or "").strip()
+    explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
+
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    cfg_base_url = ""
+    if cfg_provider == provider:
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+    env_base_url = ""
+    if pconfig and pconfig.base_url_env_var:
+        env_base_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+
+    base_url = explicit_base_url or cfg_base_url or env_base_url
+    if not base_url or not base_url.rstrip("/").endswith("/compat"):
+        raise AuthError(
+            "Cloudflare AI Gateway requires a /compat base URL. Run 'hermes model' "
+            "and choose Cloudflare AI Gateway, or set model.base_url to "
+            "https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat.",
+            provider=provider,
+            code="cloudflare_gateway_base_url_missing",
+        )
+
+    api_key = explicit_api_key
+    source = "explicit" if explicit_api_key or explicit_base_url else "config"
+    if not api_key:
+        creds = resolve_api_key_provider_credentials(provider)
+        api_key = str(creds.get("api_key") or "").strip()
+        source = creds.get("source", source)
+    if not api_key:
+        raise AuthError(
+            "Cloudflare AI Gateway token not found. Set CLOUDFLARE_AI_GATEWAY_TOKEN "
+            "or CF_AIG_TOKEN in ~/.hermes/.env.",
+            provider=provider,
+            code="cloudflare_gateway_token_missing",
+        )
+
+    return {
+        "provider": provider,
+        "api_mode": "chat_completions",
+        "base_url": base_url,
+        "api_key": api_key,
+        "source": source,
+        "requested_provider": requested_provider,
+    }
+
+
 def _resolve_explicit_runtime(
     *,
     provider: str,
@@ -896,6 +957,14 @@ def _resolve_explicit_runtime(
     # Azure Foundry: user-configured endpoint with selectable API mode
     if provider == "azure-foundry":
         return _resolve_azure_foundry_runtime(
+            requested_provider=requested_provider,
+            model_cfg=model_cfg,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
+
+    if provider == "cloudflare-ai-gateway":
+        return _resolve_cloudflare_ai_gateway_runtime(
             requested_provider=requested_provider,
             model_cfg=model_cfg,
             explicit_api_key=explicit_api_key,
@@ -1005,6 +1074,14 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    if requested_provider == "cloudflare-ai-gateway":
+        return _resolve_cloudflare_ai_gateway_runtime(
+            requested_provider=requested_provider,
+            model_cfg=_get_model_config(),
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -1029,6 +1106,14 @@ def resolve_runtime_provider(
     )
     if explicit_runtime:
         return explicit_runtime
+
+    if provider == "cloudflare-ai-gateway":
+        return _resolve_cloudflare_ai_gateway_runtime(
+            requested_provider=requested_provider,
+            model_cfg=model_cfg,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
 
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":

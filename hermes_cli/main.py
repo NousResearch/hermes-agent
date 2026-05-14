@@ -64,6 +64,7 @@ except ModuleNotFoundError:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -261,7 +262,11 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
+from hermes_constants import (
+    AI_GATEWAY_BASE_URL,
+    CLOUDFLARE_AI_GATEWAY_BASE_URL,
+    OPENROUTER_BASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1917,6 +1922,8 @@ def select_provider_and_model(args=None):
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "ai-gateway":
         _model_flow_ai_gateway(config, current_model)
+    elif selected_provider == "cloudflare-ai-gateway":
+        _model_flow_cloudflare_ai_gateway(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -2525,6 +2532,105 @@ def _model_flow_ai_gateway(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via Vercel AI Gateway)")
+    else:
+        print("No change.")
+
+
+def _model_flow_cloudflare_ai_gateway(config, current_model=""):
+    """Cloudflare AI Gateway provider: BYOK / Unified Billing setup."""
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.models import cloudflare_ai_gateway_model_ids
+
+    api_key = (
+        get_env_value("CLOUDFLARE_AI_GATEWAY_TOKEN")
+        or get_env_value("CF_AIG_TOKEN")
+        or os.getenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "")
+        or os.getenv("CF_AIG_TOKEN", "")
+    ).strip()
+    if not api_key:
+        print("No Cloudflare AI Gateway token configured.")
+        print("Create an AI Gateway token in the Cloudflare dashboard, then paste it here.")
+        print("Provider keys should be stored in Cloudflare BYOK / Unified Billing.")
+        print()
+        try:
+            import getpass
+
+            key = getpass.getpass(
+                "Cloudflare AI Gateway token (or Enter to cancel): "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not key:
+            print("Cancelled.")
+            return
+        save_env_value("CLOUDFLARE_AI_GATEWAY_TOKEN", key)
+        api_key = key
+        print("Token saved.")
+        print()
+
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    current_base_url = ""
+    if isinstance(model_cfg, dict):
+        if str(model_cfg.get("provider") or "").strip().lower() == "cloudflare-ai-gateway":
+            current_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+    account_id = ""
+    gateway_id = "default"
+    prefix = CLOUDFLARE_AI_GATEWAY_BASE_URL.rstrip("/") + "/"
+    if current_base_url.startswith(prefix) and current_base_url.endswith("/compat"):
+        parts = current_base_url[len(prefix): -len("/compat")].strip("/").split("/")
+        if len(parts) >= 2:
+            account_id, gateway_id = parts[0], parts[1]
+
+    try:
+        account_prompt = f"Cloudflare account ID [{account_id}]: " if account_id else "Cloudflare account ID: "
+        entered_account = input(account_prompt).strip()
+        account_id = entered_account or account_id
+        if not account_id:
+            print("Account ID is required. No change.")
+            return
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", account_id):
+            print("Account ID may only contain letters, numbers, underscores, and hyphens. No change.")
+            return
+
+        gateway_prompt = f"Gateway ID [{gateway_id}]: " if gateway_id else "Gateway ID [default]: "
+        entered_gateway = input(gateway_prompt).strip()
+        gateway_id = entered_gateway or gateway_id or "default"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", gateway_id):
+            print("Gateway ID may only contain letters, numbers, underscores, and hyphens. No change.")
+            return
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    base_url = f"{CLOUDFLARE_AI_GATEWAY_BASE_URL.rstrip('/')}/{account_id}/{gateway_id}/compat"
+    models_list = cloudflare_ai_gateway_model_ids(
+        api_key=api_key,
+        base_url=base_url,
+        force_refresh=True,
+    )
+
+    selected = _prompt_model_selection(models_list, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "cloudflare-ai-gateway"
+        model["base_url"] = base_url
+        model["api_mode"] = "chat_completions"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Cloudflare AI Gateway)")
     else:
         print("No change.")
 

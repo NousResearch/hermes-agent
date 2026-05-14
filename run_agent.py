@@ -1664,6 +1664,9 @@ class AIAgent:
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     from agent.auxiliary_client import build_or_headers
                     client_kwargs["default_headers"] = build_or_headers()
+                elif base_url_host_matches(effective_base, "gateway.ai.cloudflare.com"):
+                    from agent.auxiliary_client import cloudflare_ai_gateway_headers
+                    client_kwargs["default_headers"] = cloudflare_ai_gateway_headers(api_key)
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
@@ -7287,12 +7290,20 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
+        from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
+            build_or_headers,
+            cloudflare_ai_gateway_headers,
+        )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif base_url_host_matches(base_url, "gateway.ai.cloudflare.com"):
+            self._client_kwargs["default_headers"] = cloudflare_ai_gateway_headers(
+                self._client_kwargs.get("api_key", "")
+            )
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
@@ -9761,6 +9772,8 @@ class AIAgent:
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
         if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
+            return True
+        if base_url_host_matches(self._base_url_lower, "gateway.ai.cloudflare.com"):
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")

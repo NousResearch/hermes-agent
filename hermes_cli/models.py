@@ -94,6 +94,26 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
+# Cloudflare AI Gateway's OpenAI-compatible /compat endpoint does not expose a
+# Vercel-style live model catalog. Keep this list focused on agentic chat models
+# and let users enter dynamic/<route> or any other gateway model manually.
+CLOUDFLARE_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
+    ("workers-ai/@cf/moonshotai/kimi-k2.6", "recommended"),
+    ("openai/gpt-5.4-mini", ""),
+    ("openai/gpt-5.4", ""),
+    ("openai/gpt-5.3-codex", ""),
+    ("anthropic/claude-sonnet-4-6", ""),
+    ("anthropic/claude-opus-4-6", ""),
+    ("anthropic/claude-haiku-4-5", ""),
+    ("google/gemini-3.1-pro-preview", ""),
+    ("google/gemini-3-flash-preview", ""),
+    ("workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast", "Workers AI"),
+    ("dynamic/customer-support", "dynamic route example"),
+]
+
+_cloudflare_ai_gateway_catalog_cache: dict[str, list[str]] = {}
+
+
 def _codex_curated_models() -> list[str]:
     """Derive the openai-codex curated list from codex_models.py.
 
@@ -460,6 +480,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
 # and the static fallback catalog (bare ids) stay in sync from a single
 # source of truth.
 _PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
+_PROVIDER_MODELS["cloudflare-ai-gateway"] = [
+    mid for mid, _ in CLOUDFLARE_AI_GATEWAY_MODELS
+]
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
@@ -944,6 +967,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
+    ProviderEntry("cloudflare-ai-gateway", "Cloudflare AI Gateway", "Cloudflare AI Gateway (BYOK / Unified Billing)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
 ]
 
@@ -1010,6 +1034,10 @@ _PROVIDER_ALIASES = {
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
+    "cloudflare": "cloudflare-ai-gateway",
+    "cf-ai-gateway": "cloudflare-ai-gateway",
+    "cf-aig": "cloudflare-ai-gateway",
+    "cloudflare-aig": "cloudflare-ai-gateway",
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
@@ -1275,6 +1303,142 @@ def fetch_ai_gateway_models(
 def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the AI Gateway model-id strings."""
     return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
+def _resolve_cloudflare_ai_gateway_catalog_config() -> tuple[str, str]:
+    """Return (api_key, base_url) for Cloudflare AI Gateway model discovery."""
+    api_key = (
+        os.getenv("CLOUDFLARE_AI_GATEWAY_TOKEN", "").strip()
+        or os.getenv("CF_AIG_TOKEN", "").strip()
+    )
+    base_url = os.getenv("CLOUDFLARE_AI_GATEWAY_BASE_URL", "").strip().rstrip("/")
+
+    try:
+        from hermes_cli.config import get_env_value, load_config
+
+        api_key = (
+            get_env_value("CLOUDFLARE_AI_GATEWAY_TOKEN")
+            or get_env_value("CF_AIG_TOKEN")
+            or api_key
+        ).strip()
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            if str(model_cfg.get("provider") or "").strip().lower() == "cloudflare-ai-gateway":
+                base_url = str(model_cfg.get("base_url") or base_url).strip().rstrip("/")
+    except Exception:
+        pass
+
+    return api_key, base_url
+
+
+def _cloudflare_gateway_model_is_chat_candidate(model_id: str) -> bool:
+    """Best-effort filter for Cloudflare's broad gateway model catalog."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    non_chat_markers = (
+        "embedding",
+        "image",
+        "audio",
+        "tts",
+        "whisper",
+        "transcribe",
+        "veo-",
+        "dall-e",
+        "stable-diffusion",
+        "flux",
+        "sdxl",
+        "rerank",
+    )
+    return not any(marker in mid for marker in non_chat_markers)
+
+
+def fetch_cloudflare_ai_gateway_models(
+    timeout: float = 8.0,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    force_refresh: bool = False,
+) -> list[str]:
+    """Return Cloudflare AI Gateway models from the live /compat/models API.
+
+    The endpoint is authenticated and account/gateway specific. When it is not
+    configured or unavailable, returns the curated static fallback.
+    """
+    fallback = [mid for mid, _ in CLOUDFLARE_AI_GATEWAY_MODELS]
+    resolved_api_key, resolved_base_url = _resolve_cloudflare_ai_gateway_catalog_config()
+    api_key = str(api_key or resolved_api_key).strip()
+    base_url = str(base_url or resolved_base_url).strip().rstrip("/")
+    if not api_key or not base_url:
+        return fallback
+
+    cache_key = base_url.rstrip("/")
+    if not force_refresh and cache_key in _cloudflare_ai_gateway_catalog_cache:
+        return list(_cloudflare_ai_gateway_catalog_cache[cache_key])
+
+    try:
+        req = urllib.request.Request(
+            f"{cache_key}/models",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": _HERMES_USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return fallback
+
+    raw_items = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(raw_items, list):
+        return fallback
+
+    live: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if isinstance(item, dict):
+            mid = str(item.get("id") or "").strip()
+        else:
+            mid = str(item or "").strip()
+        if not _cloudflare_gateway_model_is_chat_candidate(mid):
+            continue
+        key = mid.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        live.append(mid)
+
+    if not live:
+        return fallback
+
+    # Keep Hermes' recommended agentic defaults at the top, then append all
+    # live models so the picker self-updates as Cloudflare adds more.
+    merged: list[str] = list(fallback)
+    live_seen = {mid.lower() for mid in merged}
+    for mid in live:
+        key = mid.lower()
+        if key not in live_seen:
+            merged.append(mid)
+            live_seen.add(key)
+
+    _cloudflare_ai_gateway_catalog_cache[cache_key] = merged
+    return list(merged)
+
+
+def cloudflare_ai_gateway_model_ids(
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    force_refresh: bool = False,
+) -> list[str]:
+    """Return Cloudflare AI Gateway model-id strings."""
+    return fetch_cloudflare_ai_gateway_models(
+        api_key=api_key,
+        base_url=base_url,
+        force_refresh=force_refresh,
+    )
 
 
 
@@ -1733,7 +1897,7 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
+    {"nous", "openrouter", "ai-gateway", "cloudflare-ai-gateway", "copilot", "kilocode"}
 )
 
 
@@ -2207,6 +2371,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "cloudflare-ai-gateway":
+        return cloudflare_ai_gateway_model_ids(force_refresh=force_refresh)
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:

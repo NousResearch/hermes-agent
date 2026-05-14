@@ -1426,6 +1426,32 @@ def get_pre_tool_call_block_message(
     return None
 
 
+def get_pre_api_request_block_message(**kwargs: Any) -> Optional[str]:
+    """Check ``pre_api_request`` hooks for a blocking directive.
+
+    Plugins that need to enforce request-level policy (token budgets, rate
+    limits, external approvals) can return::
+
+        {"action": "block", "message": "Reason the request was blocked"}
+
+    from their ``pre_api_request`` callback. The first valid block directive
+    wins. Invalid or irrelevant hook return values are ignored so existing
+    observer-only ``pre_api_request`` hooks remain backwards compatible.
+    """
+    hook_results = invoke_hook("pre_api_request", **kwargs)
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message:
+            return message
+
+    return None
+
+
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     """Return the global manager after ensuring plugin discovery has run.
 

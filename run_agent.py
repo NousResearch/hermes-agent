@@ -12633,9 +12633,8 @@ class AIAgent:
                         api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
                     try:
-                        from hermes_cli.plugins import invoke_hook as _invoke_hook
-                        _invoke_hook(
-                            "pre_api_request",
+                        from hermes_cli.plugins import get_pre_api_request_block_message
+                        _pre_api_block = get_pre_api_request_block_message(
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
                             platform=self.platform or "",
@@ -12651,7 +12650,16 @@ class AIAgent:
                             max_tokens=self.max_tokens,
                         )
                     except Exception:
-                        pass
+                        _pre_api_block = None
+                    if _pre_api_block:
+                        self.iteration_budget.refund()
+                        api_call_count -= 1
+                        self._api_call_count = api_call_count
+                        _turn_exit_reason = "pre_api_request_blocked"
+                        final_response = _pre_api_block
+                        messages.append({"role": "assistant", "content": final_response})
+                        self._emit_status(f"⚠️ LLM request blocked by plugin: {_pre_api_block}")
+                        break
 
                     if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -14489,6 +14497,9 @@ class AIAgent:
             # Guard: if all retries exhausted without a successful response
             # (e.g. repeated context-length errors that exhausted retry_count),
             # the `response` variable is still None. Break out cleanly.
+            if response is None and final_response is not None:
+                break
+
             if response is None:
                 _turn_exit_reason = "all_retries_exhausted_no_response"
                 print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")

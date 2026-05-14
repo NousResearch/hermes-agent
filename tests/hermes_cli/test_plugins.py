@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_pre_api_request_block_message,
     get_pre_tool_call_block_message,
     resolve_plugin_command_result,
     discover_plugins,
@@ -453,6 +454,22 @@ class TestPluginHooks:
             max_tokens=8192,
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
+
+    def test_pre_api_request_block_directive_helper(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "block", "message": "budget exhausted"}],
+        )
+
+        assert get_pre_api_request_block_message(session_id="s1") == "budget exhausted"
+
+    def test_pre_api_request_block_helper_ignores_non_block_results(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"seen": True}, {"action": "allow"}],
+        )
+
+        assert get_pre_api_request_block_message(session_id="s1") is None
 
     def test_transform_terminal_output_hook_can_be_registered_and_invoked(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

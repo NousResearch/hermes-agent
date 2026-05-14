@@ -273,3 +273,22 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         call_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
         following_results = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") in call_ids]
         assert len(following_results) == len(call_ids)
+
+
+def test_pre_api_request_block_stops_before_model_call_and_refunds_iteration():
+    agent = _make_agent("web_search", max_iterations=10)
+
+    with (
+        patch("hermes_cli.plugins.get_pre_api_request_block_message", return_value="Token budget exhausted."),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    agent.client.chat.completions.create.assert_not_called()
+    assert result["api_calls"] == 0
+    assert agent.iteration_budget.used == 0
+    assert result["turn_exit_reason"] == "pre_api_request_blocked"
+    assert result["final_response"] == "Token budget exhausted."
+    assert result["completed"] is True

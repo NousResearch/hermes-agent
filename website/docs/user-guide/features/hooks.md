@@ -367,7 +367,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_api_request`](#pre_api_request) can **block** the next model request, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 
 ### Quick reference
 
@@ -376,6 +376,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_api_request`](#pre_api_request) | Before each provider API request | `{"action": "block", "message": str}` to stop before spending another model request |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -580,6 +581,51 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### `pre_api_request`
+
+Fires before each provider API request in the tool-calling loop, after Hermes
+has built the provider payload and estimated request size, but before the
+request is sent.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, task_id: str, model: str, provider: str,
+                api_call_count: int, approx_input_tokens: int, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `model` | `str` | The model identifier |
+| `provider` | `str` | The active provider identifier |
+| `base_url` | `str` | Provider base URL, if any |
+| `api_mode` | `str` | Transport/API mode |
+| `api_call_count` | `int` | 1-based request number within this turn |
+| `message_count` | `int` | Number of messages in the provider payload |
+| `tool_count` | `int` | Number of tool definitions included in the provider payload |
+| `approx_input_tokens` | `int` | Hermes' rough request token estimate before sending |
+| `request_char_count` | `int` | Serialized request character count |
+| `max_tokens` | `int | None` | Configured max output token setting |
+
+**Return value - veto the request:**
+
+```python
+return {"action": "block", "message": "Token budget exhausted"}
+```
+
+Hermes stops before sending the provider request, refunds the iteration budget
+consumed for that pending request, and returns `message` as the turn's final
+response. The first matching block directive wins. Any other return value is
+ignored, so observer-only `pre_api_request` hooks remain backwards compatible.
+
+**Use cases:** Token budgets, spend caps, rate limits, per-user request policy,
+or external approval systems that must stop spend before another model request.
 
 ---
 

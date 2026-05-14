@@ -14,7 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, type StatusResponse } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@/components/Toast";
@@ -491,6 +491,7 @@ export default function EnvPage() {
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
+  const [status, setStatus] = useState<StatusResponse | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
 
@@ -498,6 +499,10 @@ export default function EnvPage() {
     api
       .getEnvVars()
       .then(setVars)
+      .catch(() => {});
+    api
+      .getStatus()
+      .then(setStatus)
       .catch(() => {});
   }, []);
 
@@ -686,7 +691,7 @@ export default function EnvPage() {
       <div className="flex items-center justify-between">
         <div className="flex flex-col gap-1">
           <p className="text-sm text-muted-foreground">
-            {t.env.description} <code>~/.hermes/.env</code>
+            {t.env.description} <code>{status?.env_path}</code>
           </p>
           <p className="text-[0.7rem] text-muted-foreground/70">
             {t.env.changesNote}

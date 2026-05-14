@@ -37,7 +37,7 @@ import {
   FileOutput,
   RefreshCw,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, type StatusResponse } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
@@ -118,6 +118,7 @@ export default function ConfigPage() {
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>("");
+  const [status, setStatus] = useState<StatusResponse | null>(null);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -174,6 +175,10 @@ export default function ConfigPage() {
     api
       .getDefaults()
       .then(setDefaults)
+      .catch(() => {});
+    api
+      .getStatus()
+      .then(setStatus)
       .catch(() => {});
   }, []);
 
@@ -408,7 +413,7 @@ export default function ConfigPage() {
         <div className="flex items-center gap-2">
           <Settings2 className="h-4 w-4 text-muted-foreground" />
           <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
-            {t.config.configPath}
+            {status?.config_path}
           </code>
         </div>
         <div className="flex items-center gap-1.5">

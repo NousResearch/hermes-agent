@@ -101,7 +101,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-slack` | Same as `hermes-cli`. |
 | `hermes-whatsapp` | Same as `hermes-cli`. |
 | `hermes-signal` | Same as `hermes-cli`. |
-| `hermes-matrix` | Same as `hermes-cli`. |
+| `hermes-matrix` | Adds Matrix-native tools (`matrix_send_reaction`, `matrix_redact_message`, `matrix_create_room`, `matrix_invite_user`, `matrix_fetch_history`, `matrix_set_presence`) on top of `hermes-cli`. |
 | `hermes-mattermost` | Same as `hermes-cli`. |
 | `hermes-email` | Same as `hermes-cli`. |
 | `hermes-sms` | Same as `hermes-cli`. |

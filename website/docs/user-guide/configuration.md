@@ -1516,6 +1516,12 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
+Matrix is intentionally stricter than the generic fallback: global
+`display.tool_progress`, `display.interim_assistant_messages`, and
+`streaming.enabled` do not enable live Matrix progress or partial-response
+edits unless `display.platforms.matrix.*` explicitly opts in. This avoids
+client read-marker jumps from edited Matrix events.
+
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
 ## Privacy
@@ -1609,6 +1615,10 @@ streaming:
 ```
 
 When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
+
+Matrix also requires `display.platforms.matrix.streaming: true`; top-level
+`streaming.enabled: true` alone is not enough to enable Matrix partial-response
+edits.
 
 For separate natural mid-turn assistant updates without progressive token editing, set `display.interim_assistant_messages: true`.
 

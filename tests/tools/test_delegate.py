@@ -958,6 +958,92 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestPerTaskCredentialOverride(unittest.TestCase):
+    """Tests for per-call model/provider override on delegate_task (issue #3719)."""
+
+    def setUp(self):
+        from tools.delegate_tool import _resolve_per_task_creds
+        self._resolve = _resolve_per_task_creds
+        self.parent = _make_mock_parent(depth=0)
+        self.default_creds = {
+            "model": "default-model",
+            "provider": "default-provider",
+            "base_url": "https://default.example/v1",
+            "api_key": "default-key",
+            "api_mode": "chat_completions",
+        }
+        self.cfg = {"model": "default-model", "provider": "default-provider"}
+
+    def test_no_override_returns_default_creds(self):
+        creds = self._resolve({}, None, None, self.default_creds, self.cfg, self.parent)
+        self.assertIs(creds, self.default_creds)
+
+    def test_model_only_top_level_override_swaps_model_keeps_provider(self):
+        creds = self._resolve({}, "new-model", None, self.default_creds, self.cfg, self.parent)
+        self.assertEqual(creds["model"], "new-model")
+        self.assertEqual(creds["provider"], "default-provider")
+        self.assertEqual(creds["base_url"], "https://default.example/v1")
+
+    def test_per_task_model_beats_top_level(self):
+        creds = self._resolve(
+            {"model": "per-task-model"},
+            "top-level-model", None,
+            self.default_creds, self.cfg, self.parent,
+        )
+        self.assertEqual(creds["model"], "per-task-model")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_override_re_resolves_full_bundle(self, mock_resolve):
+        mock_resolve.return_value = {
+            "model": "glm-5.1",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/v1",
+            "api_key": "zai-key",
+            "api_mode": "chat_completions",
+        }
+        creds = self._resolve(
+            {}, None, "zai",
+            self.default_creds, self.cfg, self.parent,
+        )
+        self.assertEqual(creds["provider"], "zai")
+        self.assertEqual(creds["base_url"], "https://api.z.ai/v1")
+        # Verify resolver was called with cleaned cfg (no stale base_url / api_key)
+        called_cfg = mock_resolve.call_args[0][0]
+        self.assertEqual(called_cfg["provider"], "zai")
+        self.assertNotIn("base_url", called_cfg)
+        self.assertNotIn("api_key", called_cfg)
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_provider_beats_top_level(self, mock_resolve):
+        mock_resolve.return_value = {
+            "model": "task-model",
+            "provider": "minimax",
+            "base_url": "https://minimax/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        creds = self._resolve(
+            {"provider": "minimax", "model": "task-model"},
+            None, "openrouter",
+            self.default_creds, self.cfg, self.parent,
+        )
+        called_cfg = mock_resolve.call_args[0][0]
+        self.assertEqual(called_cfg["provider"], "minimax")
+        self.assertEqual(called_cfg["model"], "task-model")
+        self.assertEqual(creds["provider"], "minimax")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_resolution_failure_falls_back_to_default(self, mock_resolve):
+        mock_resolve.side_effect = ValueError("OPENROUTER_API_KEY not set")
+        creds = self._resolve(
+            {}, "new-model", "openrouter",
+            self.default_creds, self.cfg, self.parent,
+        )
+        # Falls back to default creds with model swap (since eff_model was provided)
+        self.assertEqual(creds["model"], "new-model")
+        self.assertEqual(creds["provider"], "default-provider")
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 

@@ -1906,6 +1906,57 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_per_task_creds(
+    task_dict: Dict[str, Any],
+    top_level_model: Optional[str],
+    top_level_provider: Optional[str],
+    default_creds: Dict[str, Any],
+    cfg: dict,
+    parent_agent,
+) -> Dict[str, Any]:
+    """Compute effective credentials for a single delegated task.
+
+    Precedence: per-task model/provider > top-level model/provider > config
+    (``default_creds``). When ``provider`` is overridden, the full credential
+    bundle is re-resolved through the runtime provider system so ``base_url``,
+    ``api_key``, and ``api_mode`` match the new provider. When only ``model``
+    is overridden, the surrounding credentials are preserved.
+
+    Returns ``default_creds`` (or a model-swapped copy) if any provider
+    resolution fails; the original delegation continues with the configured
+    fallback rather than aborting the whole batch.
+    """
+    eff_model = task_dict.get("model") or top_level_model
+    eff_provider = task_dict.get("provider") or top_level_provider
+
+    if not eff_provider:
+        if eff_model:
+            return {**default_creds, "model": eff_model}
+        return default_creds
+
+    override_cfg = dict(cfg)
+    override_cfg["provider"] = eff_provider
+    if eff_model:
+        override_cfg["model"] = eff_model
+    # When the operator picks a different provider, the original base_url /
+    # api_key belong to the old provider — drop them so the resolver pulls the
+    # new provider's endpoint and credentials.
+    override_cfg.pop("base_url", None)
+    override_cfg.pop("api_key", None)
+
+    try:
+        return _resolve_delegation_credentials(override_cfg, parent_agent)
+    except ValueError as exc:
+        logger.warning(
+            "delegate_task: per-call override provider=%s model=%s failed (%s); "
+            "falling back to configured delegation credentials.",
+            eff_provider, eff_model, exc,
+        )
+        if eff_model:
+            return {**default_creds, "model": eff_model}
+        return default_creds
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -1915,6 +1966,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2049,26 +2102,37 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider beats top-level beats config. When the
+            # provider is overridden, the credential bundle is re-resolved so
+            # base_url / api_key / api_mode match the new provider.
+            task_creds = _resolve_per_task_creds(
+                t,
+                top_level_model=model,
+                top_level_provider=provider,
+                default_creds=creds,
+                cfg=cfg,
+                parent_agent=parent_agent,
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2713,6 +2777,22 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'glm-5.1'). "
+                                "Overrides the top-level 'model' for this task only. "
+                                "Falls back to delegation.model from config when unset."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'zai'). When set, the "
+                                "credential bundle (base_url, api_key, api_mode) is re-resolved "
+                                "via the runtime provider system. Overrides the top-level 'provider'."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2748,6 +2828,23 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override the model for every subagent in this delegation "
+                    "(e.g. 'glm-5.1'). Per-task 'model' inside the 'tasks' array "
+                    "beats this; this beats delegation.model from config."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override the provider for every subagent in this delegation "
+                    "(e.g. 'zai'). When set, the credential bundle (base_url, api_key, "
+                    "api_mode) is re-resolved via the runtime provider system. "
+                    "Per-task 'provider' beats this; this beats delegation.provider from config."
+                ),
+            },
         },
         "required": [],
     },
@@ -2770,6 +2867,8 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

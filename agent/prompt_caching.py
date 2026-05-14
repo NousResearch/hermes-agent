@@ -56,7 +56,12 @@ def _build_marker(ttl: str) -> Dict[str, str]:
 
 
 def _copy_message_for_cache_marking(message: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy only the mutable message shells that cache marking may edit."""
+    """Copy the message dict and mutable content containers before marking.
+
+    Strings and other immutable payloads stay shared, while list/dict content
+    wrappers are copied so adding ``cache_control`` never mutates the caller's
+    original message structure.
+    """
     copied = message.copy()
     content = copied.get("content")
     if isinstance(content, list):

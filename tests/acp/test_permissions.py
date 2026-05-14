@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+acp = pytest.importorskip("acp")
+
 from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,

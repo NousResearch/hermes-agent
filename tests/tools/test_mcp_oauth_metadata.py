@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+mcp = pytest.importorskip("mcp")
+
 from mcp.shared.auth import OAuthMetadata
 
 from tools.mcp_oauth import HermesTokenStorage

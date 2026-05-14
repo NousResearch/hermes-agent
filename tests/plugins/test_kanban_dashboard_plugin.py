@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+fastapi = pytest.importorskip("fastapi")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

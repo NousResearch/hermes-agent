@@ -6,6 +6,8 @@ import json
 import time
 from types import SimpleNamespace
 import pytest
+
+acp = pytest.importorskip("acp")
 from unittest.mock import MagicMock, patch
 
 from acp_adapter import session as acp_session

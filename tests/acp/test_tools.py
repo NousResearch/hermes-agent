@@ -2,6 +2,8 @@
 
 import pytest
 
+acp = pytest.importorskip("acp")
+
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,

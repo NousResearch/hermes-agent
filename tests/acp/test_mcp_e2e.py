@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+acp = pytest.importorskip("acp")
+
 import acp
 from acp.schema import (
     EnvVariable,

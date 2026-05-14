@@ -3,8 +3,10 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+numpy = pytest.importorskip("numpy")
+import numpy as np
 
 
 @pytest.fixture(autouse=True)

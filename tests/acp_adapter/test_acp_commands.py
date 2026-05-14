@@ -2,6 +2,8 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
+acp = pytest.importorskip("acp")
 from acp.schema import TextContentBlock
 
 from acp_adapter.server import HermesACPAgent

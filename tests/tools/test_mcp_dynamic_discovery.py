@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+mcp = pytest.importorskip("mcp")
+
 from tools.mcp_tool import MCPServerTask, _register_server_tools
 from tools.registry import ToolRegistry
 

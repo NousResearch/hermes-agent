@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+mcp = pytest.importorskip("mcp")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

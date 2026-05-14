@@ -405,7 +405,7 @@ class ContextCompressor(ContextEngine):
         self,
         model: str,
         threshold_percent: float = 0.50,
-        protect_first_n: int = 2,
+        protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,

@@ -1299,14 +1299,16 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.protect_last_n == 20
 
-    def test_default_protect_first_n_is_2(self):
-        """Default protect_first_n is 2 (system + 2 extra non-system messages =
-        3 protected messages total, preserving the pre-feature behaviour where
-        protect_first_n was hardcoded to protect 3 head messages total).
+    def test_default_protect_first_n_is_3(self):
+        """Default protect_first_n is 3 (system + 3 extra non-system messages =
+        4 protected messages total when a system prompt is present). With the
+        new semantics, the constructor default is 3 — the system prompt is
+        always implicitly protected ON TOP OF protect_first_n non-system
+        messages.
         """
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.protect_first_n == 2
+        assert c.protect_first_n == 3
 
     def test_protect_first_n_override(self):
         """protect_first_n=0 should be honoured — for users who rely on rolling
@@ -1342,8 +1344,8 @@ class TestSummaryTargetRatio:
         assert result[0]["content"].startswith("System prompt")
         # The first user/assistant exchange (msg 0, msg 1) should NOT be pinned
         # as head verbatim — those would have been summarized or absorbed.
-        # Under default protect_first_n=2, result[1] and result[2] would be
-        # the literal "msg 0" / "msg 1"; with protect_first_n=0 they aren't.
+        # Under default protect_first_n=3, result[1..3] would be the literal
+        # "msg 0" / "msg 1" / "msg 2"; with protect_first_n=0 they aren't.
         assert result[1].get("content") != "msg 0"
         # Last 2 messages are tail-protected under protect_last_n=2
         assert result[-1]["content"] == msgs[-1]["content"]

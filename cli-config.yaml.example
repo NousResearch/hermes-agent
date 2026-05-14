@@ -372,9 +372,9 @@ compression:
   # opening turns may not match how you want the session framed over time.
   # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
   # and recent tail) — the cleanest configuration for long-running sessions.
-  # Default 2 preserves the system prompt plus the first user/assistant
-  # exchange (≈ 3 messages total when a system prompt is present).
-  protect_first_n: 2
+  # Default 3 preserves the system prompt plus the first three non-system
+  # head messages, matching the pre-feature behaviour.
+  protect_first_n: 3
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).

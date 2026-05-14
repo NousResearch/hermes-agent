@@ -17,6 +17,7 @@ from .api import (
     materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow,
     resolve_workflow_gate_control,
+    seed_actionable_workflow_fixture,
     shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "promote_inbox_item_to_workflow",
     "resolve_gate",
     "resolve_workflow_gate_control",
+    "seed_actionable_workflow_fixture",
     "render_workflow_status_report",
     "save_dag",
     "shape_inbox_item_as_draft_workflow",

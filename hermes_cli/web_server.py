@@ -61,6 +61,7 @@ from hermes_cli.workflow import (
     materialize_workflow_to_kanban as workflow_materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow as workflow_promote_inbox_item_to_workflow,
     resolve_workflow_gate_control as workflow_resolve_workflow_gate_control,
+    seed_actionable_workflow_fixture as workflow_seed_actionable_workflow_fixture,
     shape_inbox_item_as_draft_workflow as workflow_shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
@@ -809,6 +810,25 @@ async def update_workflow_inbox_item_endpoint(inbox_item_id: str, request: Reque
         if message.startswith("workflow inbox item not found:"):
             raise HTTPException(status_code=404, detail=message)
         raise HTTPException(status_code=400, detail=message)
+
+
+@app.post("/api/workflows/fixtures/actionable")
+async def seed_actionable_workflow_fixture_endpoint(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_seed_actionable_workflow_fixture(
+                conn,
+                workflow_id=str(payload.get("workflowId") or "wf_actionable_fixture"),
+                title=str(payload.get("title") or "Actionable workflow fixture"),
+                board=str(payload.get("board") or "core"),
+                workspace_path=payload.get("workspacePath"),
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/workflows/{workflow_id}/materialize")

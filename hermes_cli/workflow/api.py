@@ -12,6 +12,7 @@ from .materialize import materialize_workflow
 from .policy import DEFAULT_POLICY
 from .store import (
     add_event,
+    add_gate,
     create_workflow,
     get_inbox_item,
     get_workflow,
@@ -461,6 +462,85 @@ def approve_workflow_for_materialization(
         )
     gates = [gate.to_dict() for gate in list_gates(conn, workflow_id)]
     return _response({"workflow": workflow.to_dict(), "controlActions": _control_actions(workflow_id, workflow.to_dict(), gates)})
+
+
+def seed_actionable_workflow_fixture(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str = "wf_actionable_fixture",
+    title: str = "Actionable workflow fixture",
+    board: str = "core",
+    workspace_path: str | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Seed a small persisted workflow with pending gates for live UI QA."""
+
+    workflow = create_workflow(
+        conn,
+        workflow_id=workflow_id,
+        title=title,
+        description="Seeded workflow with pending Core control actions for WebUI verification.",
+        workspace_path=workspace_path,
+        board=board,
+        scale="medium",
+        status="dag_validated",
+        created_by="workflow-fixture",
+        now=now,
+    )
+    save_dag(
+        conn,
+        workflow_id=workflow.id,
+        normalized_dag={
+            "schema_version": 1,
+            "workflow_id": workflow.id,
+            "name": title,
+            "nodes": [
+                {
+                    "id": "review-plan",
+                    "title": "Review plan",
+                    "role": "planner",
+                    "profile": "planner",
+                    "scope": {"summary": "Confirm the workflow plan is ready for implementation."},
+                    "definition_of_done": ["Plan is accepted or explicitly rejected."],
+                },
+                {
+                    "id": "build-slice",
+                    "title": "Build slice",
+                    "role": "engineer",
+                    "profile": "engineer",
+                    "parents": ["review-plan"],
+                    "scope": {"summary": "Build the first useful workflow slice after approval."},
+                    "definition_of_done": ["Implementation is complete.", "Targeted tests pass."],
+                },
+            ],
+        },
+        now=now,
+    )
+    add_gate(
+        conn,
+        workflow_id=workflow.id,
+        node_id="review-plan",
+        gate_id="gate_actionable_review",
+        gate_type="dag_review",
+        level=1,
+        required_actor="human",
+        status="pending",
+        reason="Seeded pending gate for WebUI action verification.",
+        metadata={"fixture": True, "actionable": True},
+    )
+    add_event(
+        conn,
+        workflow_id=workflow.id,
+        node_id="review-plan",
+        event_type="workflow_actionable_fixture_seeded",
+        actor_type="system",
+        actor_id="workflow-fixture",
+        message="Seeded actionable workflow fixture.",
+        data={"workflowId": workflow.id},
+        now=now,
+    )
+    return get_workflow_dag(conn, workflow.id)
+
 
 
 def _control_actions(workflow_id: str, workflow: dict[str, Any], gates: list[dict[str, Any]]) -> list[dict[str, Any]]:

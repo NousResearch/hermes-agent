@@ -630,6 +630,20 @@ class TestWebServerEndpoints:
         assert materialized.status_code == 200
         assert materialized.json()["facts"]["status"] == "materialized"
 
+    def test_workflow_actionable_fixture_endpoint_seeds_pending_gate_controls(self):
+        resp = self.client.post(
+            "/api/workflows/fixtures/actionable",
+            json={"workflowId": "wf_fixture_api", "title": "Fixture API", "board": "qa", "workspacePath": "/tmp/fixture-api"},
+        )
+
+        assert resp.status_code == 200
+        facts = resp.json()["facts"]
+        assert facts["workflow"]["id"] == "wf_fixture_api"
+        assert facts["workflow"]["board"] == "qa"
+        assert facts["workflow"]["workspacePath"] == "/tmp/fixture-api"
+        assert facts["gates"][0]["status"] == "pending"
+        assert [action["type"] for action in facts["controlActions"]] == ["resolve_gate", "resolve_gate", "resolve_gate"]
+
     def test_workflow_events_and_artifacts_endpoints_map_read_model_errors(self):
         missing_events_resp = self.client.get("/api/workflows/missing/events")
         invalid_limit_resp = self.client.get("/api/workflows/missing/artifacts?limit=0")
@@ -654,6 +668,7 @@ class TestWebServerEndpoints:
         approve_resp = unauthenticated_client.post("/api/workflows/wf_dag/approve")
         resolve_gate_resp = unauthenticated_client.post("/api/workflows/wf_dag/gates/gate_1/resolve")
         materialize_resp = unauthenticated_client.post("/api/workflows/wf_dag/materialize")
+        fixture_resp = unauthenticated_client.post("/api/workflows/fixtures/actionable")
 
         assert list_resp.status_code == 401
         assert list_resp.json()["detail"] == "Unauthorized"
@@ -671,6 +686,8 @@ class TestWebServerEndpoints:
         assert resolve_gate_resp.json()["detail"] == "Unauthorized"
         assert materialize_resp.status_code == 401
         assert materialize_resp.json()["detail"] == "Unauthorized"
+        assert fixture_resp.status_code == 401
+        assert fixture_resp.json()["detail"] == "Unauthorized"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

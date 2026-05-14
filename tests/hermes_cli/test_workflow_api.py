@@ -20,6 +20,7 @@ from hermes_cli.workflow import (
     materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow,
     resolve_workflow_gate_control,
+    seed_actionable_workflow_fixture,
     shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
     workflow_api_contract_fixture,
@@ -557,6 +558,28 @@ def test_workflow_dag_exposes_core_control_actions_for_pending_gates_and_approva
     assert [action["type"] for action in resolved_payload["facts"]["controlActions"]] == ["approve_workflow"]
     assert approved_payload["facts"]["workflow"]["status"] == "dag_approved"
     assert [action["type"] for action in approved_payload["facts"]["controlActions"]] == ["materialize_workflow"]
+
+
+def test_seed_actionable_workflow_fixture_persists_live_pending_gate_actions(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        payload = seed_actionable_workflow_fixture(
+            conn,
+            workflow_id="wf_actionable_live",
+            title="Live action QA",
+            board="qa",
+            workspace_path="/tmp/live-actions",
+            now=8.0,
+        )
+
+    facts = payload["facts"]
+    assert facts["workflow"]["id"] == "wf_actionable_live"
+    assert facts["workflow"]["status"] == "dag_validated"
+    assert facts["workflow"]["workspacePath"] == "/tmp/live-actions"
+    assert {node["id"] for node in facts["nodes"]} == {"review-plan", "build-slice"}
+    assert facts["gates"][0]["id"] == "gate_actionable_review"
+    assert facts["gates"][0]["status"] == "pending"
+    assert [action["type"] for action in facts["controlActions"]] == ["resolve_gate", "resolve_gate", "resolve_gate"]
+    assert facts["controlActions"][0]["endpoint"] == "/api/workflows/wf_actionable_live/gates/gate_actionable_review/resolve"
 
 
 def test_get_workflow_node_returns_detail_drawer_payload(tmp_path):

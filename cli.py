@@ -9375,7 +9375,7 @@ class HermesCLI:
 
         Updates the TUI spinner widget so the user can see what the agent
         is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        spinner and next response).
 
         On tool.started, records a monotonic timestamp so get_spinner_text()
         can show a live elapsed timer (the TUI poll loop already invalidates
@@ -9453,20 +9453,6 @@ class HermesCLI:
                 function_args if function_args is not None else {}
             )
             self._invalidate()
-
-        if not self._voice_mode:
-            return
-        if not function_name or function_name.startswith("_"):
-            return
-        try:
-            from tools.voice_mode import play_beep
-            threading.Thread(
-                target=play_beep,
-                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""

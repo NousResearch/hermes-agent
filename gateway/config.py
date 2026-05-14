@@ -74,6 +74,24 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
+    """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
+
+    Both slots are coerced to ``{}`` if a non-dict value is encountered, so
+    callers can safely write keys without type-checking.  Returns
+    ``(plat_data, extra)`` for in-place mutation.
+    """
+    plat_data = platforms_data.setdefault(name, {})
+    if not isinstance(plat_data, dict):
+        plat_data = {}
+        platforms_data[name] = plat_data
+    extra = plat_data.setdefault("extra", {})
+    if not isinstance(extra, dict):
+        extra = {}
+        plat_data["extra"] = extra
+    return plat_data, extra
+
+
 # Module-level cache for bundled platform plugin names (lives outside the
 # enum so it doesn't become an accidental enum member).
 _Platform__bundled_plugin_names: Optional[set] = None
@@ -755,7 +773,27 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
-            for plat in Platform:
+            # Iterate built-in platforms plus any registered plugin platforms
+            # so plugin authors get the same shared-key bridging (#24836).
+            try:
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()  # idempotent
+                from gateway.platform_registry import platform_registry as _pr
+            except Exception as e:
+                logger.debug("plugin discovery skipped: %s", e)
+                _pr = None
+
+            _shared_loop_targets: list = list(Platform)
+            if _pr is not None:
+                for _entry in _pr.plugin_entries():
+                    try:
+                        _plat = Platform(_entry.name)
+                    except (ValueError, KeyError):
+                        continue
+                    if _plat not in _shared_loop_targets:
+                        _shared_loop_targets.append(_plat)
+
+            for plat in _shared_loop_targets:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
@@ -810,19 +848,37 @@ def load_gateway_config() -> GatewayConfig:
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
-                plat_data = platforms_data.setdefault(plat.value, {})
-                if not isinstance(plat_data, dict):
-                    plat_data = {}
-                    platforms_data[plat.value] = plat_data
+                plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
-                extra = plat_data.setdefault("extra", {})
-                if not isinstance(extra, dict):
-                    extra = {}
-                    plat_data["extra"] = extra
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
+
+            # Plugin-owned YAML→env config bridges (#24836).  See
+            # ``PlatformEntry.apply_yaml_config_fn`` for the hook contract.
+            # Order: shared-key loop (above) → this dispatch → legacy hardcoded
+            # blocks (below; no-op when a hook already set their env var) →
+            # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
+            if _pr is not None:
+                for entry in _pr.all_entries():
+                    if entry.apply_yaml_config_fn is None:
+                        continue
+                    platform_cfg = yaml_cfg.get(entry.name)
+                    if not isinstance(platform_cfg, dict):
+                        continue
+                    try:
+                        seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                    except Exception as e:
+                        logger.debug(
+                            "apply_yaml_config_fn for %s raised: %s",
+                            entry.name, e,
+                        )
+                        continue
+                    if not isinstance(seeded, dict) or not seeded:
+                        continue
+                    _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
+                    extra.update(seeded)
 
             # Slack settings → env vars (env vars take precedence)
             slack_cfg = yaml_cfg.get("slack", {})
@@ -852,6 +908,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
+                    os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

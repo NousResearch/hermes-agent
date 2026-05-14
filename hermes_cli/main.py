@@ -4970,6 +4970,37 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         )
         if model_list:
             print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
+    elif provider_id == "novita":
+        from hermes_cli.models import fetch_api_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        if live_models:
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+        else:
+            mdev_models: list = []
+            try:
+                from agent.models_dev import list_agentic_models
+
+                mdev_models = list_agentic_models(provider_id)
+            except Exception:
+                pass
+            if mdev_models:
+                seen = {m.lower() for m in mdev_models}
+                model_list = list(mdev_models)
+                for m in curated:
+                    if m.lower() not in seen:
+                        model_list.append(m)
+                        seen.add(m.lower())
+                print(f"  Found {len(model_list)} model(s) from models.dev registry")
+            else:
+                model_list = curated
+                if model_list:
+                    print(
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                    )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -9269,7 +9300,7 @@ def _build_provider_choices() -> list[str]:
             "auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot",
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
-            "stepfun", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee",
+            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
         ]
 

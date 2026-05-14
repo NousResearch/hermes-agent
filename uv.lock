@@ -2092,6 +2092,7 @@ rl = [
     { name = "wandb" },
 ]
 slack = [
+    { name = "aiohttp" },
     { name = "slack-bolt" },
     { name = "slack-sdk" },
 ]
@@ -2149,6 +2150,7 @@ requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.13.3" },
+    { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.13.3" },
     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },

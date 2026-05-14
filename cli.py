@@ -6614,7 +6614,7 @@ class HermesCLI:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
+        from hermes_cli.model_switch import switch_model, parse_model_flags
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
@@ -6624,16 +6624,25 @@ class HermesCLI:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # Load providers for switch_model (picker path needs them below)
-        user_provs = None
-        custom_provs = None
+        # Single inventory context — replaces the inline config-slice the
+        # dashboard / TUI used to duplicate. Overlay live session state
+        # via with_overrides (truthy-only) so empty self.* attrs don't
+        # clobber disk config.
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
         try:
-            from hermes_cli.config import get_compatible_custom_providers, load_config
-            cfg = load_config()
-            user_provs = cfg.get("providers")
-            custom_provs = get_compatible_custom_providers(cfg)
+            ctx = load_picker_context().with_overrides(
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+            )
         except Exception:
-            pass
+            ctx = None
+
+        # switch_model() + _open_model_picker still need the raw provider
+        # dicts; ConfigContext is the canonical source for both.
+        user_provs = ctx.user_providers if ctx is not None else None
+        custom_provs = ctx.custom_providers if ctx is not None else None
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -6641,14 +6650,9 @@ class HermesCLI:
             provider_display = get_label(self.provider) if self.provider else "unknown"
 
             try:
-                providers = list_authenticated_providers(
-                    current_provider=self.provider or "",
-                    current_base_url=self.base_url or "",
-                    current_model=self.model or "",
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=50,
-                )
+                if ctx is None:
+                    raise RuntimeError("inventory context unavailable")
+                providers = build_models_payload(ctx, max_models=50)["providers"]
             except Exception:
                 providers = []
 
@@ -7643,6 +7647,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "subgoal":
+            self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -8241,6 +8247,81 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _handle_subgoal_command(self, cmd: str) -> None:
+        """Dispatch /subgoal subcommands.
+
+        Forms:
+          /subgoal                              show current subgoals
+          /subgoal <text>                       append a criterion
+          /subgoal remove <n>                   drop subgoal n (1-based)
+          /subgoal clear                        wipe all subgoals
+
+        Subgoals are extra criteria the user adds mid-loop. They get
+        appended to both the judge prompt (verdict must consider them)
+        and the continuation prompt (agent sees them) on the next turn
+        boundary. No special kick — the running turn finishes, the next
+        judge call includes them.
+        """
+        parts = (cmd or "").strip().split(None, 2)
+        arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        if not mgr.has_goal():
+            _cprint(f"  {_DIM}No active goal. Set one with /goal <text>.{_RST}")
+            return
+
+        # No args → list current subgoals.
+        if not arg:
+            _cprint(f"  {mgr.status_line()}")
+            _cprint(f"  {mgr.render_subgoals()}")
+            return
+
+        tokens = arg.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                _cprint("  Usage: /subgoal remove <n>")
+                return
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                _cprint("  /subgoal remove: <n> must be an integer (1-based index).")
+                return
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                _cprint(f"  /subgoal remove: {exc}")
+                return
+            _cprint(f"  ✓ Removed subgoal {idx}: {removed}")
+            return
+
+        if verb == "clear":
+            try:
+                prev = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                _cprint(f"  /subgoal clear: {exc}")
+                return
+            if prev:
+                _cprint(f"  ✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}.")
+            else:
+                _cprint(f"  {_DIM}No subgoals to clear.{_RST}")
+            return
+
+        # Otherwise — append the whole arg as a new subgoal.
+        try:
+            text = mgr.add_subgoal(arg)
+        except (ValueError, RuntimeError) as exc:
+            _cprint(f"  /subgoal: {exc}")
+            return
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        _cprint(f"  ✓ Added subgoal {idx}: {text}")
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
 
@@ -8267,10 +8348,36 @@ class HermesCLI:
 
         # If a real user message is already queued, don't inject a
         # continuation prompt on top — let the user's turn go first.
+        # Slash commands don't count as "real user messages" for this
+        # check: they're inspection/mutation (e.g. /subgoal added mid-
+        # run) and the process_loop dispatches them via process_command,
+        # not via chat(). If we treat a queued /subgoal as preempting,
+        # the goal loop silently stalls — we'd return here, then the
+        # slash command consumes its queue slot via process_command()
+        # which never re-fires the goal hook. Peek at all queued entries
+        # and only defer when there's a non-slash payload.
         try:
-            if getattr(self, "_pending_input", None) is not None \
-                    and not self._pending_input.empty():
-                return
+            pending = getattr(self, "_pending_input", None)
+            if pending is not None and not pending.empty():
+                has_real_message = False
+                try:
+                    # Queue.queue is the underlying deque — direct peek
+                    # without disturbing FIFO order.
+                    for entry in list(pending.queue):
+                        # Bundled payloads are (text, images) tuples;
+                        # unpack for inspection.
+                        if isinstance(entry, tuple) and entry:
+                            entry = entry[0]
+                        if isinstance(entry, str) and _looks_like_slash_command(entry):
+                            continue
+                        has_real_message = True
+                        break
+                except Exception:
+                    # Fallback: if we can't introspect the queue, behave
+                    # like the old check and defer to be safe.
+                    has_real_message = True
+                if has_real_message:
+                    return
         except Exception:
             pass
 

@@ -3577,6 +3577,25 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_thread_require_mention(self) -> bool:
+        """Return whether thread participation requires @mention to follow up.
+
+        When ``False`` (default), once the bot has participated in a thread it
+        keeps responding to every message in that thread without needing to be
+        mentioned again — useful for one-on-one conversations.
+
+        When ``True``, the @mention requirement is enforced inside threads as
+        well.  Set this when multiple bots share a thread and you want each
+        one to only fire on explicit @mention, avoiding bot-to-bot loops or
+        unwanted cross-replies.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -4167,6 +4186,17 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+
+        snapshot_attachments = []
+        if hasattr(message, "message_snapshots") and message.message_snapshots:
+            snapshot_text_parts = []
+            for snap in message.message_snapshots:
+                if getattr(snap, "content", None):
+                    snapshot_text_parts.append(snap.content.strip())
+                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
+            if snapshot_text_parts and not raw_content:
+                raw_content = "\n".join(snapshot_text_parts)
+                normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
@@ -4209,8 +4239,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+            # the bot has previously participated (auto-created or replied in)
+            # — UNLESS thread_require_mention is enabled, in which case threads
+            # are gated the same as channels.  Useful when multiple bots share
+            # a thread.
+            in_bot_thread = (
+                is_thread
+                and thread_id in self._threads
+                and not self._discord_thread_require_mention()
+            )
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
@@ -4223,7 +4260,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
+            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -4235,13 +4272,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
+        all_attachments = list(message.attachments) + snapshot_attachments
+
         # Determine message type
         msg_type = MessageType.TEXT
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif message.attachments:
+        elif all_attachments:
             # Check attachment types
-            for att in message.attachments:
+            for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
                         msg_type = MessageType.PHOTO
@@ -4300,7 +4339,7 @@ class DiscordAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
-        for att in message.attachments:
+        for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
                 try:

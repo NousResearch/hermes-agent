@@ -25,6 +25,43 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### What Counts Toward Context
+
+Hermes stores session history so it can resume conversations, but it does not
+keep re-sending every byte it has ever handled. On each turn, the model sees
+the selected system prompt, the current conversation window, and any content
+Hermes explicitly injects for that turn.
+
+Media attachments are handled as turn-scoped inputs:
+
+- Images may be attached natively to the next model call, or pre-analyzed into
+  a text description when the active model does not support native vision.
+- Audio is transcribed into text when speech-to-text is configured.
+- Text documents can have their extracted text included; other document types
+  are usually represented by a saved local path and a short note.
+- Attachment paths and extracted/derived text can appear in the transcript, but
+  the raw image, audio, or binary file bytes are not repeatedly copied into
+  future prompts.
+
+For example, if a user sends an image and asks Hermes to make a meme from it,
+Hermes may inspect that image once with vision and run an image-processing
+script. Future turns do not automatically carry the original JPEG in context.
+They carry only whatever was written into the conversation, such as the user's
+request, a short image description, a local cache path, or the final assistant
+response.
+
+The most common cause of context growth is not the media file itself. It is
+verbose text: pasted transcripts, full logs, large tool outputs, long diffs,
+repeated status reports, and detailed proof dumps. Prefer summaries, file
+paths, focused excerpts, and tool-backed lookups over copying large artifacts
+into chat.
+
+:::tip
+Use `/compress` when a session gets long, `/new` for a fresh thread, and
+`hermes sessions prune` only when you want to delete old ended sessions from
+storage. Compression reduces the active context; it is not a privacy delete.
+:::
+
 ### Session Sources
 
 Each session is tagged with its source platform:

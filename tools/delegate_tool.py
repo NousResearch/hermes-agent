@@ -2782,15 +2782,23 @@ DELEGATE_TASK_SCHEMA = {
                             "description": (
                                 "Per-task model override (e.g. 'glm-5.1'). "
                                 "Overrides the top-level 'model' for this task only. "
-                                "Falls back to delegation.model from config when unset."
+                                "Falls back to delegation.model from config when unset. "
+                                "MODEL-ONLY: keeps the surrounding provider bundle "
+                                "(base_url / api_key / api_mode). If the model belongs "
+                                "to a different provider, also set 'provider' on this "
+                                "task or the request will hit the wrong endpoint."
                             ),
                         },
                         "provider": {
                             "type": "string",
                             "description": (
-                                "Per-task provider override (e.g. 'zai'). When set, the "
-                                "credential bundle (base_url, api_key, api_mode) is re-resolved "
-                                "via the runtime provider system. Overrides the top-level 'provider'."
+                                "Per-task provider override (e.g. 'zai'). "
+                                "Overrides the top-level 'provider'. "
+                                "PROVIDER OVERRIDE: re-resolves the full credential "
+                                "bundle (base_url, api_key, api_mode) via the runtime "
+                                "provider system, replacing the original delegation "
+                                "config's base_url / api_key so the new provider's "
+                                "endpoint is used."
                             ),
                         },
                     },
@@ -2833,16 +2841,27 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Override the model for every subagent in this delegation "
                     "(e.g. 'glm-5.1'). Per-task 'model' inside the 'tasks' array "
-                    "beats this; this beats delegation.model from config."
+                    "beats this; this beats delegation.model from config. "
+                    "MODEL-ONLY OVERRIDE: keeps the existing provider's credential "
+                    "bundle (base_url / api_key / api_mode) — the model name is "
+                    "swapped within the current provider. Use this when the new "
+                    "model is served by the same provider you already use. If the "
+                    "model belongs to a DIFFERENT provider, also set 'provider' "
+                    "below to trigger full credential re-resolution; otherwise the "
+                    "request will be routed to the wrong endpoint."
                 ),
             },
             "provider": {
                 "type": "string",
                 "description": (
                     "Override the provider for every subagent in this delegation "
-                    "(e.g. 'zai'). When set, the credential bundle (base_url, api_key, "
-                    "api_mode) is re-resolved via the runtime provider system. "
-                    "Per-task 'provider' beats this; this beats delegation.provider from config."
+                    "(e.g. 'zai'). Per-task 'provider' beats this; this beats "
+                    "delegation.provider from config. "
+                    "PROVIDER OVERRIDE: triggers full credential re-resolution via "
+                    "the runtime provider system — base_url, api_key, and api_mode "
+                    "are rebuilt for the new provider, and any base_url / api_key "
+                    "from the original delegation config are discarded so the new "
+                    "provider's endpoint and key are used."
                 ),
             },
         },

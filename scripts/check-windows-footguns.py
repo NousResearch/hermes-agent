@@ -338,7 +338,10 @@ def should_scan_file(path: Path) -> bool:
         if str(path).endswith(suffix):
             return False
     # Skip self and docs that intentionally mention the patterns
-    rel = path.relative_to(REPO_ROOT).as_posix()
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        rel = path.as_posix()
     if rel in EXCLUDED_FILES:
         return False
     # Only scan text files (rough heuristic — .py, .md, .sh, .ps1, .yaml, etc.)
@@ -592,7 +595,10 @@ def main(argv: list[str]) -> int:
         files_scanned += 1
         matches = scan_file(path, FOOTGUNS)
         for lineno, line, fg in matches:
-            rel = path.relative_to(REPO_ROOT).as_posix()
+            try:
+                rel = path.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                rel = path.as_posix()
             print(f"{rel}:{lineno}: [{fg.name}]")
             print(f"    {line.strip()}")
             print(f"    — {fg.message}")

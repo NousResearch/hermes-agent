@@ -27,15 +27,44 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Prefer a .venv in the current tree, fall back to the main checkout's venv
 # (useful for worktrees where we don't always duplicate the venv).
 VENV=""
+PYTHON_VERSION="${HERMES_TEST_PYTHON:-3.11}"
+
+venv_matches_python() {
+  local candidate="$1"
+  [ -f "$candidate/bin/activate" ] || return 1
+  "$candidate/bin/python" - "$PYTHON_VERSION" <<'PY'
+import sys
+
+want = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if sys.version_info[: len(want)] == want else 1)
+PY
+}
+
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
+  if venv_matches_python "$candidate"; then
     VENV="$candidate"
     break
   fi
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        worktree_path="${line#worktree }"
+        for candidate in "$worktree_path/.venv" "$worktree_path/venv"; do
+          if venv_matches_python "$candidate"; then
+            VENV="$candidate"
+            break 2
+          fi
+        done
+        ;;
+    esac
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null || true)
+fi
+
+if [ -z "$VENV" ]; then
+  echo "error: no Python $PYTHON_VERSION virtualenv found in $REPO_ROOT/.venv, $REPO_ROOT/venv, or linked worktrees" >&2
   exit 1
 fi
 
@@ -126,4 +155,4 @@ exec "$PYTHON" -m pytest \
   --ignore=tests/integration \
   --ignore=tests/e2e \
   -m "not integration" \
-  "${ARGS[@]}"
+  "${ARGS[@]+"${ARGS[@]}"}"

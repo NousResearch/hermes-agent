@@ -462,7 +462,7 @@ display:
   platforms:
     matrix:
       tool_progress: new      # off | new | all | verbose
-      tool_preview_length: 160
+      tool_preview_length: 320
       show_reasoning: false   # true only if you want raw thinking panes
       streaming: false        # true enables progressive response edits
       interim_assistant_messages: false

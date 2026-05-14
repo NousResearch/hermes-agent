@@ -96,6 +96,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/web-dashboard',
             'user-guide/features/extending-the-dashboard',
+            'user-guide/features/subscription-proxy',
           ],
         },
         {

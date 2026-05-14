@@ -1452,6 +1452,17 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_proxy(args):
+    """Local OpenAI-compatible proxy to OAuth providers."""
+    # Lazy import — pulls in aiohttp, which is gated behind an extras install
+    # for users who don't run the proxy or the messaging gateway.
+    from hermes_cli.proxy.cli import cmd_proxy as _cmd_proxy
+
+    rc = _cmd_proxy(args)
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -9385,7 +9396,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "profile", "sessions", "setup",
+        "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -9727,6 +9738,51 @@ def main():
         help="Skip the confirmation prompt",
     )
 
+    # =========================================================================
+    # proxy command — local OpenAI-compatible proxy that attaches the user's
+    # OAuth-authenticated provider credentials to outbound requests. Lets
+    # external apps (OpenViking, Karakeep, Open WebUI, ...) ride a logged-in
+    # subscription without copy-pasting static API keys.
+    # =========================================================================
+    proxy_parser = subparsers.add_parser(
+        "proxy",
+        help="Local OpenAI-compatible proxy to OAuth providers",
+        description=(
+            "Run a local HTTP server that forwards OpenAI-compatible requests "
+            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
+            "apps can point at the proxy with any bearer token; the proxy "
+            "attaches your real credentials."
+        ),
+    )
+    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
+
+    proxy_start = proxy_subparsers.add_parser(
+        "start", help="Run the proxy in the foreground"
+    )
+    proxy_start.add_argument(
+        "--provider",
+        default="nous",
+        help="Upstream provider (default: nous). See `hermes proxy providers`.",
+    )
+    proxy_start.add_argument(
+        "--host",
+        default=None,
+        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
+    )
+    proxy_start.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port (default: 8645)",
+    )
+
+    proxy_subparsers.add_parser(
+        "status", help="Show which proxy upstreams are ready"
+    )
+    proxy_subparsers.add_parser(
+        "providers", help="List available proxy upstream providers"
+    )
+    proxy_parser.set_defaults(func=cmd_proxy)
     gateway_parser.set_defaults(func=cmd_gateway)
 
     # =========================================================================

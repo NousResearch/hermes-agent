@@ -85,7 +85,7 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     if not name:
         raise ValueError("Plugin name must not be empty.")
 
-    if name in (".", ".."):
+    if name in {".", ".."}:
         raise ValueError(
             f"Invalid plugin name '{name}': must not reference the plugins directory itself."
         )
@@ -491,7 +491,7 @@ def cmd_install(
                 answer = input(
                     f"  Enable '{installed_name}' now? [y/N]: ",
                 ).strip().lower()
-                should_enable = answer in ("y", "yes")
+                should_enable = answer in {"y", "yes"}
             except (EOFError, KeyboardInterrupt):
                 should_enable = False
         else:
@@ -731,7 +731,7 @@ def _discover_all_plugins() -> list:
         for d in sorted(base.iterdir()):
             if not d.is_dir():
                 continue
-            if source == "bundled" and d.name in ("memory", "context_engine"):
+            if source == "bundled" and d.name in {"memory", "context_engine"}:
                 continue
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
@@ -1129,10 +1129,10 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             stdscr.refresh()
             key = stdscr.getch()
 
-            if key in (curses.KEY_UP, ord("k")):
+            if key in {curses.KEY_UP, ord("k")}:
                 if total_items > 0:
                     cursor = (cursor - 1) % total_items
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in {curses.KEY_DOWN, ord("j")}:
                 if total_items > 0:
                     cursor = (cursor + 1) % total_items
             elif key == ord(" "):
@@ -1168,7 +1168,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
                             curses.init_pair(4, 8, -1)
                         curses.curs_set(0)
-            elif key in (curses.KEY_ENTER, 10, 13):
+            elif key in {curses.KEY_ENTER, 10, 13}:
                 if cursor < n_plugins:
                     # ENTER on a plugin checkbox — confirm and exit
                     result_holder["plugins_changed"] = True
@@ -1200,7 +1200,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
                             curses.init_pair(4, 8, -1)
                         curses.curs_set(0)
-            elif key in (27, ord("q")):
+            elif key in {27, ord("q")}:
                 # Save plugin changes on exit
                 result_holder["plugins_changed"] = True
                 return
@@ -1428,10 +1428,9 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
             if toolset_key not in ts_list:
                 ts_list.append(toolset_key)
                 changed = True
-        else:
-            if toolset_key in ts_list:
-                ts_list.remove(toolset_key)
-                changed = True
+        elif toolset_key in ts_list:
+            ts_list.remove(toolset_key)
+            changed = True
 
     # If enabling and no platforms have toolset lists yet, add to "cli" at minimum
     if enable and not changed and not platform_toolsets:
@@ -1570,13 +1569,13 @@ def plugins_command(args) -> None:
         )
     elif action == "update":
         cmd_update(args.name)
-    elif action in ("remove", "rm", "uninstall"):
+    elif action in {"remove", "rm", "uninstall"}:
         cmd_remove(args.name)
     elif action == "enable":
         cmd_enable(args.name)
     elif action == "disable":
         cmd_disable(args.name)
-    elif action in ("list", "ls"):
+    elif action in {"list", "ls"}:
         cmd_list()
     elif action is None:
         cmd_toggle()

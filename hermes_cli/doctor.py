@@ -287,7 +287,8 @@ def _build_apikey_providers_list() -> list:
                 (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
                 if _pp.base_url else None
             )
-            _static.append((_label, _key_vars, _models_url, _base_var, True))
+            _hc = getattr(_pp, "supports_health_check", True)
+            _static.append((_label, _key_vars, _models_url, _base_var, _hc))
     except Exception:
         pass
     return _static
@@ -296,19 +297,101 @@ def _build_apikey_providers_list() -> list:
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
+    ack_target = getattr(args, 'ack', None)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
-    
+
+    # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
+    # return without running the rest of the diagnostics — the user has
+    # already seen the advisory and just wants to silence it.
+    if ack_target:
+        from hermes_cli.security_advisories import (
+            ADVISORIES,
+            ack_advisory,
+        )
+        valid_ids = {a.id for a in ADVISORIES}
+        if ack_target not in valid_ids:
+            print(color(
+                f"Unknown advisory ID: {ack_target!r}. Known IDs: "
+                f"{', '.join(sorted(valid_ids)) or '(none)'}",
+                Colors.RED,
+            ))
+            sys.exit(2)
+        if ack_advisory(ack_target):
+            print(color(
+                f"  ✓ Acknowledged advisory {ack_target}. "
+                f"It will no longer trigger startup banners.",
+                Colors.GREEN,
+            ))
+        else:
+            print(color(
+                f"  ✗ Failed to persist ack for {ack_target}. "
+                f"Check ~/.hermes/config.yaml is writable.",
+                Colors.RED,
+            ))
+            sys.exit(1)
+        return
+
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    # =========================================================================
+    # Check: Security advisories  (RUNS FIRST — these are the most urgent)
+    # =========================================================================
+    print()
+    print(color("◆ Security Advisories", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.security_advisories import (
+            detect_compromised,
+            filter_unacked,
+            full_remediation_text,
+            get_acked_ids,
+        )
+        all_hits = detect_compromised()
+        fresh_hits = filter_unacked(all_hits)
+        if fresh_hits:
+            for hit in fresh_hits:
+                check_fail(
+                    f"{hit.advisory.title}",
+                    f"({hit.package}=={hit.installed_version})",
+                )
+                # Print the full remediation block, indented under the
+                # check_fail header so it reads as a single section.
+                for line in full_remediation_text(hit):
+                    if line:
+                        print(f"    {color(line, Colors.YELLOW)}")
+                    else:
+                        print()
+                # Funnel into the action list so the summary block surfaces it
+                # for users who scroll past the section.
+                manual_issues.append(
+                    f"Resolve security advisory {hit.advisory.id}: "
+                    f"uninstall {hit.package}=={hit.installed_version} and "
+                    f"rotate credentials, then run "
+                    f"`hermes doctor --ack {hit.advisory.id}`."
+                )
+            # Acked-but-still-installed: show as informational so the user
+            # knows the package is still on disk after the ack.
+            acked_ids = get_acked_ids()
+            for h in all_hits:
+                if h.advisory.id in acked_ids:
+                    check_warn(
+                        f"{h.package}=={h.installed_version} still installed "
+                        f"(advisory {h.advisory.id} acknowledged)",
+                    )
+        else:
+            check_ok("No active security advisories")
+    except Exception as e:
+        # Never let a bug in the advisory check block the rest of doctor.
+        check_warn(f"Security advisory check failed: {e}")
     
     # =========================================================================
     # Check: Python version
@@ -473,7 +556,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_auth_provider is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
@@ -485,7 +568,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
@@ -542,7 +625,7 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
+            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
                     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
@@ -729,13 +812,12 @@ def run_doctor(args):
     hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok(f"{_DHH} directory exists")
+    elif should_fix:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        check_ok(f"Created {_DHH} directory")
+        fixed_count += 1
     else:
-        if should_fix:
-            hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH} directory")
-            fixed_count += 1
-        else:
-            check_warn(f"{_DHH} not found", "(will be created on first use)")
+        check_warn(f"{_DHH} not found", "(will be created on first use)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
@@ -743,13 +825,12 @@ def run_doctor(args):
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
             check_ok(f"{_DHH}/{subdir_name}/ exists")
+        elif should_fix:
+            subdir_path.mkdir(parents=True, exist_ok=True)
+            check_ok(f"Created {_DHH}/{subdir_name}/")
+            fixed_count += 1
         else:
-            if should_fix:
-                subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created {_DHH}/{subdir_name}/")
-                fixed_count += 1
-            else:
-                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+            check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -955,14 +1036,12 @@ def run_doctor(args):
         else:
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
+    elif _safe_which("docker"):
+        check_ok("docker", "(optional)")
+    elif _is_termux():
+        check_info("Docker backend is not available inside Termux (expected on Android)")
     else:
-        if _safe_which("docker"):
-            check_ok("docker", "(optional)")
-        else:
-            if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
-            else:
-                check_warn("docker not found", "(optional)")
+        check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -1014,7 +1093,7 @@ def run_doctor(args):
             issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
 
         disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in ("", "0", "51200"):
+        if disk in {"", "0", "51200"}:
             check_ok("Vercel disk setting", "(uses platform default)")
         else:
             check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
@@ -1040,7 +1119,7 @@ def run_doctor(args):
         for line in auth_status.detail_lines:
             check_info(f"Vercel auth {line}")
 
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
         if persistent:
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:
@@ -1058,15 +1137,14 @@ def run_doctor(args):
         elif shutil.which("agent-browser"):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
+        elif _is_termux():
+            check_info("agent-browser is not installed (expected in the tested Termux path)")
+            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=True):
+                check_info(step)
         else:
-            if _is_termux():
-                check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-                check_info("Termux browser setup:")
-                for step in _termux_browser_setup_steps(node_installed=True):
-                    check_info(step)
-            else:
-                check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(run: npm install)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
@@ -1117,15 +1195,14 @@ def run_doctor(args):
                                 f"Install with: cd {PROJECT_ROOT} && "
                                 "npx playwright install --with-deps chromium"
                             )
+    elif _is_termux():
+        check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+        check_info("Install Node.js on Termux with: pkg install nodejs")
+        check_info("Termux browser setup:")
+        for step in _termux_browser_setup_steps(node_installed=False):
+            check_info(step)
     else:
-        if _is_termux():
-            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-            check_info("Install Node.js on Termux with: pkg install nodejs")
-            check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=False):
-                check_info(step)
-        else:
-            check_warn("Node.js not found", "(optional, needed for browser tools)")
+        check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")

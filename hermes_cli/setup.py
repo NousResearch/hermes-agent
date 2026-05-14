@@ -89,7 +89,6 @@ _DEFAULT_PROVIDER_MODELS = {
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
         "gemini-2.5-pro",
-        "grok-code-fast-1",
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
@@ -293,9 +292,9 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 
         if not value:
             return default
-        if value in ("y", "yes"):
+        if value in {"y", "yes"}:
             return True
-        if value in ("n", "no"):
+        if value in {"n", "no"}:
             return False
         print_error("Please enter 'y' or 'n'")
 
@@ -454,6 +453,26 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append((f"Image Generation ({_img_backend})", True, None))
         else:
             tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
+
+    # Video generation — opt-in via `hermes tools` → Video Generation.
+    # Only show the row when a plugin reports available so we don't badger
+    # users who don't care about video gen with a "missing" status line.
+    try:
+        from agent.video_gen_registry import list_providers as _list_video_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
+        _ensure_plugins()
+        _video_backend = None
+        for _vp in _list_video_providers():
+            try:
+                if _vp.is_available():
+                    _video_backend = _vp.display_name
+                    break
+            except Exception:
+                continue
+    except Exception:
+        _video_backend = None
+    if _video_backend:
+        tool_status.append((f"Video Generation ({_video_backend})", True, None))
 
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")
@@ -642,7 +661,7 @@ def _prompt_container_resources(config: dict):
     persist_str = prompt(
         "  Persist filesystem across sessions? (yes/no)", persist_label
     )
-    terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
+    terminal["container_persistent"] = persist_str.lower() in {"yes", "true", "y", "1"}
 
     # CPU
     current_cpu = terminal.get("container_cpu", 1)
@@ -693,7 +712,7 @@ def _prompt_vercel_sandbox_settings(config: dict):
     persist_label = "yes" if current_persist else "no"
     terminal["container_persistent"] = prompt(
         "  Persist filesystem with snapshots? (yes/no)", persist_label
-    ).lower() in ("yes", "true", "y", "1")
+    ).lower() in {"yes", "true", "y", "1"}
 
     current_cpu = terminal.get("container_cpu", 1)
     cpu_str = prompt("  CPU cores", str(current_cpu))
@@ -709,7 +728,7 @@ def _prompt_vercel_sandbox_settings(config: dict):
     except ValueError:
         pass
 
-    if terminal.get("container_disk", 51200) not in (0, 51200):
+    if terminal.get("container_disk", 51200) not in {0, 51200}:
         print_warning("Vercel Sandbox does not support custom disk sizing; resetting container_disk to 51200.")
     terminal["container_disk"] = 51200
 
@@ -1356,14 +1375,13 @@ def setup_terminal_backend(config: dict):
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
             print_info("Sudo password: configured")
-        else:
-            if prompt_yes_no(
-                "Enable sudo support? (stores password for apt install, etc.)", False
-            ):
-                sudo_pass = prompt("  Sudo password", password=True)
-                if sudo_pass:
-                    save_env_value("SUDO_PASSWORD", sudo_pass)
-                    print_success("Sudo password saved")
+        elif prompt_yes_no(
+            "Enable sudo support? (stores password for apt install, etc.)", False
+        ):
+            sudo_pass = prompt("  Sudo password", password=True)
+            if sudo_pass:
+                save_env_value("SUDO_PASSWORD", sudo_pass)
+                print_success("Sudo password saved")
 
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")
@@ -1731,7 +1749,7 @@ def setup_agent_settings(config: dict):
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in ("off", "new", "all", "verbose"):
+    if mode.lower() in {"off", "new", "all", "verbose"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
@@ -3248,18 +3266,6 @@ def run_setup_wizard(args):
         print_info(f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
 
-    _offer_launch_chat()
-
-
-def _offer_launch_chat():
-    """Prompt the user to jump straight into chat after setup."""
-    print()
-    if not prompt_yes_no("Launch hermes chat now?", True):
-        return
-
-    from hermes_cli.relaunch import relaunch
-    relaunch(["chat"])
-
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     """Streamlined first-time setup: provider, model, terminal & messaging.
@@ -3302,8 +3308,6 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print()
 
     _print_setup_summary(config, hermes_home)
-
-    _offer_launch_chat()
 
 
 def _run_quick_setup(config: dict, hermes_home):

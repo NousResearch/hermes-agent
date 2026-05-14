@@ -182,6 +182,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
+| YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
 | send_message tool | Routes through live gateway adapter |
@@ -238,6 +239,46 @@ def register(ctx):
         # ... other fields
     )
 ```
+
+
+## YAML→env Config Bridge
+
+Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `gateway/config.py` to know your platform's YAML schema.
+
+```python
+import os
+
+def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
+    """Translate config.yaml `my_platform:` keys into env vars / extras.
+
+    yaml_cfg     — the full top-level parsed config.yaml dict
+    platform_cfg — the platform's own sub-dict (yaml_cfg.get("my_platform", {}))
+
+    May mutate os.environ directly (use `not os.getenv(...)` guards to
+    preserve env > YAML precedence) and/or return a dict to merge into
+    PlatformConfig.extra. Return None or {} for no extras.
+    """
+    if "require_mention" in platform_cfg and not os.getenv("MY_PLATFORM_REQUIRE_MENTION"):
+        os.environ["MY_PLATFORM_REQUIRE_MENTION"] = str(platform_cfg["require_mention"]).lower()
+    allowed = platform_cfg.get("allowed_channels")
+    if allowed is not None and not os.getenv("MY_PLATFORM_ALLOWED_CHANNELS"):
+        if isinstance(allowed, list):
+            allowed = ",".join(str(v) for v in allowed)
+        os.environ["MY_PLATFORM_ALLOWED_CHANNELS"] = str(allowed)
+    return None  # nothing extra to merge into PlatformConfig.extra
+
+def register(ctx):
+    ctx.register_platform(
+        name="my_platform",
+        ...,
+        apply_yaml_config_fn=_apply_yaml_config,
+    )
+```
+
+The hook is invoked during `load_gateway_config()` after the generic shared-key loop (which handles common keys like `unauthorized_dm_behavior`, `notice_delivery`, `reply_prefix`, `require_mention`, etc.) and before `_apply_env_overrides()`, so your plugin only needs to bridge **platform-specific** keys.
+
+Exceptions raised by the hook are swallowed and logged at debug level — a misbehaving plugin never aborts gateway config load.
+
 
 ## Cron Delivery
 
@@ -322,9 +363,98 @@ optional_env:
 
 Bare-string entries (`- MY_PLATFORM_TOKEN`) still work — they get a generic description auto-derived from the plugin's `label`. If a hardcoded entry for the same var already exists in `OPTIONAL_ENV_VARS`, it wins (back-compat); the plugin.yaml form acts as the fallback.
 
+## Platform-Specific Slow-LLM UX
+
+Some platforms have constraints that change how a slow LLM response should be presented:
+
+- **LINE** issues a single-use *reply token* that expires roughly 60 seconds after the inbound event. Replying with that token is free; falling back to the metered Push API is not. If the LLM hasn't finished by the deadline, the choice is "burn paid Push quota" or "do something cleverer with the reply token before it expires."
+- **WhatsApp** marks a session inactive after 24h, after which only template messages are accepted.
+- **SMS** has no concept of typing indicators or progressive updates — long responses just look like the bot is offline.
+
+These are real constraints the base `BasePlatformAdapter` can't anticipate. The plugin surface intentionally leaves the room for an adapter to layer platform-specific UX on top of the base typing loop without expanding the kwarg list.
+
+### Pattern: subclass `_keep_typing` to layer mid-flight UX
+
+`BasePlatformAdapter._keep_typing` is the typing-indicator heartbeat — it runs as a background task while the LLM is generating, and is cancelled when the response is delivered. To layer a platform-specific behavior at a threshold (e.g. send a "still thinking" bubble at 45s), override `_keep_typing` in your adapter, schedule your own task alongside `super()._keep_typing()`, and tear it down in `finally`:
+
+```python
+class LineAdapter(BasePlatformAdapter):
+    async def _keep_typing(self, chat_id: str, *args, **kwargs) -> None:
+        if self.slow_response_threshold <= 0:
+            await super()._keep_typing(chat_id, *args, **kwargs)
+            return
+
+        async def _fire_at_threshold() -> None:
+            try:
+                await asyncio.sleep(self.slow_response_threshold)
+            except asyncio.CancelledError:
+                raise
+            # Platform-specific work here — for LINE, send a Template
+            # Buttons "Get answer" bubble using the cached reply token
+            # so the user can fetch the cached response later via a
+            # fresh (free) reply token from the postback callback.
+            await self._send_slow_response_button(chat_id)
+
+        side_task = asyncio.create_task(_fire_at_threshold())
+        try:
+            await super()._keep_typing(chat_id, *args, **kwargs)
+        finally:
+            if not side_task.done():
+                side_task.cancel()
+                try:
+                    await side_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+```
+
+Key points:
+
+- **Always `await super()._keep_typing(...)`.** The typing heartbeat is independently useful — don't replace it, layer on top of it.
+- **Tear down the side task in `finally`.** When the LLM finishes (or `/stop` cancels the run), the gateway cancels the typing task. Your side task must observe that cancellation too, otherwise it lingers and may fire after the response was already delivered.
+- **Pair with `interrupt_session_activity`** to resolve any orphan UX state when the user issues `/stop`. For LINE, this means transitioning the postback cache entry from `PENDING` to `ERROR` so the persistent "Get answer" button delivers a "Run was interrupted" message instead of looping.
+
+### Pattern: subclass `send` to route through a cache instead of sending immediately
+
+If your slow-response UX caches the response for later retrieval (LINE's postback flow), your `send` override needs to recognize three modes:
+
+1. **Pending postback active for this chat** → cache the response under the request_id, don't send anything visible.
+2. **System busy-ack** (`⚡ Interrupting`, `⏳ Queued`, `⏩ Steered`) → bypass the cache and send visibly so the user sees the gateway's response to their input.
+3. **Normal response** → send via reply-token-or-push as usual.
+
+```python
+async def send(self, chat_id: str, content: str, **kw) -> SendResult:
+    if _is_system_bypass(content):
+        return await self._send_text_chunks(chat_id, content, force_push=False)
+    pending_rid = self._pending_buttons.get(chat_id)
+    if pending_rid:
+        self._cache.set_ready(pending_rid, content)
+        return SendResult(success=True, message_id=pending_rid)
+    return await self._send_text_chunks(chat_id, content, force_push=False)
+```
+
+`_SYSTEM_BYPASS_PREFIXES` are the gateway's own busy-acknowledgment prefixes (`⚡`, `⏳`, `⏩`, `💾`). Always let those through visibly, regardless of cached UX state.
+
+### When this pattern is appropriate
+
+Use the typing-loop override approach when:
+
+- The platform's outbound API has a hard time-window constraint (single-use reply token, expiring sticky session, etc.) AND
+- A *visible mid-flight bubble* is acceptable UX on that platform.
+
+Use the simpler `slow_response_threshold = 0` always-Push path when:
+
+- The platform doesn't have a meaningful free vs. paid distinction, OR
+- The user community prefers "loading… loading… DONE" silence-then-response over an interactive intermediate bubble.
+
+LINE supports both: the threshold defaults to 45s for free postback fetch, and `LINE_SLOW_RESPONSE_THRESHOLD=0` reverts to "always Push fallback."
+
 ### Reference Implementation
 
-See `plugins/platforms/irc/` in the repo for a complete working example — a full async IRC adapter with zero external dependencies.
+See `plugins/platforms/line/adapter.py` for the full LINE postback implementation — a `RequestCache` state machine (`PENDING → READY → DELIVERED`, plus `ERROR` for `/stop`), a `_keep_typing` override that fires the Template Buttons bubble at threshold, a `send` override that routes through the cache, and an `interrupt_session_activity` override that resolves orphan PENDING entries.
+
+### Reference Implementations (Plugin Path)
+
+See `plugins/platforms/irc/` in the repo for a complete working example — a full async IRC adapter with zero external dependencies. `plugins/platforms/teams/` covers Bot Framework / Adaptive Cards, `plugins/platforms/google_chat/` covers OAuth-based REST APIs, and `plugins/platforms/line/` covers webhook-driven Messaging APIs with platform-specific slow-LLM UX.
 
 ---
 

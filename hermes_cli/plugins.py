@@ -86,9 +86,9 @@ logger = logging.getLogger(__name__)
 # The env var is read once at import time; tests that need to flip it
 # mid-process can call ``_install_plugin_debug_handler(force=True)``.
 
-_PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in (
+_PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
     "1", "true", "yes", "on",
-)
+}
 _DEBUG_HANDLER_INSTALLED = False
 
 
@@ -100,9 +100,9 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
     """
     global _DEBUG_HANDLER_INSTALLED, _PLUGINS_DEBUG
     if force:
-        _PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in (
+        _PLUGINS_DEBUG = os.getenv("HERMES_PLUGINS_DEBUG", "").strip().lower() in {
             "1", "true", "yes", "on",
-        )
+        }
     if not _PLUGINS_DEBUG or _DEBUG_HANDLER_INSTALLED:
         return
     handler = logging.StreamHandler(sys.stderr)
@@ -290,6 +290,27 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        # Lazy-built host-owned LLM facade — see ctx.llm property below.
+        self._llm: Any = None
+
+    # -- host-owned LLM access ----------------------------------------------
+
+    @property
+    def llm(self) -> Any:
+        """Return the plugin's :class:`agent.plugin_llm.PluginLlm` facade.
+
+        Lets trusted plugins run host-owned chat or structured completions
+        against the user's active model and auth without bringing their
+        own provider keys. Override capability (model, agent id, auth
+        profile) is fail-closed by default and gated through
+        ``plugins.entries.<plugin_id>.llm.*`` config keys.
+
+        See :mod:`agent.plugin_llm` for the full surface."""
+        if self._llm is None:
+            from agent.plugin_llm import PluginLlm
+            plugin_id = self.manifest.key or self.manifest.name
+            self._llm = PluginLlm(plugin_id=plugin_id)
+        return self._llm
 
     # -- tool registration --------------------------------------------------
 
@@ -518,6 +539,61 @@ class PluginContext:
         register_provider(provider)
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- video gen provider registration -------------------------------------
+
+    def register_video_gen_provider(self, provider) -> None:
+        """Register a video generation backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.video_gen_provider.VideoGenProvider`. The
+        ``provider.name`` attribute is what ``video_gen.provider`` in
+        ``config.yaml`` matches against when routing ``video_generate``
+        tool calls.
+        """
+        from agent.video_gen_provider import VideoGenProvider
+        from agent.video_gen_registry import register_provider as _register_video_provider
+
+        if not isinstance(provider, VideoGenProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a video_gen provider that does "
+                "not inherit from VideoGenProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_video_provider(provider)
+        logger.info(
+            "Plugin '%s' registered video_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- web search/extract provider registration ----------------------------
+
+    def register_web_search_provider(self, provider) -> None:
+        """Register a web search/extract backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.web_search_provider.WebSearchProvider`. The
+        ``provider.name`` attribute is what ``web.search_backend`` /
+        ``web.extract_backend`` / ``web.backend`` in ``config.yaml``
+        matches against when routing ``web_search`` / ``web_extract``
+        tool calls.
+        """
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider as _register_web_provider
+
+        if not isinstance(provider, WebSearchProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a web provider that does "
+                "not inherit from WebSearchProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_web_provider(provider)
+        logger.info(
+            "Plugin '%s' registered web provider: %s",
             self.manifest.name, provider.name,
         )
 
@@ -803,7 +879,7 @@ class PluginManager:
             # Bundled platform plugins (gateway adapters like IRC) auto-load
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
+            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
                 self._load_plugin(manifest)
                 continue
 
@@ -1054,7 +1130,7 @@ class PluginManager:
         )
 
         try:
-            if manifest.source in ("user", "project", "bundled"):
+            if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)
@@ -1291,6 +1367,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 
 
+_thread_tool_whitelist = threading.local()
+
+
+def set_thread_tool_whitelist(
+    allowed: Optional[Set[str]],
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+) -> None:
+    _thread_tool_whitelist.allowed = allowed
+    _thread_tool_whitelist.fmt = deny_msg_fmt
+
+
+def clear_thread_tool_whitelist() -> None:
+    _thread_tool_whitelist.allowed = None
+
+
 def get_pre_tool_call_block_message(
     tool_name: str,
     args: Optional[Dict[str, Any]],
@@ -1309,6 +1400,11 @@ def get_pre_tool_call_block_message(
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
     """
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    if allowed is not None and tool_name not in allowed:
+        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return fmt.format(tool_name=tool_name)
+
     hook_results = invoke_hook(
         "pre_tool_call",
         tool_name=tool_name,

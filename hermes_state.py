@@ -215,6 +215,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    handoff_state TEXT,
+    handoff_platform TEXT,
+    handoff_error TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1964,7 +1967,7 @@ class SessionDB:
             # Route to LIKE when any non-operator CJK token is <3 CJK chars.
             _tokens_for_check = [
                 t for t in raw_query.split()
-                if t.upper() not in ("AND", "OR", "NOT") and self._contains_cjk(t)
+                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
             ]
             _any_short_cjk = any(
                 self._count_cjk(t) < 3 for t in _tokens_for_check
@@ -1977,7 +1980,7 @@ class SessionDB:
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
-                    if tok.upper() in ("AND", "OR", "NOT"):
+                    if tok.upper() in {"AND", "OR", "NOT"}:
                         parts.append(tok)
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
@@ -2028,7 +2031,7 @@ class SessionDB:
                 # is matched independently (#20494).
                 non_op_tokens = [
                     t for t in raw_query.split()
-                    if t.upper() not in ("AND", "OR", "NOT")
+                    if t.upper() not in {"AND", "OR", "NOT"}
                 ] or [raw_query]
                 token_clauses = []
                 like_params: list = []
@@ -2334,7 +2337,7 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
                 return 0
@@ -2860,4 +2863,104 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
+
+    # ── Handoff (cross-platform session transfer) ──────────────────────────
+    #
+    # State machine:
+    #   None       — no handoff in flight
+    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
+    #   "running"  — gateway is processing (session switch + synthetic turn)
+    #   "completed"— gateway successfully delivered the synthetic turn
+    #   "failed"   — gateway hit an error; reason in handoff_error
+    #
+    # The CLI writes "pending" then poll-waits for terminal state. The gateway
+    # watcher transitions pending→running→{completed,failed}.
+
+    def request_handoff(self, session_id: str, platform: str) -> bool:
+        """Mark a session as pending handoff to the given platform.
+
+        Returns True if the row was found and not already in flight; False if
+        the session is already in a non-terminal handoff state.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions "
+                "SET handoff_state = 'pending', "
+                "    handoff_platform = ?, "
+                "    handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL "
+                "                  OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read the current handoff state for a session.
+
+        Returns ``{"state", "platform", "error"}`` or None if the session has
+        no handoff record.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT handoff_state, handoff_platform, handoff_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "state": row["handoff_state"],
+                "platform": row["handoff_platform"],
+                "error": row["handoff_error"],
+            }
+        except Exception:
+            return None
+
+    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
+        """Return all sessions in handoff_state='pending', oldest first.
+
+        Used by the gateway's handoff watcher.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM sessions "
+                "WHERE handoff_state = 'pending' "
+                "ORDER BY started_at ASC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def claim_handoff(self, session_id: str) -> bool:
+        """Atomically transition pending → running. Returns True if claimed."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET handoff_state = 'running' "
+                "WHERE id = ? AND handoff_state = 'pending'",
+                (session_id,),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def complete_handoff(self, session_id: str) -> None:
+        """Mark a handoff as completed."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'completed', "
+                "handoff_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+        self._execute_write(_do)
+
+    def fail_handoff(self, session_id: str, error: str) -> None:
+        """Mark a handoff as failed and record the reason."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'failed', "
+                "handoff_error = ? WHERE id = ?",
+                (error[:500], session_id),
+            )
+        self._execute_write(_do)
 

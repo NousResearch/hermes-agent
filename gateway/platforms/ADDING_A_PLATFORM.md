@@ -21,6 +21,14 @@ status display, gateway setup, and more.
   constructed.  Without this, env-only setups don't surface in
   `hermes gateway status` or `get_connected_platforms()` until the SDK
   instantiates.
+- `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
+  translate this platform's `config.yaml` keys into env vars and/or seed
+  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
+  instead of growing core `gateway/config.py` boilerplate per platform.
+  Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
+  preserve env > YAML precedence); the returned dict is merged into
+  `PlatformConfig.extra`.  Called during `load_gateway_config()` after
+  the generic shared-key loop and before `_apply_env_overrides()`.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
   `cron/scheduler.py`'s hardcoded sets.
@@ -32,6 +40,17 @@ status display, gateway setup, and more.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
+
+**Subclassing for platform-specific UX.** When a platform has a hard
+time-window constraint that the base adapter can't anticipate (LINE's
+60s single-use reply token, WhatsApp's 24h session window, etc.), an
+adapter can override `_keep_typing` to layer a mid-flight bubble at a
+threshold without expanding the kwarg surface. Always
+`await super()._keep_typing(...)` so the typing heartbeat keeps running,
+and tear down your side task in `finally`. See `plugins/platforms/line/`
+for the full pattern (Template Buttons postback at 45s, `RequestCache`
+state machine, `interrupt_session_activity` override for `/stop`
+orphans) and the developer-guide page for the prose walkthrough.
 
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and

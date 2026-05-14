@@ -1020,3 +1020,106 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
     assert merge_idx < drop_idx, "consolidated should render before pruned"
     assert "merge-me → umbrella" in lines[merge_idx]
     assert "drop-me — pruned (stale)" in lines[drop_idx]
+
+
+# ---------------------------------------------------------------------------
+# Pin hint — surfaces `hermes curator pin <umbrella>` in the rename block so
+# users learn the command exists at the moment they care (a consolidation
+# just landed against their library). The hint is gated on having at least
+# one umbrella destination — pruned-only runs skip it.
+# ---------------------------------------------------------------------------
+
+
+def test_rename_summary_pin_hint_appears_when_consolidation_produced_umbrella(curator_env):
+    """When at least one skill was absorbed into an umbrella, hint at pinning it."""
+    result = curator_env._build_rename_summary(
+        before_names={"pdf-extraction", "docx-extraction", "document-tools"},
+        after_report=[{"name": "document-tools", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "pdf-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "docx-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    assert "hermes curator pin document-tools" in result
+    assert "keep an umbrella stable" in result
+
+
+def test_rename_summary_pin_hint_skipped_for_pruned_only_runs(curator_env):
+    """Pruned-only runs have nothing surviving to pin — hint should not appear."""
+    result = curator_env._build_rename_summary(
+        before_names={"old-flaky-thing", "another-stale", "keeper"},
+        after_report=[{"name": "keeper", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "old-flaky-thing",
+                    "absorbed_into": "",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "another-stale",
+                    "absorbed_into": "",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    # Block still renders (skills were archived) but no pin hint.
+    assert "archived 2 skill(s):" in result
+    assert "hermes curator pin" not in result
+    assert "keep an umbrella stable" not in result
+
+
+def test_rename_summary_pin_hint_picks_one_umbrella_when_multiple_absorbed(curator_env):
+    """Multiple umbrellas → hint shows one example (alphabetically first), not a list."""
+    result = curator_env._build_rename_summary(
+        before_names={"a-skill", "b-skill", "umbrella-zeta", "umbrella-alpha"},
+        after_report=[
+            {"name": "umbrella-zeta", "state": "active"},
+            {"name": "umbrella-alpha", "state": "active"},
+        ],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "a-skill",
+                    "absorbed_into": "umbrella-zeta",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "b-skill",
+                    "absorbed_into": "umbrella-alpha",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    # Sorted picks alphabetically first.
+    assert "hermes curator pin umbrella-alpha" in result
+    # Exactly one hint line, not one per umbrella.
+    pin_lines = [ln for ln in result.splitlines() if "hermes curator pin" in ln]
+    assert len(pin_lines) == 1

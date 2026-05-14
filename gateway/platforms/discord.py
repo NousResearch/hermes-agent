@@ -86,8 +86,32 @@ def _clean_discord_id(entry: str) -> str:
 
 
 def check_discord_requirements() -> bool:
-    """Check if Discord dependencies are available."""
-    return DISCORD_AVAILABLE
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``tools.lazy_deps.ensure("platform.discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
+    global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
+    if DISCORD_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.discord", prompt=False)
+    except Exception:
+        return False
+    try:
+        import discord as _discord
+        from discord import Message as _DM, Intents as _Intents
+        from discord.ext import commands as _commands
+    except ImportError:
+        return False
+    discord = _discord
+    DiscordMessage = _DM
+    Intents = _Intents
+    commands = _commands
+    DISCORD_AVAILABLE = True
+    return True
 
 
 def _build_allowed_mentions():
@@ -115,7 +139,7 @@ def _build_allowed_mentions():
         raw = os.getenv(name, "").strip().lower()
         if not raw:
             return default
-        return raw in ("true", "1", "yes", "on")
+        return raw in {"true", "1", "yes", "on"}
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
@@ -708,7 +732,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
@@ -769,7 +793,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # answer regardless of who is mentioned.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in ("true", "1", "yes")
+                    ).lower() in {"true", "1", "yes"}
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
                         _channel_id = str(message.channel.id)
                         _parent_id = None
@@ -1317,7 +1341,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
@@ -2697,6 +2721,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     await asyncio.sleep(8)
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._typing_tasks.pop(chat_id, None)
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
@@ -3135,9 +3161,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # UX so users don't see commands they can't invoke. Off by default
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
-        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in (
+        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
             "true", "1", "yes", "on",
-        ):
+        }:
             self._apply_owner_only_visibility(tree)
 
     def _apply_owner_only_visibility(self, tree) -> None:
@@ -3524,9 +3550,9 @@ class DiscordAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -3550,6 +3576,25 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_thread_require_mention(self) -> bool:
+        """Return whether thread participation requires @mention to follow up.
+
+        When ``False`` (default), once the bot has participated in a thread it
+        keeps responding to every message in that thread without needing to be
+        mentioned again — useful for one-on-one conversations.
+
+        When ``True``, the @mention requirement is enforced inside threads as
+        well.  Set this when multiple bots share a thread and you want each
+        one to only fire on explicit @mention, avoiding bot-to-bot loops or
+        unwanted cross-replies.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3688,6 +3733,84 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Discord thread under a text channel for a handoff.
+
+        Falls back to a seed-message + ``message.create_thread`` path if
+        ``parent.create_thread`` is rejected (some channel types or
+        permission setups). Returns the new thread id as a string, or
+        ``None`` on failure or when the parent isn't a text channel
+        (DMs, voice channels, threads themselves can't host threads).
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return None
+
+        try:
+            parent_id = int(parent_chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            parent = self._client.get_channel(parent_id)
+            if parent is None:
+                parent = await self._client.fetch_channel(parent_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Handoff thread: cannot resolve parent %s: %s",
+                self.name, parent_chat_id, exc,
+            )
+            return None
+
+        # DMs, voice channels, and existing threads can't host child threads.
+        if isinstance(parent, getattr(discord, "DMChannel", ())):
+            logger.info(
+                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
+                self.name, parent_chat_id,
+            )
+            return None
+
+        thread_name = (name or "handoff").strip()[:80] or "handoff"
+        reason = "Hermes session handoff"
+
+        # First try: create a thread directly on the channel.
+        try:
+            create = getattr(parent, "create_thread", None)
+            if create is not None:
+                thread = await create(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+                return str(thread.id)
+        except Exception as direct_error:
+            logger.debug(
+                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
+                self.name, direct_error,
+            )
+
+        # Fallback: post a seed message and create the thread from it.
+        try:
+            send = getattr(parent, "send", None)
+            if send is None:
+                return None
+            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            thread = await seed_msg.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason=reason,
+            )
+            return str(thread.id)
+        except Exception as fallback_error:
+            logger.warning(
+                "[%s] Handoff thread: both create paths failed for parent %s: %s",
+                self.name, parent_chat_id, fallback_error,
+            )
+            return None
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4063,6 +4186,17 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+
+        snapshot_attachments = []
+        if hasattr(message, "message_snapshots") and message.message_snapshots:
+            snapshot_text_parts = []
+            for snap in message.message_snapshots:
+                if getattr(snap, "content", None):
+                    snapshot_text_parts.append(snap.content.strip())
+                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
+            if snapshot_text_parts and not raw_content:
+                raw_content = "\n".join(snapshot_text_parts)
+                normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
@@ -4105,8 +4239,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+            # the bot has previously participated (auto-created or replied in)
+            # — UNLESS thread_require_mention is enabled, in which case threads
+            # are gated the same as channels.  Useful when multiple bots share
+            # a thread.
+            in_bot_thread = (
+                is_thread
+                and thread_id in self._threads
+                and not self._discord_thread_require_mention()
+            )
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
@@ -4119,8 +4260,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -4131,13 +4272,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
+        all_attachments = list(message.attachments) + snapshot_attachments
+
         # Determine message type
         msg_type = MessageType.TEXT
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif message.attachments:
+        elif all_attachments:
             # Check attachment types
-            for att in message.attachments:
+            for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
                         msg_type = MessageType.PHOTO
@@ -4196,13 +4339,13 @@ class DiscordAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
-        for att in message.attachments:
+        for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
                 try:
                     # Determine extension from content type (image/png -> .png)
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
                     cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
@@ -4216,7 +4359,7 @@ class DiscordAdapter(BasePlatformAdapter):
             elif content_type.startswith("audio/"):
                 try:
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
+                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
                         ext = ".ogg"
                     cached_path = await self._cache_discord_audio(att, ext)
                     media_urls.append(cached_path)
@@ -4259,7 +4402,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             logger.info("[Discord] Cached user document: %s", cached_path)
                             # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"

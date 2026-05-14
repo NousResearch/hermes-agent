@@ -64,6 +64,7 @@ NODE_VERSION="22"
 #   data still at /root/.hermes (HERMES_HOME).  Matches Claude Code / Codex CLI
 #   and keeps Docker bind-mounted /root/ volumes lean.
 ROOT_FHS_LAYOUT=false
+DETECTED_BROWSER_EXECUTABLE=""
 
 # Options
 USE_VENV=true
@@ -366,7 +367,27 @@ install_uv() {
 
     # Install uv
     log_info "Installing uv (fast Python package manager)..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+    # Capture installer output so a failure shows the user WHY (network,
+    # glibc mismatch on old distros, missing curl, ~/.local/bin not
+    # writable, disk full, corp proxy / TLS interception, etc.) instead
+    # of the previous "✗ Failed to install uv" with zero diagnostic.
+    #
+    # Two-stage: download the installer, then run it.  Piping
+    # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
+    # and conflates network errors with installer errors.
+    local _uv_install_log _uv_installer
+    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
+        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+        log_info "curl output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
+        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
+        exit 1
+    fi
+    if sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+        rm -f "$_uv_installer"
         # uv installs to ~/.local/bin by default
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
@@ -375,15 +396,22 @@ install_uv() {
         elif command -v uv &> /dev/null; then
             UV_CMD="uv"
         else
-            log_error "uv installed but not found on PATH"
+            log_error "uv installer reported success but binary not found on PATH"
+            log_info "Installer output:"
+            sed 's/^/    /' "$_uv_install_log" >&2
             log_info "Try adding ~/.local/bin to your PATH and re-running"
+            rm -f "$_uv_install_log"
             exit 1
         fi
+        rm -f "$_uv_install_log"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
+        log_info "Installer output:"
+        sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
 }
@@ -863,7 +891,7 @@ clone_repo() {
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
                 git stash push --include-untracked -m "$stash_name"
-                autostash_ref="$(git rev-parse --verify refs/stash)"
+                autostash_ref="stash@{0}"
             fi
 
             git fetch origin
@@ -1060,20 +1088,151 @@ install_deps() {
     fi
 
     # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
-    ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
-        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
-        rm -f "$ALL_INSTALL_LOG"
-        if ! $UV_CMD pip install -e "."; then
-            log_error "Package installation failed."
-            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
-            exit 1
+    #
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive, so a compromised transitive (different hash than what
+    # we shipped) is REJECTED by the resolver. This is the *only* path
+    # that protects against the "direct dep is fine, but the dep's dep
+    # got worm-poisoned overnight" failure mode. All `uv pip install`
+    # tiers below re-resolve transitives fresh from PyPI without any
+    # hash verification — they exist to keep installs working when the
+    # lockfile is stale, missing, or out-of-sync with the current
+    # extras spec, NOT because they're equivalent in posture.
+    if [ -f "uv.lock" ]; then
+        log_info "Trying tier: hash-verified (uv.lock) ..."
+        log_info "(this resolves + downloads the curated [all] set — first run on a"
+        log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
+        # Stream uv's progress directly to the user instead of swallowing
+        # it with `2>"$(mktemp)"`.  Two reasons:
+        #   1. `--extra all --locked` against a fresh venv has to pull
+        #      every transitive — silencing stderr makes the install
+        #      look frozen for minutes on slow networks. Users see
+        #      "Trying tier: hash-verified ..." and assume it's hung.
+        #   2. The previous `2>"$(mktemp)"` substituted the path at
+        #      command-build time but never saved it, so on failure the
+        #      uv error message was unreachable — the user just got the
+        #      generic "lockfile may be stale" warning.
+        #
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key.
+        #                  This bypasses the curated `[all]` extra
+        #                  entirely and pulls e.g. [matrix] (which
+        #                  needs python-olm + make on Windows) and
+        #                  [rl] (git+https deps that fail offline).
+        #   --extra all  = install just the `[all]` extra's contents.
+        #                  This respects the curation in pyproject.toml.
+        # uv's own progress UI handles TTY detection and downgrades
+        # gracefully when stdout/stderr aren't terminals.
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+            log_success "Main package installed (hash-verified via uv.lock)"
+            log_success "All dependencies installed"
+            return 0
         fi
+        log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
     else
-        rm -f "$ALL_INSTALL_LOG"
+        log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+    fi
+
+    # Multi-tier fallback. The point of the tiers is that ONE compromised
+    # PyPI package (a worm-poisoned release that gets quarantined, like
+    # mistralai 2.4.6 in May 2026) shouldn't be able to silently demote a
+    # fresh install all the way down to "core only" — the user should keep
+    # everything else they signed up for.
+    #
+    # Tier 1: [all] — the curated extra in pyproject.toml.
+    # Tier 2: [all] minus the currently-broken extras list (_BROKEN_EXTRAS).
+    #         Edit _BROKEN_EXTRAS below when something on PyPI breaks; this
+    #         lets users keep the rest of [all] when one transitive is
+    #         unavailable. The list of [all]'s contents is parsed from
+    #         pyproject.toml at runtime — there is NO hand-mirrored copy
+    #         to drift out of sync. If you want to change what [all]
+    #         contains, edit pyproject.toml only.
+    # Tier 3: bare `.` — last-resort so at least the core CLI launches.
+    #         Skipped tiers like "PyPI-only extras (no git deps)" used to
+    #         exist to dodge [rl] / [matrix] git+sdist deps; those are no
+    #         longer in [all] post-2026-05-12 lazy-install migration, so
+    #         a separate PyPI-only tier had no remaining content.
+    local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+
+    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # tomllib is stdlib on Python 3.11+ which uv's bootstrap guarantees.
+    # Falls back to a hand list if parse fails — defensive only.
+    local _ALL_EXTRAS_CSV
+    _ALL_EXTRAS_CSV="$(
+        "$PYTHON_PATH" - <<'PY' 2>/dev/null
+import re, sys, tomllib
+try:
+    with open("pyproject.toml", "rb") as fh:
+        data = tomllib.load(fh)
+    specs = data["project"]["optional-dependencies"]["all"]
+    extras = []
+    for s in specs:
+        m = re.search(r"hermes-agent\[([\w-]+)\]", s)
+        if m:
+            extras.append(m.group(1))
+    print(",".join(extras))
+except Exception as e:
+    print("", file=sys.stderr)
+    sys.exit(1)
+PY
+    )"
+    if [ -z "$_ALL_EXTRAS_CSV" ]; then
+        log_warn "Could not parse [all] from pyproject.toml; falling back to .[all] only."
+        _ALL_EXTRAS_CSV=""
+    fi
+
+    # Build "[all] minus broken" spec by filtering the parsed list.
+    local _SAFE_SPEC=".[all]"
+    if [ -n "$_ALL_EXTRAS_CSV" ] && [ "${#_BROKEN_EXTRAS[@]}" -gt 0 ]; then
+        local _SAFE_EXTRAS=()
+        local _e _b _skip
+        IFS=',' read -ra _ALL_EXTRAS_ARR <<< "$_ALL_EXTRAS_CSV"
+        for _e in "${_ALL_EXTRAS_ARR[@]}"; do
+            _skip=false
+            for _b in "${_BROKEN_EXTRAS[@]}"; do
+                if [ "$_e" = "$_b" ]; then _skip=true; break; fi
+            done
+            if [ "$_skip" = false ]; then _SAFE_EXTRAS+=("$_e"); fi
+        done
+        _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    fi
+
+    ALL_INSTALL_LOG=$(mktemp)
+    local _installed=false
+    local _tier_name=""
+
+    install_tier() {
+        local name="$1"; local spec="$2"
+        log_info "Trying tier: $name ..."
+        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+            log_success "Main package installed ($name)"
+            _installed=true
+            _tier_name="$name"
+            return 0
+        fi
+        log_warn "Tier '$name' failed. Top of pip output:"
+        head -5 "$ALL_INSTALL_LOG" | sed 's/^/    /' >&2
+        return 1
+    }
+
+    install_tier "all" ".[all]" \
+        || install_tier "all minus known-broken (${_BROKEN_EXTRAS[*]:-none})" "$_SAFE_SPEC" \
+        || install_tier "core only (no extras)" "."
+
+    rm -f "$ALL_INSTALL_LOG"
+
+    if [ "$_installed" = false ]; then
+        log_error "Package installation failed even with no extras."
+        log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
+        log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+        exit 1
+    fi
+
+    if [ "$_tier_name" != "all (with RL/matrix extras)" ]; then
+        log_warn "Note: installed via fallback tier ($_tier_name)."
+        log_info "Some optional features may be missing. After resolving any"
+        log_info "PyPI/network issue, re-run: $UV_CMD pip install -e '.[all]'"
     fi
 
     log_success "Main package installed"
@@ -1263,6 +1422,7 @@ copy_config_templates() {
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi
+    configure_browser_env_from_system_browser
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
@@ -1311,6 +1471,68 @@ SOUL_EOF
     fi
 }
 
+find_system_browser() {
+    # Prefer a user-specified browser path, then common Linux/macOS Chrome and
+    # Chromium command names.  Arch-family distributions commonly ship plain
+    # `chromium`, while Debian-family systems often use `chromium-browser`.
+    if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
+        if [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
+            echo "$AGENT_BROWSER_EXECUTABLE_PATH"
+            return 0
+        fi
+        if command -v "$AGENT_BROWSER_EXECUTABLE_PATH" >/dev/null 2>&1; then
+            command -v "$AGENT_BROWSER_EXECUTABLE_PATH"
+            return 0
+        fi
+    fi
+
+    local candidate
+    for candidate in google-chrome google-chrome-stable chromium chromium-browser chrome; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+run_browser_install_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
+configure_browser_env_from_system_browser() {
+    local env_file="$HERMES_HOME/.env"
+    local browser_path="${DETECTED_BROWSER_EXECUTABLE:-}"
+
+    if [ -z "$browser_path" ]; then
+        browser_path="$(find_system_browser 2>/dev/null || true)"
+    fi
+
+    if [ -z "$browser_path" ] || [ ! -f "$env_file" ]; then
+        return 0
+    fi
+
+    if grep -q '^AGENT_BROWSER_EXECUTABLE_PATH=' "$env_file" 2>/dev/null; then
+        log_info "AGENT_BROWSER_EXECUTABLE_PATH already configured"
+        return 0
+    fi
+
+    {
+        echo ""
+        echo "# Hermes Agent browser tools — use the system Chrome/Chromium binary."
+        echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
+    } >> "$env_file"
+    log_success "Configured browser tools to use $browser_path"
+}
+
 install_node_deps() {
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
@@ -1337,57 +1559,63 @@ install_node_deps() {
         # For Arch/Manjaro we install the system libs via pacman first.
         # Other systems must install Chromium dependencies manually.
         log_info "Installing browser engine (Playwright Chromium)..."
-        case "$DISTRO" in
-            ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
-                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
-                }
-                ;;
-            arch|manjaro)
-                if command -v pacman &> /dev/null; then
-                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
-                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    elif [ "$(id -u)" -eq 0 ]; then
-                        pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    else
-                        log_warn "Cannot install browser deps without sudo. Run manually:"
-                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+        DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
+        if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
+            log_success "Found system Chrome/Chromium at $DETECTED_BROWSER_EXECUTABLE"
+            log_info "Skipping Playwright browser download; Hermes will use the system browser."
+        else
+            case "$DISTRO" in
+                ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                    log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
+                    log_info "This is standard Playwright setup — Hermes itself does not require root access."
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install --with-deps chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — browser tools will not work."
+                        log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                    }
+                    ;;
+                arch|manjaro|cachyos|endeavouros|garuda)
+                    if command -v pacman &> /dev/null; then
+                        log_info "Arch-family distro detected — installing Chromium system dependencies via pacman..."
+                        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                            sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
+                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                        elif [ "$(id -u)" -eq 0 ]; then
+                            pacman -S --noconfirm --needed \
+                                nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                        else
+                            log_warn "Cannot install browser deps without sudo. Run manually:"
+                            log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                        fi
                     fi
-                fi
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                }
-                ;;
-            fedora|rhel|centos|rocky|alma)
-                log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            opensuse*|sles)
-                log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            *)
-                log_warn "Playwright does not support automatic dependency installation on $DISTRO."
-                log_info "Install Chromium/browser system dependencies for your distribution, then run:"
-                log_info "  cd $INSTALL_DIR && npx playwright install chromium"
-                log_info "Browser tools will not work until dependencies are installed."
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
-                ;;
-        esac
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — browser tools will not work."
+                    }
+                    ;;
+                fedora|rhel|centos|rocky|alma)
+                    log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
+                    log_info "Install Chromium system dependencies manually before using browser tools:"
+                    log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    }
+                    ;;
+                opensuse*|sles)
+                    log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
+                    log_info "Install Chromium system dependencies manually before using browser tools:"
+                    log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || {
+                        log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    }
+                    ;;
+                *)
+                    log_warn "Playwright does not support automatic dependency installation on $DISTRO."
+                    log_info "Install Chromium/browser system dependencies for your distribution, then run:"
+                    log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+                    log_info "Browser tools will not work until dependencies are installed."
+                    cd "$INSTALL_DIR" && run_browser_install_with_timeout 600 npx playwright install chromium 2>/dev/null || true
+                    ;;
+            esac
+        fi
         log_success "Browser engine setup complete"
     fi
 

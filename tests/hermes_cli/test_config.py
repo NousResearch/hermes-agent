@@ -81,6 +81,81 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
 
 
+class TestLoadConfigParseFailure:
+    """A YAML parse failure must NOT silently fall back to defaults.
+
+    Before issue #23570 this was a single ``print(...)`` that scrolled past
+    on the first invocation — users saw aux-fallback misbehavior with no clue
+    their config.yaml was being ignored. The helper must:
+      * log at WARNING (so ``hermes logs`` surfaces it)
+      * also write to stderr (so it's visible at startup even before
+        ``setup_logging()`` has wired up file handlers)
+      * dedup on (path, mtime_ns, size) so concurrent loads don't spam
+      * re-warn after the user edits the file (different mtime)
+    """
+
+    def test_logs_and_warns_on_parse_failure(self, tmp_path, caplog, capsys):
+        # Reset the dedup cache so this test isn't affected by other tests
+        # that may have warned about a different broken config.
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken tab indent:\n")
+
+            import logging
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                config = load_config()
+
+            # Falls back to defaults — confirms the silent-fallback we're warning about
+            assert config["model"] == DEFAULT_CONFIG["model"]
+
+            # WARNING-level log was emitted with file path + reason
+            assert any(
+                str(tmp_path / "config.yaml") in rec.message
+                and "Falling back to default config" in rec.message
+                for rec in caplog.records
+            ), f"expected WARNING log, got: {[r.message for r in caplog.records]}"
+
+            # stderr also got a user-visible message (with the ⚠️ marker so it
+            # stands out at hermes startup before logging is configured)
+            captured = capsys.readouterr()
+            assert "hermes config:" in captured.err
+            assert str(tmp_path / "config.yaml") in captured.err
+
+    def test_dedup_on_repeated_load_same_file(self, tmp_path, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+
+            load_config()
+            first = capsys.readouterr().err
+            assert "hermes config:" in first
+
+            load_config()
+            second = capsys.readouterr().err
+            assert second == "", "second load should NOT re-warn (same file, same mtime)"
+
+    def test_rewarns_after_file_edit(self, tmp_path, capsys):
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            load_config()
+            capsys.readouterr()  # discard first warning
+
+            # Edit the file (still broken, but different content) — mtime changes
+            time.sleep(0.05)
+            (tmp_path / "config.yaml").write_text("\tstill broken differently:\n")
+            load_config()
+            after_edit = capsys.readouterr().err
+            assert "hermes config:" in after_edit, "edited file should re-warn"
+
+
 class TestSaveAndLoadRoundtrip:
     def test_roundtrip(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

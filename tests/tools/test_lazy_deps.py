@@ -12,6 +12,8 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Iterator
 
 import pytest
@@ -226,3 +228,55 @@ class TestIsAvailable:
         monkeypatch.setitem(ld.LAZY_DEPS, "test.miss", ("zzzfake>=1",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         assert ld.is_available("test.miss") is False
+
+
+# --------------------------------------------------------------------------
+# Docker overlay path fix — sys.prefix vs executable.parent.parent
+# --------------------------------------------------------------------------
+
+
+class TestVenvRootResolution:
+    """Regression test for Docker overlay path issue.
+
+    In a Docker image with a volume mounted at /opt/data and packages
+    installed at /opt/hermes, ``sys.executable`` resolves to something inside
+    the overlay (e.g. /opt/data/.venv/bin/python) while ``sys.prefix`` is
+    /opt/hermes (the actual venv root).  Using executable.parent.parent
+    caused lazy_deps to install into the overlay volume, where the package
+    was lost on container restart.  Using sys.prefix targets the real
+    site-packages regardless of overlay mounts.
+    """
+
+    def test_sys_prefix_is_used_as_venv_root(self, monkeypatch, tmp_path):
+        """Verify _venv_pip_install targets sys.prefix, not executable.parent.parent.
+
+        In Docker with /opt/data volume overlay and /opt/hermes as the real venv,
+        sys.executable may point inside the overlay while sys.prefix = /opt/hermes.
+        We verify the VIRTUAL_ENV passed to the install command matches sys.prefix.
+        """
+        # Simulate: real venv is /opt/hermes, but executable is accessed via overlay
+        real_venv = str(tmp_path / "hermes")
+        (Path(real_venv) / "bin").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(sys, "prefix", real_venv)
+        # executable resolves to overlay path (simulates /opt/data/.local/bin/python)
+        overlay_exec = str(tmp_path / "data" / ".local" / "bin" / "python")
+        (tmp_path / "data" / ".local" / "bin").mkdir(parents=True)
+        Path(overlay_exec).touch()
+        monkeypatch.setattr(sys, "executable", overlay_exec)
+
+        captured_venv = {}
+        def fake_run(cmd, *args, **kwargs):
+            env = kwargs.get("env", {})
+            captured_venv["virtual_env"] = env.get("VIRTUAL_ENV", "MISSING")
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+
+        ld._venv_pip_install(("fake-pkg>=1",))
+
+        assert captured_venv.get("virtual_env") == real_venv, (
+            f"Expected VIRTUAL_ENV={real_venv!r}, "
+            f"got {captured_venv.get('virtual_env')!r}. "
+            "Using executable.parent.parent would give the overlay path. "
+            "sys.prefix must be used instead."
+        )

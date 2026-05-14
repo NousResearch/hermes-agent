@@ -278,7 +278,11 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     if not specs:
         return _InstallResult(True, "", "")
 
-    venv_root = Path(sys.executable).parent.parent
+    # Use sys.prefix instead of executable.parent.parent so that Docker
+    # environments with overlaid /opt/data volumes resolve to /opt/hermes
+    # (where packages are installed) rather than the data volume mount point.
+    # Fixes: python-telegram-bot lazy-install silently fails in Docker.
+    venv_root = Path(sys.prefix)
     uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
 
     # Tier 1: uv (preferred — fast, doesn't need pip in the venv)

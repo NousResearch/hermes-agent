@@ -277,13 +277,13 @@ def _serialize_gate(row: sqlite3.Row) -> dict[str, Any]:
         "gateType": row["gate_type"],
         "level": row["level"],
         "status": row["status"],
-        "requiredActor": row["required_actor"],
         "verdict": row["verdict"],
+        "requiredActor": row["required_actor"],
         "resolvedBy": row["resolved_by"],
-        "artifactId": row["artifact_id"],
-        "metadata": _loads(row["metadata_json"], {}),
-        "createdAt": row["created_at"],
         "resolvedAt": row["resolved_at"],
+        "artifactId": row["artifact_id"],
+        "reason": row["reason"],
+        "metadata": _loads(row["metadata_json"], {}),
     }
 
 

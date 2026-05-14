@@ -212,6 +212,17 @@ def test_get_workflow_node_returns_detail_drawer_payload(tmp_path):
     with connect(tmp_path / "workflow.db") as conn:
         _create_workflow(conn)
         add_event(conn, workflow_id="wf_api", event_type="node_started", node_id="backend-api", actor_type="workflow", now=3.0)
+        add_gate(
+            conn,
+            workflow_id="wf_api",
+            node_id="backend-api",
+            gate_type="review",
+            level=1,
+            required_actor="reviewer",
+            status="pending",
+            reason="needs human review",
+            metadata={"severity": "medium"},
+        )
 
         payload = get_workflow_node(conn, "wf_api", "backend-api")
 
@@ -222,6 +233,10 @@ def test_get_workflow_node_returns_detail_drawer_payload(tmp_path):
     assert facts["node"]["children"] == ["integration"]
     assert facts["node"]["definitionOfDone"] == ["API tests pass."]
     assert facts["node"]["scope"] == {"summary": "Build API."}
+    assert facts["gates"][0]["gateType"] == "review"
+    assert facts["gates"][0]["status"] == "pending"
+    assert facts["gates"][0]["reason"] == "needs human review"
+    assert facts["gates"][0]["metadata"] == {"severity": "medium"}
     assert facts["events"][0]["eventType"] == "node_started"
 
 

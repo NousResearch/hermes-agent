@@ -27,7 +27,8 @@ import logging
 import os
 import re
 import threading
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.config import cfg_get, load_config
 from tools.registry import tool_error
@@ -161,16 +162,122 @@ def _is_geoip() -> bool:
     return bool(_get_cloakbrowser_config().get("geoip", False))
 
 
+def _get_timezone() -> str:
+    """Return the timezone override (empty = auto-detect or system default)."""
+    env = os.getenv("CLOAKBROWSER_TIMEZONE", "").strip()
+    if env:
+        return env
+    return str(_get_cloakbrowser_config().get("timezone", ""))
+
+
+def _get_locale() -> str:
+    """Return the locale override (empty = auto-detect or system default)."""
+    env = os.getenv("CLOAKBROWSER_LOCALE", "").strip()
+    if env:
+        return env
+    return str(_get_cloakbrowser_config().get("locale", ""))
+
+
 # ---------------------------------------------------------------------------
 # Browser / page lifecycle
 # ---------------------------------------------------------------------------
 
 _browser_lock = threading.Lock()
+# ---------------------------------------------------------------------------
+# Playwright thread dispatcher
+# ---------------------------------------------------------------------------
+# Playwright's sync API binds its greenlet/fiber dispatcher to the thread that
+# called ``sync_playwright().__enter__()``.  When Hermes calls browser tools
+# from inside an asyncio event loop, ``sync_playwright`` detects the running
+# loop and raises.  Even if we launch in a background thread, all subsequent
+# operations (new_page, goto, evaluate, etc.) must run on that *same* thread
+# because the greenlet dispatcher is thread-bound.
+#
+# The fix: a dedicated daemon thread that owns the Playwright context and
+# processes all browser operations via a ``queue.Queue``.  Every public
+# function submits a callable to the queue and blocks on the result.
+
+_playwright_thread: Optional[threading.Thread] = None
+_playwright_queue: "queue.Queue" = None  # type: ignore[assignment]
+_playwright_ready = threading.Event()
+
+
+def _run_on_playwright_thread(fn: Callable, timeout: float = 120.0) -> Any:
+    """Submit *fn* to the dedicated Playwright thread and return the result.
+
+    Starts the thread on first call.  Raises any exception from *fn* in the
+    caller's thread.
+
+    If called from within the Playwright thread itself (e.g. nested calls
+    from _ensure_page -> _ensure_browser), runs *fn* directly to avoid
+    deadlock.
+    """
+    global _playwright_thread, _playwright_queue
+    import queue as _queue_mod
+
+    # If we're already on the Playwright thread, just call directly — no
+    # deadlock risk since a single thread can't dequeue while executing.
+    if threading.current_thread() is _playwright_thread:
+        return fn()
+
+    if _playwright_thread is None or not _playwright_thread.is_alive():
+        _playwright_queue = _queue_mod.Queue()
+        _playwright_ready.clear()
+        _playwright_thread = threading.Thread(
+            target=_playwright_main, daemon=True, name="cloakbrowser-pw"
+        )
+        _playwright_thread.start()
+        _playwright_ready.wait(timeout=120)  # block until Playwright is ready
+
+    result_container: list = []
+    exc_container: list = []
+
+    def _work():
+        try:
+            result_container.append(fn())
+        except Exception as e:
+            exc_container.append(e)
+
+    _playwright_queue.put(_work)
+    # Block until the work item is processed
+    deadline = time.monotonic() + timeout
+    while not result_container and not exc_container:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"Playwright thread did not respond within {timeout}s")
+        time.sleep(0.01)
+    if exc_container:
+        raise exc_container[0]
+    return result_container[0]
+
+
+def _playwright_main():
+    """Persistent thread that owns the Playwright event loop."""
+    # This thread has no asyncio loop, so sync_playwright() works without
+    # the "using Playwright Sync API inside the asyncio loop" error.
+    _playwright_ready.set()
+    while True:
+        work = _playwright_queue.get()
+        if work is None:
+            # Shutdown sentinel
+            break
+        try:
+            work()
+        except Exception:
+            # Exceptions are captured by the caller via _run_on_playwright_thread;
+            # we must not crash the thread.
+            pass
+
+
 _browser_instance = None  # Singleton cloakbrowser.Browser
 
 
 def _ensure_browser():
-    """Launch (or return the existing) singleton CloakBrowser instance."""
+    """Launch (or return the existing) singleton CloakBrowser instance.
+
+    All Playwright operations are dispatched to a dedicated thread to avoid
+    conflicts with asyncio event loops in the caller's thread.
+    """
     global _browser_instance
     if _browser_instance is not None:
         return _browser_instance
@@ -180,9 +287,10 @@ def _ensure_browser():
     kwargs: Dict[str, Any] = {}
     kwargs["headless"] = _is_headless()
 
+    extra_args: List[str] = []
     fingerprint_seed = _get_fingerprint_seed()
     if fingerprint_seed:
-        kwargs["fingerprint_seed"] = fingerprint_seed
+        extra_args.append(f"--fingerprint={fingerprint_seed}")
 
     proxy = _get_proxy()
     if proxy:
@@ -199,11 +307,25 @@ def _ensure_browser():
     if binary_path:
         kwargs["executable_path"] = binary_path
 
-    logger.info("Launching CloakBrowser (headless=%s, humanize=%s, geoip=%s)",
+    timezone = _get_timezone()
+    if timezone:
+        kwargs["timezone"] = timezone
+
+    locale = _get_locale()
+    if locale:
+        kwargs["locale"] = locale
+
+    logger.info("Launching CloakBrowser (headless=%s, humanize=%s, geoip=%s, tz=%s, locale=%s, fp_seed=%s)",
                 kwargs.get("headless", True),
                 kwargs.get("humanize", False),
-                kwargs.get("geoip", False))
-    _browser_instance = cloakbrowser.launch(**kwargs)
+                kwargs.get("geoip", False),
+                kwargs.get("timezone", ""),
+                kwargs.get("locale", ""),
+                fingerprint_seed or "random")
+    if extra_args:
+        kwargs["args"] = extra_args
+
+    _browser_instance = _run_on_playwright_thread(lambda: cloakbrowser.launch(**kwargs))
     return _browser_instance
 
 
@@ -214,14 +336,21 @@ _refs: Dict[str, Dict[str, str]] = {}  # task_id → {ref_id → locator_string}
 
 
 def _ensure_page(task_id: Optional[str] = None):
-    """Get or create a Playwright Page for the given task."""
+    """Get or create a Playwright Page for the given task.
+
+    Runs browser launch and page creation on the dedicated Playwright thread.
+    """
     task_id = task_id or "default"
     with _pages_lock:
         if task_id in _pages:
             return _pages[task_id]
-        browser = _ensure_browser()
-        context = browser.new_context() if hasattr(browser, "new_context") else browser
-        page = context.new_page() if hasattr(context, "new_page") else browser.new_page()
+
+        def _create_page():
+            browser = _ensure_browser()
+            context = browser.new_context() if hasattr(browser, "new_context") else browser
+            return context.new_page() if hasattr(context, "new_page") else browser.new_page()
+
+        page = _run_on_playwright_thread(_create_page)
         _pages[task_id] = page
         _refs[task_id] = {}
         return page
@@ -321,23 +450,28 @@ def cloakbrowser_navigate(url: str, task_id: Optional[str] = None) -> str:
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        page.goto(url, timeout=30000, wait_until="domcontentloaded")
-        # Wait a moment for dynamic content to render
-        try:
-            page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass  # networkidle can timeout on complex pages; that's fine
 
-        result = {
-            "success": True,
-            "url": page.url,
-            "title": page.title() if hasattr(page, "title") else "",
-        }
+        def _do_navigate():
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            # Wait a moment for dynamic content to render
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass  # networkidle can timeout on complex pages; that's fine
+            return {
+                "success": True,
+                "url": page.url,
+                "title": page.title() if hasattr(page, "title") else "",
+            }
+
+        result = _run_on_playwright_thread(_do_navigate)
 
         # Auto-take a compact snapshot so the model can act immediately
         try:
             from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD, _truncate_snapshot
-            snap = _playwright_snapshot_to_hermes_format(page, task_id)
+            snap = _run_on_playwright_thread(
+                lambda: _playwright_snapshot_to_hermes_format(page, task_id)
+            )
             snapshot_text = snap.get("snapshot", "")
             if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
                 snapshot_text = _truncate_snapshot(snapshot_text)
@@ -357,7 +491,9 @@ def cloakbrowser_snapshot(full: bool = False, task_id: Optional[str] = None,
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        snap = _playwright_snapshot_to_hermes_format(page, task_id)
+        snap = _run_on_playwright_thread(
+            lambda: _playwright_snapshot_to_hermes_format(page, task_id)
+        )
 
         snapshot = snap.get("snapshot", "")
         refs_count = snap.get("element_count", 0)
@@ -391,31 +527,35 @@ def cloakbrowser_click(ref: str, task_id: Optional[str] = None) -> str:
         page = _ensure_page(task_id)
         clean_ref = ref.lstrip("@")
 
-        locator_str = _refs.get(task_id, {}).get(clean_ref)
-        if locator_str:
-            try:
-                locator = page.locator(locator_str)
-                locator.first.click(timeout=5000)
-            except Exception as exc:
-                logger.debug("CloakBrowser locator click failed, falling back to role: %s", exc)
-                locator_str = None  # Fall through to role-based resolution
-
-        if not locator_str:
-            # Fallback: re-parse snapshot to find role and name
-            try:
-                raw_aria = page.aria_snapshot()
-                _add_refs_to_aria_snapshot(raw_aria, task_id)
-                locator_str = _refs.get(task_id, {}).get(clean_ref)
-                if locator_str:
+        def _do_click():
+            locator_str = _refs.get(task_id, {}).get(clean_ref)
+            if locator_str:
+                try:
                     locator = page.locator(locator_str)
                     locator.first.click(timeout=5000)
-                else:
-                    # Last resort: try get_by_role with name from aria
-                    _resolve_click_by_role(page, clean_ref, task_id)
-            except Exception as exc2:
-                return tool_error(f"CloakBrowser click failed for ref @{clean_ref}: {exc2}", success=False)
+                    return
+                except Exception as exc:
+                    logger.debug("CloakBrowser locator click failed, falling back to role: %s", exc)
+                    locator_str = None  # Fall through to role-based resolution
 
-        url_after = page.url
+            if not locator_str:
+                # Fallback: re-parse snapshot to find role and name
+                try:
+                    raw_aria = page.aria_snapshot()
+                    _add_refs_to_aria_snapshot(raw_aria, task_id)
+                    locator_str = _refs.get(task_id, {}).get(clean_ref)
+                    if locator_str:
+                        locator = page.locator(locator_str)
+                        locator.first.click(timeout=5000)
+                    else:
+                        # Last resort: try get_by_role with name from aria
+                        _resolve_click_by_role(page, clean_ref, task_id)
+                except Exception as exc2:
+                    raise RuntimeError(f"CloakBrowser click failed for ref @{clean_ref}: {exc2}")
+
+            return page.url
+
+        url_after = _run_on_playwright_thread(_do_click)
         return json.dumps({
             "success": True,
             "clicked": clean_ref,
@@ -453,42 +593,45 @@ def cloakbrowser_type(ref: str, text: str, task_id: Optional[str] = None) -> str
         page = _ensure_page(task_id)
         clean_ref = ref.lstrip("@")
 
-        locator_str = _refs.get(task_id, {}).get(clean_ref)
-        if locator_str:
-            try:
-                locator = page.locator(locator_str)
-                locator.first.fill(text, timeout=5000)
-            except Exception as exc:
-                logger.debug("CloakBrowser locator fill failed, falling back to role: %s", exc)
-                # Try using get_by_role
-                refs = _refs.get(task_id, {})
-                ls = refs.get(clean_ref, "")
-                parts = ls.split(" >> ")
-                role = ""
-                name = ""
-                for part in parts:
-                    if part.startswith("[role='") and part.endswith("']"):
-                        role = part[7:-2]
-                    elif part.startswith("text='") and part.endswith("'"):
-                        name = part[6:-1]
-                if role:
-                    if name:
-                        page.get_by_role(role, name=name).first.fill(text, timeout=5000)
-                    else:
-                        page.get_by_role(role).first.fill(text, timeout=5000)
-                else:
-                    raise
-        else:
-            # Re-parse snapshot to find the ref
-            raw_aria = page.aria_snapshot()
-            _add_refs_to_aria_snapshot(raw_aria, task_id)
+        def _do_type():
             locator_str = _refs.get(task_id, {}).get(clean_ref)
             if locator_str:
-                locator = page.locator(locator_str)
-                locator.first.fill(text, timeout=5000)
+                try:
+                    locator = page.locator(locator_str)
+                    locator.first.fill(text, timeout=5000)
+                    return
+                except Exception as exc:
+                    logger.debug("CloakBrowser locator fill failed, falling back to role: %s", exc)
+                    # Try using get_by_role
+                    refs = _refs.get(task_id, {})
+                    ls = refs.get(clean_ref, "")
+                    parts = ls.split(" >> ")
+                    role = ""
+                    name = ""
+                    for part in parts:
+                        if part.startswith("[role='") and part.endswith("']"):
+                            role = part[7:-2]
+                        elif part.startswith("text='") and part.endswith("'"):
+                            name = part[6:-1]
+                    if role:
+                        if name:
+                            page.get_by_role(role, name=name).first.fill(text, timeout=5000)
+                        else:
+                            page.get_by_role(role).first.fill(text, timeout=5000)
+                    else:
+                        raise
             else:
-                raise ValueError(f"Could not resolve ref @{clean_ref}")
+                # Re-parse snapshot to find the ref
+                raw_aria = page.aria_snapshot()
+                _add_refs_to_aria_snapshot(raw_aria, task_id)
+                locator_str = _refs.get(task_id, {}).get(clean_ref)
+                if locator_str:
+                    locator = page.locator(locator_str)
+                    locator.first.fill(text, timeout=5000)
+                else:
+                    raise ValueError(f"Could not resolve ref @{clean_ref}")
 
+        _run_on_playwright_thread(_do_type)
         return json.dumps({
             "success": True,
             "typed": text,
@@ -504,18 +647,21 @@ def cloakbrowser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     try:
         page = _ensure_page(task_id)
         scroll_amount = 500  # pixels per scroll step
-        if direction == "up":
-            page.mouse.wheel(0, -scroll_amount)
-        elif direction == "down":
-            page.mouse.wheel(0, scroll_amount)
-        elif direction == "left":
-            page.mouse.wheel(-scroll_amount, 0)
-        elif direction == "right":
-            page.mouse.wheel(scroll_amount, 0)
-        else:
-            # Default to down
-            page.mouse.wheel(0, scroll_amount)
 
+        def _do_scroll():
+            if direction == "up":
+                page.mouse.wheel(0, -scroll_amount)
+            elif direction == "down":
+                page.mouse.wheel(0, scroll_amount)
+            elif direction == "left":
+                page.mouse.wheel(-scroll_amount, 0)
+            elif direction == "right":
+                page.mouse.wheel(scroll_amount, 0)
+            else:
+                # Default to down
+                page.mouse.wheel(0, scroll_amount)
+
+        _run_on_playwright_thread(_do_scroll)
         return json.dumps({"success": True, "scrolled": direction})
     except Exception as e:
         return tool_error(str(e), success=False)
@@ -526,10 +672,15 @@ def cloakbrowser_back(task_id: Optional[str] = None) -> str:
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        page.go_back(timeout=10000)
+
+        def _do_back():
+            page.go_back(timeout=10000)
+            return page.url
+
+        url_after = _run_on_playwright_thread(_do_back)
         return json.dumps({
             "success": True,
-            "url": page.url,
+            "url": url_after,
         })
     except Exception as e:
         return tool_error(f"CloakBrowser back failed: {e}", success=False)
@@ -540,7 +691,11 @@ def cloakbrowser_press(key: str, task_id: Optional[str] = None) -> str:
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        page.keyboard.press(key)
+
+        def _do_press():
+            page.keyboard.press(key)
+
+        _run_on_playwright_thread(_do_press)
         return json.dumps({
             "success": True,
             "pressed": key,
@@ -578,31 +733,34 @@ def cloakbrowser_get_images(task_id: Optional[str] = None) -> str:
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        # Use page.evaluate with JS to extract images (NOT accessibility snapshot)
-        images = page.evaluate("""() => {
-            const imgs = [];
-            for (const img of document.querySelectorAll('img')) {
-                imgs.push({
-                    src: img.src || '',
-                    alt: img.alt || '',
-                    width: img.naturalWidth || img.width || 0,
-                    height: img.naturalHeight || img.height || 0,
-                });
-            }
-            for (const el of document.querySelectorAll('[role="img"], svg, canvas')) {
-                const ariaLabel = el.getAttribute('aria-label') || '';
-                const src = el.getAttribute('src') || el.toDataURL?.() || '';
-                if (src || ariaLabel) {
+
+        def _get_images():
+            return page.evaluate("""() => {
+                const imgs = [];
+                for (const img of document.querySelectorAll('img')) {
                     imgs.push({
-                        src: src,
-                        alt: ariaLabel,
-                        width: el.offsetWidth || 0,
-                        height: el.offsetHeight || 0,
+                        src: img.src || '',
+                        alt: img.alt || '',
+                        width: img.naturalWidth || img.width || 0,
+                        height: img.naturalHeight || img.height || 0,
                     });
                 }
-            }
-            return imgs;
-        }""")
+                for (const el of document.querySelectorAll('[role="img"], svg, canvas')) {
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    const src = el.getAttribute('src') || el.toDataURL?.() || '';
+                    if (src || ariaLabel) {
+                        imgs.push({
+                            src: src,
+                            alt: ariaLabel,
+                            width: el.offsetWidth || 0,
+                            height: el.offsetHeight || 0,
+                        });
+                    }
+                }
+                return imgs;
+            }""")
+
+        images = _run_on_playwright_thread(_get_images)
         return json.dumps({
             "success": True,
             "images": images or [],
@@ -618,7 +776,11 @@ def cloakbrowser_vision(question: Optional[str] = None, annotate: bool = False,
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        screenshot_bytes = page.screenshot(full_page=False)
+
+        def _take_screenshot():
+            return page.screenshot(full_page=False)
+
+        screenshot_bytes = _run_on_playwright_thread(_take_screenshot)
         import base64
         screenshot_b64 = base64.b64encode(screenshot_bytes).decode("ascii")
 
@@ -637,13 +799,16 @@ def cloakbrowser_vision(question: Optional[str] = None, annotate: bool = False,
     except Exception as e:
         return tool_error(f"CloakBrowser vision failed: {e}", success=False)
 
-
 def _cloakbrowser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context via CloakBrowser."""
     task_id = task_id or "default"
     try:
         page = _ensure_page(task_id)
-        raw_result = page.evaluate(expression)
+
+        def _do_eval():
+            return page.evaluate(expression)
+
+        raw_result = _run_on_playwright_thread(_do_eval)
 
         # Try to parse as JSON for structured return
         parsed = raw_result
@@ -677,7 +842,7 @@ def cloakbrowser_close(task_id: Optional[str] = None) -> str:
 
     if page is not None:
         try:
-            page.close()
+            _run_on_playwright_thread(page.close, timeout=10)
         except Exception as exc:
             logger.debug("CloakBrowser page close error for task %s: %s", task_id, exc)
 
@@ -689,9 +854,11 @@ def cloakbrowser_close(task_id: Optional[str] = None) -> str:
         with _browser_lock:
             if _browser_instance is not None:
                 try:
-                    _browser_instance.close()
+                    _run_on_playwright_thread(_browser_instance.close, timeout=10)
                 except Exception as exc:
                     logger.debug("CloakBrowser browser close error: %s", exc)
                 _browser_instance = None
+                # Signal the Playwright thread to exit
+                _playwright_queue.put(None)
 
     return json.dumps({"success": True})

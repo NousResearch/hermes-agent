@@ -2174,6 +2174,22 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "CLOAKBROWSER_TIMEZONE": {
+        "description": "Timezone override for CloakBrowser (e.g. Asia/Ho_Chi_Minh, America/New_York)",
+        "prompt": "CloakBrowser timezone",
+        "url": "https://github.com/CloakHQ/CloakBrowser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
+    "CLOAKBROWSER_LOCALE": {
+        "description": "Locale override for CloakBrowser (e.g. en-US, vi-VN)",
+        "prompt": "CloakBrowser locale",
+        "url": "https:///CloakHQ/CloakBrowser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "FAL_KEY": {
         "description": "FAL API key for image generation",
         "prompt": "FAL API key",

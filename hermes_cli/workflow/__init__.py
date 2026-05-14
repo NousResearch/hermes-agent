@@ -25,6 +25,7 @@ from .dag import DagValidationResult, normalize_dag, validate_dag
 from .errors import WorkflowError, WorkflowValidationError
 from .materialize import MaterializationResult, MaterializedTask, materialize_workflow
 from .policy import DEFAULT_POLICY, PolicyLoadResult, WorkflowPolicy, load_policy
+from .reports import render_workflow_status_report, workflow_status_report
 from .worktrees import allocate_worktrees
 from .store import (
     WorkflowArtifact,
@@ -95,6 +96,7 @@ __all__ = [
     "promote_inbox_item_to_workflow",
     "resolve_gate",
     "resolve_workflow_gate_control",
+    "render_workflow_status_report",
     "save_dag",
     "shape_inbox_item_as_draft_workflow",
     "update_inbox_item",
@@ -102,4 +104,5 @@ __all__ = [
     "update_workflow_status",
     "validate_dag",
     "workflow_api_contract_fixture",
+    "workflow_status_report",
 ]

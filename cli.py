@@ -4847,6 +4847,28 @@ class HermesCLI:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_frontdesk_command(self, cmd: str):
+        """Handle /frontdesk status — show live control-plane readiness."""
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if arg and arg != "status":
+            _cprint("  Usage: /frontdesk status")
+            return
+
+        from agent.frontdesk_live import ensure_default_worker_lane
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+
+        live_enabled = bool(getattr(self, "frontdesk_live_enabled", False))
+        if live_enabled:
+            ensure_default_worker_lane(self, session_key=getattr(self, "session_id", None))
+        runtime = get_or_create_orchestration_runtime(self)
+        lanes = runtime.worker_registry.lane_names()
+        default_lane_available = "main" in lanes
+        _cprint("  Frontdesk status")
+        _cprint(f"  Frontdesk live: {'enabled' if live_enabled else 'disabled'}")
+        _cprint(f"  Default worker lane: {'available' if default_lane_available else 'missing'}")
+        _cprint("  Available worker lanes: " + (", ".join(lanes) if lanes else "none"))
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -7607,6 +7629,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "frontdesk":
+            self._handle_frontdesk_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":

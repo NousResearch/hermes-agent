@@ -125,6 +125,21 @@ async def test_gateway_pending_sentinel_does_not_consume_korean_followup():
 
 
 @pytest.mark.asyncio
+async def test_frontdesk_status_command_reports_live_gate_and_worker_lane():
+    from gateway.run import GatewayRunner
+
+    runner, _sentinel = _make_runner()
+    runner.frontdesk_live_enabled = True
+    event = _make_event(text="/frontdesk status")
+
+    result = await GatewayRunner._handle_frontdesk_command(runner, event)
+
+    assert "Frontdesk live: enabled" in result
+    assert "Default worker lane: available" in result
+    assert "Available worker lanes: main" in result
+
+
+@pytest.mark.asyncio
 async def test_frontdesk_mode_enabled_alone_does_not_enable_gateway_live_interception():
     from gateway.run import GatewayRunner
 

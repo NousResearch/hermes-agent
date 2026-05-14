@@ -601,37 +601,26 @@ class CodexAppServerSession:
             except Exception:
                 logger.exception("approval_callback raised on exec request")
                 return "decline"
+        try:
+            from tools.approval import request_gateway_approval
+
+            choice = request_gateway_approval(
+                command,
+                description,
+                pattern_key="codex:exec",
+                surface="codex_app_server",
+            )
+            return _approval_choice_to_codex_decision(choice)
+        except Exception:
+            logger.exception("gateway approval bridge raised on exec request")
+            return "decline"
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
         if self._routing.auto_approve_apply_patch:
             return "accept"
+        command_label, description = self._format_apply_patch_approval(params)
         if self._approval_callback is not None:
-            # FileChangeRequestApprovalParams gives us reason + grantRoot.
-            # The actual changeset lives on the corresponding fileChange
-            # item which the projector has already cached for us — look it
-            # up by item_id so the user sees what's actually changing.
-            reason = params.get("reason")
-            grant_root = params.get("grantRoot")
-            item_id = params.get("itemId") or ""
-            change_summary = self._lookup_pending_file_change(item_id)
-            description_parts = []
-            if reason:
-                description_parts.append(reason)
-            if change_summary:
-                description_parts.append(change_summary)
-            if grant_root:
-                description_parts.append(f"grants write to {grant_root}")
-            description = (
-                "; ".join(description_parts)
-                if description_parts
-                else "Codex requests to apply a patch"
-            )
-            command_label = (
-                f"apply_patch: {change_summary}" if change_summary
-                else f"apply_patch: {reason}" if reason
-                else "apply_patch"
-            )
             try:
                 choice = self._approval_callback(
                     command_label,
@@ -642,7 +631,45 @@ class CodexAppServerSession:
             except Exception:
                 logger.exception("approval_callback raised on apply_patch")
                 return "decline"
+        try:
+            from tools.approval import request_gateway_approval
+
+            choice = request_gateway_approval(
+                command_label,
+                description,
+                pattern_key="codex:apply_patch",
+                surface="codex_app_server",
+            )
+            return _approval_choice_to_codex_decision(choice)
+        except Exception:
+            logger.exception("gateway approval bridge raised on apply_patch")
+            return "decline"
         return "decline"
+
+    def _format_apply_patch_approval(self, params: dict) -> tuple[str, str]:
+        """Return ``(command_label, description)`` for Codex file changes."""
+        reason = params.get("reason")
+        grant_root = params.get("grantRoot")
+        item_id = params.get("itemId") or ""
+        change_summary = self._lookup_pending_file_change(item_id)
+        description_parts = []
+        if reason:
+            description_parts.append(reason)
+        if change_summary:
+            description_parts.append(change_summary)
+        if grant_root:
+            description_parts.append(f"grants write to {grant_root}")
+        description = (
+            "; ".join(description_parts)
+            if description_parts
+            else "Codex requests to apply a patch"
+        )
+        command_label = (
+            f"apply_patch: {change_summary}" if change_summary
+            else f"apply_patch: {reason}" if reason
+            else "apply_patch"
+        )
+        return command_label, description
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Maintain self._pending_file_changes from item/started + item/completed

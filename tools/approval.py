@@ -551,6 +551,131 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def request_gateway_approval(
+    command: str,
+    description: str,
+    *,
+    pattern_key: str = "external:approval",
+    pattern_keys: Optional[list[str]] = None,
+    surface: str = "gateway",
+) -> str:
+    """Request an arbitrary gateway approval and block for the user's choice.
+
+    This is the gateway analogue of ``prompt_dangerous_approval()`` for
+    callers that already know an operation requires approval, but do not flow
+    through ``check_all_command_guards()``.  The Codex app-server transport is
+    the main user: Codex emits its own exec/apply-patch approval requests, so
+    Hermes must bridge those requests to Telegram/Discord/etc. instead of
+    relying on Hermes' regex detector to rediscover them.
+
+    Returns one of ``once``, ``session``, ``always``, or ``deny``.  Failures,
+    missing gateway context, and timeouts all return ``deny`` (fail closed).
+    """
+    session_key = get_current_session_key(default="")
+    if not session_key or not _is_gateway_approval_context():
+        return "deny"
+
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None:
+        return "deny"
+
+    keys = list(pattern_keys or [pattern_key])
+    if pattern_key not in keys:
+        keys.insert(0, pattern_key)
+    approval_data = {
+        "command": command,
+        "pattern_key": pattern_key,
+        "pattern_keys": keys,
+        "description": description,
+    }
+    entry = _ApprovalEntry(approval_data)
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=list(keys),
+        session_key=session_key,
+        surface=surface,
+    )
+
+    try:
+        notify_cb(approval_data)
+    except Exception as exc:
+        logger.warning("Gateway approval notify failed: %s", exc)
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+        _fire_approval_hook(
+            "post_approval_response",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            pattern_keys=list(keys),
+            session_key=session_key,
+            surface=surface,
+            choice="notify_failed",
+        )
+        return "deny"
+
+    timeout = _get_approval_config().get("gateway_timeout", 300)
+    try:
+        timeout = int(timeout)
+    except (ValueError, TypeError):
+        timeout = 300
+
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    _now = time.monotonic()
+    _deadline = _now + max(timeout, 0)
+    _activity_state = {"last_touch": _now, "start": _now}
+    resolved = False
+    while True:
+        _remaining = _deadline - time.monotonic()
+        if _remaining <= 0:
+            break
+        if entry.event.wait(timeout=min(1.0, _remaining)):
+            resolved = True
+            break
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(_activity_state, "waiting for user approval")
+
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    choice = entry.result
+    outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=list(keys),
+        session_key=session_key,
+        surface=surface,
+        choice=outcome,
+    )
+    if not resolved or choice is None:
+        return "deny"
+    if choice in {"once", "session", "always", "deny"}:
+        return choice
+    return "deny"
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

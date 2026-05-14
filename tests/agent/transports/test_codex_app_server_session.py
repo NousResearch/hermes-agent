@@ -315,6 +315,45 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("req-1", {"decision": "decline"}) in client.responses
 
+    def test_exec_approval_without_callback_uses_gateway_queue(self, monkeypatch):
+        """Gateway sessions have no CLI callback, but Codex approvals must
+        still notify and wait on the gateway approval queue."""
+        from tools import approval
+
+        approval._gateway_queues.clear()
+        approval._gateway_notify_cbs.clear()
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        token = approval.set_current_session_key("agent:main:telegram:dm:1")
+        notified = {}
+
+        def notify(data):
+            notified.update(data)
+            approval.resolve_gateway_approval("agent:main:telegram:dm:1", "once")
+
+        approval.register_gateway_notify("agent:main:telegram:dm:1", notify)
+        try:
+            client = FakeClient()
+            client.queue_server_request(
+                "item/commandExecution/requestApproval", request_id="req-gw-1",
+                command="python migrate.py", cwd="/repo", reason="needs write access",
+            )
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
+            s = make_session(client)
+            s.run_turn("hi", turn_timeout=1.0)
+        finally:
+            approval.unregister_gateway_notify("agent:main:telegram:dm:1")
+            approval.reset_current_session_key(token)
+            approval._gateway_queues.clear()
+            approval._gateway_notify_cbs.clear()
+
+        assert notified["command"] == "python migrate.py"
+        assert notified["pattern_key"] == "codex:exec"
+        assert "Codex requests exec in /repo" in notified["description"]
+        assert ("req-gw-1", {"decision": "accept"}) in client.responses
+
     def test_apply_patch_approval_session_maps_to_session_decision(self):
         client = FakeClient()
         client.queue_server_request(
@@ -336,6 +375,47 @@ class TestServerRequestRouting:
         s = make_session(client, approval_callback=cb)
         s.run_turn("hi", turn_timeout=1.0)
         assert ("req-2", {"decision": "acceptForSession"}) in client.responses
+
+    def test_apply_patch_approval_without_callback_uses_gateway_queue(self, monkeypatch):
+        from tools import approval
+
+        approval._gateway_queues.clear()
+        approval._gateway_notify_cbs.clear()
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        token = approval.set_current_session_key("agent:main:telegram:dm:1")
+        notified = {}
+
+        def notify(data):
+            notified.update(data)
+            approval.resolve_gateway_approval("agent:main:telegram:dm:1", "session")
+
+        approval.register_gateway_notify("agent:main:telegram:dm:1", notify)
+        try:
+            client = FakeClient()
+            client.queue_server_request(
+                "item/fileChange/requestApproval", request_id="req-gw-2",
+                itemId="fc-1",
+                turnId="t1",
+                threadId="th",
+                reason="modify config file",
+                grantRoot="/repo",
+            )
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
+            s = make_session(client)
+            s.run_turn("hi", turn_timeout=1.0)
+        finally:
+            approval.unregister_gateway_notify("agent:main:telegram:dm:1")
+            approval.reset_current_session_key(token)
+            approval._gateway_queues.clear()
+            approval._gateway_notify_cbs.clear()
+
+        assert notified["command"] == "apply_patch: modify config file"
+        assert notified["pattern_key"] == "codex:apply_patch"
+        assert "grants write to /repo" in notified["description"]
+        assert ("req-gw-2", {"decision": "acceptForSession"}) in client.responses
 
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()

@@ -579,6 +579,66 @@ class TestMatrixBangCommandAlias:
         assert captured_event.message_type == MessageType.COMMAND
 
 
+class TestMatrixRoomConfiguration:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.captured_event = None
+        self.adapter._text_batch_delay_seconds = 0
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+
+        async def capture(msg_event):
+            self.captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("msgtype", "expected_type"),
+        [
+            ("m.text", MessageType.TEXT),
+            ("m.image", MessageType.PHOTO),
+        ],
+    )
+    async def test_configured_room_options_are_attached_to_inbound_event(
+        self, msgtype, expected_type
+    ):
+        self.adapter.config.extra["channel_prompts"] = {
+            "!room:example.org": "Research mode",
+        }
+        self.adapter.config.extra["channel_skill_bindings"] = [
+            {"id": "!room:example.org", "skills": ["research"]},
+        ]
+        source_content = {"msgtype": msgtype, "body": "hello"}
+
+        if msgtype == "m.text":
+            await self.adapter._handle_text_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$channel-prompt-text",
+                event_ts=0.0,
+                source_content=source_content,
+                relates_to={},
+            )
+        else:
+            source_content.update(body="chart.png", url="", info={})
+            await self.adapter._handle_media_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$channel-prompt-image",
+                event_ts=0.0,
+                source_content=source_content,
+                relates_to={},
+                msgtype=msgtype,
+            )
+
+        assert self.captured_event is not None
+        assert self.captured_event.message_type == expected_type
+        assert self.captured_event.channel_prompt == "Research mode"
+        assert self.captured_event.auto_skill == ["research"]
+
+
 # ---------------------------------------------------------------------------
 # Thread detection
 # ---------------------------------------------------------------------------

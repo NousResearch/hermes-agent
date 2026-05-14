@@ -133,6 +133,8 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    resolve_channel_prompt,
+    resolve_channel_skills,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
     _ssrf_redirect_guard,
@@ -3504,6 +3506,8 @@ class MatrixAdapter(BasePlatformAdapter):
             # top-level fields. Mirror them so matrix matches signal/slack.
             user_id=sender,
             user_name=display_name,
+            auto_skill=resolve_channel_skills(self.config.extra, room_id),
+            channel_prompt=resolve_channel_prompt(self.config.extra, room_id),
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -3735,6 +3739,8 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_author_name=reply_to_author_name,
             user_id=sender,
             user_name=display_name,
+            auto_skill=resolve_channel_skills(self.config.extra, room_id),
+            channel_prompt=resolve_channel_prompt(self.config.extra, room_id),
         )
 
         await self.handle_message(msg_event)

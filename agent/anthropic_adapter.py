@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -361,6 +362,24 @@ def _normalize_base_url_text(base_url) -> str:
     return str(base_url).strip()
 
 
+def _normalize_anthropic_sdk_base_url(base_url) -> str:
+    """Return a base URL safe to pass to Anthropic's native SDK.
+
+    The SDK appends /v1/messages to the base URL. If the user configured
+    base_url with a trailing /v1 (e.g., https://api.anthropic.com/v1),
+    the SDK would produce /v1/v1/messages -> 404.
+    Strip the trailing /v1 for non-Azure endpoints.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return ""
+    stripped = normalized.rstrip("/")
+    # Only strip /v1 suffix for non-Azure endpoints
+    if stripped.endswith("/v1") and "azure.com" not in stripped.lower():
+        normalized = stripped[:-3].rstrip("/") or ""
+    return normalized
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -553,7 +572,7 @@ def build_anthropic_client(
 
     from httpx import Timeout
 
-    normalized_base_url = _normalize_base_url_text(base_url)
+    normalized_base_url = _normalize_anthropic_sdk_base_url(base_url)
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),

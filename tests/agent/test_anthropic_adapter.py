@@ -156,6 +156,62 @@ class TestBuildAnthropicClient:
             }
 
 
+    def test_strips_trailing_v1_from_base_url(self):
+        """Trailing /v1 is stripped so SDK does not double it (/v1/v1/messages → 404).
+
+        Reproduces #24833: when base_url=https://api.anthropic.com/v1, the SDK
+        appends its own /v1/messages producing /v1/v1/messages → 404.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03", base_url="https://api.anthropic.com/v1")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # The /v1 must be stripped so SDK produces /v1/messages, not /v1/v1/messages
+            assert kwargs["base_url"] == "https://api.anthropic.com"
+
+    def test_strips_trailing_v1_from_custom_provider_base_url(self):
+        """Custom Anthropic-compatible endpoints with trailing /v1 are also fixed."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-key", base_url="https://proxy.example.com/v1")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com"
+
+    def test_azure_endpoint_with_trailing_v1_is_not_stripped(self):
+        """Azure AI Foundry endpoints must NOT be stripped — they use their own versioning."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-key",
+                base_url="https://example.services.ai.azure.com/models/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Azure endpoint must keep its full URL
+            assert kwargs["base_url"] == "https://example.services.ai.azure.com/models/anthropic/v1"
+
+    def test_base_url_without_v1_is_unchanged(self):
+        """Base URL without trailing /v1 passes through unchanged."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03", base_url="https://api.anthropic.com")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://api.anthropic.com"
+
+    def test_base_url_with_trailing_slash_v1_is_stripped(self):
+        """base_url=https://api.anthropic.com/v1/ (with trailing slash) becomes https://api.anthropic.com."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03", base_url="https://api.anthropic.com/v1/")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://api.anthropic.com"
+
+    def test_base_url_with_deep_path_v1_is_unchanged(self):
+        """Base URL like /v1/anthropic (non-trailing) must NOT be stripped."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03",
+                base_url="https://api.anthropic.com/v1/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Only the exact /v1 suffix is stripped, not /v1/anthropic
+            assert kwargs["base_url"] == "https://api.anthropic.com/v1/anthropic"
+
+
 class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"

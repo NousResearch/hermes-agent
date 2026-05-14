@@ -1131,5 +1131,120 @@ class TestImapConnectionCleanup(unittest.TestCase):
         mock_imap.logout.assert_called_once()
 
 
+class TestHtmlSignature(unittest.TestCase):
+    """Verify the optional HTML signature support in _send_email."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def _sent_message(self, mock_smtp):
+        """Return the MIME message object passed to smtplib.SMTP.send_message."""
+        mock_server = MagicMock()
+        mock_smtp.return_value = mock_server
+        return mock_server
+
+    def test_no_signature_stays_plain_text(self):
+        """Without EMAIL_SIGNATURE_HTML_FILE, behaviour is unchanged (plain only)."""
+        adapter = self._make_adapter()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EMAIL_SIGNATURE_HTML_FILE", None)
+            with patch("smtplib.SMTP") as mock_smtp:
+                server = self._sent_message(mock_smtp)
+                adapter._send_email("user@test.com", "Plain body.", None)
+
+        sent = server.send_message.call_args[0][0]
+        # Top-level MIME structure: MIMEMultipart() with one text/plain leaf
+        payload = sent.get_payload()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0].get_content_type(), "text/plain")
+        self.assertIn("Plain body.", payload[0].get_payload(decode=True).decode("utf-8"))
+
+    def test_signature_produces_multipart_alternative(self):
+        """When the env var points to a readable HTML file, build a
+        multipart/alternative with text/plain (raw body) + text/html
+        (HTML-escaped body + signature)."""
+        import tempfile
+
+        adapter = self._make_adapter()
+        sig_html = (
+            '<table><tr><td style="color:#FD7D00">'
+            "Signature with brand color"
+            "</td></tr></table>"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sig_html)
+            sig_path = f.name
+
+        try:
+            with patch.dict(
+                os.environ, {"EMAIL_SIGNATURE_HTML_FILE": sig_path}, clear=False
+            ):
+                with patch("smtplib.SMTP") as mock_smtp:
+                    server = self._sent_message(mock_smtp)
+                    adapter._send_email(
+                        "user@test.com",
+                        "Hello & welcome.\nSecond line.",
+                        None,
+                    )
+
+            sent = server.send_message.call_args[0][0]
+            # Should have a multipart/alternative inside the outer multipart
+            alt = next(
+                p for p in sent.walk() if p.get_content_type() == "multipart/alternative"
+            )
+            parts = alt.get_payload()
+            self.assertEqual(len(parts), 2)
+            self.assertEqual(parts[0].get_content_type(), "text/plain")
+            self.assertEqual(parts[1].get_content_type(), "text/html")
+
+            plain = parts[0].get_payload(decode=True).decode("utf-8")
+            html = parts[1].get_payload(decode=True).decode("utf-8")
+
+            # Plain part keeps the body verbatim
+            self.assertIn("Hello & welcome.", plain)
+
+            # HTML part: body is HTML-escaped, newlines become <br/>, and
+            # the signature HTML is concatenated as-is
+            self.assertIn("Hello &amp; welcome.", html)
+            self.assertIn("<br/>", html)
+            self.assertIn("color:#FD7D00", html)
+        finally:
+            os.unlink(sig_path)
+
+    def test_signature_file_missing_falls_back_to_plain(self):
+        """A missing or unreadable signature file must not crash the send;
+        adapter falls back to plain-text-only."""
+        adapter = self._make_adapter()
+
+        with patch.dict(
+            os.environ,
+            {"EMAIL_SIGNATURE_HTML_FILE": "/nonexistent/signature.html"},
+            clear=False,
+        ):
+            with patch("smtplib.SMTP") as mock_smtp:
+                server = self._sent_message(mock_smtp)
+                adapter._send_email("user@test.com", "Body.", None)
+
+        sent = server.send_message.call_args[0][0]
+        payload = sent.get_payload()
+        # Falls back to plain (single text/plain part, no alternative)
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0].get_content_type(), "text/plain")
+
+
 if __name__ == "__main__":
     unittest.main()

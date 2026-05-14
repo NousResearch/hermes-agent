@@ -13,6 +13,9 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_SIGNATURE_HTML_FILE — Optional path to an HTML file appended to
+        outbound messages as a multipart/alternative HTML part.  When unset,
+        outbound messages are plain-text-only (unchanged default).
 """
 
 import asyncio
@@ -521,7 +524,36 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        # Optional HTML signature.
+        # When EMAIL_SIGNATURE_HTML_FILE points to a readable HTML file, the
+        # body is wrapped as multipart/alternative: a text/plain part with the
+        # raw body (unchanged for clients that prefer plain) and a text/html
+        # part that wraps the body (HTML-escaped, line-breaks converted to
+        # <br/>) followed by the signature HTML.  Without the env var, the
+        # adapter falls back to the original text/plain-only behaviour.
+        _sig_path = os.getenv("EMAIL_SIGNATURE_HTML_FILE", "").strip()
+        _sig_html = ""
+        if _sig_path:
+            try:
+                with open(_sig_path, "r", encoding="utf-8") as _f:
+                    _sig_html = _f.read()
+            except Exception as _e:
+                logger.warning("[Email] Failed to read signature %s: %s", _sig_path, _e)
+
+        if _sig_html:
+            import html as _html_mod
+            alt = MIMEMultipart("alternative")
+            alt.attach(MIMEText(body, "plain", "utf-8"))
+            _body_html = _html_mod.escape(body).replace("\n", "<br/>\n")
+            _html_doc = (
+                "<!DOCTYPE html><html><body style=\"font-family:Arial,Helvetica,sans-serif;"
+                "font-size:14px;color:#222;line-height:1.5;\">"
+                f"<div>{_body_html}</div>{_sig_html}</body></html>"
+            )
+            alt.attach(MIMEText(_html_doc, "html", "utf-8"))
+            msg.attach(alt)
+        else:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:

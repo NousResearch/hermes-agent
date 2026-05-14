@@ -5,6 +5,17 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# NAS/docker-compose ecosystems often pass PUID/PGID (LinuxServer convention).
+# Keep HERMES_UID/HERMES_GID as primary when set, and fall back to aliases
+# when unset so bind-mounted host directories can be owned without chown hacks.
+if [ -z "$HERMES_UID" ] && [ -n "$PUID" ]; then
+    HERMES_UID="$PUID"
+fi
+
+if [ -z "$HERMES_GID" ] && [ -n "$PGID" ]; then
+    HERMES_GID="$PGID"
+fi
+
 # --- Privilege dropping via gosu ---
 # When started as root (the default for Docker, or fakeroot in rootless Podman),
 # optionally remap the hermes user/group to match host-side ownership, fix volume

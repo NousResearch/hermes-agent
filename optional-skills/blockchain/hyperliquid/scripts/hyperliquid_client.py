@@ -816,9 +816,6 @@ def _validate_export_path(path: Path) -> Path:
     except ValueError as exc:
         raise SystemExit(f"Export output must stay under {root}: {path}") from exc
 
-    if resolved.is_symlink():
-        raise SystemExit(f"Refusing to write export through symlink: {path}")
-
     return resolved
 
 

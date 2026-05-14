@@ -6598,6 +6598,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "frontdesk":
+            return await self._handle_frontdesk_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -8875,6 +8878,35 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_frontdesk_command(self, event: MessageEvent) -> str:
+        """Handle /frontdesk status — report live gate and worker-lane readiness."""
+        args = (event.get_command_args() or "").strip().lower()
+        if args and args not in {"status", ""}:
+            return "Usage: /frontdesk status"
+
+        from agent.frontdesk_live import ensure_default_worker_lane
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+
+        live_enabled = bool(getattr(self, "frontdesk_live_enabled", False))
+        if live_enabled:
+            ensure_default_worker_lane(self)
+        runtime = get_or_create_orchestration_runtime(self)
+        lanes = runtime.worker_registry.lane_names()
+        default_lane_available = "main" in lanes
+        current_session_key = self._session_key_for_source(event.source)
+        overview = self._format_session_scoped_orchestration_overview(current_session_key)
+
+        return "\n".join(
+            [
+                "Frontdesk status",
+                f"Frontdesk live: {'enabled' if live_enabled else 'disabled'}",
+                f"Default worker lane: {'available' if default_lane_available else 'missing'}",
+                "Available worker lanes: " + (", ".join(lanes) if lanes else "none"),
+                "",
+                overview,
+            ]
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

@@ -8,9 +8,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
+
+
+def _fake_faster_whisper_module(mock_model):
+    return SimpleNamespace(WhisperModel=MagicMock(return_value=mock_model))
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +142,9 @@ class TestTranscribeLocal:
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
+        fake_fw = _fake_faster_whisper_module(mock_model)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
@@ -300,7 +306,8 @@ class TestNormalizeLocalModel:
                  }), \
                  patch("tools.transcription_tools._local_model", None), \
                  patch("tools.transcription_tools._local_model_name", None), \
-                 patch("faster_whisper.WhisperModel", return_value=mock_model) as mock_cls:
+                 patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+                mock_cls = __import__("faster_whisper").WhisperModel
                 from tools.transcription_tools import transcribe_audio
                 transcribe_audio(audio_file)
                 # WhisperModel must NOT have been called with "whisper-1"

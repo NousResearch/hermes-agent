@@ -521,6 +521,9 @@ def build_snapshot(
     """
     tasks = _collect_tasks(task_registry, session_key=session_key, active_only=False)
     workers = _collect_workers(worker_registry)
+    if session_key is not None and task_registry is not None:
+        visible_task_ids = {t.get("task_id") for t in tasks if t.get("task_id")}
+        workers = [w for w in workers if w.get("task_id") in visible_task_ids]
     return OrchestrationSnapshot(
         tasks=tasks,
         workers=workers,

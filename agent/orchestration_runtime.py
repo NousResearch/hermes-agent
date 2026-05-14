@@ -524,17 +524,34 @@ class OrchestrationRuntime:
     def _cancel_active_frontdesk_work(
         self, *, session_key: str | None = None
     ) -> tuple[int, int]:
+        active_tasks = self.task_registry.list_tasks(
+            session_key=session_key, active_only=True
+        )
+        cancellable_worker_ids = {
+            task.active_worker_id
+            for task in active_tasks
+            if isinstance(task.active_worker_id, str) and task.active_worker_id
+        }
+        if session_key is None:
+            # Global STOP may also cancel orphaned workers; session-scoped STOP
+            # must never reach workers that belong to another session.
+            for worker in self.snapshot(session_key=None).workers:
+                if worker.get("status") in {"queued", "running"}:
+                    worker_id = worker.get("worker_id")
+                    if isinstance(worker_id, str) and worker_id:
+                        cancellable_worker_ids.add(worker_id)
+
         cancelled_workers = 0
-        for worker in self.snapshot(session_key=session_key).workers:
-            if worker.get("status") in {"queued", "running"}:
-                worker_id = worker.get("worker_id")
-                if isinstance(worker_id, str) and self.worker_registry.cancel(worker_id):
-                    cancelled_workers += 1
+        for worker_id in sorted(cancellable_worker_ids):
+            try:
+                cancelled = self.worker_registry.cancel(worker_id)
+            except KeyError:
+                cancelled = False
+            if cancelled:
+                cancelled_workers += 1
 
         cancelled_tasks = 0
-        for task in self.task_registry.list_tasks(
-            session_key=session_key, active_only=True
-        ):
+        for task in active_tasks:
             if task.status != STATUS_CANCELLED:
                 self.task_registry.cancel_task(task.task_id, reason="frontdesk stop")
                 cancelled_tasks += 1

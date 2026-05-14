@@ -201,6 +201,90 @@ def test_followup_without_active_worker_falls_through_honestly():
     assert runtime.task_registry.list_tasks(session_key="s1") == []
 
 
+def test_session_scoped_status_does_not_leak_other_session_workers():
+    runtime = OrchestrationRuntime.create()
+    release = threading.Event()
+
+    def runner(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        release.wait(2.0)
+        token.raise_if_cancelled()
+        return "done"
+
+    runtime.worker_registry.register(ThreadWorkerLane(runner=runner, name="thread"))
+    s1 = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 s1 작업을 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    s2 = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 s2 작업을 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s2",
+    )
+    assert s1.worker_id is not None
+    assert s2.worker_id is not None
+
+    try:
+        status = runtime.handle_frontdesk_input(
+            "지금 뭐 하고 있어?",
+            frontdesk_mode_active=True,
+            session_key="s1",
+        )
+
+        assert status.action == "status"
+        assert s1.worker_id in status.message
+        assert s2.worker_id not in status.message
+        assert "s2 작업" not in status.message
+        assert "not registered" not in status.message
+    finally:
+        runtime.worker_registry.cancel(s1.worker_id)
+        runtime.worker_registry.cancel(s2.worker_id)
+        release.set()
+        runtime.worker_registry.wait(s1.worker_id, timeout=2.0)
+        runtime.worker_registry.wait(s2.worker_id, timeout=2.0)
+
+
+def test_session_scoped_stop_does_not_cancel_other_session_workers():
+    runtime = OrchestrationRuntime.create()
+    release = threading.Event()
+
+    def runner(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        release.wait(2.0)
+        token.raise_if_cancelled()
+        return "done"
+
+    runtime.worker_registry.register(ThreadWorkerLane(runner=runner, name="thread"))
+    s1 = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 s1 작업을 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    s2 = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 s2 작업을 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s2",
+    )
+    assert s1.worker_id is not None
+    assert s2.worker_id is not None
+
+    stopped = runtime.handle_frontdesk_input(
+        "멈춰",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+
+    assert stopped.action == "stopped"
+    assert stopped.cancelled_tasks == 1
+    assert stopped.cancelled_workers == 1
+    assert runtime.worker_registry.status(s1.worker_id).cancel_requested is True
+    assert runtime.worker_registry.status(s2.worker_id).cancel_requested is False
+
+    runtime.worker_registry.cancel(s2.worker_id)
+    release.set()
+    runtime.worker_registry.wait(s1.worker_id, timeout=2.0)
+    runtime.worker_registry.wait(s2.worker_id, timeout=2.0)
+
+
 def test_frontdesk_status_returns_local_overview_without_starting_worker():
     runtime = OrchestrationRuntime.create()
     runtime.task_registry.create_task("existing", session_key="s1", status=STATUS_RUNNING)

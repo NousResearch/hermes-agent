@@ -2,7 +2,7 @@
 
 The ``quiet_mode=True`` fast path in :func:`model_tools.get_tool_definitions`
 memoizes results to avoid re-walking the registry on every Gateway call. The
-cached object must NOT be aliased into callers' return values \u2014 long-lived
+cached object must NOT be aliased into callers' return values — long-lived
 Gateway processes mutate the returned list (``run_agent`` appends memory and
 LCM context-engine tool schemas to ``self.tools``), and a shared list would
 poison subsequent agent inits with duplicate tool names. Providers that
@@ -32,7 +32,7 @@ def _clear_cache():
 class TestQuietModeCacheIsolation:
 
     def test_first_uncached_call_returns_fresh_list(self):
-        """The first quiet_mode call must not alias the cached object \u2014
+        """The first quiet_mode call must not alias the cached object,
         otherwise a caller mutating the returned list mutates the cache."""
         first = model_tools.get_tool_definitions(quiet_mode=True)
         assert isinstance(first, list)
@@ -41,7 +41,7 @@ class TestQuietModeCacheIsolation:
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert first is not cached, (
             "issue #17335: first quiet_mode call returned the cached list "
-            "by reference \u2014 mutations will leak into subsequent calls."
+            "by reference — mutations will leak into subsequent calls."
         )
 
     def test_cache_hit_returns_fresh_list(self):
@@ -63,12 +63,12 @@ class TestQuietModeCacheIsolation:
         first.append({"type": "function", "function": {"name": "lcm_expand"}})
 
         second = model_tools.get_tool_definitions(quiet_mode=True)
-        # Length must match the original \u2014 cache pollution would make
+        # Length must match the original; cache pollution would make
         # second 2 entries longer.
         assert len(second) == baseline_len, (
             f"issue #17335: cache was polluted by caller mutation. "
             f"first len={baseline_len}, mutated len={len(first)}, "
-            f"second-call len={len(second)} \u2014 expected {baseline_len}."
+            f"second-call len={len(second)} — expected {baseline_len}."
         )
         names = [t.get("function", {}).get("name") for t in second]
         assert "lcm_grep" not in names
@@ -87,8 +87,22 @@ class TestQuietModeCacheIsolation:
             f"baseline={baseline}, final={len(final)}."
         )
 
+    def test_cache_is_capped_and_clears_when_over_limit(self, monkeypatch):
+        """Quiet-mode cache keeps at most 8 entries by dropping all cached keys."""
+        def _mock_compute(*_args, **_kwargs):
+            return [{"type": "function", "function": {"name": "mock_tool"}}]
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", _mock_compute)
+
+        for idx in range(8):
+            model_tools.get_tool_definitions(enabled_toolsets=[f"set-{idx}"], quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 8
+
+        model_tools.get_tool_definitions(enabled_toolsets=["overflow"], quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 1
+
     def test_non_quiet_mode_does_not_use_cache(self):
-        """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
+        """Sanity: quiet_mode=False (TUI path) skips the cache entirely —
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0

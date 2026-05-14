@@ -685,12 +685,9 @@ _DESC_TASK_ID_DEFAULT = (
 KANBAN_SHOW_SCHEMA = {
     "name": "kanban_show",
     "description": (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "Read a task's full state — title, body, assignee, prior run "
+        "history, comments, and recent events. Call this to orient "
+        "yourself before starting work or on retries."
     ),
     "parameters": {
         "type": "object",
@@ -707,14 +704,9 @@ KANBAN_SHOW_SCHEMA = {
 KANBAN_LIST_SCHEMA = {
     "name": "kanban_list",
     "description": (
-        "List Kanban task summaries so an orchestrator profile can discover "
-        "work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Bounded to 50 rows by default, 200 max, with truncation "
-        "metadata. Also recomputes ready tasks before listing, matching the "
-        "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
-        "this tool."
+        "List kanban task summaries for board discovery. Supports filters: "
+        "assignee, status, tenant, include_archived, limit (default 50, "
+        "max 200). Orchestrator-only."
     ),
     "parameters": {
         "type": "object",
@@ -751,16 +743,10 @@ KANBAN_LIST_SCHEMA = {
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
-        "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
-        "human-readable 1-3 sentence description of what you did; put "
-        "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
-        "tasks via ``kanban_create`` during this run, list their ids "
-        "in ``created_cards`` — the kernel verifies them so phantom "
-        "references are caught before they leak into downstream "
-        "automation."
+        "Mark your current task done with a structured handoff. Requires "
+        "``summary`` (human-readable) and/or ``result``; use ``metadata`` "
+        "for structured facts. List any ids from ``kanban_create`` in "
+        "``created_cards``."
     ),
     "parameters": {
         "type": "object",
@@ -902,12 +888,9 @@ KANBAN_COMMENT_SCHEMA = {
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
-        "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
-        "orchestrator workers to fan out — decompose work into child "
-        "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "Create a new kanban task. Pass the current task id in ``parents`` "
+        "to make it a child; the dispatcher spawns the assigned profile "
+        "once all parents are done."
     ),
     "parameters": {
         "type": "object",

@@ -571,6 +571,28 @@ def test_comment_ignores_caller_supplied_author(worker_env):
         conn.close()
 
 
+def test_kanban_schema_descriptions_within_budget():
+    """Every kanban tool schema description must fit within 280 characters."""
+    from tools.kanban_tools import (
+        KANBAN_SHOW_SCHEMA, KANBAN_LIST_SCHEMA, KANBAN_COMPLETE_SCHEMA,
+        KANBAN_BLOCK_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_COMMENT_SCHEMA,
+        KANBAN_CREATE_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_LINK_SCHEMA,
+    )
+    schemas = [
+        KANBAN_SHOW_SCHEMA, KANBAN_LIST_SCHEMA, KANBAN_COMPLETE_SCHEMA,
+        KANBAN_BLOCK_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_COMMENT_SCHEMA,
+        KANBAN_CREATE_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_LINK_SCHEMA,
+    ]
+    over_budget = [
+        (s["name"], len(s["description"]))
+        for s in schemas
+        if len(s["description"]) > 280
+    ]
+    assert over_budget == [], (
+        f"Schema descriptions exceed 280-char budget: {over_budget}"
+    )
+
+
 def test_comment_schema_omits_author_override():
     """The ``author`` property must not appear on KANBAN_COMMENT_SCHEMA;
     exposing it to the LLM would re-introduce the forgery surface this

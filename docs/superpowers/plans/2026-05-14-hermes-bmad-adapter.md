@@ -2122,9 +2122,16 @@ Implemented PR1 scope:
 - Config defaults in `hermes_cli/config.py` with safe gating, including `bmad.expose_in_skill_index: false`.
 - User docs for BMAD adapter, config reference, and CLI reference.
 
-Explicitly **not** implemented in PR1:
+Implemented as Phase 3 follow-up after PR1 checkpoint:
 
-- Phase 3 `/bmad-*` slash commands via `agent/skill_commands.py`.
+- `agent/skill_commands.py` now exposes active project `/bmad-*` commands from a separate BMAD command cache keyed by active project root, BMAD root, adapter slash config subset, and file-level BMAD fingerprint.
+- `build_skill_invocation_message()` routes BMAD slash commands through `agent.bmad.invocation` so the payload remains project-scoped and semi-trusted.
+- CLI help/dispatch/completion and all identified TUI slash-command catalog/dispatch/completion routes now consume `get_skill_commands()` so project-derived BMAD commands are visible at execution time without being stored in the normal Hermes skill-command cache.
+- BMAD slash command names are normalized with the same slug rules as regular skills, restricted to `/bmad-*`, and active BMAD project commands override same-key regular skills only while the BMAD project is active.
+- `resolve_skill_command_key()` accepts both bare and slash-prefixed command names while preserving hyphen/underscore compatibility.
+
+Explicitly **not** implemented:
+
 - Phase 4 prompt-builder/system skill-index exposure via `agent/prompt_builder.py`.
 - BMAD Kanban mapping, npm installer integration, persistent BMAD party mode, or global BMAD prompt injection.
 
@@ -2139,6 +2146,30 @@ python -m pytest tests/website/test_generate_skill_docs.py -q -o 'addopts='
 
 python -m pytest tests/agent/test_prompt_builder.py tests/tools/test_skills_tool.py tests/tools/test_skill_view_path_check.py tests/tools/test_bmad_skills_tool.py tests/agent/bmad -q -o 'addopts='
 # 236 passed, 1 skipped
+
+python -m pytest tests/agent/bmad tests/agent/test_skill_commands.py tests/agent/test_skill_commands_reload.py -q -o 'addopts='
+# 79 passed
+
+python -m pytest tests/tools/test_bmad_skills_tool.py tests/tools/test_skill_view_path_check.py -q -o 'addopts='
+# 8 passed, 1 skipped
+
+python -m py_compile agent/skill_commands.py cli.py tui_gateway/server.py
+# exit 0
+
+python -m pytest tests/test_tui_gateway_server.py tests/cli/test_cli_background_tui_refresh.py tests/hermes_cli/test_tui_resume_flow.py -q -o 'addopts='
+# 197 passed
+
+Manual disposable fixture validation covered BMAD discovery, `skills_list`, `skill_view`, `/bmad-help` registration/invocation, and non-BMAD cwd isolation:
+# [('bmad:bmad-help', 'Help choose the right BMAD workflow.')]
+# True
+# True
+# True
+# False  (normal scan cache intentionally does not contain project BMAD commands)
+# True   (`get_skill_commands()` dynamic composite contains `/bmad-help`)
+# True
+# True
+# []
+# False
 ```
 
 Post-restart smoke check:
@@ -2171,8 +2202,8 @@ python -m pytest tests/agent/bmad tests/tools/test_bmad_skills_tool.py tests/too
 
 Recommended next work, in order:
 
-1. If working on PR1 follow-up bugs, stay within `agent/bmad/**`, `tools/skills_tool.py`, docs, and the BMAD tests unless a failing test proves another integration point is necessary.
-2. For Phase 3 slash commands, create a new isolated worktree and implement only after designing project-aware slash-command cache keys. Declare a lock before touching `agent/skill_commands.py`.
+1. Ask Executor to review the Phase 3 slash-command diff before fan-in commit/push if more assurance is needed.
+2. If working on PR1/Phase 3 follow-up bugs, stay within `agent/bmad/**`, `tools/skills_tool.py`, `agent/skill_commands.py`, docs, and the BMAD tests unless a failing test proves another integration point is necessary.
 3. For Phase 4 prompt index exposure, do not touch `agent/prompt_builder.py` until file-level BMAD fingerprinting and cache-key invalidation are designed and tested.
 4. Keep `bmad.expose_in_skill_index: false` unless Phase 4 is fully implemented and validated.
 5. Treat project-local `_bmad/` content as semi-trusted project instruction, never global policy.

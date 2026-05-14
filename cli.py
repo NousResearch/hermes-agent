@@ -2187,12 +2187,10 @@ def _looks_like_slash_command(text: str) -> bool:
 # ============================================================================
 
 from agent.skill_commands import (
-    scan_skill_commands,
+    get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
 )
-
-_skill_commands = scan_skill_commands()
 
 
 def _get_plugin_cmd_handler_names() -> set:
@@ -5197,9 +5195,10 @@ class HermesCLI:
                     continue
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
-        if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
-            for cmd, info in sorted(_skill_commands.items()):
+        skill_commands = get_skill_commands()
+        if skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+            for cmd, info in sorted(skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
@@ -7712,25 +7711,28 @@ class HermesCLI:
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
-            elif base_cmd in _skill_commands:
-                user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
-                )
-                if msg:
-                    skill_name = _skill_commands[base_cmd]["name"]
-                    print(f"\n⚡ Loading skill: {skill_name}")
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
+                skill_commands = get_skill_commands()
+                if base_cmd in skill_commands:
+                    user_instruction = cmd_original[len(base_cmd):].strip()
+                    msg = build_skill_invocation_message(
+                        base_cmd, user_instruction, task_id=self.session_id
+                    )
+                    if msg:
+                        skill_name = skill_commands[base_cmd]["name"]
+                        print(f"\n⚡ Loading skill: {skill_name}")
+                        if hasattr(self, '_pending_input'):
+                            self._pending_input.put(msg)
+                    else:
+                        ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+                    return True
+
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
                 # that execution-time resolution agrees with tab-completion.
                 from hermes_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
-                all_known = set(COMMANDS) | set(_skill_commands)
+                all_known = set(COMMANDS) | set(skill_commands)
                 matches = [c for c in all_known if c.startswith(typed_base)]
                 if len(matches) > 1:
                     # Prefer an exact match (typed the full command name)
@@ -12259,7 +12261,7 @@ class HermesCLI:
 
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=get_skill_commands,
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(

@@ -4340,9 +4340,9 @@ def _(rid, params: dict) -> dict:
 
         skill_count = 0
         try:
-            from agent.skill_commands import scan_skill_commands
+            from agent.skill_commands import get_skill_commands
 
-            for k, info in sorted(scan_skill_commands().items()):
+            for k, info in sorted(get_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
                 all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
                 skill_count += 1
@@ -4492,11 +4492,11 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
-            scan_skill_commands,
+            get_skill_commands,
             build_skill_invocation_message,
         )
 
-        cmds = scan_skill_commands()
+        cmds = get_skill_commands()
         key = f"/{name}"
         if key in cmds:
             msg = build_skill_invocation_message(

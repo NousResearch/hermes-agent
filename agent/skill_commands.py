@@ -22,9 +22,17 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_bmad_skill_commands_cache: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+
+def _skill_command_slug(name: str) -> str:
+    """Normalize a skill name into the slash-command slug used by Hermes."""
+    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+    return _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -286,9 +294,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # Normalize to hyphen-separated slug, stripping
                     # non-alnum chars (e.g. +, /) to avoid invalid
                     # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    cmd_name = _skill_command_slug(str(name))
                     if not cmd_name:
                         continue
                     _skill_commands[f"/{cmd_name}"] = {
@@ -304,19 +310,104 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
+def _bmad_adapter_slash_config() -> dict[str, Any]:
+    """Return adapter config relevant to project BMAD slash commands."""
+    try:
+        from hermes_cli.config import load_config
+
+        return (load_config() or {}).get("bmad") or {}
+    except Exception:
+        return {}
+
+
+def _active_bmad_command_cache_key() -> tuple | None:
+    """Return the active BMAD slash-command cache key, or None outside BMAD projects.
+
+    Normal Hermes skill commands are process-global and platform-scoped. BMAD
+    commands are project-derived, so they must be keyed separately by active
+    project identity and a file-level fingerprint to avoid leaking commands
+    across cwd/project changes in long-lived CLI or gateway processes.
+    """
+    adapter_config = _bmad_adapter_slash_config()
+    if adapter_config.get("expose_slash_commands", True) is not True:
+        return None
+
+    try:
+        from agent.bmad.discovery import build_bmad_fingerprint
+        from agent.bmad.index import get_active_bmad_project
+
+        project = get_active_bmad_project()
+        if not project:
+            return None
+        disabled = tuple(sorted(str(item) for item in (adapter_config.get("disabled_skills") or [])))
+        allowed_roots = tuple(sorted(str(item) for item in (adapter_config.get("allowed_roots") or [])))
+        max_indexed = int(adapter_config.get("max_indexed_skills") or 80)
+        return (
+            str(project.project_root.resolve()),
+            str(project.bmad_root.resolve()),
+            disabled,
+            allowed_roots,
+            max_indexed,
+            build_bmad_fingerprint(project.bmad_root),
+        )
+    except Exception:
+        return None
+
+
+def _get_bmad_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Return BMAD project slash commands for the active cwd without polluting the normal cache."""
+    key = _active_bmad_command_cache_key()
+    if key is None:
+        return {}
+
+    cached = _bmad_skill_commands_cache.get(key)
+    if cached is not None:
+        return dict(cached)
+
+    commands: Dict[str, Dict[str, Any]] = {}
+    try:
+        from agent.bmad.index import get_active_bmad_project, list_bmad_skills
+
+        project = get_active_bmad_project()
+        if not project:
+            return {}
+        for skill in list_bmad_skills(project.project_root):
+            cmd_name = _skill_command_slug(skill.name)
+            if not cmd_name.startswith("bmad-"):
+                continue
+            commands[f"/{cmd_name}"] = {
+                "name": skill.name,
+                "description": skill.description or f"Invoke the {skill.name} BMAD project skill",
+                "skill_md_path": str(skill.skill_file),
+                "skill_dir": str(skill.skill_dir),
+                "project_root": str(project.project_root),
+                "bmad_root": str(project.bmad_root),
+                "source": "bmad-project",
+            }
+    except Exception:
+        commands = {}
+
+    _bmad_skill_commands_cache.clear()
+    _bmad_skill_commands_cache[key] = commands
+    return dict(commands)
+
+
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty).
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    sees its own ``skills.platform_disabled`` view (#14536). Project BMAD
+    commands are merged dynamically from a separate project-aware cache.
     """
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
     ):
         scan_skill_commands()
-    return _skill_commands
+    result = dict(_skill_commands)
+    result.update(_get_bmad_skill_commands())
+    return result
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -399,7 +490,7 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
+    cmd_key = f"/{command.lstrip('/').replace('_', '-')}"
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
@@ -422,6 +513,19 @@ def build_skill_invocation_message(
     skill_info = commands.get(cmd_key)
     if not skill_info:
         return None
+
+    if skill_info.get("source") == "bmad-project":
+        try:
+            from agent.bmad.invocation import build_bmad_skill_message
+
+            return build_bmad_skill_message(
+                skill_info["name"],
+                user_instruction,
+                start_path=skill_info.get("project_root") or skill_info.get("skill_dir"),
+                task_id=task_id,
+            )
+        except Exception:
+            return f"[Failed to load BMAD project skill: {skill_info['name']}]"
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:

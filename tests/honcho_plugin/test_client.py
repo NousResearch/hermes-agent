@@ -352,20 +352,23 @@ class TestResolveConfigPath:
         assert result == local_cfg
 
     def test_falls_back_to_default_profile_when_no_local(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
+        # Profile mode: HERMES_HOME points at ~/.hermes/profiles/<name>, so
+        # _get_default_hermes_home() must resolve back to ~/.hermes — that's
+        # the bug the HOME-anchored helper fixes (vs. blindly using Path.home()).
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
-        default_cfg = fake_home / ".hermes" / "honcho.json"
-        default_cfg.parent.mkdir(parents=True)
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
         default_cfg.write_text('{"apiKey": "default-key"}')
 
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
         result = resolve_config_path()
 
-        assert _get_default_hermes_home() == fake_home / ".hermes"
+        assert _get_default_hermes_home() == default_home
         assert result == default_cfg
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
@@ -390,19 +393,21 @@ class TestResolveConfigPath:
             assert resolve_config_path() == fake_home / ".honcho" / "config.json"
 
     def test_from_global_config_uses_default_profile_fallback(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
+        # Profile mode: from_global_config() reads the default-profile honcho.json
+        # via the HOME-anchored helper, not Path.home() / ".hermes".
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
-        default_cfg = fake_home / ".hermes" / "honcho.json"
-        default_cfg.parent.mkdir(parents=True)
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
         default_cfg.write_text(json.dumps({
             "apiKey": "default-key",
             "workspace": "default-ws",
         }))
 
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
         config = HonchoClientConfig.from_global_config()
 

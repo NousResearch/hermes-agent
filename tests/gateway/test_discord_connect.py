@@ -624,6 +624,64 @@ async def test_post_connect_initialization_respects_discord_retry_after(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_post_connect_initialization_syncs_configured_guilds_even_when_global_fingerprint_matches(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_GUILDS", "12345")
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {"name": "status", "description": "Show Hermes status", "type": 1, "options": []}
+
+    class _Tree:
+        def __init__(self):
+            self.sync = AsyncMock(return_value=[object()])
+            self.copy_global_to = MagicMock()
+
+        def get_commands(self):
+            return [_DesiredCommand()]
+
+    tree = _Tree()
+    adapter._client = SimpleNamespace(
+        tree=tree,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+        guilds=[SimpleNamespace(id=12345)],
+    )
+    fingerprint = adapter._desired_command_sync_fingerprint()
+    adapter._record_command_sync_success(
+        999,
+        fingerprint,
+        {"total": 1, "unchanged": 1, "updated": 0, "recreated": 0, "created": 0, "deleted": 0},
+    )
+    safe_sync = AsyncMock()
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", safe_sync)
+
+    await adapter._run_post_connect_initialization()
+
+    safe_sync.assert_not_awaited()
+    tree.copy_global_to.assert_called_once()
+    tree.sync.assert_awaited_once()
+    discord_platform.discord.Object.assert_called_with(id=12345)
+    assert tree.sync.await_args.kwargs["guild"] is discord_platform.discord.Object.return_value
+
+
+def test_discord_command_sync_guild_ids_auto(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_GUILDS", "auto")
+    adapter._client = SimpleNamespace(
+        guilds=[
+            SimpleNamespace(id=333),
+            SimpleNamespace(id="222"),
+            SimpleNamespace(id=333),
+            SimpleNamespace(id=None),
+        ]
+    )
+
+    assert adapter._get_discord_command_sync_guild_ids() == [222, 333]
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_reraises_non_rate_limit_exceptions(tmp_path, monkeypatch):
     """Arbitrary failures during sync must surface, not be swallowed as rate-limits."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))

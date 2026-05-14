@@ -1068,6 +1068,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if sync_policy == "bulk":
                 synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
+                await self._sync_guild_slash_commands()
                 return
 
             app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
@@ -1075,6 +1076,7 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
             if skip_reason:
                 logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
+                await self._sync_guild_slash_commands()
                 return
             self._record_command_sync_attempt(app_id, fingerprint)
 
@@ -1120,6 +1122,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 summary["created"],
                 summary["deleted"],
             )
+            await self._sync_guild_slash_commands()
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] Slash command sync timed out — Discord rate-limit bucket "
@@ -1142,6 +1145,91 @@ class DiscordAdapter(BasePlatformAdapter):
                 raw,
             )
         return "safe"
+
+    def _get_discord_command_sync_guild_ids(self) -> List[int]:
+        """Return guild IDs that should receive immediate guild command sync.
+
+        Global application commands can take time to appear in every guild.
+        Operators who need commands to be visible immediately can set
+        ``DISCORD_COMMAND_SYNC_GUILDS`` to a comma-separated list of guild IDs,
+        or to ``auto`` to sync every guild the bot is currently connected to.
+        ``discord.command_sync_guilds`` in config.yaml accepts the same values.
+        """
+        raw: Any = os.getenv("DISCORD_COMMAND_SYNC_GUILDS", "").strip()
+        if not raw:
+            try:
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                discord_cfg = cfg.get("discord") if isinstance(cfg, dict) else None
+                if isinstance(discord_cfg, dict):
+                    raw = discord_cfg.get("command_sync_guilds") or ""
+            except Exception as exc:
+                logger.debug("Could not read discord.command_sync_guilds: %s", exc)
+                raw = ""
+
+        if isinstance(raw, (list, tuple, set)):
+            parts = [str(item).strip() for item in raw]
+        else:
+            text = str(raw or "").strip()
+            if not text:
+                return []
+            if text.lower() == "auto":
+                guilds = getattr(self._client, "guilds", []) if self._client else []
+                ids: List[int] = []
+                for guild in guilds or []:
+                    gid = getattr(guild, "id", None)
+                    try:
+                        if gid is not None:
+                            ids.append(int(gid))
+                    except (TypeError, ValueError):
+                        continue
+                return sorted(set(ids))
+            parts = [item.strip() for item in text.split(",")]
+
+        ids = []
+        for item in parts:
+            if not item:
+                continue
+            try:
+                guild_id = int(item)
+            except (TypeError, ValueError):
+                logger.warning("[%s] Ignoring invalid Discord command sync guild ID: %r", self.name, item)
+                continue
+            if guild_id > 0:
+                ids.append(guild_id)
+        return sorted(set(ids))
+
+    async def _sync_guild_slash_commands(self) -> None:
+        """Sync commands into configured guilds for immediate visibility."""
+        if not self._client:
+            return
+        guild_ids = self._get_discord_command_sync_guild_ids()
+        if not guild_ids:
+            return
+
+        tree = self._client.tree
+        for guild_id in guild_ids:
+            try:
+                guild = discord.Object(id=guild_id)
+                copy_global_to = getattr(tree, "copy_global_to", None)
+                if callable(copy_global_to):
+                    copy_global_to(guild=guild)
+                synced = await asyncio.wait_for(tree.sync(guild=guild), timeout=30)
+                logger.info(
+                    "[%s] Synced %d slash command(s) to Discord guild %s",
+                    self.name,
+                    len(synced),
+                    guild_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Guild slash command sync failed for guild %s: %s",
+                    self.name,
+                    guild_id,
+                    exc,
+                    exc_info=True,
+                )
 
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""

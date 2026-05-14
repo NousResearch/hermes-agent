@@ -1070,7 +1070,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "CI": "1"},
+            env={**os.environ, "CI": "1", "NODE_ENV": ""},
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
@@ -5622,6 +5622,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -5633,6 +5634,9 @@ def _run_npm_install_deterministic(
     lockfile — repeatedly.
     """
     lockfile = cwd / "package-lock.json"
+    # Strip NODE_ENV so devDependencies (esbuild, etc.) are always installed
+    sub_env = dict(os.environ) if env is None else dict(env)
+    sub_env.pop("NODE_ENV", None)
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
@@ -5643,6 +5647,7 @@ def _run_npm_install_deterministic(
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=sub_env,
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -5657,6 +5662,7 @@ def _run_npm_install_deterministic(
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=sub_env,
     )
 
 

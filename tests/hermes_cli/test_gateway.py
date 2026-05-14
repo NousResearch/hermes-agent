@@ -268,6 +268,67 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     assert calls == [False]
 
 
+def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
+    """Windows manual restart must not fall back to foreground run_gateway().
+
+    A Telegram-hosted agent may run `hermes gateway restart` via the terminal
+    tool. The generic manual fallback stops the gateway and then calls
+    run_gateway() in the same foreground subprocess; on Windows that subprocess
+    can be reaped when its gateway parent is terminated, leaving the gateway
+    down. The Windows backend restarts via detached pythonw.exe even when no
+    Scheduled Task / Startup item is installed.
+    """
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "restart", lambda: calls.append("restart"))
+    monkeypatch.setattr(
+        gateway,
+        "run_gateway",
+        lambda *args, **kwargs: pytest.fail("Windows restart must not use foreground run_gateway()"),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "stop_profile_gateway",
+        lambda: pytest.fail("Windows restart must not use generic manual stop fallback"),
+    )
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["restart"]
+
+
+def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
+    """If the Windows backend cannot launch, keep the existing fallback."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+
+    def fail_restart():
+        calls.append("restart")
+        raise OSError("simulated detached backend failure")
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "restart", fail_restart)
+    monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: calls.append("stop") or False)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda *args, **kwargs: calls.append("wait"))
+    monkeypatch.setattr(gateway, "run_gateway", lambda *args, **kwargs: calls.append("run"))
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["restart", "stop", "wait", "run"]
+
+
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

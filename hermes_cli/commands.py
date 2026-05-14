@@ -96,6 +96,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
+    CommandDef(
+        "advisor",
+        "Ask a stronger advisor model for a second opinion on the current conversation",
+        "Session",
+        aliases=("consult",),
+        args_hint="[model] [question]",
+    ),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",

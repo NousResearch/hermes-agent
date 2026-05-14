@@ -7653,6 +7653,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "advisor":
+            self._handle_advisor_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -7961,6 +7963,174 @@ class HermesCLI:
                     self._invalidate(min_interval=0)
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
+        self._background_tasks[task_id] = thread
+        thread.start()
+
+    _ADVISOR_DEFAULT_MODEL = "claude-opus-4-7"
+    _ADVISOR_SYSTEM_PROMPT = (
+        "You are an expert advisor reviewing a conversation between a user and an AI assistant. "
+        "Your role is to provide a high-quality second opinion, critique, or improvement on the "
+        "assistant's most recent response. Be direct and concise. "
+        "If the assistant's answer was correct and thorough, confirm it and note any small gaps. "
+        "If you can do better, provide the improved answer. "
+        "Do not simply repeat what was said."
+    )
+
+    def _handle_advisor_command(self, cmd: str) -> None:
+        """Handle /advisor [model] [question] -- ask a stronger model to review the conversation.
+
+        Usage:
+          /advisor                     -- review the last exchange with the default advisor model
+          /advisor opus                -- same, explicitly using opus
+          /advisor claude-opus-4-7     -- same, full model name
+          /advisor What is a qubit?    -- override the question sent to the advisor
+
+        The advisor sees the full conversation history (read-only) and posts its
+        response as a background panel, without affecting the active session.
+        """
+        parts = cmd.strip().split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        # Detect if the first word looks like a model name or known alias.
+        advisor_model = self._ADVISOR_DEFAULT_MODEL
+        question_override = ""
+        if raw_args:
+            first_word = raw_args.split()[0]
+            # Treat it as a model hint if it contains a model keyword or looks
+            # like an API model ID.
+            _model_keywords = {"opus", "sonnet", "haiku", "claude", "gpt", "gemini", "llama",
+                               "mixtral", "qwen", "mistral", "grok", "deepseek"}
+            _is_model_hint = (
+                any(kw in first_word.lower() for kw in _model_keywords)
+                or "-" in first_word
+            )
+            if _is_model_hint:
+                advisor_model = first_word
+                question_override = raw_args.split(None, 1)[1].strip() if " " in raw_args else ""
+            else:
+                question_override = raw_args
+
+        # Resolve credentials for the advisor model. Use the same provider as
+        # the current session so the user does not need a separate credential.
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start advisor: no valid credentials.")
+            return
+
+        # Snapshot conversation history for the advisor (read-only copy).
+        history_snapshot: list[dict] = []
+        if self.agent is not None and hasattr(self.agent, "messages"):
+            try:
+                import copy
+                history_snapshot = copy.deepcopy(self.agent.messages)
+            except Exception:
+                pass
+
+        if not history_snapshot:
+            _cprint("  No conversation history yet -- start a conversation first, then call /advisor.")
+            return
+
+        # Build the question sent to the advisor.
+        if question_override:
+            advisor_question = question_override
+        else:
+            advisor_question = (
+                "Please review the conversation above. "
+                "Provide a second opinion or improvement on the assistant's most recent response."
+            )
+
+        task_id = f"advisor_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        _cprint(f"  Consulting advisor ({advisor_model}) on this conversation ...")
+        _cprint(f"  Task ID: {task_id}  (results appear here when ready)\n")
+
+        turn_route = self._resolve_turn_agent_config(advisor_question)
+
+        def run_advisor():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
+            try:
+                adv_agent = AIAgent(
+                    model=advisor_model,
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    max_iterations=10,
+                    enabled_toolsets=[],  # advisor is read-only, no tools
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                )
+                adv_agent._print_fn = lambda *_a, **_kw: None
+
+                result = adv_agent.run_conversation(
+                    user_message=advisor_question,
+                    system_message=self._ADVISOR_SYSTEM_PROMPT,
+                    conversation_history=history_snapshot,
+                    task_id=task_id,
+                )
+
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                ChatConsole().print(f"[#B8860B]{'=' * 50}[/]")
+                _cprint(f"  Advisor ({advisor_model}) -- second opinion")
+                ChatConsole().print(f"[#B8860B]{'=' * 50}[/]")
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        _resp_color = _skin.get_color("response_border", "#B8860B")
+                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                    except Exception:
+                        _resp_color = "#B8860B"
+                        _resp_text = "#FFF8DC"
+
+                    ChatConsole().print(Panel(
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
+                        title=f"[{_resp_color} bold]Advisor ({advisor_model})[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                    ))
+                else:
+                    _cprint("  (Advisor returned no response)")
+
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  Advisor failed: {e}")
+            finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                self._background_tasks.pop(task_id, None)
+                if not self._agent_running:
+                    self._spinner_text = ""
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_advisor, daemon=True, name=f"advisor-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
 

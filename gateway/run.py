@@ -6542,6 +6542,9 @@ class GatewayRunner:
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "advisor":
+            return await self._handle_advisor_command(event)
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user
@@ -10543,6 +10546,176 @@ class GatewayRunner:
                 await adapter.send(
                     chat_id=source.chat_id,
                     content=f"❌ Background task {task_id} failed: {e}",
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # /advisor command -- gateway (async) implementation
+    # ------------------------------------------------------------------
+
+    _ADVISOR_DEFAULT_MODEL = "claude-opus-4-7"
+    _ADVISOR_SYSTEM_PROMPT = (
+        "You are an expert advisor reviewing a conversation between a user and an AI assistant. "
+        "Your role is to provide a high-quality second opinion, critique, or improvement on the "
+        "assistant's most recent response. Be direct and concise. "
+        "If the assistant's answer was correct and thorough, confirm it and note any small gaps. "
+        "If you can do better, provide the improved answer. "
+        "Do not simply repeat what was said."
+    )
+
+    async def _handle_advisor_command(self, event: "MessageEvent") -> str:
+        """Handle /advisor [model] [question] -- consult a stronger model for a second opinion.
+
+        Usage:
+          /advisor                     review last exchange with the default advisor model
+          /advisor opus                same, explicitly using opus
+          /advisor claude-opus-4-7     same, full model name
+          /advisor What is a qubit?    custom question sent to the advisor
+
+        The advisor receives the full conversation history read-only and responds
+        directly to the chat without modifying the active session context.
+        """
+        raw_args = event.get_command_args().strip()
+
+        advisor_model = self._ADVISOR_DEFAULT_MODEL
+        question_override = ""
+        if raw_args:
+            first_word = raw_args.split()[0]
+            _model_keywords = {"opus", "sonnet", "haiku", "claude", "gpt", "gemini", "llama",
+                               "mixtral", "qwen", "mistral", "grok", "deepseek"}
+            _is_model_hint = (
+                any(kw in first_word.lower() for kw in _model_keywords)
+                or "-" in first_word
+            )
+            if _is_model_hint:
+                advisor_model = first_word
+                question_override = raw_args.split(None, 1)[1].strip() if " " in raw_args else ""
+            else:
+                question_override = raw_args
+
+        source = event.source
+        task_id = f"advisor_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        event_message_id = self._reply_anchor_for_event(event)
+
+        _task = asyncio.create_task(
+            self._run_advisor_task(
+                advisor_model=advisor_model,
+                question_override=question_override,
+                source=source,
+                task_id=task_id,
+                event_message_id=event_message_id,
+            )
+        )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        return f"Consulting advisor ({advisor_model}) ... (task {task_id})"
+
+    async def _run_advisor_task(
+        self,
+        advisor_model: str,
+        question_override: str,
+        source: "SessionSource",
+        task_id: str,
+        event_message_id: Optional[str] = None,
+    ) -> None:
+        """Execute the advisor agent and deliver the result to the chat."""
+        from run_agent import AIAgent
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            logger.warning("No adapter for platform %s in advisor task %s", source.platform, task_id)
+            return
+
+        _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+
+        try:
+            user_config = _load_gateway_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                user_config=user_config,
+            )
+            if not runtime_kwargs.get("api_key"):
+                await adapter.send(
+                    source.chat_id,
+                    f"Advisor task {task_id} failed: no provider credentials configured.",
+                    metadata=_thread_metadata,
+                )
+                return
+
+            # Snapshot the active session history, if one exists.
+            history_snapshot: list[dict] = []
+            try:
+                session_key = self._session_key_for_source(source)
+                cached = self._agent_cache.get(session_key)
+                if cached:
+                    cached_agent = cached[0]
+                    raw_msgs = getattr(cached_agent, "messages", None)
+                    if raw_msgs:
+                        import copy
+                        history_snapshot = copy.deepcopy(raw_msgs)
+            except Exception:
+                pass
+
+            if not history_snapshot:
+                await adapter.send(
+                    source.chat_id,
+                    "No conversation history found for this session. Start a conversation first.",
+                    metadata=_thread_metadata,
+                )
+                return
+
+            advisor_question = question_override or (
+                "Please review the conversation above. "
+                "Provide a second opinion or improvement on the assistant's most recent response."
+            )
+
+            adv_agent = AIAgent(
+                model=advisor_model,
+                api_key=runtime_kwargs.get("api_key"),
+                base_url=runtime_kwargs.get("base_url"),
+                provider=runtime_kwargs.get("provider"),
+                api_mode=runtime_kwargs.get("api_mode"),
+                max_iterations=10,
+                enabled_toolsets=[],  # advisor is read-only, no tools
+                quiet_mode=True,
+                verbose_logging=False,
+                session_id=task_id,
+                platform=source.platform,
+                session_db=self._session_db,
+            )
+            adv_agent._print_fn = lambda *_a, **_kw: None  # type: ignore[method-assign]
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: adv_agent.run_conversation(
+                    user_message=advisor_question,
+                    system_message=self._ADVISOR_SYSTEM_PROMPT,
+                    conversation_history=history_snapshot,
+                    task_id=task_id,
+                ),
+            )
+
+            response = (result or {}).get("final_response", "")
+            if not response and result and result.get("error"):
+                response = f"Error: {result['error']}"
+
+            header = f"**Advisor ({advisor_model})**\n\n"
+            await adapter.send(
+                chat_id=source.chat_id,
+                content=header + (response or "(No response generated)"),
+                metadata=_thread_metadata,
+            )
+
+        except Exception as e:
+            logger.exception("Advisor task %s failed", task_id)
+            try:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f"Advisor task {task_id} failed: {e}",
                     metadata=_thread_metadata,
                 )
             except Exception:

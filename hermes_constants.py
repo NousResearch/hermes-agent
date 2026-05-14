@@ -29,6 +29,24 @@ def get_hermes_home() -> Path:
     """
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
+        resolved = Path(val).resolve()
+        if resolved == Path("/") or len(resolved.parts) < 2 or resolved in _PROTECTED_DIRS:
+            import sys, logging
+            msg = (
+                f"[HERMES_HOME DANGER] HERMES_HOME={val!r} resolves to {resolved} — "
+                f"a protected system directory. Credential-store chmod calls will "
+                f"skip this path to avoid bricking the host (see #25821). "
+                f"Set HERMES_HOME to a safe subdirectory (e.g. ~/.hermes)."
+            )
+            try:
+                sys.stderr.write(msg + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            try:
+                logging.getLogger(__name__).error(msg)
+            except Exception:
+                pass
         return Path(val)
 
     # Guard: if a non-default profile is sticky-active, warn once that
@@ -337,6 +355,62 @@ def apply_ipv4_preference(force: bool = False) -> None:
 
     _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
+
+
+# ── Protected system paths ────────────────────────────────────────────
+# chmod(0o700) on any of these would break non-root system services
+# (systemd-resolved, journald, Docker containers that drop privileges, …).
+# See https://github.com/NousResearch/hermes-agent/issues/25821
+_PROTECTED_DIRS: frozenset[Path] = frozenset({
+    Path("/"),
+    Path("/etc"),
+    Path("/var"),
+    Path("/usr"),
+    Path("/home"),
+    Path("/root"),
+    Path("/opt"),
+    Path("/tmp"),
+    Path("/proc"),
+    Path("/sys"),
+    Path("/dev"),
+    Path("/run"),
+    Path("/boot"),
+})
+
+
+def safe_chmod_parent(path: Path, mode: int = 0o700) -> None:
+    """chmod *path.parent* only if it is a safe, non-system directory.
+
+    Prevents the catastrophic scenario where a malformed HERMES_HOME or
+    unexpected path resolution causes ``os.chmod("/", 0o700)`` — which
+    bricks every non-root user on the host (systemd-resolved, journald,
+    Docker containers, …).
+
+    This is the single authoritative guard for all credential-store parent
+    directory chmod calls.  Use it everywhere you would otherwise write::
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+
+    Instead write::
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        safe_chmod_parent(path)
+    """
+    parent = path.parent.resolve()
+    # Refuse to chmod root or any top-level directory.
+    if parent == Path("/") or len(parent.parts) < 2:
+        return
+    # Refuse well-known system roots.
+    if parent in _PROTECTED_DIRS:
+        return
+    try:
+        os.chmod(parent, mode)
+    except OSError:
+        pass
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

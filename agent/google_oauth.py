@@ -491,10 +491,8 @@ def save_credentials(creds: GoogleCredentials) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to the creds file.
     # On Windows this is a no-op (POSIX mode bits aren't enforced); ignore failures.
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    from hermes_constants import safe_chmod_parent
+    safe_chmod_parent(path)
     payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
 
     with _credentials_lock():

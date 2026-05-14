@@ -987,10 +987,8 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
-    try:
-        os.chmod(auth_file.parent, 0o700)
-    except OSError:
-        pass
+    from hermes_constants import safe_chmod_parent
+    safe_chmod_parent(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
@@ -1569,10 +1567,8 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
     auth_path = _qwen_cli_auth_path()
     auth_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(auth_path.parent, 0o700)
-    except OSError:
-        pass
+    from hermes_constants import safe_chmod_parent
+    safe_chmod_parent(auth_path)
     # Per-process random temp suffix avoids collisions between concurrent
     # writers and stale leftovers from a crashed prior write.
     tmp_path = auth_path.with_name(f"{auth_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
@@ -2987,10 +2983,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(path.parent, 0o700)
-            except OSError:
-                pass
+            from hermes_constants import safe_chmod_parent
+            safe_chmod_parent(path)
             tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
             # Create with 0o600 atomically via os.open(O_EXCL) — closes the TOCTOU
             # window where write_text() + post-write chmod briefly exposed Nous

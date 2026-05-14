@@ -175,10 +175,8 @@ def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
     # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    from hermes_constants import safe_chmod_parent
+    safe_chmod_parent(path)
     # Per-process random suffix avoids collisions between concurrent
     # writers and stale leftovers from a prior crashed write.
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")

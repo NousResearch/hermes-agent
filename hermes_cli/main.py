@@ -5688,12 +5688,29 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
+
+    def _relay(result: "subprocess.CompletedProcess") -> None:
+        """Print captured npm output so users can see *why* a step failed.
+
+        Windows users hitting `rm -rf` / `cp -r` errors (or any other
+        sync-assets / Vite failure) would otherwise see only ``Web UI
+        build failed`` with no hint of the underlying cause, because
+        the npm calls run with ``capture_output=True``.
+        """
+        for blob in (result.stdout, result.stderr):
+            if not blob:
+                continue
+            text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
+            if text:
+                print(text)
+
     r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        _relay(r1)
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
@@ -5739,8 +5756,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
-        if stderr_tail:
-            print(f"  Build error:\n  {stderr_tail}")
+        _relay(r2)
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False

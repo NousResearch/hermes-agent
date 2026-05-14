@@ -462,7 +462,12 @@ PLATFORM_HINTS = {
         "Keep replies conversational and concise. Basic Markdown formatting is okay, "
         "but avoid tables and overly complex layout because messages render inside chat. "
         "Incoming Tlon blobs are converted into readable attachment annotations and, "
-        "when safe to fetch, local media/document paths for tool access."
+        "when safe to fetch, local media/document paths for tool access. "
+        "You can manage Tlon with the tlon tool: create groups and channels, "
+        "invite ships, assign admin roles, inspect history, manage contacts, "
+        "update Tlon/OpenClaw settings, expose posts, manage hooks, upload files, "
+        "and create notebook posts. Do not tell the user to create groups or "
+        "channels manually when the tlon tool is available."
     ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "

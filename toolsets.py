@@ -169,6 +169,12 @@ TOOLSETS = {
         "tools": ["send_message"],
         "includes": []
     },
+
+    "tlon": {
+        "description": "Tlon/Urbit management: groups, channels, invites, roles, contacts, settings, history, activity, expose, hooks, notebook posts, uploads, and raw scry/poke/thread",
+        "tools": ["tlon"],
+        "includes": []
+    },
     
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
@@ -517,7 +523,7 @@ TOOLSETS = {
 
     "hermes-tlon": {
         "description": "Tlon bot toolset - decentralized Urbit messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["tlon"],
         "includes": []
     },
 
@@ -528,7 +534,7 @@ TOOLSETS = {
             "vision_analyze", "image_generate",
             "skills_list", "skill_view",
             "todo", "memory", "session_search", "clarify",
-            "text_to_speech", "send_message",
+            "text_to_speech", "send_message", "tlon",
         ],
         "includes": []
     },

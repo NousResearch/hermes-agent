@@ -2098,6 +2098,18 @@ class AIAgent:
             _api_retries = 3
         self._api_max_retries = _api_retries
 
+        # GLM stop-to-length heuristic opt-out (#14572 / #15463).
+        # Set agent.glm_truncation_heuristic: false in config.yaml to
+        # disable the conservative stop->length reclassification for
+        # Ollama-hosted GLM models.  Defaults to True (heuristic on).
+        _glm_heuristic_raw = _agent_section.get("glm_truncation_heuristic", True)
+        if isinstance(_glm_heuristic_raw, str):
+            self._glm_truncation_heuristic_enabled = (
+                _glm_heuristic_raw.lower() in ("true", "1", "yes")
+            )
+        else:
+            self._glm_truncation_heuristic_enabled = bool(_glm_heuristic_raw)
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
@@ -3745,7 +3757,18 @@ class AIAgent:
 
     @staticmethod
     def _has_natural_response_ending(content: str) -> bool:
-        """Heuristic: does visible assistant text look intentionally finished?"""
+        """Heuristic: does visible assistant text look intentionally finished?
+
+        Recognises ASCII/CJK punctuation, emoji, and other common sign-off
+        glyphs as natural endings.  Returns True for characters that are
+        unlikely to appear mid-sentence in a truncated response.
+
+        Extended to cover emoji sign-offs (e.g. 💛 ✨ 🙌) and math/arrow
+        symbols which were previously false-positive triggers for the
+        Ollama/GLM stop-to-length heuristic.
+        """
+        import unicodedata
+
         if not content:
             return False
         stripped = content.rstrip()
@@ -3753,7 +3776,35 @@ class AIAgent:
             return False
         if stripped.endswith("```"):
             return True
-        return stripped[-1] in '.!?:)"\']}。！？：）】」』》'
+        if stripped[-1] in '.!?:)"\']}。！？：）】」』》':
+            return True
+
+        # Strip trailing Unicode combining marks (variation selectors
+        # U+FE0F, zero-width joiners U+200D, etc.) before checking the
+        # last real glyph so emoji + VS16 is recognised as the base emoji.
+        i = len(stripped) - 1
+        while i >= 0 and unicodedata.category(stripped[i]) in ("Mn", "Me", "Cf"):
+            i -= 1
+        if i < 0:
+            return False
+        last_char = stripped[i]
+
+        # Emoji and other Unicode sign-off glyphs.
+        # Use unicodedata categories rather than a hard-coded codepoint
+        # list so we automatically cover new emoji as Python's Unicode
+        # database grows.
+        cat = unicodedata.category(last_char)
+        # So (Other_Symbol): sparkles, rocket, check, cross, stars, etc.
+        # Sk (Modifier_Symbol): VS16 heart variation selector, etc.
+        # Sm (Math_Symbol): arrows, infinity, and similar sign-off glyphs.
+        if cat in ("So", "Sk", "Sm"):
+            return True
+        # Extended_Pictographic range (many emoji have category So but
+        # some are Lo/Lm/Other — this catches the rest).
+        try:
+            return ord(last_char) in range(0x1F000, 0x1FAFF)
+        except TypeError:
+            return False
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
@@ -3771,7 +3822,17 @@ class AIAgent:
         assistant_message,
         messages: Optional[list] = None,
     ) -> bool:
-        """Detect conservative stop->length misreports for Ollama-hosted GLM models."""
+        """Detect conservative stop->length misreports for Ollama-hosted GLM models.
+
+        Guard rails (to minimise false positives, cf. #14572):
+        - <500 chars visible: almost certainly complete (short replies can't
+          hit meaningful token limits)
+        - heuristic_enabled flag: opt-out via agent.glm_truncation_heuristic
+        """
+        # Config opt-out (#14572).
+        if not getattr(self, "_glm_truncation_heuristic_enabled", True):
+            return False
+
         if finish_reason != "stop" or self.api_mode != "chat_completions":
             return False
         if not self._is_ollama_glm_backend():
@@ -3792,6 +3853,13 @@ class AIAgent:
         if not visible_text:
             return False
         if len(visible_text) < 20 or not re.search(r"\s", visible_text):
+            return False
+
+        # Short-to-medium responses (<500 chars visible) are very unlikely
+        # to be truncated.  Raising this gate from 20 to 500 eliminates the
+        # vast majority of false positives from conversational replies and
+        # emoji sign-offs (#14572).
+        if len(visible_text) < 500:
             return False
 
         return not self._has_natural_response_ending(visible_text)

@@ -3107,13 +3107,24 @@ class TestRunConversation:
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "glm-5.1:cloud"
 
+        # The 500-char gate (#14572) requires >=500 visible chars to trigger
+        # the heuristic.  Pad the mock to a valid-looking long response that
+        # ends mid-sentence without punctuation.
+        _prefix = "Based on the search results, "
+        _filler = "we can see that the data supports this conclusion. " * 10
+        _ending = "the best next"
+        _long_content = _prefix + _filler.strip() + " " + _ending
+        assert len(_long_content.strip()) >= 500, (
+            f"content is {len(_long_content.strip())} chars, need >=500 for 500-char gate"
+        )
+
         tool_turn = _mock_response(
             content="",
             finish_reason="tool_calls",
             tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
         )
         misreported_stop = _mock_response(
-            content="Based on the search results, the best next",
+            content=_long_content,
             finish_reason="stop",
         )
         continued = _mock_response(
@@ -3138,7 +3149,7 @@ class TestRunConversation:
         assert result["api_calls"] == 3
         assert (
             result["final_response"]
-            == "Based on the search results, the best next step is to update the config."
+            == _long_content.rstrip() + " step is to update the config."
         )
 
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]

@@ -578,6 +578,13 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+
+  # GLM stop-to-length truncation heuristic (#14572).
+  # Ollama-hosted GLM models can misreport truncated responses as
+  # finish_reason='stop'.  When true (default), the agent detects
+  # likely truncations and requests continuation.  Set to false to
+  # disable and treat all stop reasons as genuine.
+  # glm_truncation_heuristic: true
   
   # Enable verbose logging
   verbose: false

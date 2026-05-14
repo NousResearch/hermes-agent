@@ -3778,8 +3778,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(f"  Get your key at: {var['url']}")
             
             if var.get("password"):
-                import getpass
-                value = getpass.getpass(f"  {var['prompt']}: ")
+                from hermes_cli.cli_output import read_secret_line
+                value = read_secret_line(f"  {var['prompt']}: ").strip()
             else:
                 value = input(f"  {var['prompt']}: ").strip()
             
@@ -3830,8 +3830,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print(f"  {info.get('description', name)}")
                     if info.get("password"):
-                        import getpass
-                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                        from hermes_cli.cli_output import read_secret_line
+                        value = read_secret_line(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     else:
                         value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:

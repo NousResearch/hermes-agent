@@ -202,9 +202,9 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
     try:
         if password:
-            import getpass
+            from hermes_cli.cli_output import read_secret_line
 
-            value = getpass.getpass(color(display, Colors.YELLOW))
+            value = read_secret_line(color(display, Colors.YELLOW))
         else:
             value = input(color(display, Colors.YELLOW))
 

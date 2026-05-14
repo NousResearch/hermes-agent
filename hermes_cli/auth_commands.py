@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from getpass import getpass
+from hermes_cli.cli_output import read_secret_line
 import math
 import sys
 import time
@@ -194,7 +194,7 @@ def auth_add_command(args) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
-            token = getpass("Paste your API key: ").strip()
+            token = read_secret_line("Paste your API key: ").strip()
         if not token:
             raise SystemExit("No API key provided.")
         default_label = _api_key_default_label(len(pool.entries()) + 1)

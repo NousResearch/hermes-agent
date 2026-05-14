@@ -465,8 +465,28 @@ if _config_path.exists():
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
+            # When the terminal backend is local, skip container-specific
+            # config keys so stale Docker/Modal/etc. settings from a previous
+            # config do not leak through env vars into the terminal tool.
+            _container_only_keys = {
+                "docker_image", "docker_forward_env", "docker_volumes",
+                "docker_env", "docker_mount_cwd_to_workspace",
+                "docker_run_as_host_user", "docker_extra_args",
+                "singularity_image", "modal_image", "modal_mode",
+                "daytona_image", "vercel_runtime",
+                "container_cpu", "container_memory", "container_disk",
+                "container_persistent",
+            }
+            _backend = str(_terminal_cfg.get("backend", "local")).strip().lower()
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
+                    # Skip container-only keys when running locally.
+                    if _backend == "local" and _cfg_key in _container_only_keys:
+                        # Explicitly clear any previously-set env var so a
+                        # stale Docker config from an earlier gateway process
+                        # does not persist.
+                        os.environ.pop(_env_var, None)
+                        continue
                     _val = _terminal_cfg[_cfg_key]
                     # Skip cwd placeholder values (".", "auto", "cwd") — the
                     # gateway resolves these to Path.home() later (line ~255).

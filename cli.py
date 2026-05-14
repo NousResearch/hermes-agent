@@ -497,6 +497,19 @@ def load_cli_config() -> Dict[str, Any]:
     if effective_backend == "local":
         terminal_config["cwd"] = os.getcwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        # Remove container-specific config keys so stale Docker/Modal/etc.
+        # settings from a previous config do not leak via env vars.
+        for _ck in (
+            "docker_image", "docker_forward_env", "docker_volumes",
+            "docker_env", "docker_mount_cwd_to_workspace",
+            "docker_run_as_host_user", "docker_extra_args",
+            "singularity_image", "modal_image", "modal_mode",
+            "daytona_image", "vercel_runtime",
+            "container_cpu", "container_memory", "container_disk",
+            "container_persistent",
+        ):
+            terminal_config.pop(_ck, None)
+            defaults.get("terminal", {}).pop(_ck, None)
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
     

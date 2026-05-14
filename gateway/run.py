@@ -16407,17 +16407,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and platform_key in _legacy_tp_overrides
             )
         )
-        if (
-            source.platform == Platform.MATRIX
-            and not _platform_tool_progress_configured
-            and not _env_tp
-        ):
-            progress_mode = "off"
-        else:
-            progress_mode = (
-                _env_tp
-                if _env_tp and not _tool_progress_configured
-                else (_resolved_tp or _env_tp or "all")
+        progress_mode = (
+            _env_tp
+            if _env_tp and not _tool_progress_configured
+            else (_resolved_tp or _env_tp or "all")
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
@@ -16526,6 +16519,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        _matrix_show_reasoning = bool(
+            resolve_display_setting(user_config, platform_key, "show_reasoning", False)
+        )
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -16573,6 +16569,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+            if (
+                tool_progress_enabled
+                and event_type == "tool.completed"
+                and source.platform == Platform.MATRIX
+            ):
+                progress_queue.put((
+                    "__matrix_tool_completed__",
+                    tool_name,
+                    float(kwargs.get("duration") or 0.0),
+                    bool(kwargs.get("is_error")),
+                ))
                 return
 
             # "_thinking" is assistant scratch text between tool calls.  It
@@ -16846,6 +16854,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
+            thinking_msg_id = None   # Matrix-only reasoning/thinking pane
+            thinking_text = ""       # Latest accumulated Matrix thinking text
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -16867,22 +16877,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             # Detect whether the adapter's edit_message accepts metadata so
-            # overflow edits preserve Telegram topic/thread routing (#27487).
+            # overflow edits preserve platform-specific routing/formatting
+            # metadata, including Telegram topics and Matrix formatted bodies.
             _edit_accepts_metadata = False
-            if _progress_metadata:
-                try:
-                    _edit_params = inspect.signature(adapter.edit_message).parameters
-                    _edit_accepts_metadata = (
-                        "metadata" in _edit_params
-                        or any(
-                            param.kind is inspect.Parameter.VAR_KEYWORD
-                            for param in _edit_params.values()
-                        )
+            try:
+                _edit_params = inspect.signature(adapter.edit_message).parameters
+                _edit_accepts_metadata = (
+                    "metadata" in _edit_params
+                    or any(
+                        param.kind is inspect.Parameter.VAR_KEYWORD
+                        for param in _edit_params.values()
                     )
-                except (TypeError, ValueError):
-                    _edit_accepts_metadata = False
+                )
+            except (TypeError, ValueError):
+                _edit_accepts_metadata = False
 
-            async def _edit_progress_message(message_id: str, content: str):
+            def _matrix_tool_activity_metadata(content: str) -> tuple[str, Dict[str, Any]]:
+                """Return Matrix plain text plus collapsible formatted-body metadata."""
+                import html as _html
+
+                lines = [line for line in str(content or "").splitlines() if line.strip()]
+                count = len(lines)
+                summary = f"🛠 Tool activity ({count} update{'s' if count != 1 else ''})"
+                plain = summary if not lines else f"{summary}\n" + "\n".join(lines)
+                escaped_summary = _html.escape(summary)
+                escaped_body = _html.escape("\n".join(lines))
+                if escaped_body:
+                    formatted = (
+                        f"<details><summary>{escaped_summary}</summary>"
+                        f"<pre><code>{escaped_body}</code></pre></details>"
+                    )
+                else:
+                    formatted = f"<details><summary>{escaped_summary}</summary></details>"
+                metadata = dict(_progress_metadata or {})
+                metadata["matrix_body"] = plain
+                metadata["matrix_formatted_body"] = formatted
+                return plain, metadata
+
+            def _prepare_progress_payload(
+                content: str,
+                *,
+                matrix_tool_activity: bool = False,
+            ) -> tuple[str, Optional[Dict[str, Any]]]:
+                if source.platform == Platform.MATRIX and matrix_tool_activity:
+                    return _matrix_tool_activity_metadata(content)
+                return content, _progress_metadata
+
+            async def _edit_progress_message(
+                message_id: str,
+                content: str,
+                metadata: Optional[Dict[str, Any]] = None,
+            ):
+                effective_metadata = _progress_metadata if metadata is None else metadata
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
@@ -16890,8 +16936,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
                     kwargs["finalize"] = True
-                if _edit_accepts_metadata:
-                    kwargs["metadata"] = _progress_metadata
+                if _edit_accepts_metadata and effective_metadata is not None:
+                    kwargs["metadata"] = effective_metadata
                 return await adapter.edit_message(**kwargs)
 
             def _progress_text(lines: list) -> str:
@@ -16920,12 +16966,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ):
                     _cleanup_msg_ids.append(str(result.message_id))
 
-            async def _send_progress_text(text: str):
+            async def _send_progress_text(
+                text: str,
+                metadata: Optional[Dict[str, Any]] = None,
+            ):
+                effective_metadata = _progress_metadata if metadata is None else metadata
                 result = await adapter.send(
                     chat_id=source.chat_id,
                     content=text,
                     reply_to=_progress_reply_to,
-                    metadata=_progress_metadata,
+                    metadata=effective_metadata,
                 )
                 _track_progress_result(result)
                 return result
@@ -16943,20 +16993,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if len(groups) <= 1:
                     return False
 
-                first_text = _progress_text(groups[0])
+                first_text, first_metadata = _prepare_progress_payload(
+                    _progress_text(groups[0]),
+                    matrix_tool_activity=source.platform == Platform.MATRIX,
+                )
                 if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
+                    result = await _edit_progress_message(
+                        progress_msg_id,
+                        first_text,
+                        first_metadata,
+                    )
                     if not result.success:
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
                         return False
                 else:
-                    result = await _send_progress_text(first_text)
+                    result = await _send_progress_text(first_text, first_metadata)
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
 
                 for group in groups[1:]:
-                    result = await _send_progress_text(_progress_text(group))
+                    group_text, group_metadata = _prepare_progress_payload(
+                        _progress_text(group),
+                        matrix_tool_activity=source.platform == Platform.MATRIX,
+                    )
+                    result = await _send_progress_text(group_text, group_metadata)
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
 
@@ -16965,6 +17026,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # replaying the full historical transcript into new messages.
                 progress_lines = groups[-1]
                 return True
+
+            async def _send_or_edit_progress(
+                message_id: Optional[str],
+                content: str,
+                *,
+                matrix_tool_activity: bool = False,
+            ) -> Optional[str]:
+                if not content:
+                    return message_id
+                content, send_metadata = _prepare_progress_payload(
+                    content,
+                    matrix_tool_activity=matrix_tool_activity,
+                )
+                if can_edit and message_id is not None:
+                    result = await _edit_progress_message(message_id, content, send_metadata)
+                    if result.success:
+                        return message_id
+                    message_id = None
+                result = await _send_progress_text(content, send_metadata)
+                if result.success and result.message_id:
+                    return result.message_id
+                return message_id
+
+            async def _handle_matrix_progress_tuple(raw: tuple) -> bool:
+                """Handle Matrix-specific pane updates. Returns True if consumed."""
+                nonlocal progress_msg_id, progress_lines, thinking_msg_id, thinking_text
+                tag = raw[0] if raw else ""
+                if tag == "__matrix_thinking__":
+                    addition = str(raw[1] if len(raw) > 1 else "").strip()
+                    if not addition:
+                        return True
+                    if thinking_text:
+                        thinking_text = f"{thinking_text}\n\n{addition}"
+                    else:
+                        thinking_text = addition
+                    if len(thinking_text) > 3500:
+                        thinking_text = "...\n" + thinking_text[-3496:]
+                    thinking_msg_id = await _send_or_edit_progress(
+                        thinking_msg_id,
+                        f"💭 Thinking\n\n{thinking_text}",
+                    )
+                    return True
+                if tag == "__matrix_tool_completed__":
+                    tool = str(raw[1] if len(raw) > 1 else "tool")
+                    duration = float(raw[2] if len(raw) > 2 else 0.0)
+                    is_error = bool(raw[3] if len(raw) > 3 else False)
+                    marker = "❌" if is_error else "✅"
+                    state = "failed" if is_error else "completed"
+                    progress_lines.append(f"{marker} {tool} {state} ({duration:.1f}s)")
+                    progress_msg_id = await _send_or_edit_progress(
+                        progress_msg_id,
+                        "\n".join(progress_lines),
+                        matrix_tool_activity=True,
+                    )
+                    return True
+                if tag == "__matrix_finalize__":
+                    outcome = str(raw[1] if len(raw) > 1 else "")
+                    if outcome in ("failed", "aborted") and progress_lines:
+                        marker = "❌" if outcome == "failed" else "⚠️"
+                        label = "Tool activity failed" if outcome == "failed" else "Tool activity aborted"
+                        progress_lines.append(f"{marker} {label}")
+                        progress_msg_id = await _send_or_edit_progress(
+                            progress_msg_id,
+                            "\n".join(progress_lines),
+                            matrix_tool_activity=True,
+                        )
+                    return True
+                return False
 
             while True:
                 try:
@@ -17000,6 +17129,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif (
+                        source.platform == Platform.MATRIX
+                        and isinstance(raw, tuple)
+                        and await _handle_matrix_progress_tuple(raw)
+                    ):
+                        _last_edit_ts = time.monotonic()
+                        continue
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17040,6 +17176,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     if not _run_still_current():
                         return
+
+                    if source.platform == Platform.MATRIX:
+                        progress_msg_id = await _send_or_edit_progress(
+                            progress_msg_id,
+                            "\n".join(progress_lines),
+                            matrix_tool_activity=True,
+                        )
+                        _last_edit_ts = time.monotonic()
+                        await asyncio.sleep(0.3)
+                        if _run_still_current():
+                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                        continue
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
@@ -19230,6 +19378,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
+            if progress_queue is not None and source.platform == Platform.MATRIX:
+                try:
+                    _response_for_progress = locals().get("response")
+                    if isinstance(_response_for_progress, dict) and _response_for_progress.get("failed"):
+                        progress_queue.put(("__matrix_finalize__", "failed"))
+                    elif _interrupt_detected.is_set():
+                        progress_queue.put(("__matrix_finalize__", "aborted"))
+                except Exception:
+                    pass
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()

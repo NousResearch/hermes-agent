@@ -127,12 +127,13 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
-    # Matrix clients commonly treat edits/replacements as read-relevant events.
-    # Keep Matrix quiet by default; operators can opt back into live progress or
-    # streaming with display.platforms.matrix.* when their client behaves well.
+    # Matrix clients commonly treat edits/replacements as read-relevant events,
+    # so keep token/interim streaming off. Tool activity is still useful for
+    # agent workflows and is rendered as a single collapsible formatted message
+    # by the Matrix adapter when clients support <details>/<summary>.
     "matrix": {
         **_TIER_MEDIUM,
-        "tool_progress": "off",
+        "tool_progress": "new",
         "streaming": False,
         "tool_preview_length": 160,
     },

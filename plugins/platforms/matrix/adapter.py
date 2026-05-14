@@ -208,9 +208,10 @@ class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
     _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3",
-        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "strike",
-        "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
+        "a", "b", "blockquote", "br", "code", "del", "details", "em", "h1",
+        "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre",
+        "s", "strike", "strong", "summary", "table", "tbody", "td", "th",
+        "thead", "tr", "ul",
     }
     _VOID_TAGS = {"br", "hr"}
 
@@ -243,6 +244,11 @@ class _MatrixHtmlSanitizer(HTMLParser):
                 if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
                     safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
         return "".join(safe)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._VOID_TAGS and not self._skip_depth:
+            self._parts.append(f"<{tag}>")
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -1593,6 +1599,8 @@ class MatrixAdapter(BasePlatformAdapter):
         last_event_id = None
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
+            if i == 0:
+                self._apply_formatted_body_metadata(msg_content, metadata)
 
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
@@ -1716,15 +1724,22 @@ class MatrixAdapter(BasePlatformAdapter):
 
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit an existing message (via m.replace)."""
 
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        self._apply_formatted_body_metadata(new_content, metadata)
         msg_content: Dict[str, Any] = {
             "msgtype": "m.text",
-            "body": f"* {formatted}",
+            "body": f"* {new_content.get('body', formatted)}",
             "m.new_content": new_content,
         }
         if "m.mentions" in new_content:
@@ -3995,6 +4010,23 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["formatted_body"] = html
 
         return msg_content
+
+    def _apply_formatted_body_metadata(
+        self,
+        msg_content: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Apply Matrix-specific formatted-body override metadata."""
+        if not isinstance(metadata, dict):
+            return
+        formatted_body = metadata.get("matrix_formatted_body")
+        if not formatted_body:
+            return
+        body = metadata.get("matrix_body")
+        if body:
+            msg_content["body"] = str(body)
+        msg_content["format"] = "org.matrix.custom.html"
+        msg_content["formatted_body"] = _sanitize_matrix_html(str(formatted_body))
 
     def _apply_relation_metadata(
         self,

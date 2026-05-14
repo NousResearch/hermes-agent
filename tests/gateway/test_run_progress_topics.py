@@ -39,12 +39,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
         self.edits.append(
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "metadata": kwargs.get("metadata"),
             }
         )
         return SendResult(success=True, message_id=message_id)
@@ -118,7 +119,7 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
@@ -1077,7 +1078,7 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_run_agent_matrix_defaults_to_final_answer_only(monkeypatch, tmp_path):
+async def test_run_agent_matrix_defaults_to_tool_activity_without_response_streaming(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -1095,8 +1096,40 @@ async def test_run_agent_matrix_defaults_to_final_answer_only(monkeypatch, tmp_p
 
     assert result["final_response"] == "done"
     assert not result.get("already_sent")
-    assert adapter.sent == []
-    assert adapter.edits == []
+    assert adapter.sent
+    assert adapter.edits
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert any("terminal" in text for text in all_contents)
+    assert any("browser_navigate" in text for text in all_contents)
+    assert all("done" not in text for text in all_contents)
+    matrix_metadata = [
+        call.get("metadata") or {}
+        for call in adapter.sent + adapter.edits
+        if call.get("metadata")
+    ]
+    assert matrix_metadata
+    assert any("<details>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
+    assert any("<summary>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-no-thinking",
+        config_data={"display": {"platforms": {"matrix": {"tool_progress": "all"}}}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert not any("Thinking" in text for text in all_contents)
+    assert not any("Need view minimax ref" in text for text in all_contents)
 
 
 @pytest.mark.asyncio

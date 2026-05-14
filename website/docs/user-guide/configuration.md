@@ -1516,11 +1516,13 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
-Matrix is intentionally stricter than the generic fallback: global
+Matrix defaults to live tool activity, rendered as a single formatted
+`<details>` / `<summary>` message where the Matrix client supports it. Reasoning
+text, interim assistant commentary, and token-level response streaming remain
+off unless `display.platforms.matrix.*` explicitly opts in. Global
 `display.tool_progress`, `display.interim_assistant_messages`, and
-`streaming.enabled` do not enable live Matrix progress or partial-response
-edits unless `display.platforms.matrix.*` explicitly opts in. This avoids
-client read-marker jumps from edited Matrix events.
+`streaming.enabled` do not enable those Matrix behaviors unless the platform
+override opts in — this avoids client read-marker jumps from edited events.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 

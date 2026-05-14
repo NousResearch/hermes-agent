@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -253,8 +254,21 @@ class _SlashWorker:
             )
 
     def close(self):
+        # Prefer a cooperative EOF so the worker can run its own finally blocks
+        # (notably closing/re-ending the resumed SessionDB row). A hard
+        # terminate is still the fallback for wedged command handlers.
         try:
             if self.proc.poll() is None:
+                try:
+                    if self.proc.stdin:
+                        self.proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    self.proc.wait(timeout=1)
+                    return
+                except Exception:
+                    pass
                 self.proc.terminate()
                 self.proc.wait(timeout=1)
         except Exception:
@@ -319,7 +333,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
 
 def _shutdown_sessions() -> None:
-    for session in list(_sessions.values()):
+    for session_key, session in list(_sessions.items()):
+        # Remove before closeout so signal + atexit, or nested shutdown paths,
+        # cannot repeatedly finalize/kill the same worker.
+        if _sessions.get(session_key) is session:
+            _sessions.pop(session_key, None)
         _finalize_session(session, end_reason="tui_shutdown")
         try:
             worker = session.get("slash_worker")
@@ -327,6 +345,28 @@ def _shutdown_sessions() -> None:
                 worker.close()
         except Exception:
             pass
+
+
+def _handle_shutdown_signal(signum, _frame) -> None:
+    """Finalize TUI sessions before SIGTERM/SIGHUP/SIGINT exits the gateway.
+
+    The Node TUI calls ``ChildProcess.kill()`` during `/quit` and signal
+    cleanup. Python's default SIGTERM action exits immediately and skips
+    ``atexit``, which leaves SessionDB rows open and can orphan persistent
+    slash-worker subprocesses. Run the same closeout path explicitly before
+    exiting with the conventional signal-derived code.
+    """
+    try:
+        _shutdown_sessions()
+    finally:
+        raise SystemExit(128 + int(signum))
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    try:
+        signal.signal(_sig, _handle_shutdown_signal)
+    except Exception:
+        pass
 
 
 atexit.register(_shutdown_sessions)

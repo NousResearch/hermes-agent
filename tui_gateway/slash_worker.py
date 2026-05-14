@@ -43,6 +43,18 @@ def _run(cli: HermesCLI, command: str) -> str:
     return buf.getvalue().rstrip()
 
 
+def _close_cli_session(cli: HermesCLI, reason: str = "slash_worker_exit") -> None:
+    """Best-effort closeout for the resumed CLI session owned by this worker."""
+    session_id = getattr(cli, "session_id", None)
+    db = getattr(cli, "_session_db", None)
+    if not session_id or db is None:
+        return
+    try:
+        db.end_session(session_id, reason)
+    except Exception:
+        pass
+
+
 def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
@@ -55,21 +67,24 @@ def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
 
-    for raw in sys.stdin:
-        line = raw.strip()
-        if not line:
-            continue
+    try:
+        for raw in sys.stdin:
+            line = raw.strip()
+            if not line:
+                continue
 
-        rid = None
-        try:
-            req = json.loads(line)
-            rid = req.get("id")
-            out = _run(cli, req.get("command", ""))
-            sys.stdout.write(json.dumps({"id": rid, "ok": True, "output": out}) + "\n")
-            sys.stdout.flush()
-        except Exception as e:
-            sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")
-            sys.stdout.flush()
+            rid = None
+            try:
+                req = json.loads(line)
+                rid = req.get("id")
+                out = _run(cli, req.get("command", ""))
+                sys.stdout.write(json.dumps({"id": rid, "ok": True, "output": out}) + "\n")
+                sys.stdout.flush()
+            except Exception as e:
+                sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")
+                sys.stdout.flush()
+    finally:
+        _close_cli_session(cli)
 
 
 if __name__ == "__main__":

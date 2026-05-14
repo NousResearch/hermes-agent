@@ -755,6 +755,122 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_shutdown_sessions_finalizes_live_agent_id_and_closes_worker(monkeypatch):
+    ended: list[tuple[str, str]] = []
+    closed: list[str] = []
+
+    class _Worker:
+        def close(self):
+            closed.append("worker")
+
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(end_session=lambda sid, reason: ended.append((sid, reason))),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    server._sessions["stale-key"] = _session(
+        agent=types.SimpleNamespace(session_id="live-agent-id"),
+        slash_worker=_Worker(),
+    )
+
+    try:
+        server._shutdown_sessions()
+        server._shutdown_sessions()
+    finally:
+        server._sessions.pop("stale-key", None)
+
+    assert ended == [("live-agent-id", "tui_shutdown")]
+    assert closed == ["worker"]
+    assert "stale-key" not in server._sessions
+
+
+def test_shutdown_signal_runs_session_closeout_before_exit(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(server, "_shutdown_sessions", lambda: calls.append("shutdown"))
+
+    try:
+        server._handle_shutdown_signal(15, None)
+    except SystemExit as exc:
+        assert exc.code == 143
+    else:  # pragma: no cover - defensive
+        raise AssertionError("shutdown signal handler did not exit")
+
+    assert calls == ["shutdown"]
+
+
+def test_slash_worker_close_prefers_stdin_eof_before_terminate(monkeypatch):
+    events: list[str] = []
+
+    class _Stdin:
+        def close(self):
+            events.append("stdin.close")
+
+    class _Proc:
+        stdin = _Stdin()
+        stdout: list[str] = []
+        stderr: list[str] = []
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            events.append(f"wait:{timeout}")
+            return 0
+
+        def terminate(self):
+            events.append("terminate")
+
+        def kill(self):
+            events.append("kill")
+
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **kw: _Proc())
+
+    worker = server._SlashWorker("session-key", "model")
+    worker.close()
+
+    assert events == ["stdin.close", "wait:1"]
+
+
+def test_slash_worker_close_terminates_when_eof_does_not_exit(monkeypatch):
+    events: list[str] = []
+
+    class _Stdin:
+        def close(self):
+            events.append("stdin.close")
+
+    class _Proc:
+        stdin = _Stdin()
+        stdout: list[str] = []
+        stderr: list[str] = []
+
+        def __init__(self):
+            self.waits = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            events.append(f"wait:{timeout}")
+            if self.waits == 1:
+                raise TimeoutError("still running")
+            return 0
+
+        def terminate(self):
+            events.append("terminate")
+
+        def kill(self):
+            events.append("kill")
+
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **kw: _Proc())
+
+    worker = server._SlashWorker("session-key", "model")
+    worker.close()
+
+    assert events == ["stdin.close", "wait:1", "terminate", "wait:1"]
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

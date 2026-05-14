@@ -46,6 +46,9 @@ _session_context = threading.local()
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
+# Config cache for _read_logging_config (60s TTL)
+_config_cache: dict = {"ts": 0, "val": (None, None, None)}
+
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
     "openai",
@@ -370,20 +373,23 @@ def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml.
 
     Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
+    Cached for 60s.
     """
+    now = time.time()
+    if _config_cache["ts"] and now - _config_cache["ts"] < 60:
+        return _config_cache["val"]
     try:
         import yaml
-        config_path = get_config_path()
+        config_path = _get_config_path()
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
-                return (
-                    log_cfg.get("level"),
-                    log_cfg.get("max_size_mb"),
-                    log_cfg.get("backup_count"),
-                )
+                result = (log_cfg.get("level"), log_cfg.get("max_size_mb"), log_cfg.get("backup_count"))
+                _config_cache["ts"] = now
+                _config_cache["val"] = result
+                return result
     except Exception:
         pass
     return (None, None, None)

@@ -514,20 +514,23 @@ def _capture_default_log_snapshots(
 # ---------------------------------------------------------------------------
 
 def _capture_dump() -> str:
-    """Run ``hermes dump`` and return its stdout as a string."""
+    """Run ``hermes dump`` and return its stdout + stderr as a string."""
     from hermes_cli.dump import run_dump
 
     class _FakeArgs:
         show_keys = False
 
     old_stdout = sys.stdout
+    old_stderr = sys.stderr
     sys.stdout = capture = io.StringIO()
+    sys.stderr = capture
     try:
         run_dump(_FakeArgs())
     except SystemExit:
         pass
     finally:
         sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
     return capture.getvalue()
 

@@ -1394,6 +1394,27 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 },
             )
 
+    elif provider == "xai-coding-plan":
+        state = _load_provider_state(auth_store, "xai-coding-plan")
+        if state and not _is_suppressed(provider, "grok_auth"):
+            access_token = state.get("access_token", "")
+            if access_token:
+                active_sources.add("grok_auth")
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    "grok_auth",
+                    {
+                        "source": "grok_auth",
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": access_token,
+                        "refresh_token": state.get("refresh_token"),
+                        "base_url": state.get("base_url", "https://api.x.ai/v1"),
+                        "last_refresh": state.get("last_refresh"),
+                        "label": label_from_token(access_token, "grok_auth"),
+                    },
+                )
+
     return changed, active_sources
 
 

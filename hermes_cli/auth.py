@@ -174,6 +174,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
+    "xai-coding-plan": ProviderConfig(
+        id="xai-coding-plan",
+        name="xAI Coding Plan (OAuth via grok CLI)",
+        auth_type="oauth_external",
+        inference_base_url="https://api.x.ai/v1",
+    ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
         name="LM Studio",
@@ -4215,15 +4221,14 @@ def _update_config_for_provider(
     provider_id: str,
     inference_base_url: str,
     default_model: Optional[str] = None,
+    force_default_model: bool = False,
 ) -> Path:
     """Update config.yaml and auth.json to reflect the active provider.
 
-    When *default_model* is provided the function also writes it as the
-    ``model.default`` value.  This prevents a race condition where the
-    gateway (which re-reads config per-message) picks up the new provider
-    before the caller has finished model selection, resulting in a
-    mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
-    MiniMax's API).
+    When *force_default_model* is true, *default_model* is written in the
+    same atomic config update as provider/base_url.  This prevents a race
+    where the gateway (which re-reads config per-message) picks up the new
+    provider before the caller has finished saving the selected model.
     """
     # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
@@ -4266,7 +4271,9 @@ def _update_config_for_provider(
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
     # "anthropic/claude-opus-4.6" will fail on direct-API providers.
-    if default_model:
+    if default_model and force_default_model:
+        model_cfg["default"] = default_model
+    elif default_model:
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
@@ -5414,6 +5421,270 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
     except Exception as exc:
         print(f"Login failed: {exc}")
         raise SystemExit(1)
+
+
+def _login_xai_coding_plan(args, pconfig, *, force_new_login=False):
+    """Login to xAI Coding Plan via grok CLI delegation.
+
+    Flow:
+      1. Check grok binary exists (PATH or ~/.grok/bin/grok)
+      2. Try importing existing tokens from ~/.grok/auth.json
+      3. If valid and not forced: save, update config, done
+      4. If missing/expired/forced: run 'grok login --device-auth'
+      5. Post-login: re-import from auth.json, verify, save, update config
+    """
+    del args  # kept for parity with other provider login helpers
+
+    # --- step 1: locate grok binary ---
+    grok_path = _find_grok_binary()
+    if not grok_path:
+        print()
+        print("xAI Coding Plan requires the Grok CLI.")
+        print("Install it from the official xAI CLI docs: https://x.ai/cli")
+        print("Then run 'hermes model' again to set up the Coding Plan.")
+        print()
+        return
+
+    # --- step 2: try importing existing tokens ---
+    if not force_new_login:
+        imported = _import_grok_auth_tokens()
+        if imported is not None:
+            token = imported.get("api_key", "")
+            if _verify_xai_token(token):
+                _save_xai_coding_plan_tokens(imported)
+                config_path = _update_config_for_provider(
+                    "xai-coding-plan", "https://api.x.ai/v1"
+                )
+                print("Existing Grok OAuth credentials imported.")
+                print(f"  Config updated: {config_path}")
+                return
+            else:
+                print("Existing Grok tokens are expired. Re-authenticating...")
+
+    # --- step 4: run grok login --device-auth ---
+    print()
+    print("Signing in to xAI Coding Plan via Grok CLI...")
+    print()
+    print("A browser window will open for authentication.")
+    print("(If running headless, a device code + URL will be shown.)")
+    print()
+
+    try:
+        ret = subprocess.run(
+            [str(grok_path), "login", "--device-auth"],
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except FileNotFoundError:
+        print("  grok binary not found at the expected path.")
+        return
+    except Exception as exc:
+        print(f"  Failed to launch grok login: {exc}")
+        return
+
+    if ret.returncode != 0:
+        print(f"  grok login failed (exit code {ret.returncode}).")
+        print("  Make sure you have an xAI Coding Plan subscription.")
+        return
+
+    # --- step 5: import freshly-created tokens ---
+    imported = _import_grok_auth_tokens()
+    if imported is None:
+        print("  Failed to read ~/.grok/auth.json after login.")
+        print("  Authentication may not have completed.")
+        return
+
+    _save_xai_coding_plan_tokens(imported)
+    config_path = _update_config_for_provider("xai-coding-plan", "https://api.x.ai/v1")
+    print()
+    print("xAI Coding Plan login successful!")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Config updated: {config_path}")
+
+
+GROK_AUTH_FILE = Path.home() / ".grok" / "auth.json"
+GROK_AUTH_SCOPE_OIDC = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
+GROK_AUTH_SCOPE_LEGACY = "https://accounts.x.ai/sign-in"
+XAI_INFERENCE_URL = "https://api.x.ai/v1"
+
+
+def _find_grok_binary() -> Path | None:
+    """Locate the grok CLI binary on PATH or at ~/.grok/bin/grok."""
+    grok = shutil.which("grok")
+    if grok:
+        return Path(grok)
+    alt = Path.home() / ".grok" / "bin" / "grok"
+    if alt.is_file():
+        return alt
+    return None
+
+
+def _import_grok_auth_tokens() -> dict | None:
+    """Import OIDC token from ~/.grok/auth.json.
+
+    auth.json format (from grok binary reverse-engineering):
+      {"https://auth.x.ai::<scope>": {"key": "<token>", ...},
+       "https://accounts.x.ai/sign-in":   {"key": "<token>", ...}}
+
+    Returns dict with 'api_key' and optionally 'refresh_token', or None.
+    """
+    if not GROK_AUTH_FILE.is_file():
+        return None
+    try:
+        data = json.loads(GROK_AUTH_FILE.read_text())
+        # Try OIDC scope first (newer), fall back to legacy sign-in scope
+        token_entry = data.get(GROK_AUTH_SCOPE_OIDC) or data.get(GROK_AUTH_SCOPE_LEGACY)
+        if not token_entry or not isinstance(token_entry, dict):
+            return None
+        api_key = token_entry.get("key", "")
+        if not api_key:
+            return None
+        result: dict = {
+            "api_key": api_key,
+            "source": "grok-auth-import",
+        }
+        refresh_token = token_entry.get("refresh_token", "")
+        if refresh_token:
+            result["refresh_token"] = refresh_token
+        expiry = token_entry.get("expires_at")
+        if expiry is not None:
+            result["expires_at"] = expiry
+        return result
+    except Exception:
+        return None
+
+
+def _verify_xai_token(token: str) -> bool:
+    """Check if an xAI Bearer token is valid via a lightweight GET /models probe."""
+    import httpx
+    try:
+        resp = httpx.get(
+            f"{XAI_INFERENCE_URL}/models",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _save_xai_coding_plan_tokens(creds: dict) -> None:
+    """Save xAI coding plan credentials to the Hermes auth store.
+
+    Follows the _save_codex_tokens pattern: stores under
+    providers.xai-coding-plan in ~/.hermes/auth.json so the
+    /model picker's auth detection can find it.
+    """
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "xai-coding-plan") or {}
+        state["access_token"] = creds.get("api_key", "")
+        state["refresh_token"] = creds.get("refresh_token", "")
+        state["expires_at"] = creds.get("expires_at", "")
+        state["source"] = creds.get("source", "grok-auth")
+        state["last_refresh"] = now
+        state["base_url"] = XAI_INFERENCE_URL
+        _save_provider_state(auth_store, "xai-coding-plan", state)
+        _save_auth_store(auth_store)
+
+
+def resolve_xai_coding_plan_credentials(
+    *,
+    force_refresh: bool = False,
+    verify: bool = False,
+) -> dict:
+    """Resolve runtime credentials for xAI Coding Plan from Hermes auth store.
+
+    Returns dict with 'api_key' and 'base_url', or raises AuthError.
+    """
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "xai-coding-plan")
+    if not state:
+        raise AuthError(
+            "No xAI Coding Plan credentials found. Run 'hermes model' to set up.",
+            provider="xai-coding-plan", code="no_credentials",
+        )
+
+    api_key = state.get("access_token", "")
+    verified: bool | None = None
+
+    if force_refresh or _is_xai_token_expiring(
+        api_key,
+        expires_at=state.get("expires_at"),
+    ):
+        # Try a re-import from ~/.grok/auth.json (grok daemon may have refreshed)
+        imported = _import_grok_auth_tokens()
+        if imported is not None:
+            fresh_key = imported.get("api_key", "")
+            verified = bool(fresh_key and _verify_xai_token(fresh_key))
+            if verified:
+                _save_xai_coding_plan_tokens(imported)
+                api_key = fresh_key
+        if not verified:
+            raise AuthError(
+                "xAI Coding Plan credentials are expired or invalid.",
+                provider="xai-coding-plan",
+                code="xai_token_expired",
+                relogin_required=True,
+            )
+
+    if verify and verified is None:
+        verified = _verify_xai_token(api_key)
+        if not verified:
+            raise AuthError(
+                "xAI Coding Plan credentials failed validation.",
+                provider="xai-coding-plan",
+                code="xai_token_invalid",
+                relogin_required=True,
+            )
+
+    return {
+        "provider": "xai-coding-plan",
+        "base_url": XAI_INFERENCE_URL,
+        "api_key": api_key,
+        "source": "hermes-auth-store",
+        "verified": verified,
+    }
+
+
+def _is_xai_token_expiring(
+    token: str,
+    *,
+    expires_at: Any = None,
+    skew_seconds: int = 120,
+) -> bool:
+    """Return True when an xAI token is expired or within the refresh skew."""
+    if not token:
+        return True
+    if expires_at:
+        return _is_expiring(expires_at, skew_seconds)
+    claims = _decode_jwt_claims(token)
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)):
+        return float(exp) <= (time.time() + max(0, int(skew_seconds)))
+    return False
+
+
+def get_xai_coding_plan_auth_status() -> dict:
+    """Return auth status dict for xAI Coding Plan.
+
+    Returns {'logged_in': True/False, 'error': str|None, ...}
+    """
+    result: dict = {"logged_in": False}
+    try:
+        creds = resolve_xai_coding_plan_credentials(verify=True)
+        if creds.get("api_key") and creds.get("verified"):
+            result["logged_in"] = True
+        else:
+            result["error"] = "No access token"
+    except AuthError as exc:
+        result["error"] = format_auth_error(exc)
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
 
 
 def logout_command(args) -> None:

@@ -97,6 +97,25 @@ class TestProviderPersistsAfterModelSave:
         assert mock_write.call_count == 1
         assert config_path.read_text(encoding="utf-8") == original_text
 
+    def test_update_config_for_provider_can_atomically_replace_model(self, config_home):
+        """OAuth model flows can persist provider/base_url/model in one write."""
+        from hermes_cli.auth import _update_config_for_provider
+
+        _update_config_for_provider(
+            "xai-coding-plan",
+            "https://api.x.ai/v1",
+            default_model="grok-build",
+            force_default_model=True,
+        )
+
+        import yaml
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model["provider"] == "xai-coding-plan"
+        assert model["base_url"] == "https://api.x.ai/v1"
+        assert model["default"] == "grok-build"
+
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when
         config.model started as a plain string."""

@@ -1938,6 +1938,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "xai-coding-plan":
+        _model_flow_xai_coding_plan(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -2909,6 +2911,84 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
+
+
+def _model_flow_xai_coding_plan(config, current_model=""):
+    """xAI Coding Plan provider: ensure logged in via grok CLI, then pick model."""
+    from hermes_cli.auth import (
+        get_xai_coding_plan_auth_status,
+        _login_xai_coding_plan,
+        _prompt_model_selection,
+        _update_config_for_provider,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_xai_coding_plan_auth_status()
+    if status.get("logged_in"):
+        print("  xAI Coding Plan credentials: \u2713")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "3"
+
+        if choice == "2":
+            print("Starting fresh xAI Coding Plan authentication...")
+            print()
+            try:
+                mock_args = argparse.Namespace()
+                _login_xai_coding_plan(
+                    mock_args,
+                    PROVIDER_REGISTRY["xai-coding-plan"],
+                    force_new_login=True,
+                )
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+            status = get_xai_coding_plan_auth_status()
+            if not status.get("logged_in"):
+                print("Login failed.")
+                return
+        elif choice == "3":
+            return
+    else:
+        print("Not logged into xAI Coding Plan. Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_xai_coding_plan(mock_args, PROVIDER_REGISTRY["xai-coding-plan"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    # Pick model from fallback list (live fetch will come once the API supports it)
+    model_ids = _PROVIDER_MODELS.get("xai-coding-plan", [])
+    if not model_ids:
+        from hermes_cli.auth import get_provider_profile
+        pp = get_provider_profile("xai-coding-plan")
+        model_ids = list(pp.fallback_models) if pp else ["grok-build"]
+
+    selected = _prompt_model_selection(model_ids, current_model)
+    if not selected:
+        return
+    _update_config_for_provider(
+        "xai-coding-plan",
+        "https://api.x.ai/v1",
+        default_model=selected,
+        force_default_model=True,
+    )
+    print(f"\u2713 Using xAI Coding Plan model: {selected}")
 
 
 def _model_flow_google_gemini_cli(_config, current_model=""):

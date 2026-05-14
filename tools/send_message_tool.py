@@ -12,6 +12,7 @@ import os
 import re
 import ssl
 import time
+import uuid
 from email.utils import formatdate
 from typing import Dict, Optional
 
@@ -30,6 +31,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_TLON_CHANNEL_TARGET_RE = re.compile(r"^\s*((?:chat|heap|diary)/~[^/]+/.+?)(?::([^:]+))?\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -317,6 +319,13 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    if platform_name == "tlon":
+        target_ref = target_ref.strip()
+        if target_ref.startswith("~"):
+            return target_ref, None, True
+        match = _TLON_CHANNEL_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -730,6 +739,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.TLON:
+            result = await _send_tlon(pconfig.extra, chat_id, chunk, thread_id=thread_id)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1758,6 +1769,175 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _send_tlon(extra, chat_id, message, thread_id=None):
+    """Send via a Tlon ship HTTP API without requiring a live SSE adapter."""
+    try:
+        import aiohttp
+
+        from gateway.platforms.tlon import (
+            _da_from_unix,
+            _format_ud,
+            _normalize_ship,
+            _text_to_story,
+        )
+
+        ship_url = (extra or {}).get("ship_url") or os.getenv("TLON_SHIP_URL", "")
+        ship_name = (extra or {}).get("ship_name") or os.getenv("TLON_SHIP_NAME", "")
+        ship_code = os.getenv("TLON_SHIP_CODE", "")
+        if not all([ship_url, ship_name, ship_code]):
+            return _error("Tlon not configured (TLON_SHIP_URL/NAME/CODE required)")
+
+        ship_url = ship_url.rstrip("/")
+        ship_name = _normalize_ship(ship_name)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{ship_url}/~/login",
+                data={"password": ship_code},
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status not in (200, 204, 302, 303, 307):
+                    return _error(f"Tlon auth failed: HTTP {resp.status}")
+                cookie = resp.headers.get("set-cookie", "")
+                if not cookie:
+                    for c in session.cookie_jar:
+                        if c.key.startswith("urbauth"):
+                            cookie = f"{c.key}={c.value}"
+                            break
+                if not cookie:
+                    return _error("Tlon auth failed: no urbauth cookie received")
+
+            channel_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
+            channel_url = f"{ship_url}/~/channel/{channel_id}"
+            sent_at = int(time.time() * 1000)
+            story = _text_to_story(message)
+            bare_ship = ship_name.lstrip("~")
+            author = ship_name
+            writ_id = f"{author}/{_da_from_unix(sent_at)}"
+            essay = {
+                "content": story,
+                "author": author,
+                "sent": sent_at,
+                "kind": "/chat",
+                "meta": None,
+                "blob": None,
+            }
+            if thread_id:
+                bare_thread_id = str(thread_id).replace(".", "")
+                if bare_thread_id.isdigit():
+                    thread_id = _format_ud(int(bare_thread_id))
+
+            if str(chat_id).startswith("~"):
+                if thread_id:
+                    dm_diff = {
+                        "id": thread_id,
+                        "delta": {
+                            "reply": {
+                                "id": writ_id,
+                                "meta": None,
+                                "delta": {
+                                    "add": {
+                                        "memo": {
+                                            "content": story,
+                                            "author": author,
+                                            "sent": sent_at,
+                                        },
+                                        "time": None,
+                                    }
+                                },
+                            }
+                        },
+                    }
+                else:
+                    dm_diff = {
+                        "id": writ_id,
+                        "delta": {"add": {"essay": essay, "time": None}},
+                    }
+                app = "chat"
+                mark = os.getenv("TLON_DM_ACTION_MARK", "chat-dm-action-1")
+                poke_json = {
+                    "ship": _normalize_ship(str(chat_id)),
+                    "diff": dm_diff,
+                }
+            else:
+                if thread_id:
+                    post_action = {
+                        "reply": {
+                            "id": thread_id,
+                            "action": {
+                                "add": {
+                                    "content": story,
+                                    "author": author,
+                                    "sent": sent_at,
+                                }
+                            },
+                        }
+                    }
+                else:
+                    post_action = {
+                        "add": {
+                            "content": story,
+                            "author": author,
+                            "sent": sent_at,
+                            "kind": (
+                                "/diary" if str(chat_id).startswith("diary/")
+                                else "/heap" if str(chat_id).startswith("heap/")
+                                else "/chat"
+                            ),
+                            "meta": None,
+                            "blob": None,
+                        }
+                    }
+                app = "channels"
+                mark = os.getenv("TLON_CHANNEL_ACTION_MARK", "channel-action-1")
+                poke_json = {
+                    "channel": {
+                        "nest": chat_id,
+                        "action": {"post": post_action},
+                    }
+                }
+
+            headers = {"Content-Type": "application/json", "Cookie": cookie}
+            async with session.put(
+                channel_url,
+                json=[{
+                    "id": 1,
+                    "action": "poke",
+                    "ship": bare_ship,
+                    "app": app,
+                    "mark": mark,
+                    "json": poke_json,
+                }],
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status not in (200, 204):
+                    text = await resp.text()
+                    return _error(f"Tlon send failed: HTTP {resp.status} - {text[:200]}")
+
+            try:
+                async with session.delete(
+                    channel_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ):
+                    pass
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "platform": "tlon",
+                "chat_id": chat_id,
+                "message_id": f"{ship_name}/{sent_at}",
+            }
+    except ImportError:
+        return _error("aiohttp not installed. Run: pip install aiohttp")
+    except Exception as e:
+        return _error(f"Tlon send error: {e}")
 
 
 def _check_send_message():

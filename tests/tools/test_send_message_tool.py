@@ -844,6 +844,34 @@ class TestParseTargetRefDiscord:
         assert is_explicit is True
 
 
+class TestParseTargetRefTlon:
+    """_parse_target_ref handles Tlon ships, channels, and thread replies."""
+
+    def test_tlon_ship_dm_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("tlon", "~zod")
+        assert chat_id == "~zod"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_tlon_channel_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("tlon", "chat/~zod/general")
+        assert chat_id == "chat/~zod/general"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_tlon_channel_thread_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "tlon",
+            "chat/~zod/general:170.141.184",
+        )
+        assert chat_id == "chat/~zod/general"
+        assert thread_id == "170.141.184"
+        assert is_explicit is True
+
+    def test_tlon_invalid_target_requires_directory_resolution(self):
+        assert _parse_target_ref("tlon", "general")[2] is False
+
+
 class TestParseTargetRefMatrix:
     """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
 

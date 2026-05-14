@@ -3349,6 +3349,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "TLON_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -3364,6 +3365,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "TLON_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -5377,6 +5379,13 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.TLON:
+            from gateway.platforms.tlon import TlonAdapter, check_tlon_requirements
+            if not check_tlon_requirements():
+                logger.warning("Tlon: aiohttp not installed or TLON_SHIP_URL/NAME/CODE not set")
+                return None
+            return TlonAdapter(config)
+
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -5419,6 +5428,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.TLON: "TLON_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -5445,6 +5455,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.TLON: "TLON_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -5630,6 +5641,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.TLON:     "TLON_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -12446,6 +12458,7 @@ class GatewayRunner:
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.TLON,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:

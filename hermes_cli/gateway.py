@@ -3648,6 +3648,33 @@ _PLATFORMS = [
              "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
         ],
     },
+    {
+        "key": "tlon",
+        "label": "Tlon",
+        "emoji": "◆",
+        "token_var": "TLON_SHIP_URL",
+        "setup_instructions": [
+            "1. Create or choose a Tlon ship for Hermes.",
+            "2. Copy the ship URL, ship name, and +code.",
+            "3. Set TLON_AUTO_DISCOVER=true to monitor joined group channels.",
+            "4. Add owner/allowed ships so DMs can reach Hermes.",
+        ],
+        "vars": [
+            {"name": "TLON_SHIP_URL", "prompt": "Ship URL (e.g. https://sampel-palnet.tlon.network)", "password": False,
+             "help": "Base URL for the Tlon ship."},
+            {"name": "TLON_SHIP_NAME", "prompt": "Ship name (e.g. ~sampel-palnet)", "password": False,
+             "help": "The patp of the Hermes ship."},
+            {"name": "TLON_SHIP_CODE", "prompt": "Ship +code", "password": True,
+             "help": "Login code for the Hermes ship."},
+            {"name": "TLON_OWNER_SHIP", "prompt": "Owner ship (e.g. ~zod)", "password": False,
+             "help": "Ship that receives approval requests and can run owner commands."},
+            {"name": "TLON_ALLOWED_USERS", "prompt": "Allowed ships (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Ships allowed to interact with Hermes."},
+            {"name": "TLON_HOME_CHANNEL", "prompt": "Home channel/DM for cron delivery (or empty)", "password": False,
+             "help": "A channel nest like chat/~host/channel, or a ship like ~zod."},
+        ],
+    },
 ]
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.

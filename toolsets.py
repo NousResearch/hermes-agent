@@ -515,6 +515,24 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-tlon": {
+        "description": "Tlon bot toolset - decentralized Urbit messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-tlon-safe": {
+        "description": "Tlon bot safe toolset - chat, web, memory, and messaging without local code execution",
+        "tools": [
+            "web_search", "web_extract",
+            "vision_analyze", "image_generate",
+            "skills_list", "skill_view",
+            "todo", "memory", "session_search", "clarify",
+            "text_to_speech", "send_message",
+        ],
+        "includes": []
+    },
+
     "hermes-sms": {
         "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
         "tools": _HERMES_CORE_TOOLS,
@@ -530,7 +548,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao", "hermes-tlon"]
     }
 }
 

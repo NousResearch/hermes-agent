@@ -89,6 +89,8 @@ AUTHOR_MAP = {
     "axmaiqiu@gmail.com": "qWaitCrypto",
     "44045911+kidonng@users.noreply.github.com": "kidonng",
     "44045943+ayushere@users.noreply.github.com": "ayushere",
+    "ayushere@users.noreply.github.com": "ayushere",
+    "44045943+ayushere@users.noreply.github.com": "ayushere",
     "daniellsmarta@gmail.com": "DanielLSM",
     "264291321+v1b3coder@users.noreply.github.com": "v1b3coder",
     "silverchris@foxmail.com": "ming1523",

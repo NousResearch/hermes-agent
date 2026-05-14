@@ -496,6 +496,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    execution_policy: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -574,6 +575,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_execution_policy = dict(execution_policy) if isinstance(execution_policy, dict) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -627,6 +629,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "execution_policy": normalized_execution_policy,
+        "last_policy_audit_events": [],
     }
 
     jobs = load_jobs()
@@ -766,7 +770,9 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 policy_audit_events: Optional[List[Dict[str, Any]]] = None,
+                 agent_run_trace: Optional[Dict[str, Any]] = None):
     """
     Mark a job as having been run.
     
@@ -786,6 +792,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                job["last_policy_audit_events"] = list(policy_audit_events or [])
+                job["last_agent_run_trace"] = dict(agent_run_trace or {})
                 
                 # Increment completed count
                 if job.get("repeat"):

@@ -27,6 +27,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.execution_policy import block_result as execution_policy_block_result, decide_tool_call
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -703,6 +704,8 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    execution_policy: Optional[Dict[str, Any]] = None,
+    policy_audit_events: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -726,6 +729,17 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        if execution_policy is not None:
+            decision = decide_tool_call(
+                execution_policy,
+                function_name,
+                toolset=registry.get_toolset_for_tool(function_name),
+            )
+            if decision.action in {"audit", "block"} and policy_audit_events is not None:
+                policy_audit_events.append(decision.to_audit_event())
+            if not decision.allows_execution:
+                return json.dumps(execution_policy_block_result(decision), ensure_ascii=False)
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

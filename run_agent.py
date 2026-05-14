@@ -185,7 +185,15 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
 )
+from agent.execution_policy import (
+    ExecutionPolicyDecision,
+    block_result as execution_policy_block_result,
+    decide_tool_call,
+    default_execution_policy,
+    normalize_execution_policy,
+)
 from agent.trajectory import (
+    build_agent_run_trace,
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
@@ -1184,6 +1192,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        execution_policy: Dict[str, Any] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1390,6 +1399,11 @@ class AIAgent:
         self._executing_tools = False
         self._tool_guardrails = ToolCallGuardrailController()
         self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+        self.execution_policy = normalize_execution_policy(
+            execution_policy, source=platform or "interactive"
+        )
+        self.policy_audit_events: list[dict[str, Any]] = []
+        self.policy_terminated = False
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
@@ -10606,15 +10620,38 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _authorize_tool_call(self, function_name: str) -> ExecutionPolicyDecision:
+        """Apply the run's execution policy before any tool side effect."""
+        toolset = None
+        try:
+            toolset = get_toolset_for_tool(function_name)
+        except Exception:
+            toolset = None
+        decision = decide_tool_call(self.execution_policy, function_name, toolset=toolset)
+        if decision.action in {"audit", "block"}:
+            self.policy_audit_events.append(decision.to_audit_event())
+        if not decision.allows_execution:
+            self.policy_terminated = True
+        return decision
+
+    def _execution_policy_block_result(self, decision: ExecutionPolicyDecision) -> str:
+        return json.dumps(execution_policy_block_result(decision), ensure_ascii=False)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
-                     pre_tool_block_checked: bool = False) -> str:
+                     pre_tool_block_checked: bool = False,
+                     pre_policy_checked: bool = False) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        if not pre_policy_checked:
+            policy_decision = self._authorize_tool_call(function_name)
+            if not policy_decision.allows_execution:
+                return self._execution_policy_block_result(policy_decision)
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         if not pre_tool_block_checked:
@@ -10691,6 +10728,7 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+
             )
 
     @staticmethod
@@ -10781,6 +10819,10 @@ class AIAgent:
 
             block_result = None
             blocked_by_guardrail = False
+            policy_decision = self._authorize_tool_call(function_name)
+            if not policy_decision.allows_execution:
+                block_result = self._execution_policy_block_result(policy_decision)
+
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
@@ -10789,13 +10831,14 @@ class AIAgent:
             except Exception:
                 block_message = None
 
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-            else:
-                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = self._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
+            if block_result is None:
+                if block_message is not None:
+                    block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+                else:
+                    guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
+                    if not guardrail_decision.allows_execution:
+                        block_result = self._guardrail_block_result(guardrail_decision)
+                        blocked_by_guardrail = True
 
             parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -10898,6 +10941,7 @@ class AIAgent:
                     tool_call.id,
                     messages=messages,
                     pre_tool_block_checked=True,
+                    pre_policy_checked=True,
                 )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
@@ -11161,6 +11205,8 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
 
+            _policy_block_decision = self._authorize_tool_call(function_name)
+
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None
             try:
@@ -11172,12 +11218,12 @@ class AIAgent:
                 pass
 
             _guardrail_block_decision: ToolGuardrailDecision | None = None
-            if _block_msg is None:
+            if _policy_block_decision.allows_execution and _block_msg is None:
                 guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     _guardrail_block_decision = guardrail_decision
 
-            _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+            _execution_blocked = (not _policy_block_decision.allows_execution) or _block_msg is not None or _guardrail_block_decision is not None
 
             if _execution_blocked:
                 # Tool blocked by plugin or guardrail policy — skip counters,
@@ -11251,7 +11297,11 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if _block_msg is not None:
+            if not _policy_block_decision.allows_execution:
+                # Tool blocked by execution policy — return error without executing.
+                function_result = self._execution_policy_block_result(_policy_block_decision)
+                tool_duration = 0.0
+            elif _block_msg is not None:
                 # Tool blocked by plugin policy — return error without executing.
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
@@ -11872,6 +11922,7 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        run_trace_started_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         # Expose the active task_id so tools running mid-turn (e.g. delegate_task
         # in delegate_tool.py) can identify this agent for the cross-agent file
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
@@ -15564,11 +15615,24 @@ class AIAgent:
                 last_reasoning = msg["reasoning"]
                 break
 
+        agent_run_trace = build_agent_run_trace(
+            messages=messages,
+            run_id=effective_task_id,
+            started_at=run_trace_started_at,
+            ended_at=datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            origin=getattr(self, "platform", None) or "unknown",
+            task_summary=_summarize_user_message_for_log(original_user_message),
+            completed=completed,
+            interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
+        )
+
         # Build result with interrupt info if applicable
         result = {
             "final_response": final_response,
             "last_reasoning": last_reasoning,
             "messages": messages,
+            "agent_run_trace": agent_run_trace,
             "api_calls": api_call_count,
             "completed": completed,
             "turn_exit_reason": _turn_exit_reason,
@@ -15590,6 +15654,8 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "policy_audit_events": list(self.policy_audit_events),
+            "policy_terminated": bool(self.policy_terminated),
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()

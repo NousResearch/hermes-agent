@@ -390,6 +390,22 @@ class TestMarkJobRun:
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
+    def test_agent_run_trace_recorded(self, tmp_cron_dir):
+        """Cron job metadata keeps the latest compact agent trace for review."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        trace = {
+            "schema_version": "agent_run_trace.v1",
+            "run_id": "cron_report_20260514",
+            "origin": "cron",
+            "risk_level": "medium",
+            "verifier_detected": True,
+        }
+
+        mark_job_run(job["id"], success=True, agent_run_trace=trace)
+
+        updated = get_job(job["id"])
+        assert updated["last_agent_run_trace"] == trace
+
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.
 

@@ -1,8 +1,8 @@
 name: dreaming
 version: 1.0.0
-description: "Dreaming — automatic background memory consolidation. Reviews recent conversations, scores memories by importance, and promotes the best into long-term memory (MEMORY.md). Inspired by biological sleep cycles: Light (sort/stage), REM (reflect/patterns), Deep (promote to MEMORY.md)."
+description: "Dreaming — automatic background memory consolidation. Reviews recent conversations during quiet hours, scores memories by importance, and promotes the best into long-term memory (MEMORY.md). Three phases: Light (sort/stage), REM (reflect/patterns), Deep (promote). Opt-in, disabled by default."
+author: "@Minamaged18"
 hooks:
-  - on_gateway_start
-  - on_gateway_stop
+  - on_session_end
 cli:
   - dream

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hermes ↔ Notion Task Board sync every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=hermes-notion-kanban-sync.service
+
+[Install]
+WantedBy=timers.target

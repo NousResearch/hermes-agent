@@ -2478,6 +2478,15 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Drawer collapse — when true, the modal shade + body disappear and a
+    // thin right-edge handle takes their place so the user can keep the
+    // task "pinned" while still reading the board behind it. Click the
+    // handle (or the chevron in the head) to restore. Reset every time
+    // the drawer is opened for a different task so the user always gets
+    // the full UI for a fresh open. Persisting across reloads would be
+    // surprising — leave it ephemeral.
+    const [collapsed, setCollapsed] = useState(false);
+    useEffect(function () { setCollapsed(false); }, [props.taskId]);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -2627,6 +2636,40 @@
         });
     };
 
+    // Collapsed view: a thin vertical handle pinned to the right edge.
+    // The shade is omitted so clicks on the board pass through. Click the
+    // handle anywhere to restore the full drawer; click ✕ inside the handle
+    // to close entirely (same as Escape in the expanded view).
+    if (collapsed) {
+      const previewTitle = (data && data.task && data.task.title) || props.taskId;
+      return h("div", {
+        className: "hermes-kanban-drawer-handle",
+        role: "button",
+        tabIndex: 0,
+        title: tx(t, "drawerExpandHint", "Expand task drawer"),
+        onClick: function () { setCollapsed(false); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setCollapsed(false);
+          }
+        },
+      },
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-drawer-handle-close",
+          title: tx(t, "close", "Close (Esc)"),
+          "aria-label": tx(t, "close", "Close (Esc)"),
+          onClick: function (e) { e.stopPropagation(); props.onClose(); },
+        }, "×"),
+        h("span", {
+          className: "hermes-kanban-drawer-handle-chevron",
+          "aria-hidden": "true",
+        }, "‹"),
+        h("span", { className: "hermes-kanban-drawer-handle-title" }, previewTitle),
+      );
+    }
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -2634,6 +2677,14 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
+          h("button", {
+            type: "button",
+            onClick: function () { setCollapsed(true); },
+            className: "hermes-kanban-drawer-collapse",
+            title: tx(t, "drawerCollapseHint",
+                      "Collapse to right edge — keep this task pinned while reading the board"),
+            "aria-label": tx(t, "drawerCollapseAria", "Collapse drawer"),
+          }, "›"),
           h("button", {
             type: "button",
             onClick: props.onClose,

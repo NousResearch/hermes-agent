@@ -345,7 +345,8 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-.hermes-kanban-drawer-close {
+.hermes-kanban-drawer-close,
+.hermes-kanban-drawer-collapse {
   appearance: none;
   background: transparent;
   border: 0;
@@ -355,7 +356,92 @@
   cursor: pointer;
   padding: 0 0.25rem;
 }
-.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+.hermes-kanban-drawer-close:hover,
+.hermes-kanban-drawer-collapse:hover { color: var(--color-foreground); }
+
+/* Drawer head right-side button cluster. Without explicit grouping the
+ * close-button is space-between'd against the task id, leaving the
+ * collapse button awkwardly mid-row; group them so both sit at the right. */
+.hermes-kanban-drawer-head .hermes-kanban-drawer-collapse {
+  margin-left: auto;
+}
+
+/* Collapsed-state handle — slim vertical strip pinned to the right edge
+ * of the viewport. Acts as the restore affordance when the user has
+ * dismissed the modal shade in favor of keeping the task pinned. */
+.hermes-kanban-drawer-handle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.35rem;
+  width: 1.75rem;
+  max-height: 60vh;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-right: 0;
+  border-top-left-radius: var(--radius, 0.5rem);
+  border-bottom-left-radius: var(--radius, 0.5rem);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.25);
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+  animation: hermes-kanban-drawer-handle-in 160ms ease-out;
+}
+.hermes-kanban-drawer-handle:hover {
+  background: color-mix(in srgb, var(--color-card) 80%, var(--color-foreground) 20%);
+  color: var(--color-foreground);
+  transform: translateY(-50%) translateX(-2px);
+}
+.hermes-kanban-drawer-handle:focus-visible {
+  outline: 2px solid var(--color-ring, currentColor);
+  outline-offset: 2px;
+}
+
+@keyframes hermes-kanban-drawer-handle-in {
+  from { transform: translate(100%, -50%); opacity: 0; }
+  to   { transform: translate(0,    -50%); opacity: 1; }
+}
+
+.hermes-kanban-drawer-handle-close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.5;
+}
+.hermes-kanban-drawer-handle-close:hover { opacity: 1; }
+
+.hermes-kanban-drawer-handle-chevron {
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+/* The task title runs vertically inside the strip — limited height so it
+ * truncates rather than blowing past the strip's max-height bound. */
+.hermes-kanban-drawer-handle-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  font-size: 0.72rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 40vh;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
 
 .hermes-kanban-drawer-body {
   flex: 1;

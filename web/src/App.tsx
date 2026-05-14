@@ -18,6 +18,8 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Code,
   Cpu,
@@ -312,6 +314,31 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+
+  // Desktop sidebar collapse — independent of the mobile slide-in. When
+  // collapsed, only icons are shown (width ~14 vs ~64 in expanded mode),
+  // matching the Mission Control nav-rail UX. Persisted to localStorage
+  // so the preference survives reloads. Mobile (<lg) ignores this — the
+  // mobile UI is always the slide-in pattern.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("hermes.dashboard.sidebarCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((cur) => {
+      const next = !cur;
+      try {
+        if (next) window.localStorage.setItem("hermes.dashboard.sidebarCollapsed", "1");
+        else window.localStorage.removeItem("hermes.dashboard.sidebarCollapsed");
+      } catch {
+        /* ignore quota / private mode */
+      }
+      return next;
+    });
+  }, []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
@@ -474,11 +501,18 @@ export default function App() {
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            data-collapsed={sidebarCollapsed ? "true" : "false"}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh min-h-0 flex-col",
+              // Mobile: always 16rem (w-64) so the slide-in is readable.
+              // Desktop: width switches between 14 (icons-only) and 64
+              // based on the collapsed preference. Transition is on
+              // width + transform so both gestures animate smoothly.
+              "w-64",
+              sidebarCollapsed ? "lg:w-14" : "lg:w-64",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-transform duration-200 ease-out",
+              "transition-[transform,width] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
             )}
@@ -491,10 +525,19 @@ export default function App() {
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
+                sidebarCollapsed && "lg:px-2",
                 "border-b border-current/20",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div
+                className={cn(
+                  "flex items-center gap-2 min-w-0",
+                  // When collapsed (desktop) hide the brand text so the
+                  // 14-rem rail isn't crammed. The PluginSlot still
+                  // renders — if a plugin injects a logo it stays.
+                  sidebarCollapsed && "lg:hidden",
+                )}
+              >
                 <PluginSlot name="header-left" />
 
                 <Typography
@@ -506,6 +549,30 @@ export default function App() {
                   Agent
                 </Typography>
               </div>
+
+              {/* Desktop collapse/expand toggle. ChevronLeft when expanded
+                  (clicking collapses the sidebar); ChevronRight when collapsed.
+                  Hidden on mobile because the mobile UI uses the slide-in
+                  pattern instead. Labels are intentionally hardcoded — adding
+                  two more i18n keys across 17 locales for an icon-only button
+                  with tooltip felt out of proportion; revisit if a localized
+                  release needs them. */}
+              <Button
+                ghost
+                size="icon"
+                onClick={toggleSidebarCollapsed}
+                aria-label={
+                  sidebarCollapsed ? "Expand navigation" : "Collapse navigation"
+                }
+                aria-expanded={!sidebarCollapsed}
+                aria-controls="app-sidebar"
+                title={
+                  sidebarCollapsed ? "Expand navigation" : "Collapse navigation"
+                }
+                className="hidden lg:inline-flex text-midground/60 hover:text-midground"
+              >
+                {sidebarCollapsed ? <ChevronRight /> : <ChevronLeft />}
+              </Button>
 
               <Button
                 ghost
@@ -526,6 +593,7 @@ export default function App() {
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
+                    collapsed={sidebarCollapsed}
                     item={item}
                     key={item.path}
                     t={t}
@@ -539,10 +607,15 @@ export default function App() {
                   className="flex flex-col border-t border-current/10 pb-2"
                   role="group"
                 >
+                  {/* Plugin section heading reads ambiguously in collapsed
+                      mode (would just be 'P...' clipped). Hide it on
+                      desktop-collapsed; the border-top above still divides
+                      core vs plugin nav, so the structure stays legible. */}
                   <span
                     className={cn(
                       "px-5 pt-2.5 pb-1",
                       "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                      sidebarCollapsed && "lg:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -553,6 +626,7 @@ export default function App() {
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
                         closeMobile={closeMobile}
+                        collapsed={sidebarCollapsed}
                         item={item}
                         key={item.path}
                         t={t}
@@ -563,13 +637,23 @@ export default function App() {
               )}
             </nav>
 
-            <SidebarSystemActions onNavigate={closeMobile} />
+            {/* System actions hide on desktop-collapsed because the panel
+                shows labelled list items and a status strip that don't fit
+                in a 14-rem rail. Same trade-off as MC's nav-rail: expand
+                to use system actions / change theme. */}
+            <div className={cn(sidebarCollapsed && "lg:hidden")}>
+              <SidebarSystemActions onNavigate={closeMobile} />
+            </div>
 
+            {/* Theme/language footer hides on desktop-collapsed because
+                those widgets need horizontal room their dropdowns assume.
+                Mobile and expanded-desktop both show it normally. */}
             <div
               className={cn(
                 "flex shrink-0 items-center justify-between gap-2",
                 "px-3 py-2",
                 "border-t border-current/20",
+                sidebarCollapsed && "lg:hidden",
               )}
             >
               <div className="flex min-w-0 items-center gap-2">
@@ -579,7 +663,11 @@ export default function App() {
               </div>
             </div>
 
-            <SidebarFooter />
+            {/* Version + org footer would overflow the 14-rem rail in
+                collapsed mode; hide it there. Same MC pattern. */}
+            <div className={cn(sidebarCollapsed && "lg:hidden")}>
+              <SidebarFooter />
+            </div>
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
@@ -652,7 +740,7 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+function SidebarNavLink({ closeMobile, item, t, collapsed }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
 
   const navLabel = labelKey
@@ -665,10 +753,17 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
+        // When collapsed (desktop), use the label as a native tooltip so
+        // users can still tell icons apart without expanding the sidebar.
+        // Mobile (<lg) always shows the full label so no title is needed.
+        title={collapsed ? navLabel : undefined}
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
-            "px-5 py-2.5",
+            "py-2.5",
+            // Padding shrinks in collapsed mode so the icon sits centered
+            // in the 14-rem rail rather than being pinned to the left edge.
+            collapsed ? "lg:px-0 lg:justify-center px-5" : "px-5",
             "font-mondwest text-[0.8rem] tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -682,7 +777,16 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         {({ isActive }) => (
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{navLabel}</span>
+            <span
+              className={cn(
+                "truncate",
+                // Hide labels only on desktop when collapsed. Mobile slide-in
+                // keeps labels regardless of the desktop-collapsed pref.
+                collapsed && "lg:hidden",
+              )}
+            >
+              {navLabel}
+            </span>
 
             <span
               aria-hidden
@@ -825,6 +929,8 @@ interface SidebarNavLinkProps {
   closeMobile: () => void;
   item: NavItem;
   t: Translations;
+  /** When true, render icon-only (desktop collapsed sidebar mode). */
+  collapsed?: boolean;
 }
 
 interface SystemActionItem {

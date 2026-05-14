@@ -564,11 +564,14 @@ def _matching_task_ids_for_code(recent: list[dict[str, Any]], code: str) -> list
         return []
     bridge_prefix = f"HERMES-BRIDGE-{code}"
     matches = [
-        str(task.get("task_id") or "")
+        task
         for task in recent
         if str(task.get("title") or "").upper().startswith((code, bridge_prefix))
     ]
-    return [task_id for task_id in matches if task_id]
+    active_matches = [task for task in matches if task.get("status") != "refused"]
+    if active_matches:
+        matches = active_matches
+    return [str(task.get("task_id") or "") for task in matches if task.get("task_id")]
 
 
 def _resolve_unique_code_candidates(

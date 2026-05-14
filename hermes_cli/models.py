@@ -1516,7 +1516,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     if normalized == "ai-gateway":
         return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
-        return _fetch_novita_pricing()
+        return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1533,19 +1533,31 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     return {}
 
 
-def _fetch_novita_pricing(timeout: float = 8.0) -> dict[str, dict[str, str]]:
+def _fetch_novita_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
     """Fetch pricing from NovitaAI /v1/models.
 
     NovitaAI returns input/output prices per million tokens in units of
     0.0001 USD. Convert them to the per-token strings used by the shared
     pricing formatter.
+
+    Results are cached in ``_pricing_cache`` keyed on the resolved base URL,
+    matching the pattern used by ``fetch_ai_gateway_pricing`` — without this,
+    every menu render or pricing lookup re-hits the network.
     """
     api_key = os.getenv("NOVITA_API_KEY", "").strip()
     if not api_key:
         return {}
 
     base_url = os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1"
-    url = base_url.rstrip("/") + "/models"
+    cache_key = base_url.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    url = cache_key + "/models"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json",
@@ -1557,6 +1569,7 @@ def _fetch_novita_pricing(timeout: float = 8.0) -> dict[str, dict[str, str]]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
+        _pricing_cache[cache_key] = {}
         return {}
 
     result: dict[str, dict[str, str]] = {}
@@ -1574,6 +1587,8 @@ def _fetch_novita_pricing(timeout: float = 8.0) -> dict[str, dict[str, str]]:
             "prompt": str(float(inp or 0) / 10_000 / 1_000_000),
             "completion": str(float(out or 0) / 10_000 / 1_000_000),
         }
+
+    _pricing_cache[cache_key] = result
     return result
 
 

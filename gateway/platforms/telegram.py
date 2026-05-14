@@ -4443,6 +4443,16 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 
+    def _effective_update_message(self, update: Update) -> Optional[Message]:
+        """Return the message-like payload for normal messages and channel posts.
+
+        Telegram exposes channel broadcasts as ``update.channel_post`` rather
+        than ``update.message``.  MessageHandler filters can still dispatch
+        those updates, so handlers must use ``effective_message`` to avoid
+        consuming channel posts without ever building a gateway event.
+        """
+        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4450,35 +4460,37 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
         await self._ensure_forum_commands(update.message)
 
-        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message, is_command=True):
+        if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(update.message)
         
-        event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
-        if not update.message:
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
 
-        msg = update.message
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
 
@@ -5116,11 +5128,14 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Normalize through ``str`` so tests/mocks and
+        # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
+        # string-like, but mocks often provide plain strings).
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif telegram_chat_type == "channel":
             chat_type = "channel"
 
         # Resolve Telegram topic name and skill binding.
@@ -5181,8 +5196,20 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_id=(
+                str(user.id)
+                if user
+                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+            ),
+            user_name=(
+                user.full_name
+                if user
+                else (
+                    chat.full_name
+                    if hasattr(chat, "full_name") and chat_type == "dm"
+                    else (chat.title if chat_type == "channel" else None)
+                )
+            ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),

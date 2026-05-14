@@ -467,6 +467,24 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+def _is_xiaomi_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Xiaomi MiMo's Anthropic-compatible endpoint.
+
+    Xiaomi MiMo's ``/anthropic`` route speaks Anthropic Messages but, in
+    thinking mode, requires unsigned thinking blocks from prior assistant
+    turns to round-trip on subsequent requests — same contract as Kimi
+    ``/coding`` and DeepSeek ``/anthropic``. Without this, replay fails
+    with HTTP 400 "The reasoning_content in the thinking mode must be
+    passed back to the API."
+    """
+    if not base_url_host_matches(base_url or "", "xiaomimimo.com"):
+        return False
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return "/anthropic" in normalized.rstrip("/").lower()
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1754,6 +1772,7 @@ def convert_messages_to_anthropic(
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_xiaomi_anthropic_endpoint(base_url)
     )
 
     last_assistant_idx = None

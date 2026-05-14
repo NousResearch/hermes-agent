@@ -1426,6 +1426,10 @@ copy_config_templates() {
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi
+    # Restrict .env permissions — this file holds API keys and tokens.
+    # 0600 ensures only the file owner can read/write, matching standard
+    # practice for credential files (.netrc, .aws/credentials, .ssh/config).
+    chmod 600 "$HERMES_HOME/.env"
     configure_browser_env_from_system_browser
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)

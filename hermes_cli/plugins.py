@@ -280,6 +280,15 @@ class LoadedPlugin:
     error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class InjectedMessage:
+    """Message injected by a plugin into the active CLI session."""
+
+    content: str
+    visible: bool = True
+    preview: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -345,7 +354,13 @@ class PluginContext:
 
     # -- message injection --------------------------------------------------
 
-    def inject_message(self, content: str, role: str = "user") -> bool:
+    def inject_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        visible: bool = True,
+    ) -> bool:
         """Inject a message into the active conversation.
 
         If the agent is idle (waiting for user input), this starts a new turn.
@@ -354,7 +369,14 @@ class PluginContext:
         This enables plugins (e.g. remote control viewers, messaging bridges)
         to send messages into the conversation from external sources.
 
-        Returns True if the message was queued successfully.
+        Args:
+            content: Message content to send to the active CLI conversation.
+            role: Logical role label. Non-user roles are prefixed as before.
+            visible: If False, suppress rendering this injected message in the
+                live CLI UI.
+
+        Returns:
+            True if the message was queued successfully.
         """
         cli = self._manager._cli_ref
         if cli is None:
@@ -362,13 +384,14 @@ class PluginContext:
             return False
 
         msg = content if role == "user" else f"[{role}] {content}"
+        payload = msg if visible else InjectedMessage(content=msg, visible=False)
 
         if getattr(cli, "_agent_running", False):
             # Agent is mid-turn — interrupt with the message
-            cli._interrupt_queue.put(msg)
+            cli._interrupt_queue.put(payload)
         else:
             # Agent is idle — queue as next input
-            cli._pending_input.put(msg)
+            cli._pending_input.put(payload)
         return True
 
     # -- CLI command registration --------------------------------------------

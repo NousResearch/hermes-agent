@@ -3442,6 +3442,56 @@ class HermesCLI:
 
         return paste_ref_re.sub(_expand_ref, text)
 
+    def _is_injected_message(self, value: Any) -> bool:
+        """Return True when a queued item is the plugin injection envelope."""
+        return (
+            hasattr(value, "content")
+            and hasattr(value, "visible")
+            and getattr(getattr(value, "__class__", None), "__name__", "") == "InjectedMessage"
+        )
+
+    def _unwrap_queued_input(self, value: Any) -> tuple[Any, bool, Any]:
+        """Return queued content plus its visibility metadata."""
+        if self._is_injected_message(value):
+            content = value.content
+            visible = bool(value.visible)
+            preview = value.preview if value.preview is not None else value.content
+            return content, visible, preview
+        return value, True, value
+
+    def _combine_queued_inputs(self, items: list[Any]) -> tuple[Any, bool, str]:
+        """Combine queued interrupt messages without leaking hidden previews."""
+        contents: list[str] = []
+        visible_previews: list[str] = []
+        saw_injected = False
+
+        for item in items:
+            content, visible, preview = self._unwrap_queued_input(item)
+            contents.append(str(content))
+            if self._is_injected_message(item):
+                saw_injected = True
+            if visible:
+                visible_previews.append(str(preview))
+
+        combined_content = "\n".join(contents)
+        if not saw_injected:
+            return combined_content, True, combined_content
+
+        combined_visible = bool(visible_previews)
+        combined_preview = "\n".join(visible_previews) if visible_previews else ""
+
+        from hermes_cli.plugins import InjectedMessage
+
+        return (
+            InjectedMessage(
+                content=combined_content,
+                visible=combined_visible,
+                preview=combined_preview,
+            ),
+            combined_visible,
+            combined_preview,
+        )
+
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -10553,21 +10603,25 @@ class HermesCLI:
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            interrupt_item = None
             while agent_thread.is_alive():
                 if hasattr(self, '_interrupt_queue'):
                     try:
-                        interrupt_msg = self._interrupt_queue.get(timeout=0.1)
+                        raw_interrupt = self._interrupt_queue.get(timeout=0.1)
+                        interrupt_msg, interrupt_visible, interrupt_preview = self._unwrap_queued_input(raw_interrupt)
                         if interrupt_msg:
                             # If clarify is active, the Enter handler routes
                             # input directly; this queue shouldn't have anything.
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
-                            print("\n⚡ New message detected, interrupting...")
+                            if interrupt_visible:
+                                print("\n⚡ New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
                             self.agent.interrupt(interrupt_msg)
+                            interrupt_item = raw_interrupt
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
@@ -10719,7 +10773,7 @@ class HermesCLI:
             # so they can skip themselves when the turn was user-cancelled.
             self._last_turn_interrupted = _interrupted_this_turn
             if _interrupted_this_turn:
-                pending_message = result.get("interrupt_message") or interrupt_msg
+                pending_message = interrupt_item or result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
@@ -10823,13 +10877,15 @@ class HermesCLI:
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
+                combined, combined_visible, combined_preview = self._combine_queued_inputs(all_parts)
                 n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
-                if n > 1:
-                    print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
-                else:
-                    print(f"\n⚡ Sending after interrupt: '{preview}'")
+                preview_source = str(combined_preview)
+                preview = preview_source[:50] + ("..." if len(preview_source) > 50 else "")
+                if combined_visible:
+                    if n > 1:
+                        print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
+                    else:
+                        print(f"\n⚡ Sending after interrupt: '{preview}'")
                 self._pending_input.put(combined)
 
             # If a /steer was left over (agent finished before another tool
@@ -12960,6 +13016,7 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
+                        user_input, input_visible, input_preview = self._unwrap_queued_input(user_input)
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -13027,8 +13084,9 @@ class HermesCLI:
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
-                    print()
-                    self._print_user_message_preview(user_input)
+                    if input_visible:
+                        print()
+                        self._print_user_message_preview(input_preview)
                     
                     # Show image attachment count
                     if submit_images:

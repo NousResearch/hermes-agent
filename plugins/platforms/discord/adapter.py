@@ -50,7 +50,17 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.discord_thread_rename import (
+    load_config_from_env as _load_auto_rename_config,
+    maybe_auto_rename_thread,
+    strip_discord_mentions as _strip_discord_mentions,
+)
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    PendingMessageStore,
+    RenamedThreadsTracker,
+    ThreadParticipationTracker,
+)
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -626,6 +636,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Auto-rename Hermes-owned threads with a short conversation-style
+        # title after the first assistant response.  Persistent JSON stores
+        # survive gateway restarts so the state isn't lost on crash/recycle.
+        self._auto_rename_cfg = _load_auto_rename_config()
+        self._renamed_threads = RenamedThreadsTracker("discord")
+        self._pending_user_msgs = PendingMessageStore("discord")
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1510,6 +1526,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
 
+            # Hermes-owned thread? Schedule a one-shot auto-rename in the
+            # background so the user-facing reply isn't blocked on the
+            # auxiliary LLM round-trip or Discord PATCH.
+            thread_cls = getattr(discord, "Thread", None) if discord is not None else None
+            if (
+                self._auto_rename_cfg.enabled
+                and message_ids
+                and thread_cls is not None
+                and isinstance(channel, thread_cls)
+            ):
+                self._schedule_thread_auto_rename(channel, content)
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -1519,6 +1547,46 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    def _schedule_thread_auto_rename(self, thread: Any, assistant_response: str) -> None:
+        """Fire-and-forget: rename ``thread`` based on the captured user prompt.
+
+        Pops the pending user message from the persistent store so a
+        second send into the same thread doesn't re-trigger a rename
+        mid-conversation; the ``RenamedThreadsTracker`` is the persistent
+        guard against duplicate renames across restarts.
+        """
+        thread_id = str(getattr(thread, "id", "") or "")
+        if not thread_id:
+            return
+        if thread_id in self._renamed_threads:
+            return
+        if thread_id not in self._threads:
+            return
+        user_message = self._pending_user_msgs.pop(thread_id)
+        if not user_message:
+            return
+
+        cfg = self._auto_rename_cfg
+        renamed_tracker = self._renamed_threads
+
+        async def _runner():
+            await maybe_auto_rename_thread(
+                thread,
+                user_message,
+                assistant_response,
+                cfg,
+                is_renamed=lambda: thread_id in renamed_tracker,
+                on_renamed=lambda _title: renamed_tracker.mark(thread_id),
+            )
+
+        try:
+            asyncio.create_task(_runner())
+        except RuntimeError:
+            # No running loop (rare: send() called outside the bot loop —
+            # e.g. in unit tests).  Silently skip — auto-rename is
+            # non-essential.
+            logger.debug("[%s] No event loop available to auto-rename %s", self.name, thread_id)
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -4170,7 +4238,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_name = thread_name[:77] + "..."
 
         try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=4320)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -4179,7 +4247,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
                 thread = await seed_msg.create_thread(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=4320,
                     reason=reason,
                 )
                 return thread
@@ -5086,6 +5154,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # follow-up messages in threads it has already engaged in.
         if thread_id:
             self._threads.mark(thread_id)
+
+        # Capture the user prompt for auto-rename: strip Discord mentions
+        # (same normalization used in _auto_create_thread) so the stored
+        # prompt matches the seeded thread name.
+        if thread_id and self._auto_rename_cfg.enabled:
+            cleaned = _strip_discord_mentions(normalized_content)
+            if cleaned:
+                self._pending_user_msgs.store(thread_id, cleaned)
 
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the Discord client.

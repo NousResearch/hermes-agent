@@ -262,6 +262,134 @@ class ThreadParticipationTracker:
         self._threads.clear()
 
 
+# ─── Discord Thread Rename Tracking (persistent stores) ──────────────────────
+
+
+class RenamedThreadsTracker:
+    """Persistent JSON store for thread IDs that have already been auto-renamed.
+
+    Survives gateway restarts so a thread is never renamed twice, even
+    if the process is recycled between the rename and a follow-up message.
+
+    Usage::
+
+        self._renamed_threads = RenamedThreadsTracker("discord")
+        if thread_id in self._renamed_threads:
+            return  # already renamed
+        self._renamed_threads.mark(thread_id)
+    """
+
+    _MAX_TRACKED = 1000
+
+    def __init__(self, platform_name: str, max_tracked: int = 1000):
+        self._platform = platform_name
+        self._max_tracked = max_tracked
+        self._renamed: dict[str, None] = {
+            str(tid): None for tid in self._load()
+        }
+
+    def _state_path(self) -> Path:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / f"{self._platform}_renamed_threads.json"
+
+    def _load(self) -> list[str]:
+        path = self._state_path()
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(thread_id) for thread_id in data]
+            except Exception:
+                pass
+        return []
+
+    def _save(self) -> None:
+        path = self._state_path()
+        thread_list = list(self._renamed)
+        if len(thread_list) > self._max_tracked:
+            thread_list = thread_list[-self._max_tracked:]
+            self._renamed = dict.fromkeys(thread_list)
+        atomic_json_write(path, thread_list, indent=None)
+
+    def mark(self, thread_id: str) -> None:
+        """Mark *thread_id* as renamed and persist."""
+        if thread_id not in self._renamed:
+            self._renamed[thread_id] = None
+            self._save()
+
+    def __contains__(self, thread_id: str) -> bool:
+        return thread_id in self._renamed
+
+    def clear(self) -> None:
+        self._renamed.clear()
+
+
+class PendingMessageStore:
+    """Persistent JSON store for pending user messages per thread.
+
+    The Discord adapter captures the raw user prompt when it receives a
+    message in a thread, and consumes it when sending the first assistant
+    response to generate a title.  This store survives restarts so a
+    prompt captured before a crash isn't lost.
+
+    Usage::
+
+        self._pending_msgs = PendingMessageStore("discord")
+        self._pending_msgs.store(thread_id, user_message)
+        msg = self._pending_msgs.pop(thread_id)
+    """
+
+    _MAX_ENTRIES = 500
+
+    def __init__(self, platform_name: str, max_entries: int = 500):
+        self._platform = platform_name
+        self._max_entries = max_entries
+        self._messages: dict[str, str] = dict(self._load())
+
+    def _state_path(self) -> Path:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / f"{self._platform}_pending_msgs.json"
+
+    def _load(self) -> dict[str, str]:
+        path = self._state_path()
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+            except Exception:
+                pass
+        return {}
+
+    def _save(self) -> None:
+        path = self._state_path()
+        # Keep only the newest entries if over limit
+        items = list(self._messages.items())
+        if len(items) > self._max_entries:
+            items = items[-self._max_entries:]
+            self._messages = dict(items)
+        atomic_json_write(path, self._messages, indent=None)
+
+    def store(self, thread_id: str, message: str) -> None:
+        """Store a pending user message for *thread_id* and persist."""
+        self._messages[str(thread_id)] = message
+        self._save()
+
+    def pop(self, thread_id: str, default: str | None = None) -> str | None:
+        """Pop and return the pending message for *thread_id*, or *default*."""
+        result = self._messages.pop(str(thread_id), default)
+        if result is not None or thread_id in self._messages:
+            self._save()
+        return result
+
+    def __contains__(self, thread_id: str) -> bool:
+        return str(thread_id) in self._messages
+
+    def clear(self) -> None:
+        self._messages.clear()
+        self._save()
+
+
 # ─── Phone Number Redaction ──────────────────────────────────────────────────
 
 

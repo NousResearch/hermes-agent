@@ -76,3 +76,45 @@ under `$HERMES_HOME/plugins/model-providers/` for a private plugin).
 ## Configuration fields
 
 Full reference in `providers/base.py` dataclass definition.
+
+---
+
+## Overriding the Anthropic OAuth client profile
+
+`hermes auth add anthropic --type oauth` runs a PKCE flow against
+Hermes's own registered OAuth application. The env vars below let you
+point that flow at a different OAuth client without forking the code.
+Set any of them and leave the rest unset to keep the upstream defaults:
+
+| Env var | Default |
+|---|---|
+| `HERMES_ANTHROPIC_OAUTH_CLIENT_ID`      | Hermes's registered client id |
+| `HERMES_ANTHROPIC_OAUTH_AUTHORIZE_URL`  | `https://claude.ai/oauth/authorize` |
+| `HERMES_ANTHROPIC_OAUTH_TOKEN_URL`      | `https://console.anthropic.com/v1/oauth/token` |
+| `HERMES_ANTHROPIC_OAUTH_REDIRECT_URI`   | `https://console.anthropic.com/oauth/code/callback` |
+| `HERMES_ANTHROPIC_OAUTH_SCOPES`         | `org:create_api_key user:profile user:inference` |
+
+The resolver is `agent.anthropic_adapter.get_anthropic_oauth_client_profile()`
+— it re-reads the environment on every call so overrides set in `.env`
+or the shell take effect without restarting hermes. Both the PKCE
+login flow and the refresh path go through it. The refresh path also
+keeps the upstream endpoints as fallbacks after the configured one so
+refresh tokens minted elsewhere keep working.
+
+### When this is appropriate
+
+This override is intended **only** for:
+
+- **Development and testing** against a local or staging OAuth server you
+  control (e.g. running PKCE end-to-end without hitting production).
+- **Enterprise deployments** where you operate the OAuth bridge yourself —
+  a self-hosted Anthropic-compatible proxy, an internal SSO gateway, or
+  any other OAuth-2.0 server you administer.
+- **Anthropic-approved integrations** that have their own registered
+  client identifier from Anthropic.
+
+Do **not** point this at an OAuth client you do not own or operate.
+That is impersonation, violates the client owner's terms of service,
+and almost certainly violates Anthropic's acceptable use policy.
+Hermes does not validate or whitelist client identifiers — the
+responsibility is entirely yours.

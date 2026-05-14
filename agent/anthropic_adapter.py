@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
@@ -792,7 +792,8 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
     if not refresh_token:
         raise ValueError("refresh_token is required")
 
-    client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    profile = get_anthropic_oauth_client_profile()
+    client_id = profile.client_id
     if use_json:
         data = json.dumps({
             "grant_type": "refresh_token",
@@ -808,10 +809,17 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
         }).encode()
         content_type = "application/x-www-form-urlencoded"
 
-    token_endpoints = [
+    # Try the configured token URL first; keep the historical alternates
+    # as fallbacks so refresh tokens minted against either keep working
+    # without forcing a maintainer to set the env var.
+    token_endpoints: List[str] = []
+    for url in (
+        profile.token_url,
         "https://platform.claude.com/v1/oauth/token",
         "https://console.anthropic.com/v1/oauth/token",
-    ]
+    ):
+        if url and url not in token_endpoints:
+            token_endpoints.append(url)
     last_error = None
     for endpoint in token_endpoints:
         req = urllib.request.Request(
@@ -1038,10 +1046,95 @@ def run_oauth_setup_token() -> Optional[str]:
 # Mirrors the flow used by Claude Code, pi-ai, and OpenCode.
 # Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
 
-_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
-_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+# Defaults — Hermes's own registered OAuth client. Each field is
+# overridable via the matching ``HERMES_ANTHROPIC_OAUTH_*`` env var.
+#
+# The override mechanism is intended ONLY for:
+#   - development and testing against a local or staging OAuth server
+#     you control;
+#   - an enterprise deployment where you operate the OAuth bridge
+#     (self-hosted SSO, Anthropic-compatible proxy, etc.);
+#   - an Anthropic-approved integration with its own registered client.
+#
+# Pointing the flow at an OAuth client you do not own or operate is
+# impersonation, violates that client's terms of service, and almost
+# certainly violates Anthropic's acceptable use policy. Hermes does not
+# validate or whitelist client identifiers — the responsibility is yours.
+# See ``get_anthropic_oauth_client_profile`` and ``providers/README.md``.
+_DEFAULT_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+_DEFAULT_OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
+_DEFAULT_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+_DEFAULT_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+_DEFAULT_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+
+
+class AnthropicOAuthClientProfile(NamedTuple):
+    """Identifies the calling application to the OAuth server during the PKCE flow.
+
+    All five fields match the values Hermes's upstream OAuth client uses
+    by default. Override per field via the env vars listed in
+    ``get_anthropic_oauth_client_profile`` only when running Hermes
+    against an OAuth client you operate yourself (dev/test, enterprise
+    deployment, or Anthropic-approved integration) — see the warning on
+    ``get_anthropic_oauth_client_profile``.
+    """
+
+    client_id: str
+    authorize_url: str
+    token_url: str
+    redirect_uri: str
+    scopes: str
+
+
+def get_anthropic_oauth_client_profile() -> "AnthropicOAuthClientProfile":
+    """Resolve the active Anthropic OAuth client profile.
+
+    Each field falls back to the corresponding ``_DEFAULT_OAUTH_*`` value
+    when its env var is unset or empty:
+
+        HERMES_ANTHROPIC_OAUTH_CLIENT_ID
+        HERMES_ANTHROPIC_OAUTH_AUTHORIZE_URL
+        HERMES_ANTHROPIC_OAUTH_TOKEN_URL
+        HERMES_ANTHROPIC_OAUTH_REDIRECT_URI
+        HERMES_ANTHROPIC_OAUTH_SCOPES
+
+    Re-reads the environment on every call so overrides taking effect
+    after this module loaded still apply. The legacy module-level
+    ``_OAUTH_*`` constants capture only the values present at import
+    time and are retained for back-compat with existing importers.
+
+    Intended ONLY for:
+      - development/testing against a local or staging OAuth server you control;
+      - enterprise deployments where you operate the OAuth bridge
+        (self-hosted SSO, Anthropic-compatible proxy, etc.);
+      - Anthropic-approved integrations with their own registered client.
+
+    Do not point the flow at an OAuth client you do not own or operate.
+    That is impersonation, violates the client's terms of service, and
+    almost certainly violates Anthropic's acceptable use policy. Hermes
+    does not validate or whitelist client identifiers — the
+    responsibility is yours.
+    """
+    return AnthropicOAuthClientProfile(
+        client_id=(os.environ.get("HERMES_ANTHROPIC_OAUTH_CLIENT_ID") or "").strip() or _DEFAULT_OAUTH_CLIENT_ID,
+        authorize_url=(os.environ.get("HERMES_ANTHROPIC_OAUTH_AUTHORIZE_URL") or "").strip() or _DEFAULT_OAUTH_AUTHORIZE_URL,
+        token_url=(os.environ.get("HERMES_ANTHROPIC_OAUTH_TOKEN_URL") or "").strip() or _DEFAULT_OAUTH_TOKEN_URL,
+        redirect_uri=(os.environ.get("HERMES_ANTHROPIC_OAUTH_REDIRECT_URI") or "").strip() or _DEFAULT_OAUTH_REDIRECT_URI,
+        scopes=(os.environ.get("HERMES_ANTHROPIC_OAUTH_SCOPES") or "").strip() or _DEFAULT_OAUTH_SCOPES,
+    )
+
+
+# Module-level aliases evaluated at import time. Retained because
+# ``hermes_cli.web_server`` imports them by name. New code should call
+# ``get_anthropic_oauth_client_profile()`` so env-var overrides applied
+# after this module loaded still take effect.
+_initial_oauth_profile = get_anthropic_oauth_client_profile()
+_OAUTH_CLIENT_ID = _initial_oauth_profile.client_id
+_OAUTH_TOKEN_URL = _initial_oauth_profile.token_url
+_OAUTH_REDIRECT_URI = _initial_oauth_profile.redirect_uri
+_OAUTH_SCOPES = _initial_oauth_profile.scopes
+del _initial_oauth_profile
+
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
@@ -1063,21 +1156,22 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     import time
     import webbrowser
 
+    profile = get_anthropic_oauth_client_profile()
     verifier, challenge = _generate_pkce()
 
     params = {
         "code": "true",
-        "client_id": _OAUTH_CLIENT_ID,
+        "client_id": profile.client_id,
         "response_type": "code",
-        "redirect_uri": _OAUTH_REDIRECT_URI,
-        "scope": _OAUTH_SCOPES,
+        "redirect_uri": profile.redirect_uri,
+        "scope": profile.scopes,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": verifier,
     }
     from urllib.parse import urlencode
 
-    auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
+    auth_url = f"{profile.authorize_url}?{urlencode(params)}"
 
     print()
     print("Authorize Hermes with your Claude Pro/Max subscription.")
@@ -1117,15 +1211,15 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
         exchange_data = json.dumps({
             "grant_type": "authorization_code",
-            "client_id": _OAUTH_CLIENT_ID,
+            "client_id": profile.client_id,
             "code": code,
             "state": state,
-            "redirect_uri": _OAUTH_REDIRECT_URI,
+            "redirect_uri": profile.redirect_uri,
             "code_verifier": verifier,
         }).encode()
 
         req = urllib.request.Request(
-            _OAUTH_TOKEN_URL,
+            profile.token_url,
             data=exchange_data,
             headers={
                 "Content-Type": "application/json",

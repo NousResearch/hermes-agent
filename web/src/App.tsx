@@ -75,6 +75,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { api } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -316,6 +317,21 @@ export default function App() {
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
+  // `dashboard.show_token_analytics` gates the Analytics nav item.  The
+  // page itself remains reachable by URL (it renders an explanation when
+  // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
+  // surfacing misleading token/cost numbers in the sidebar.  Default off.
+  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((cfg) => {
+        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
+        setShowTokenAnalytics(dash.show_token_analytics === true);
+      })
+      .catch(() => setShowTokenAnalytics(false));
+  }, []);
+
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
   // element for <PluginPage /> — but we also have to suppress the
@@ -346,11 +362,12 @@ export default function App() {
     [embeddedChat],
   );
 
-  const builtinNav = useMemo(
-    () =>
-      embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST,
-    [embeddedChat],
-  );
+  const builtinNav = useMemo(() => {
+    const base = embeddedChat
+      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
+      : BUILTIN_NAV_REST;
+    return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
+  }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),

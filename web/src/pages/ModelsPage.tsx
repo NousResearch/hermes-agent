@@ -310,12 +310,14 @@ function ModelCard({
   main,
   aux,
   onAssigned,
+  showTokens,
 }: {
   entry: ModelsAnalyticsModelEntry;
   rank: number;
   main: { provider: string; model: string } | null;
   aux: AuxiliaryTaskAssignment[];
   onAssigned(): void;
+  showTokens: boolean;
 }) {
   const { t } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
@@ -375,14 +377,27 @@ function ModelCard({
             </div>
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
-            <div className="text-right">
-              <div className="text-xs font-mono font-semibold">
-                {formatTokens(totalTokens)}
+            {showTokens ? (
+              <div className="text-right">
+                <div className="text-xs font-mono font-semibold">
+                  {formatTokens(totalTokens)}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {t.models.tokens}
+                </div>
               </div>
-              <div className="text-[10px] text-muted-foreground">
-                {t.models.tokens}
-              </div>
-            </div>
+            ) : (
+              entry.sessions > 0 && (
+                <div className="text-right">
+                  <div className="text-xs font-mono font-semibold">
+                    {entry.sessions}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {t.models.sessions}
+                  </div>
+                </div>
+              )
+            )}
             <UseAsMenu
               provider={provider}
               model={entry.model}
@@ -394,47 +409,51 @@ function ModelCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
-        <TokenBar
-          input={entry.input_tokens}
-          output={entry.output_tokens}
-          cacheRead={entry.cache_read_tokens}
-          reasoning={entry.reasoning_tokens}
-        />
+        {showTokens && (
+          <>
+            <TokenBar
+              input={entry.input_tokens}
+              output={entry.output_tokens}
+              cacheRead={entry.cache_read_tokens}
+              reasoning={entry.reasoning_tokens}
+            />
 
-        <div className="grid grid-cols-3 gap-2 text-xs">
-          <div className="text-center">
-            <div className="font-mono font-semibold">{entry.sessions}</div>
-            <div className="text-[10px] text-muted-foreground">
-              {t.models.sessions}
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="text-center">
+                <div className="font-mono font-semibold">{entry.sessions}</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {t.models.sessions}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="font-mono font-semibold">
+                  {formatTokens(entry.avg_tokens_per_session)}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {t.models.avgPerSession}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="font-mono font-semibold">
+                  {entry.api_calls > 0 ? formatTokens(entry.api_calls) : "—"}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {t.models.apiCalls}
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="text-center">
-            <div className="font-mono font-semibold">
-              {formatTokens(entry.avg_tokens_per_session)}
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              {t.models.avgPerSession}
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="font-mono font-semibold">
-              {entry.api_calls > 0 ? formatTokens(entry.api_calls) : "—"}
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              {t.models.apiCalls}
-            </div>
-          </div>
-        </div>
+          </>
+        )}
 
         <div className="flex items-center justify-between text-[10px] text-muted-foreground border-t border-border/30 pt-2">
           <div className="flex items-center gap-3">
-            {entry.estimated_cost > 0 && (
+            {showTokens && entry.estimated_cost > 0 && (
               <span className="flex items-center gap-0.5">
                 <DollarSign className="h-2.5 w-2.5" />
                 {formatCost(entry.estimated_cost)}
               </span>
             )}
-            {entry.tool_calls > 0 && (
+            {showTokens && entry.tool_calls > 0 && (
               <span className="flex items-center gap-0.5">
                 <Zap className="h-2.5 w-2.5" />
                 {entry.tool_calls} {t.models.toolCalls}
@@ -752,8 +771,25 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
+  // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
+  // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
+  // calls and retries, so they're misleading next to provider billing.
+  const [showTokens, setShowTokens] = useState(false);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
+
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((cfg) => {
+        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
+        setShowTokens(dash.show_token_analytics === true);
+      })
+      .catch(() => {
+        // Default to hidden on any failure — safer than showing wrong numbers.
+        setShowTokens(false);
+      });
+  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -842,35 +878,59 @@ export default function ModelsPage() {
           <Card>
             <CardContent className="py-6">
               <Stats
-                items={[
-                  {
-                    label: t.models.modelsUsed,
-                    value: String(data.totals.distinct_models),
-                  },
-                  {
-                    label: t.analytics.totalTokens,
-                    value: formatTokens(
-                      data.totals.total_input + data.totals.total_output,
-                    ),
-                  },
-                  {
-                    label: t.analytics.input,
-                    value: formatTokens(data.totals.total_input),
-                  },
-                  {
-                    label: t.analytics.output,
-                    value: formatTokens(data.totals.total_output),
-                  },
-                  {
-                    label: t.models.estimatedCost,
-                    value: formatCost(data.totals.total_estimated_cost),
-                  },
-                  {
-                    label: t.analytics.totalSessions,
-                    value: String(data.totals.total_sessions),
-                  },
-                ]}
+                items={
+                  showTokens
+                    ? [
+                        {
+                          label: t.models.modelsUsed,
+                          value: String(data.totals.distinct_models),
+                        },
+                        {
+                          label: t.analytics.totalTokens,
+                          value: formatTokens(
+                            data.totals.total_input + data.totals.total_output,
+                          ),
+                        },
+                        {
+                          label: t.analytics.input,
+                          value: formatTokens(data.totals.total_input),
+                        },
+                        {
+                          label: t.analytics.output,
+                          value: formatTokens(data.totals.total_output),
+                        },
+                        {
+                          label: t.models.estimatedCost,
+                          value: formatCost(data.totals.total_estimated_cost),
+                        },
+                        {
+                          label: t.analytics.totalSessions,
+                          value: String(data.totals.total_sessions),
+                        },
+                      ]
+                    : [
+                        {
+                          label: t.models.modelsUsed,
+                          value: String(data.totals.distinct_models),
+                        },
+                        {
+                          label: t.analytics.totalSessions,
+                          value: String(data.totals.total_sessions),
+                        },
+                      ]
+                }
               />
+              {!showTokens && (
+                <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
+                  Token & cost analytics are hidden because the local counts
+                  exclude auxiliary calls (compression, vision, web extract,
+                  …) and provider retries, so they diverge from your provider
+                  bill. Enable{" "}
+                  <span className="font-mono">dashboard.show_token_analytics</span>{" "}
+                  in <a href="/config" className="underline">Config</a> to
+                  show the local debug estimate anyway.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
@@ -902,6 +962,7 @@ export default function ModelsPage() {
                   main={aux?.main ?? null}
                   aux={aux?.tasks ?? []}
                   onAssigned={onAssigned}
+                  showTokens={showTokens}
                 />
               ))}
             </div>

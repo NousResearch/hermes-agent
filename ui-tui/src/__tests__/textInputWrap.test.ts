@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { offsetFromPosition } from '../components/textInput.js'
+import {
+  cursorRenderParts,
+  offsetFromPosition,
+  shouldHideHardwareInputCursor,
+  shouldUseNativeInputCursor
+} from '../components/textInput.js'
 import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 
 describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
@@ -61,6 +66,46 @@ describe('input metrics helpers', () => {
     expect(stableComposerColumns(100, 5)).toBe(91)
     expect(stableComposerColumns(10, 3)).toBe(5)
     expect(stableComposerColumns(6, 3)).toBe(1)
+  })
+})
+
+describe('text input cursor mode', () => {
+  it('splits text into in-band cursor render parts without losing the covered character', () => {
+    expect(cursorRenderParts('abcd', 2)).toEqual({ after: 'd', before: 'ab', cursor: 'c' })
+    expect(cursorRenderParts('abcd', 4)).toEqual({ after: '', before: 'abcd', cursor: ' ' })
+  })
+
+  it('uses the native terminal cursor for focused single-line TTY input', () => {
+    expect(
+      shouldUseNativeInputCursor({ cursorLine: 0, focus: true, isTty: true, selected: false, termFocus: true })
+    ).toBe(true)
+  })
+
+  it('uses an in-band cursor after wrapping so paste labels stay visually aligned', () => {
+    const text = 'hello world baby chickens are so cool its really rainy outside but wish'
+    const layout = cursorLayout(text, text.length, 70)
+
+    expect(layout).toEqual({ column: 4, line: 1 })
+    expect(
+      shouldUseNativeInputCursor({
+        cursorLine: layout.line,
+        focus: true,
+        isTty: true,
+        selected: false,
+        termFocus: true
+      })
+    ).toBe(false)
+    expect(shouldHideHardwareInputCursor({ focus: true, isTty: true, nativeCursor: false })).toBe(true)
+  })
+
+  it('does not use the native cursor for inactive or selected input', () => {
+    expect(
+      shouldUseNativeInputCursor({ cursorLine: 0, focus: false, isTty: true, selected: false, termFocus: true })
+    ).toBe(false)
+    expect(
+      shouldUseNativeInputCursor({ cursorLine: 0, focus: true, isTty: true, selected: true, termFocus: true })
+    ).toBe(false)
+    expect(shouldHideHardwareInputCursor({ focus: true, isTty: true, nativeCursor: true })).toBe(false)
   })
 })
 

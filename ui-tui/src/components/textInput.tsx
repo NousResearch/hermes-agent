@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
@@ -179,15 +179,17 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
 
 export { offsetFromPosition }
 
-function renderWithCursor(value: string, cursor: number) {
+export function cursorRenderParts(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
-  let out = '',
+  let before = '',
+    cursorCell = ' ',
+    after = '',
     done = false
 
   for (const { segment, index } of seg().segment(value)) {
     if (!done && index >= pos) {
-      out += invert(index === pos && segment !== '\n' ? segment : ' ')
+      cursorCell = index === pos && segment !== '\n' ? segment : ' '
       done = true
 
       if (index === pos && segment !== '\n') {
@@ -195,10 +197,38 @@ function renderWithCursor(value: string, cursor: number) {
       }
     }
 
-    out += segment
+    if (done) {
+      after += segment
+    } else {
+      before += segment
+    }
   }
 
-  return done ? out : out + invert(' ')
+  return done ? { after, before, cursor: cursorCell } : { after: '', before, cursor: ' ' }
+}
+
+function renderCursorCell(cursor: string, cursorColor?: string, cursorTextColor?: string) {
+  if (!cursorColor) {
+    return invert(cursor)
+  }
+
+  return (
+    <Text backgroundColor={cursorColor} color={cursorTextColor}>
+      {cursor}
+    </Text>
+  )
+}
+
+function renderWithCursor(value: string, cursor: number, cursorColor?: string, cursorTextColor?: string): ReactNode {
+  const parts = cursorRenderParts(value, cursor)
+
+  return (
+    <>
+      {parts.before}
+      {renderCursorCell(parts.cursor, cursorColor, cursorTextColor)}
+      {parts.after}
+    </>
+  )
 }
 
 function renderWithSelection(value: string, start: number, end: number) {
@@ -240,6 +270,8 @@ const isPasteResultPromise = (
 
 export function TextInput({
   columns = 80,
+  cursorColor,
+  cursorTextColor = 'black',
   value,
   onChange,
   onPaste,
@@ -292,17 +324,21 @@ export function TextInput({
 
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
 
+  const nativeCursor = shouldUseNativeInputCursor({
+    cursorLine: layout.line,
+    focus,
+    isTty: !!stdout?.isTTY,
+    selected: !!selected,
+    termFocus
+  })
+
   const boxRef = useDeclaredCursor({
     line: layout.line,
     column: layout.column,
-    active: focus && termFocus && !selected
+    active: nativeCursor
   })
 
-  // Hide the hardware cursor while a selection is active (prevents
-  // auto-wrap onto the next row when inverted text fills the column
-  // exactly) or when the terminal loses focus (suppresses the hollow-rect
-  // ghost most terminals draw at the parked position).
-  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+  const hideHardwareCursor = shouldHideHardwareInputCursor({ focus, isTty: !!stdout?.isTTY, nativeCursor })
 
   useEffect(() => {
     if (!hideHardwareCursor || !stdout) {
@@ -316,8 +352,6 @@ export function TextInput({
     }
   }, [hideHardwareCursor, stdout])
 
-  const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
-
   // Placeholder text is just a hint, not a selection — render it dim
   // without inverse styling. In a TTY the hardware cursor parks at column
   // 0 and visually marks the input start. Non-TTY surfaces still need the
@@ -328,15 +362,22 @@ export function TextInput({
     }
 
     if (!display && placeholder) {
-      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return nativeCursor ? (
+        dim(placeholder)
+      ) : (
+        <>
+          {renderCursorCell(placeholder[0] ?? ' ', cursorColor, cursorTextColor)}
+          {dim(placeholder.slice(1))}
+        </>
+      )
     }
 
     if (selected) {
       return renderWithSelection(display, selected.start, selected.end)
     }
 
-    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+    return nativeCursor ? display || ' ' : renderWithCursor(display, cur, cursorColor, cursorTextColor)
+  }, [cur, cursorColor, cursorTextColor, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -1037,6 +1078,8 @@ export interface PasteEvent {
 
 interface TextInputProps {
   columns?: number
+  cursorColor?: string
+  cursorTextColor?: string
   focus?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
@@ -1050,9 +1093,38 @@ interface TextInputProps {
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
-export type RightClickDecision =
-  | { action: 'copy'; text: string }
-  | { action: 'paste' }
+export type RightClickDecision = { action: 'copy'; text: string } | { action: 'paste' }
+
+export function shouldUseNativeInputCursor({
+  cursorLine,
+  focus,
+  isTty,
+  selected,
+  termFocus
+}: {
+  cursorLine: number
+  focus: boolean
+  isTty: boolean
+  selected: boolean
+  termFocus: boolean
+}): boolean {
+  // Once the composer wraps, Ink and the terminal are both doing line layout.
+  // Rendering the caret in-band keeps it tied to the same wrapped text stream
+  // the user sees instead of parking the hardware cursor from parallel metrics.
+  return focus && termFocus && !selected && isTty && cursorLine === 0
+}
+
+export function shouldHideHardwareInputCursor({
+  focus,
+  isTty,
+  nativeCursor
+}: {
+  focus: boolean
+  isTty: boolean
+  nativeCursor: boolean
+}): boolean {
+  return focus && isTty && !nativeCursor
+}
 
 /**
  * Decide what right-click should do on the composer:

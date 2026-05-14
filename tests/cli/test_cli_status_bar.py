@@ -332,6 +332,38 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
 
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        """When _status_bar_suppressed_after_resize is set, both rules hide.
+
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
+
+        cli_obj._status_bar_suppressed_after_resize = False
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scrollback_box_width_caps_to_resize_safe_value(self):
+        """Decorative scrollback boxes clamp to a width small enough that
+        moderate terminal shrinks don't cause reflow into scrollback."""
+        from cli import HermesCLI
+
+        # Floor at 32 — narrow terminals still get something usable.
+        assert HermesCLI._scrollback_box_width(20) == 32
+        assert HermesCLI._scrollback_box_width(32) == 32
+        # Cap at 56 — wide terminals don't get full-width boxes.
+        assert HermesCLI._scrollback_box_width(80) == 56
+        assert HermesCLI._scrollback_box_width(120) == 56
+        assert HermesCLI._scrollback_box_width(200) == 56
+        # Mid-range passes through up to the cap.
+        assert HermesCLI._scrollback_box_width(48) == 48
+
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._agent_running = True

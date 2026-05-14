@@ -287,6 +287,13 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+# Maximum pixel dimension for vision API payloads (8000 px).  Anthropic's
+# Messages API rejects any image larger than 8000 px on either axis with a
+# non-retryable 400 error.  Once such an image enters the message history the
+# session is permanently bricked.  Other major providers accept larger images
+# but 8000 px is a safe universal cap.
+_MAX_PIXEL_DIMENSION = 8000
+
 
 def _is_image_size_error(error: Exception) -> bool:
     """Detect if an API error is related to image or payload size."""
@@ -349,6 +356,17 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # Convert RGBA to RGB for JPEG output
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
+
+    # Pixel dimension safety cap — ensures the image never exceeds
+    # _MAX_PIXEL_DIMENSION on either axis regardless of byte size.
+    if img.width > _MAX_PIXEL_DIMENSION or img.height > _MAX_PIXEL_DIMENSION:
+        ratio = min(_MAX_PIXEL_DIMENSION / img.width,
+                     _MAX_PIXEL_DIMENSION / img.height)
+        new_size = (max(int(img.width * ratio), 1),
+                    max(int(img.height * ratio), 1))
+        logger.info("Pixel cap: resizing %dx%d → %dx%d",
+                     img.width, img.height, *new_size)
+        img = img.resize(new_size, Image.LANCZOS)
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.
     # For JPEG, also try reducing quality at each size step.
@@ -589,6 +607,31 @@ async def _vision_analyze_native(
                 "Only real image files are supported for vision analysis.",
                 success=False,
             )
+
+        # Pixel dimension cap — Anthropic rejects images > 8000 px on either
+        # axis with a non-retryable 400.  Check BEFORE base64 encoding so
+        # that oversized-but-small-byte-count images are caught early.
+        # Pillow is a soft dependency; skip the check if unavailable.
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(temp_image_path) as _img:
+                _w, _h = _img.size
+            if _w > _MAX_PIXEL_DIMENSION or _h > _MAX_PIXEL_DIMENSION:
+                logger.info(
+                    "Image dimensions %dx%d exceed %dpx cap — resizing",
+                    _w, _h, _MAX_PIXEL_DIMENSION,
+                )
+                with _PILImage.open(temp_image_path) as _img:
+                    _ratio = min(
+                        _MAX_PIXEL_DIMENSION / _w,
+                        _MAX_PIXEL_DIMENSION / _h,
+                    )
+                    _new_size = (max(int(_w * _ratio), 1),
+                                 max(int(_h * _ratio), 1))
+                    _resized = _img.resize(_new_size, _PILImage.LANCZOS)
+                    _resized.save(temp_image_path)
+        except ImportError:
+            logger.debug("Pillow not installed — pixel dimension check skipped")
 
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,

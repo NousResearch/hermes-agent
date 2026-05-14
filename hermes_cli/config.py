@@ -1486,6 +1486,11 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
+        # the historical 2 MiB + one-backup behavior; long-running workers can
+        # raise these to keep more early failure evidence.
+        "worker_log_rotate_bytes": 2 * 1024 * 1024,
+        "worker_log_backup_count": 1,
         # Profile that decomposes tasks in the Triage column. When unset,
         # falls back to the default profile (the one `hermes` launches with
         # no -p flag). Set this to a dedicated 'orchestrator' profile if you

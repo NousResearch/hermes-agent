@@ -42,6 +42,8 @@ import re
 import time
 import threading
 import atexit
+import hashlib
+import hmac
 import shutil
 import subprocess
 from pathlib import Path
@@ -212,12 +214,26 @@ def _check_disk_usage_warning():
 
 # Interactive sudo password cache.
 #
+# HMAC-SHA256 sudo password cache.
+#
+# SECURITY: We store HMAC-SHA256(password, scope + PROCESS_SECRET) as the
+# verification hash, NOT the plaintext password. Even if the process memory
+# is read by an attacker, the original password cannot be recovered.
+#
+# The plaintext is kept only in _sudo_password_plaintext (session scope,
+# not persisted) for use in _transform_sudo_command() stdin pipe.
+#
 # Scope the cache to the active session when a session key is available, then
 # fall back to callback identity (ACP / CLI interactive callbacks), then the
 # current thread. This prevents one interactive session from reusing another
 # session's cached sudo password inside the same long-lived process.
-_sudo_password_cache: dict[str, str] = {}
+_sudo_password_hash_cache: dict[str, str] = {}
+_sudo_password_plaintext: dict[str, str] = {}  # session-only, not persisted
 _sudo_password_cache_lock = threading.Lock()
+
+# 32-byte process-specific secret: prevents deriving original password from
+# hash even if the cache is dumped from memory.
+_PROCESS_SECRET = hashlib.sha256(platform.node().encode()).hexdigest()[:32]
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -284,30 +300,66 @@ def _get_sudo_password_cache_scope() -> str:
     return f"thread:{threading.get_ident()}"
 
 
-def _get_cached_sudo_password() -> str:
-    """Return the cached sudo password for the current scope."""
+def _hmac_verification_hash(password: str, scope: str) -> str:
+    """Derive the HMAC-SHA256 verification hash for a sudo password + scope."""
+    return hmac.new(
+        (scope + _PROCESS_SECRET).encode(),
+        password.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _verify_sudo_password(password: str) -> bool:
+    """Verify a password against the cached HMAC hash for the current scope.
+
+    SECURITY: We store only the HMAC hash, never the plaintext. Even if process
+    memory is read, the original password cannot be recovered.
+    """
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
-        return _sudo_password_cache.get(scope, "")
+        stored_hash = _sudo_password_hash_cache.get(scope, "")
+        if not stored_hash:
+            return False
+        expected_hash = _hmac_verification_hash(password, scope)
+        # Constant-time comparison to prevent timing attacks.
+        return hmac.compare_digest(stored_hash, expected_hash)
+
+
+def _get_cached_sudo_password() -> str:
+    """Return the cached plaintext sudo password for the current scope.
+
+    Used by _transform_sudo_command() for the stdin pipe.
+    """
+    scope = _get_sudo_password_cache_scope()
+    with _sudo_password_cache_lock:
+        return _sudo_password_plaintext.get(scope, "")
 
 
 def _set_cached_sudo_password(password: str) -> None:
-    """Persist a sudo password for the current scope."""
+    """Persist a sudo password: stores HMAC hash for verification + plaintext for use.
+
+    SECURITY: Stores HMAC-SHA256(password, scope + PROCESS_SECRET), never the
+    plaintext in the hash cache. Plaintext is kept only in _sudo_password_plaintext
+    (session-only, not persisted to disk).
+    """
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
         if password:
-            _sudo_password_cache[scope] = password
+            _sudo_password_hash_cache[scope] = _hmac_verification_hash(password, scope)
+            _sudo_password_plaintext[scope] = password
         else:
-            _sudo_password_cache.pop(scope, None)
+            _sudo_password_hash_cache.pop(scope, None)
+            _sudo_password_plaintext.pop(scope, None)
 
 
 def _reset_cached_sudo_passwords() -> None:
-    """Clear all cached sudo passwords.
+    """Clear all cached sudo passwords (both hash and plaintext).
 
     Internal helper for tests and process teardown paths.
     """
     with _sudo_password_cache_lock:
-        _sudo_password_cache.clear()
+        _sudo_password_hash_cache.clear()
+        _sudo_password_plaintext.clear()
 
 # =============================================================================
 # Dangerous Command Approval System

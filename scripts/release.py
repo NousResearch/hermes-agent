@@ -71,6 +71,7 @@ AUTHOR_MAP = {
     "kyanam.preetham@gmail.com": "pkyanam",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "147827411+EloquentBrush@users.noreply.github.com": "AhmetArif0",
+    "97489706+purzbeats@users.noreply.github.com": "purzbeats",
     "hugosequier@gmail.com": "Hugo-SEQUIER",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",

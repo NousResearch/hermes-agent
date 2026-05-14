@@ -208,3 +208,71 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "Web UI build failed" in out
         assert "vite ENOMEM" in out
         assert "Run manually" in out
+
+
+class TestNpmInstallStripsNodeEnv:
+    """Regression: `npm install`/`npm ci` must run without NODE_ENV=production
+    leaking from the parent environment — otherwise npm >= 9 skips
+    devDependencies and the subsequent ``tsc -b && vite build`` fails with
+    ``sh: 1: tsc: not found``. See issue #17906.
+    """
+
+    def test_run_npm_install_deterministic_strips_node_env_from_environ(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("NODE_ENV", "production")
+        captured: dict = {}
+
+        def fake_run(*args, env=None, **kwargs):
+            captured["env"] = env
+            import subprocess
+            return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+        monkeypatch.setattr("hermes_cli.main.subprocess.run", fake_run)
+        _run_npm_install_deterministic("/usr/bin/npm", tmp_path)
+
+        assert captured["env"] is not None
+        assert "NODE_ENV" not in captured["env"], (
+            "NODE_ENV must be stripped so devDependencies install"
+        )
+
+    def test_run_npm_install_deterministic_strips_node_env_from_explicit_env(
+        self, tmp_path, monkeypatch
+    ):
+        captured: dict = {}
+
+        def fake_run(*args, env=None, **kwargs):
+            captured["env"] = env
+            import subprocess
+            return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+        monkeypatch.setattr("hermes_cli.main.subprocess.run", fake_run)
+        explicit_env = {"PATH": "/usr/bin", "NODE_ENV": "production", "CI": "1"}
+        _run_npm_install_deterministic("/usr/bin/npm", tmp_path, env=explicit_env)
+
+        assert "NODE_ENV" not in captured["env"]
+        assert captured["env"]["CI"] == "1", "non-NODE_ENV keys must be preserved"
+        assert "NODE_ENV" in explicit_env, "caller's dict must not be mutated"
+
+    def test_run_npm_install_deterministic_falls_back_to_install_on_ci_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """The fallback `npm install` branch must also strip NODE_ENV."""
+        monkeypatch.setenv("NODE_ENV", "production")
+        (tmp_path / "package-lock.json").write_text("{}")
+        envs_seen: list = []
+
+        import subprocess as _sp
+
+        def fake_run(args, **kwargs):
+            envs_seen.append(kwargs.get("env"))
+            rc = 1 if args[1] == "ci" else 0
+            return _sp.CompletedProcess(args, rc, stdout="", stderr="")
+
+        monkeypatch.setattr("hermes_cli.main.subprocess.run", fake_run)
+        result = _run_npm_install_deterministic("/usr/bin/npm", tmp_path)
+
+        assert result.returncode == 0
+        assert len(envs_seen) == 2, "both npm ci and fallback npm install must run"
+        for env in envs_seen:
+            assert env is not None and "NODE_ENV" not in env

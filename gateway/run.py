@@ -174,6 +174,200 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+def _safe_int(value, default=0):
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_bool(value, default=False):
+    if value is None:
+        return default
+    return bool(value)
+
+# -- Heartbeat / long-running notification internal state ----------------------
+# Per-card blocked-reminder rate-limit tracker.
+# key: task_id  value: (last_sent_timestamp, blocked_reason_fingerprint)
+# Sentinels: last_sent_timestamp = -1 means "never notified for this card".
+_blocked_notified_at: dict[str, tuple[float, str]] = {}
+
+# Default 3600s (60 min) between repeated blocked-card Telegram notifications.
+# Configurable via HERMES_BLOCKED_REMINDER_INTERVAL env var.
+_BLOCKED_REMINDER_INTERVAL_DEFAULT = 3600
+
+
+def _heartbeat_eligibility(session_state, board_state, process_state):
+    """Return (should_send: bool, state_label: str)."""
+    status = session_state.get("status", "unknown")
+    if status == "terminal":
+        return False, "terminal"
+    active_processes = _safe_int(process_state.get("active_process_count", 0), 0)
+    active_kanban = _safe_int(process_state.get("active_kanban_count", 0), 0)
+    has_active_process = active_processes > 0 or active_kanban > 0
+    agent_active = _safe_bool(session_state.get("agent_active"), False)
+    is_kanban = session_state.get("is_kanban_worker", False)
+    if is_kanban:
+        task_status = (board_state or {}).get("status", "unknown")
+        if task_status in ("done", "completed", "cancelled", "archived"):
+            logger.debug(
+                "heartbeat skip: kanban task %s is terminal (%s)",
+                session_state.get("kanban_task_id", "?"),
+                task_status,
+            )
+            return False, "completed"
+        if task_status == "blocked":
+            return True, "blocked"
+        if not has_active_process and not agent_active:
+            return False, "idle"
+        return True, "active"
+    if board_state and board_state.get("status") == "blocked":
+        return True, "blocked"
+    if has_active_process:
+        return True, "active"
+    if not agent_active:
+        return False, "idle"
+    return True, "active"
+
+
+def _reset_blocked_tracker(
+    tracker: Optional[dict[str, tuple[float, str]]] = None,
+) -> None:
+    (tracker if tracker is not None else _blocked_notified_at).clear()
+
+
+def _blocked_reminder_should_send(
+    task_id: str,
+    blocked_reason: str,
+    now: float,
+    reminder_interval: float | None = None,
+    tracker: Optional[dict[str, tuple[float, str]]] = None,
+) -> bool:
+    """Return True if a blocked-card reminder should be sent now.
+
+    Rate-limits blocked Telegram notifications so the same card is not
+    spammed every 3 minutes.  A reminder is allowed when:
+      - the card has never been notified (first block), OR
+      - the configured reminder_interval has elapsed since last send, OR
+      - the blocked_reason fingerprint has changed since last send.
+
+    The in-memory tracker (_blocked_notified_at) is shared across all
+    sessions within the same Gateway process.
+    """
+    if reminder_interval is None:
+        reminder_interval = _BLOCKED_REMINDER_INTERVAL_DEFAULT
+    reminder_tracker = tracker if tracker is not None else _blocked_notified_at
+    fp = str(blocked_reason or "")
+    last_ts, last_fp = reminder_tracker.get(task_id, (-1.0, ""))
+    # -1.0 sentinel means "never notified" -> always send the first time.
+    if last_ts < 0 or now - last_ts >= reminder_interval or fp != last_fp:
+        reminder_tracker[task_id] = (now, fp)
+        return True
+    return False
+
+
+def _agent_env_value(agent: Any, name: str) -> str:
+    env = getattr(agent, "env", None)
+    if isinstance(env, dict):
+        value = env.get(name)
+        if value:
+            return str(value)
+    return os.environ.get(name, "")
+
+
+def _latest_kanban_block_reason(kb: Any, conn: Any, task_id: str) -> str:
+    try:
+        for event in reversed(kb.list_events(conn, task_id)):
+            if event.kind != "blocked" or not isinstance(event.payload, dict):
+                continue
+            return str(event.payload.get("reason") or "")
+    except Exception:
+        pass
+    try:
+        for run in reversed(kb.list_runs(conn, task_id, include_active=False)):
+            if run.outcome == "blocked":
+                return str(run.summary or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _load_kanban_board_state(
+    task_id: str,
+    *,
+    board: str = "",
+    db_path: str = "",
+) -> Optional[dict]:
+    """Load minimal kanban task state using the canonical board path resolver."""
+    if not task_id:
+        return None
+    try:
+        from hermes_cli import kanban_db as kb
+
+        conn = (
+            kb.connect(db_path=Path(db_path).expanduser())
+            if db_path
+            else kb.connect(board=board or None)
+        )
+        try:
+            task = kb.get_task(conn, task_id)
+            if not task:
+                return None
+            state = {
+                "status": task.status,
+                "title": task.title,
+            }
+            if task.status == "blocked":
+                state["blocked_reason"] = _latest_kanban_block_reason(kb, conn, task_id)
+            return state
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("heartbeat board query failed: %s", exc)
+        return None
+
+
+def _format_heartbeat_message(state_label, session_state, board_state, process_state, elapsed_mins):
+    session_id = session_state.get("session_id", "?")
+    is_kanban = session_state.get("is_kanban_worker", False)
+    task_id = session_state.get("kanban_task_id")
+    task_title = (board_state or {}).get("title", "")
+    blocked_reason = (board_state or {}).get("blocked_reason", "")
+    parent_id = (board_state or {}).get("parent_session_id", "")
+    current_tool = process_state.get("current_tool", "") or ""
+    iteration = process_state.get("iteration", "") or ""
+    if state_label == "blocked":
+        parts = [f"Blocked for approval ({elapsed_mins} min)"]
+        if task_title:
+            parts.append(f"Card: {task_title}")
+        if task_id:
+            parts.append(f"Task: {task_id}")
+        if blocked_reason:
+            parts.append(f"Reason: {blocked_reason}")
+        if parent_id:
+            parts.append(f"Parent session: {parent_id}")
+        return "\n".join(parts)
+    if state_label == "terminal":
+        return f"Task completed ({session_id})"
+    if not is_kanban:
+        parts = [f"Still working... ({elapsed_mins} min elapsed"]
+        if iteration:
+            parts.append(f"iteration {iteration}")
+        if current_tool:
+            parts.append(f"running: {current_tool}")
+        detail = " — " + ", ".join(p for p in parts[1:] if p) if len(parts) > 1 else ""
+        return parts[0] + detail + ")"
+    parts = [f"Working on card: {task_title or task_id or '?'} ({elapsed_mins} min"]
+    if iteration:
+        parts.append(f"iteration {iteration}")
+    if current_tool:
+        parts.append(f"running: {current_tool}")
+    detail = " — " + ", ".join(p for p in parts[1:] if p) if len(parts) > 1 else ""
+    return parts[0] + detail + ")"
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -1238,6 +1432,7 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._blocked_notified_at: dict[str, tuple[float, str]] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
@@ -15751,6 +15946,9 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        # HERMES_BLOCKED_REMINDER_INTERVAL env var.  Default 60 min.
+        # How long to wait before re-notifying about the same blocked card.
+        _blocked_reminder_interval = _float_env("HERMES_BLOCKED_REMINDER_INTERVAL", _BLOCKED_REMINDER_INTERVAL_DEFAULT)
         _notify_start = time.time()
 
         async def _notify_long_running():
@@ -15764,22 +15962,88 @@ class GatewayRunner:
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
+                _process_state = {
+                    "active_process_count": 0,
+                    "active_kanban_count": 0,
+                    "current_tool": None,
+                    "iteration": None,
+                }
+                _session_state = {
+                    "session_id": session_id or "unknown",
+                    "agent_active": bool(_agent_ref),
+                }
+                _board_state = None
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        _tool = _a.get("current_tool")
+                        if _tool:
+                            _process_state["current_tool"] = _tool
+                            _process_state["active_process_count"] = 1
+                        _api_n = _a.get("api_call_count", 0)
+                        _api_max = _a.get("max_iterations", 0)
+                        if _api_n or _api_max:
+                            _process_state["iteration"] = f"{_api_n}/{_api_max}"
+                        if _a.get("is_idle") is None:
+                            _session_state["agent_active"] = True
+                        elif not _safe_bool(_a.get("is_idle"), True):
+                            _session_state["agent_active"] = True
                     except Exception:
                         pass
+                _kanban_task = _agent_env_value(_agent_ref, "HERMES_KANBAN_TASK")
+                if _kanban_task:
+                    _session_state["is_kanban_worker"] = True
+                    _session_state["kanban_task_id"] = _kanban_task
+                if not _kanban_task and hasattr(_agent_ref, "system_prompt"):
+                    _sp = getattr(_agent_ref, "system_prompt", "") or ""
+                    _hb_match = re.search(
+                        r"work kanban task (t_[a-f0-9]+)", _sp
+                    )
+                    if _hb_match:
+                        _kanban_task = _hb_match.group(1)
+                        _session_state["is_kanban_worker"] = True
+                        _session_state["kanban_task_id"] = _kanban_task
+                if _kanban_task:
+                    _board_state = _load_kanban_board_state(
+                        _kanban_task,
+                        board=_agent_env_value(_agent_ref, "HERMES_KANBAN_BOARD"),
+                        db_path=_agent_env_value(_agent_ref, "HERMES_KANBAN_DB"),
+                    )
+                _should_send, _state_label = _heartbeat_eligibility(
+                    _session_state, _board_state, _process_state
+                )
+                if not _should_send:
+                    logger.debug(
+                        "heartbeat skipped: session=%s state=%s task=%s",
+                        session_id, _state_label,
+                        _session_state.get("kanban_task_id", "N/A"),
+                    )
+                    continue
+                # -- blocked-card rate-limiting --------------------------------
+                if _state_label == "blocked":
+                    _blocked_key = _session_state.get("kanban_task_id")
+                    if _blocked_key:
+                        _blocked_fp = str(_board_state.get("blocked_reason", "") if _board_state else "")
+                        if not _blocked_reminder_should_send(
+                            _blocked_key,
+                            _blocked_fp,
+                            time.time(),
+                            _blocked_reminder_interval,
+                            tracker=getattr(self, "_blocked_notified_at", None),
+                        ):
+                            logger.debug(
+                                "heartbeat blocked reminder skipped (rate-limited): "
+                                "task=%s reason=%s",
+                                _blocked_key, _blocked_fp,
+                            )
+                            continue
+                _msg = _format_heartbeat_message(
+                    _state_label, _session_state, _board_state, _process_state, _elapsed_mins
+                )
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _msg,
                         metadata=_status_thread_metadata,
                     )
                     if (

@@ -1188,6 +1188,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
 
+            # Before starting a new polling session, tell Telegram's servers
+            # to drop any stale webhook/polling registration from a previous
+            # gateway instance.  Without this, a crash-restart cycle leaves
+            # the old connection alive in Telegram's view and the new instance
+            # gets "bot token already in use" (#23783).
+            try:
+                _bot = Bot(token=self.config.token)
+                await _bot.delete_webhook(drop_pending_updates=True)
+                logger.info("[%s] Deregistered stale webhook/polling before reconnect", self.name)
+            except Exception as _webhook_err:
+                logger.debug("[%s] Webhook deregistration skipped: %s", self.name, _webhook_err)
+
             # Build the application
             builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")

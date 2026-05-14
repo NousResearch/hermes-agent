@@ -2646,6 +2646,7 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._background_results: list[dict[str, str]] = []  # Completed background tasks for /bg results
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -7846,6 +7847,15 @@ class HermesCLI:
                 response = result.get("final_response", "") if result else ""
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
+
+                # Store result for /bg results and foreground agent context
+                _bg_result = {
+                    "task_num": task_num,
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "response": response[:2000],
+                }
+                self._background_results.append(_bg_result)
 
                 # Display result in the CLI (thread-safe via patch_stdout).
                 # Force a TUI refresh first so spinner/status bar don't overlap

@@ -918,6 +918,15 @@ platform_toolsets:
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
 #
+# Signal settings for group-specific authorizations:
+#
+# platforms:
+#   signal:
+#     extra:
+#       groups:
+#         "SIGNAL-GROUP-ID":
+#           allow_users: "+123456789,+987654321"
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

@@ -10,7 +10,10 @@ def _would_warn():
         os.getenv(v)
         for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                    "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                   "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+                   "SIGNAL_ALLOWED_USERS", "SIGNAL_ALLOWED_GROUPS",
+                   "SIGNAL_ALLOWED_GROUP_USERS",
+                   # Legacy alias (deprecated)
+                   "SIGNAL_GROUP_ALLOWED_USERS",
                    "EMAIL_ALLOWED_USERS",
                    "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                    "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
@@ -33,8 +36,13 @@ class TestAllowlistStartupCheck:
         with patch.dict(os.environ, {}, clear=True):
             assert _would_warn() is True
 
-    def test_signal_group_allowed_users_suppresses_warning(self):
-        with patch.dict(os.environ, {"SIGNAL_GROUP_ALLOWED_USERS": "user1"}, clear=True):
+    def test_signal_allowed_groups_suppresses_warning(self):
+        with patch.dict(os.environ, {"SIGNAL_ALLOWED_GROUPS": "groupA"}, clear=True):
+            assert _would_warn() is False
+
+    def test_signal_legacy_group_allowed_users_suppresses_warning(self):
+        """Legacy SIGNAL_GROUP_ALLOWED_USERS still counts as a configured allowlist."""
+        with patch.dict(os.environ, {"SIGNAL_GROUP_ALLOWED_USERS": "groupA"}, clear=True):
             assert _would_warn() is False
 
     def test_telegram_allow_all_users_suppresses_warning(self):

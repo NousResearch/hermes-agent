@@ -245,6 +245,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
     "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_ALLOWED_GROUPS",
+    "SIGNAL_ALLOWED_GROUP_USERS",
+    # Legacy alias (deprecated, still recognized for backward compatibility)
     "SIGNAL_GROUP_ALLOWED_USERS",
     "EMAIL_ALLOWED_USERS",
     "SMS_ALLOWED_USERS",

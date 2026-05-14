@@ -16,6 +16,9 @@ def _clear_auth_env(monkeypatch) -> None:
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
         "SIGNAL_ALLOWED_USERS",
+        "SIGNAL_ALLOWED_GROUPS",
+        "SIGNAL_ALLOWED_GROUP_USERS",
+        # Legacy alias (deprecated)
         "SIGNAL_GROUP_ALLOWED_USERS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "EMAIL_ALLOWED_USERS",
@@ -953,6 +956,132 @@ def test_get_unauthorized_dm_behavior_email_no_allowlist_returns_ignore(monkeypa
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
     assert behavior == "ignore"
+
+
+def test_signal_group_chat_allowlist_authorizes_sender_without_dm_allowlist(monkeypatch):
+    """A group message reaches authorization via SIGNAL_ALLOWED_GROUPS even
+    if the sender isn't in SIGNAL_ALLOWED_USERS.
+
+    With the default SIGNAL_ALLOWED_GROUP_USERS=* (every authorized-group
+    member can interact), the gateway's chat-allowlist branch should pass
+    the message through.  Regression cover for the chat-vs-user gate split.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "groupABC")
+    # No SIGNAL_ALLOWED_USERS set — sender is not DM-authorized.
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15559999999",            # not on any DM allowlist
+        chat_id="group:groupABC",          # adapter formats as group:<id>
+        chat_id_alt="groupABC",            # bare group id (what env var matches)
+        user_name="random group member",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_signal_legacy_group_allowed_users_authorizes_group_traffic(monkeypatch):
+    """Deprecated SIGNAL_GROUP_ALLOWED_USERS (group-IDs semantic) still
+    authorizes group traffic at the run.py gate so existing deployments
+    keep working through the migration."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupABC")
+    # SIGNAL_ALLOWED_GROUPS deliberately unset — exercise the legacy fallback.
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15559999999",
+        chat_id="group:groupABC",
+        chat_id_alt="groupABC",
+        user_name="random group member",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_signal_new_var_takes_precedence_over_legacy(monkeypatch):
+    """When both vars are set, only the new one is honored — the legacy
+    fallback fires only when the new var is empty."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "groupNEW")
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupLEGACY")
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    legacy_source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15559999999",
+        chat_id="group:groupLEGACY",
+        chat_id_alt="groupLEGACY",
+        user_name="random",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(legacy_source) is False
+
+
+def test_signal_dm_allowlist_matches_phone_when_source_carries_uuid(monkeypatch):
+    """signal-cli may report a sender under their UUID while the operator's
+    allowlist holds the phone number. SessionSource carries both forms
+    (user_id + user_id_alt); the gate must check both."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15551234567")
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    # Sender's user_id is the UUID (what signal-cli reported), but the
+    # adapter remembered the phone counterpart and stashed it on user_id_alt.
+    uuid_form = "12345678-1234-1234-1234-123456789abc"
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id=uuid_form,
+        user_id_alt="+15551234567",
+        chat_id=uuid_form,
+        user_name="known contact",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_signal_group_chat_allowlist_rejects_dm_from_same_sender(monkeypatch):
+    """The chat-allowlist branch only authorizes group/forum traffic, not DMs."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "groupABC")
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    dm_source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15559999999",
+        chat_id="+15559999999",
+        user_name="random sender",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(dm_source) is False
 
 
 def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):

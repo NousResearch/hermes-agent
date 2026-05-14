@@ -7719,7 +7719,13 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "name": "Signal",
         "description": "Connect through a signal-cli REST bridge.",
         "docs_url": "https://github.com/bbernhard/signal-cli-rest-api",
-        "env_vars": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"),
+        "env_vars": (
+            "SIGNAL_HTTP_URL",
+            "SIGNAL_ACCOUNT",
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_GROUPS",
+            "SIGNAL_ALLOWED_GROUP_USERS",
+        ),
         "required_env": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"),
     },
     "whatsapp": {
@@ -7914,6 +7920,20 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "SIGNAL_ALLOWED_USERS": {
         "description": "Comma-separated Signal users allowed to use the bot",
         "prompt": "Allowed Signal users",
+    },
+    "SIGNAL_ALLOWED_GROUPS": {
+        "description": (
+            "Comma-separated Signal group IDs the bot responds in, or * for "
+            "all groups. Leave empty to disable group chats."
+        ),
+        "prompt": "Allowed Signal groups",
+    },
+    "SIGNAL_ALLOWED_GROUP_USERS": {
+        "description": (
+            "Comma-separated phone numbers or UUIDs allowed to interact with "
+            "the bot inside allowed groups, or * for all members (default)."
+        ),
+        "prompt": "Allowed Signal group members",
     },
     "WHATSAPP_ENABLED": {
         "description": "Enable the WhatsApp gateway adapter",

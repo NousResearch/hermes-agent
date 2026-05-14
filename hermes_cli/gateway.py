@@ -6101,7 +6101,7 @@ def _setup_signal():
     ):
         print()
         print_info("  Enter group IDs to allow, or * for all groups.")
-        existing_groups = get_env_value("SIGNAL_GROUP_ALLOWED_USERS") or ""
+        existing_groups = get_env_value("SIGNAL_ALLOWED_GROUPS") or ""
         try:
             groups = (
                 input(f"  Group IDs [{existing_groups or '*'}]: ").strip()
@@ -6111,16 +6111,28 @@ def _setup_signal():
         except (EOFError, KeyboardInterrupt):
             print("\n  Setup cancelled.")
             return
-        save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
+        save_env_value("SIGNAL_ALLOWED_GROUPS", groups)
+
+        # Group user allowlist
+        print()
+        print_info("  Control which users in authorized groups can interact with the bot.")
+        print_info("  Or leave empty to allow all group members (default: \"*\").")
+        print_info("  Per-group user allowlists are possible - see the Hermes docs for Signal for details.")
+        existing_group_users = get_env_value("SIGNAL_ALLOWED_GROUP_USERS") or "*"
+        try:
+            group_users = input(f"  Allowed users in groups [{existing_group_users}]: ").strip() or existing_group_users
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup cancelled.")
+            return
+        save_env_value("SIGNAL_ALLOWED_GROUP_USERS", group_users)
 
     print()
     print_success("Signal configured!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
     print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
-    print_info(
-        f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}"
-    )
+    group_chats = get_env_value("SIGNAL_ALLOWED_GROUPS")
+    print_info(f"  Groups: {'enabled' if group_chats else 'disabled'}")
 
 
 def _builtin_setup_fn(key: str):

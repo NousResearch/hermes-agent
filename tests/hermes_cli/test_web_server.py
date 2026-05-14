@@ -3200,6 +3200,43 @@ class TestWebServerEndpoints:
         assert "App-Level Tokens" in fields["SLACK_APP_TOKEN"]["help"]
         assert "Copy member ID" in fields["SLACK_ALLOWED_USERS"]["help"]
 
+    def test_signal_messaging_platform_exposes_group_auth_controls(self):
+        """The split group-auth vars must appear on the Signal dashboard card.
+
+        The card's env vars come from the _PLATFORM_OVERRIDES entry plus
+        OPTIONAL_ENV_VARS discovery; these two live only in _EXTRA_ENV_KEYS,
+        so they must be listed in the override (and described via
+        _MESSAGING_ENV_FALLBACKS) or the dashboard can't configure them.
+        """
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        signal = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "signal"
+        )
+        fields = {field["key"]: field for field in signal["env_vars"]}
+
+        assert set(fields) >= {
+            "SIGNAL_HTTP_URL",
+            "SIGNAL_ACCOUNT",
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_GROUPS",
+            "SIGNAL_ALLOWED_GROUP_USERS",
+        }
+        assert "group IDs" in fields["SIGNAL_ALLOWED_GROUPS"]["description"]
+        assert fields["SIGNAL_ALLOWED_GROUPS"]["prompt"] == "Allowed Signal groups"
+        assert "inside allowed groups" in (
+            fields["SIGNAL_ALLOWED_GROUP_USERS"]["description"]
+        )
+        assert fields["SIGNAL_ALLOWED_GROUP_USERS"]["prompt"] == (
+            "Allowed Signal group members"
+        )
+        # The deprecated alias must stay off the card — the dashboard should
+        # only offer the new split controls.
+        assert "SIGNAL_GROUP_ALLOWED_USERS" not in fields
+
     def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
         resp = self.client.get("/api/messaging/platforms")
 

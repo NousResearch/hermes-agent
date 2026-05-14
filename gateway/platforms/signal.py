@@ -25,7 +25,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
@@ -248,6 +248,15 @@ def validate_signal_config(config: PlatformConfig) -> bool:
     return bool(http_url and account)
 
 
+def _summarize_allowlist(allow_set: set) -> str:
+    """Render an allowlist set for log output: 'off', 'all', or member count."""
+    if not allow_set:
+        return "off"
+    if "*" in allow_set:
+        return "all"
+    return str(len(allow_set))
+
+
 # ---------------------------------------------------------------------------
 # Signal Adapter
 # ---------------------------------------------------------------------------
@@ -269,9 +278,35 @@ class SignalAdapter(BasePlatformAdapter):
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
 
-        # Parse allowlists — group policy is derived from presence of group allowlist
-        group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        self.group_allow_from = set(_parse_comma_list(group_allowed_str))
+        # ── Group chat allowlist ──────────────────────────────────────
+        # SIGNAL_ALLOWED_GROUPS controls which groups the bot monitors.
+        # - Not set / empty → groups disabled (default safe behavior)
+        # - Comma-separated group IDs → only those groups
+        # - "*" → all groups
+        #
+        # Legacy handling: the now-deprecated SIGNAL_GROUP_ALLOWED_USERS
+        # used to mean "group IDs" in older releases. If only the legacy
+        # var is set, route its value here so existing deployments keep
+        # working through the upgrade, and log a one-shot deprecation
+        # warning telling the operator to migrate.
+        group_chats_str = os.getenv("SIGNAL_ALLOWED_GROUPS", "")
+        legacy_group_users = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        if not group_chats_str and legacy_group_users:
+            logger.warning(
+                "Signal: SIGNAL_GROUP_ALLOWED_USERS is deprecated; treating "
+                "its value as group IDs for backward compatibility. Migrate "
+                "to SIGNAL_ALLOWED_GROUPS (group whitelist) and "
+                "SIGNAL_ALLOWED_GROUP_USERS (in-group user whitelist, defaults "
+                "to '*').",
+            )
+            group_chats_str = legacy_group_users
+        elif legacy_group_users and group_chats_str:
+            logger.warning(
+                "Signal: SIGNAL_GROUP_ALLOWED_USERS is deprecated and ignored "
+                "because SIGNAL_ALLOWED_GROUPS is also set. Remove the legacy "
+                "variable from your config.",
+            )
+        self.group_chat_allow_from = set(_parse_comma_list(group_chats_str))
 
         # Mention filter — only respond in groups when the bot account is @mentioned.
         # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
@@ -281,12 +316,26 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
-        # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
-        # Stored here so the reaction hooks can skip unauthorized senders
-        # (reactions fire before run.py's auth gate, so without this check
-        # every inbound DM from any contact gets a 👀 reaction).
-        # "*" means all users allowed (open mode); empty means no restriction
-        # recorded at adapter level (run.py still enforces auth separately).
+        # ── Global in-group user allowlist ────────────────────────────
+        # SIGNAL_ALLOWED_GROUP_USERS gates which users inside authorized
+        # groups can interact with the bot.  Defaults to "*" (all users
+        # in authorized groups are allowed).  Per-group overrides from
+        # config.yaml also take precedence (see _parse_group_config).
+        group_users_str = os.getenv("SIGNAL_ALLOWED_GROUP_USERS", "*")
+        self.group_user_allow_from = set(_parse_comma_list(group_users_str))
+
+        # ── Per-group user allowlist from config.yaml ─────────────────
+        self._per_group_allow_users: Dict[str, set] = {}
+        try:
+            self._parse_group_config(config)
+        except Exception:
+            logger.error("Failed to parse Signal group config", exc_info=True)
+
+        # ── DM allowlist ──────────────────────────────────────────────
+        # SIGNAL_ALLOWED_USERS gates who can DM the bot. Mirrored here
+        # so the reaction hooks can skip unauthorized senders (reactions
+        # fire before run.py's auth gate, so without this check every
+        # inbound DM from any contact gets a 👀 reaction).
         dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
         self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
 
@@ -338,9 +387,138 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
 
-        logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
-                     self.http_url, redact_phone(self.account),
-                     "enabled" if self.group_allow_from else "disabled")
+        per_group_summary = (
+            f"|per_group={len(self._per_group_allow_users)}"
+            if self._per_group_allow_users
+            else ""
+        )
+        logger.info(
+            "Signal adapter initialized: url=%s account=%s "
+            "groups[chats=%s|users=%s%s] dm_users=%s",
+            self.http_url, redact_phone(self.account),
+            _summarize_allowlist(self.group_chat_allow_from),
+            _summarize_allowlist(self.group_user_allow_from),
+            per_group_summary,
+            _summarize_allowlist(self.dm_allow_from),
+        )
+
+    # ------------------------------------------------------------------
+    # Group config from config.yaml
+    # ------------------------------------------------------------------
+
+    def _parse_group_config(self, config) -> None:
+        """Parse per-group user allowlists from config.yaml.
+
+        Expected YAML shape::
+
+          platforms:
+            signal:
+              extra:
+                groups:
+                  groupId1:
+                    allow_users: +123456789,+987654321
+                  groupId2:
+                    allow_users: "*"
+
+        Each entry is a single-key dict whose key is the group ID and value
+        is a dict with an ``allow_users`` key (comma-separated phone numbers
+        or ``"*"`` for all). Per-group lists override the global
+        ``SIGNAL_ALLOWED_GROUP_USERS`` for their respective groups.
+        """
+        extra = getattr(config, "extra", None) or {}
+        groups_cfg = extra.get("groups") if isinstance(extra, dict) else None
+        if not isinstance(groups_cfg, dict):
+            return
+
+        chats_wildcard = "*" in self.group_chat_allow_from
+
+        for group_id, group_cfg in groups_cfg.items():
+            if not isinstance(group_cfg, dict):
+                continue
+            allow_str = group_cfg.get("allow_users", "*")  # default to allowing all group users
+            if allow_str is None:
+                # `allow_users:` with no value (or explicit `null`) — treat as deny-all
+                # rather than silently falling through to the global default.
+                self._per_group_allow_users[group_id] = set()
+                continue
+            if isinstance(allow_str, list):
+                if len(allow_str) == 0:
+                    self._per_group_allow_users[group_id] = set()  # no authorized users is allowed
+                    continue
+                allow_str = ','.join(allow_str)
+            # Coerce: YAML parses unquoted +123456789 as integer
+            if isinstance(allow_str, (int, float)):
+                allow_str = str(allow_str)
+            if isinstance(allow_str, str):
+                per_group = set(_parse_comma_list(allow_str))
+                self._per_group_allow_users[group_id] = per_group
+
+            # sanity check: surface per-group allowlists missing in
+            # ``SIGNAL_ALLOWED_GROUPS`` - therefore being unreachable
+            if not chats_wildcard and group_id not in self.group_chat_allow_from:
+                logger.warning(
+                    "Signal: per-group config for %r but group is not in "
+                    "SIGNAL_ALLOWED_GROUPS — this entry will never apply.",
+                    group_id or "?",
+                )
+
+    def expand_user_aliases(self, identifier: Optional[str]) -> Set[str]:
+        """Return all known representations of a Signal identifier.
+
+        signal-cli reports senders as either an E.164 phone number or a
+        Signal service ID (UUID / PNI / ``u:``-prefixed handle), and the
+        same person may appear under either form across events. An
+        allowlist holding one form should match the other. We cache the
+        number↔UUID mapping as we observe it via
+        ``_remember_recipient_identifiers``; this helper returns the input
+        plus any counterpart we've seen so callers can do set-intersection
+        membership checks instead of brittle string equality.
+        """
+        if not identifier:
+            return set()
+        result = {identifier}
+        counterpart = self._recipient_uuid_by_number.get(identifier)
+        if counterpart:
+            result.add(counterpart)
+        counterpart = self._recipient_number_by_uuid.get(identifier)
+        if counterpart:
+            result.add(counterpart)
+        return result
+
+    def _is_group_user_allowed(self, group_id: str, user_id: str) -> bool:
+        """Check whether user_id is allowed to interact in group_id.
+
+        This is the inner fence of the two-layer group auth model.
+        The outer fence - whole-group authorization via
+        ``SIGNAL_ALLOWED_GROUPS`` - lives in
+        ``run.py._is_user_authorized`` and is mirrored at the top of
+        ``_handle_envelope``.  By the time this method runs, the group
+        itself is already authorized; we're just narrowing to specific
+        senders within it.
+
+        Resolution order:
+        1. Per-group allowlist from config.yaml (if present, wins).
+        2. Global SIGNAL_ALLOWED_GROUP_USERS env var (default ``"*"``).
+
+        Sender identity is expanded via ``expand_user_aliases`` so an
+        allowlist holding the phone number matches a sender reported by
+        UUID (and vice versa).
+
+        Returns True if the user is authorized.
+        """
+        candidate_ids = self.expand_user_aliases(user_id)
+
+        # 1. Per-group override
+        per_group = self._per_group_allow_users.get(group_id)
+        if per_group is not None:
+            if "*" in per_group:
+                return True
+            return bool(candidate_ids & per_group)
+
+        # 2. Global group user allowlist
+        if "*" in self.group_user_allow_from:
+            return True
+        return bool(candidate_ids & self.group_user_allow_from)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -598,17 +776,29 @@ class SignalAdapter(BasePlatformAdapter):
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
 
-        # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
-        # - No env var set → groups disabled (default safe behavior)
-        # - Env var set with group IDs → only those groups allowed
-        # - Env var set with "*" → all groups allowed
-        # DM auth is fully handled by run.py (_is_user_authorized)
+        # Group message filtering with two-layers:
+        #   * Outer fence (run.py._is_user_authorized) authorizes whole groups
+        #     via SIGNAL_ALLOWED_GROUPS. Adapter mirrors that gate here so
+        #     messages from non-allowed groups never reach run.py.
+        #   * Inner fence (this adapter) narrows which *users* inside an
+        #     authorized group can talk to the bot:
+        #       - SIGNAL_ALLOWED_GROUP_USERS (default "*") is the global gate.
+        #       - Per-group overrides from config.yaml take precedence when
+        #         present (see _is_group_user_allowed).
+        # DM auth is fully handled by run.py (_is_user_authorized).
         if is_group:
-            if not self.group_allow_from:
-                logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
+            if not self.group_chat_allow_from:
+                logger.debug("Signal: ignoring group message (no SIGNAL_ALLOWED_GROUPS)")
                 return
-            if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+            if "*" not in self.group_chat_allow_from and group_id not in self.group_chat_allow_from:
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
+                return
+            # In-group user gating
+            if not self._is_group_user_allowed(group_id, sender):
+                logger.debug(
+                    "Signal: ignoring group message from %s (not in group user allowlist for %s)",
+                    redact_phone(sender), group_id[:8] if group_id else "?",
+                )
                 return
 
         # Build chat info
@@ -1635,19 +1825,43 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """Check if message reactions are enabled for this event.
 
-        Two gates:
+        Three gates:
         1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
         2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
            messages from senders in that list.  This prevents unauthorized
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
+        3. Group user allowlist — for group messages, also check that the
+           sender is authorized by SIGNAL_ALLOWED_GROUP_USERS or per-group
+           config (same as _is_group_user_allowed).
         """
         if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
-            sender = getattr(getattr(event, "source", None), "user_id", None)
-            if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
-                return False
+            source = getattr(event, "source", None)
+            sender = getattr(source, "user_id", None) if source else None
+            chat_type = getattr(source, "chat_type", None) if source else None
+            chat_id_alt = getattr(source, "chat_id_alt", None) if source else None
+
+            # For group messages, mirror the message-handler fences.
+            # Fail closed if we somehow lost the group ID — better no
+            # reaction than a 👀 that leaks the bot's presence to an
+            # unauthorized chat.
+            if chat_type == "group":
+                if not chat_id_alt:
+                    return False
+                if (
+                    "*" not in self.group_chat_allow_from
+                    and chat_id_alt not in self.group_chat_allow_from
+                ):
+                    return False
+                if sender and not self._is_group_user_allowed(chat_id_alt, sender):
+                    return False
+            elif sender and "*" not in self.dm_allow_from:
+                # Phone↔UUID alias expansion: signal-cli may report this
+                # sender under either form across events, so check both.
+                if not (self.expand_user_aliases(sender) & self.dm_allow_from):
+                    return False
         return True
 
     async def on_processing_start(self, event: MessageEvent) -> None:

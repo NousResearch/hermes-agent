@@ -23,7 +23,7 @@ import requests
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
-from tools.registry import registry, tool_error
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,8 @@ def image_transform(
         )
         logger.debug("image_transform description: %s...", description[:120])
     except Exception as exc:
-        return {"success": False, "error": f"Vision analysis failed: {exc}"}
+        logger.exception("image_transform: vision analysis failed")
+        return {"success": False, "error": "Vision analysis failed", "error_type": "vision_error"}
 
     # ── Step 2: craft generation prompt ────────────────────────────────────
     try:
@@ -122,15 +123,16 @@ def image_transform(
         gen_prompt = gen_prompt[:1480].rsplit(" ", 1)[0] + "."
 
     try:
-        from tools.image_generation_tool import _dispatch_to_plugin_provider
-        result_json = _dispatch_to_plugin_provider(gen_prompt, aspect_ratio)
+        from tools.image_generation_tool import dispatch_to_provider
+        result_json = dispatch_to_provider(gen_prompt, aspect_ratio)
         if result_json:
             result = json.loads(result_json)
             result["source_description"] = description[:300]
             result["generation_prompt"] = gen_prompt
             return result
     except Exception as exc:
-        return {"success": False, "error": f"Image generation failed: {exc}"}
+        logger.exception("image_transform: image generation failed")
+        return {"success": False, "error": "Image generation failed", "error_type": "generation_error"}
 
     return {"success": False, "error": "No image gen provider available"}
 

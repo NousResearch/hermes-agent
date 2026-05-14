@@ -1035,6 +1035,17 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def dispatch_to_provider(prompt: str, aspect_ratio: str, **extra_kwargs):
+    """Public entry point for dispatching an image generation request to a
+    plugin-registered provider.
+
+    Thin wrapper around :func:`_dispatch_to_plugin_provider` so external
+    tools (e.g. ``image_transform_tool``) can import a stable public symbol
+    instead of coupling to a private helper.
+    """
+    return _dispatch_to_plugin_provider(prompt, aspect_ratio, **extra_kwargs)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:

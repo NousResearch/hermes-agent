@@ -323,6 +323,8 @@ def _contains_sudo_stdin_invocation(command: str) -> bool:
         sudo_index = _sudo_after_env_wrapper(words, index)
         if sudo_index is not None and _sudo_invocation_uses_stdin(words, sudo_index):
             return True
+        if _looks_like_env_assignment(word):
+            continue
         expect_command = False
     return False
 

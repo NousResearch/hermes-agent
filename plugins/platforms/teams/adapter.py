@@ -27,6 +27,9 @@ import html
 import json
 import logging
 import os
+import re
+import time
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -53,6 +56,8 @@ try:
     from microsoft_teams.api import MessageActivity, ConversationReference
     from microsoft_teams.api.activities.typing import TypingActivityInput
     from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
+    from microsoft_teams.api.activities.invoke.file_consent import FileConsentInvokeActivity
+    from microsoft_teams.api.models import FileUploadInfo
     from microsoft_teams.api.models.adaptive_card import (
         AdaptiveCardActionCardResponse,
         AdaptiveCardActionMessageResponse,
@@ -76,6 +81,8 @@ except ImportError:
     ConversationReference = None  # type: ignore[assignment,misc]
     TypingActivityInput = None  # type: ignore[assignment,misc]
     AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+    FileConsentInvokeActivity = None  # type: ignore[assignment,misc]
+    FileUploadInfo = None  # type: ignore[assignment,misc]
     AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
     AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
     AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
@@ -95,7 +102,11 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    cache_audio_from_url,
+    cache_document_from_bytes,
     cache_image_from_url,
+    cache_video_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -384,8 +395,66 @@ class _AiohttpBridgeAdapter:
 
 
 def check_requirements() -> bool:
-    """Return True when all Teams dependencies and credentials are present."""
-    return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
+    """Return True when all Teams dependencies and credentials are present.
+
+    Lazy-installs microsoft-teams-apps via ``tools.lazy_deps.ensure("platform.teams")``
+    on first call if not present, following the same pattern as check_slack_requirements().
+    """
+    global TEAMS_SDK_AVAILABLE, AIOHTTP_AVAILABLE, web
+    global App, ActivityContext, ClientOptions, MessageActivity, ConversationReference
+    global TypingActivityInput, AdaptiveCardInvokeActivity
+    global FileConsentInvokeActivity, FileUploadInfo
+    global AdaptiveCardActionCardResponse, AdaptiveCardActionMessageResponse
+    global InvokeResponse, AdaptiveCardInvokeResponse
+    global HttpMethod, HttpRequest, HttpResponse, HttpRouteHandler
+    global AdaptiveCard, ExecuteAction, TextBlock
+
+    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.teams", prompt=False)
+    except Exception:
+        return False
+    try:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App as _App, ActivityContext as _ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions as _ClientOptions
+        from microsoft_teams.api import MessageActivity as _MessageActivity, ConversationReference as _ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput as _TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity as _AdaptiveCardInvokeActivity
+        from microsoft_teams.api.activities.invoke.file_consent import FileConsentInvokeActivity as _FileConsentInvokeActivity
+        from microsoft_teams.api.models import FileUploadInfo as _FileUploadInfo
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse as _AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse as _AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import InvokeResponse as _InvokeResponse, AdaptiveCardInvokeResponse as _AdaptiveCardInvokeResponse
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod as _HttpMethod,
+            HttpRequest as _HttpRequest,
+            HttpResponse as _HttpResponse,
+            HttpRouteHandler as _HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard as _AdaptiveCard, ExecuteAction as _ExecuteAction, TextBlock as _TextBlock
+    except ImportError:
+        return False
+    web = _web
+    App, ActivityContext, ClientOptions = _App, _ActivityContext, _ClientOptions
+    MessageActivity, ConversationReference = _MessageActivity, _ConversationReference
+    TypingActivityInput = _TypingActivityInput
+    AdaptiveCardInvokeActivity = _AdaptiveCardInvokeActivity
+    FileConsentInvokeActivity = _FileConsentInvokeActivity
+    FileUploadInfo = _FileUploadInfo
+    AdaptiveCardActionCardResponse = _AdaptiveCardActionCardResponse
+    AdaptiveCardActionMessageResponse = _AdaptiveCardActionMessageResponse
+    InvokeResponse, AdaptiveCardInvokeResponse = _InvokeResponse, _AdaptiveCardInvokeResponse
+    HttpMethod, HttpRequest = _HttpMethod, _HttpRequest
+    HttpResponse, HttpRouteHandler = _HttpResponse, _HttpRouteHandler
+    AdaptiveCard, ExecuteAction, TextBlock = _AdaptiveCard, _ExecuteAction, _TextBlock
+    AIOHTTP_AVAILABLE = True
+    TEAMS_SDK_AVAILABLE = True
+    return True
 
 
 def validate_config(config) -> bool:
@@ -612,10 +681,173 @@ async def _standalone_send(
 check_teams_requirements = check_requirements
 
 
+_HOSTED_CONTENT_RE = re.compile(
+    r"/hostedContents/([^/?#]+)(?:/\$value)?(?:[?#]|$)",
+    re.IGNORECASE,
+)
+
+
+# Bot Framework hosts that require an Authorization: Bearer header on GETs.
+# When an inbound activity references a content_url under one of these hosts
+# (typical shape: https://smba.trafficmanager.net/<region>/<tenant>/v3/
+# attachments/<id>/views/original) the shared cache_*_from_url helpers will
+# 401 because they don't carry per-platform auth. We fetch the bytes here
+# instead, using the SDK-managed bot token, then route to cache_*_from_bytes.
+_BF_ATTACHMENT_HOSTS = {"smba.trafficmanager.net"}
+
+
+def _is_bf_attachment_url(url: Optional[str]) -> bool:
+    """True if ``url`` points at a Bot Framework attachment endpoint that
+    needs a Bearer token."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _BF_ATTACHMENT_HOSTS
+
+
+# Magic-byte prefixes used when a Teams attachment arrives with a wildcard
+# or missing MIME subtype (e.g. ``image/*`` from inline-pasted images). The
+# subtype must never be passed straight through into a cache filename or it
+# leaks as a literal ``.*`` extension and breaks downstream tooling that
+# resolves files by extension.
+_IMAGE_DEFAULT_EXT = ".jpg"
+_AUDIO_DEFAULT_EXT = ".ogg"
+_VIDEO_DEFAULT_EXT = ".mp4"
+
+
+def _sniff_image_ext(data: bytes) -> Optional[str]:
+    if not data:
+        return None
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"BM"):
+        return ".bmp"
+    return None
+
+
+def _sniff_audio_ext(data: bytes) -> Optional[str]:
+    if not data:
+        return None
+    if data.startswith(b"OggS"):
+        return ".ogg"
+    if data.startswith(b"ID3") or data.startswith(b"\xff\xfb") or data.startswith(b"\xff\xf3") or data.startswith(b"\xff\xf2"):
+        return ".mp3"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data.startswith(b"fLaC"):
+        return ".flac"
+    # ISO BMFF (m4a/aac in mp4 container) — ftyp box at offset 4
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in (b"M4A ", b"M4B ", b"mp42", b"isom"):
+            return ".m4a"
+    return None
+
+
+def _sniff_video_ext(data: bytes) -> Optional[str]:
+    if not data:
+        return None
+    # ISO BMFF — common brands for mp4/mov
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand.startswith(b"qt"):
+            return ".mov"
+        # isom / mp42 / iso2 / dash / etc. all map to .mp4 for our purposes
+        return ".mp4"
+    # WebM / Matroska EBML header
+    if data.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    # AVI
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"AVI ":
+        return ".avi"
+    return None
+
+
+def _resolve_media_ext(subtype: str, data: bytes, kind: str) -> str:
+    """Resolve a safe file extension for a Teams media attachment.
+
+    Teams sometimes posts attachments with ``content_type="image/*"`` (literal
+    asterisk wildcard) — particularly inline-pasted images. Splitting that on
+    ``"/"`` would yield ``"*"`` and produce a cache filename with a literal
+    ``.*`` extension, breaking every downstream consumer that opens files by
+    extension. Instead, when the subtype is missing, ``"*"``, or otherwise
+    meaningless, sniff the bytes via magic numbers and fall back to a sane
+    per-kind default.
+
+    Args:
+        subtype: The MIME subtype (already lowercased; e.g. ``"png"``,
+            ``"jpeg"``, ``"*"``, or ``""``).
+        data: The fetched bytes (may be empty if the fetch failed).
+        kind: ``"image"``, ``"audio"``, or ``"video"``.
+
+    Returns:
+        Extension including the leading dot, e.g. ``".png"``. Never returns
+        ``".*"`` or an empty string.
+    """
+    sub = (subtype or "").strip().lower()
+    # Strip any codec params left in the subtype (defence against caller bugs)
+    sub = sub.split(";", 1)[0].strip()
+
+    # jpeg → jpg normalisation, regardless of source
+    if sub == "jpeg":
+        return ".jpg"
+
+    # Explicit, non-wildcard subtype: trust it. Codec/container variants are
+    # too broad to whitelist and the caller already validated the kind via
+    # the ``image/`` / ``audio/`` / ``video/`` prefix.
+    if sub and sub != "*":
+        return "." + sub
+
+    # Wildcard or empty — sniff bytes.
+    if kind == "image":
+        sniffed = _sniff_image_ext(data)
+        return sniffed or _IMAGE_DEFAULT_EXT
+    if kind == "audio":
+        sniffed = _sniff_audio_ext(data)
+        return sniffed or _AUDIO_DEFAULT_EXT
+    if kind == "video":
+        sniffed = _sniff_video_ext(data)
+        return sniffed or _VIDEO_DEFAULT_EXT
+    return _IMAGE_DEFAULT_EXT
+
+
+def _parse_hosted_content_id(url: str) -> Optional[str]:
+    """Extract the hostedContents/{id} fragment from a Teams URL.
+
+    Returns the opaque id that Graph's
+    /teams/{team}/channels/{channel}/messages/{msg}/hostedContents/{id}
+    endpoint expects, or None when the URL isn't shaped that way
+    (e.g. a SharePoint file-upload URL — those have no Graph fallback).
+    """
+    if not url:
+        return None
+    match = _HOSTED_CONTENT_RE.search(url)
+    return match.group(1) if match else None
+
+
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
+
+    # Bound _pending_uploads memory: drop oldest beyond this many entries
+    # and sweep entries older than the TTL on every DM send. Without
+    # this, a long-running gateway holding many users' un-consented DM
+    # file sends grows unboundedly in RAM (especially when users send
+    # videos but never click Allow / Decline).
+    _PENDING_UPLOAD_MAX = 64
+    _PENDING_UPLOAD_TTL_SECONDS = 3600  # 1 hour
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -626,10 +858,39 @@ class TeamsAdapter(BasePlatformAdapter):
         self._port = int(extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT)))
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
+        # Captured in connect() so tools/send_message_tool._send_teams can
+        # bridge cross-loop calls back to the gateway loop the SDK App was
+        # built on. Stays None until connect() succeeds; cleared on
+        # disconnect(). See _send_teams' "Cross-loop bridge" docstring.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+
+        # SharePoint target for outbound channel/group file uploads.
+        # Defaults: site_id="" disables channel uploads; folder defaults to
+        # "hermes" so DM-only deployments without SharePoint config still
+        # construct cleanly (channel sends will return a clean error).
+        self._sharepoint_site_id: str = (
+            extra.get("sharepoint_site_id")
+            or os.getenv("TEAMS_SHAREPOINT_SITE_ID", "")
+        )
+        self._sharepoint_folder: str = (
+            extra.get("sharepoint_folder")
+            or os.getenv("TEAMS_SHAREPOINT_FOLDER", "hermes")
+        )
+        # Files awaiting FileConsent acceptance from a DM user — the
+        # fileConsent/invoke handler drains this dict; the DM send path
+        # primes it. Keyed by the upload_id seeded into the FileConsent
+        # acceptContext.
+        # OrderedDict + size cap + TTL bound memory; see
+        # _register_pending_upload / _evict_stale_pending_uploads.
+        self._pending_uploads: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        # Lazy Graph client + token provider; built on first channel send
+        # so DM-only deployments don't pay the msgraph-sdk import cost.
+        self._graph: Any = None
+        self._token_provider: Any = None
 
     async def connect(self) -> bool:
         if not TEAMS_SDK_AVAILABLE:
@@ -680,6 +941,12 @@ class TeamsAdapter(BasePlatformAdapter):
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
 
+            @self._app.on_file_consent
+            async def _handle_file_consent(
+                ctx: ActivityContext[FileConsentInvokeActivity],
+            ) -> Optional[InvokeResponse[None]]:
+                return await self._handle_file_consent_invoke(ctx)
+
             # initialize() calls register_route() on the bridge, which adds
             # POST /api/messages to aiohttp_app automatically
             await self._app.initialize()
@@ -690,6 +957,12 @@ class TeamsAdapter(BasePlatformAdapter):
             await site.start()
 
             self._running = True
+            # Capture the gateway loop so cross-loop callers (e.g.
+            # tools/send_message_tool._send_teams invoked from the agent's
+            # worker loop) can hop here via run_coroutine_threadsafe. Done
+            # last — only after _app + aiohttp are fully wired so a partial
+            # init never publishes a half-baked loop.
+            self._loop = asyncio.get_running_loop()
             self._mark_connected()
             logger.info(
                 "[teams] Webhook server listening on 0.0.0.0:%d%s",
@@ -713,8 +986,58 @@ class TeamsAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Clear the captured loop reference so a stale send_message tool
+        # call doesn't try to hop to a loop that's about to close.
+        self._loop = None
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
+
+    async def _fetch_bf_attachment_bytes(self, url: str) -> Optional[bytes]:
+        """GET a Bot Framework attachment URL with an SDK-minted bearer token.
+
+        BF attachment endpoints (``smba.trafficmanager.net/.../v3/attachments/
+        .../views/original``) reject anonymous GETs with 401. The SDK already
+        manages an MSAL-cached bot token via ``self._app._get_bot_token``;
+        we stringify that token (``JsonWebToken.__str__`` returns the raw JWT)
+        and attach it as ``Authorization: Bearer <jwt>``.
+
+        Returns the response body on 2xx, or ``None`` on any failure (no
+        token, non-200, network error). Logs at WARNING for diagnosable
+        failures so the same ``[teams][attach]`` log breadcrumbs the rest
+        of the attachment loop emits remain greppable.
+        """
+        if not url:
+            return None
+        if self._app is None:
+            logger.warning("[teams][attach] BF fetch skipped — no SDK app available")
+            return None
+        try:
+            token = await self._app._get_bot_token()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[teams][attach] BF token fetch failed: %s", exc)
+            return None
+        if token is None:
+            logger.warning("[teams][attach] BF token fetch returned None")
+            return None
+        bearer = str(token)
+        headers = {"Authorization": f"Bearer {bearer}"}
+
+        try:
+            import aiohttp as _aiohttp
+
+            timeout = _aiohttp.ClientTimeout(total=60)
+            async with _aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "[teams][attach] BF GET %s -> status=%s",
+                            url, resp.status,
+                        )
+                        return None
+                    return await resp.read()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[teams][attach] BF GET %s raised: %s", url, exc)
+            return None
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
@@ -770,22 +1093,325 @@ class TeamsAdapter(BasePlatformAdapter):
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
 
-        # Handle image attachments
+        # Handle inbound attachments — images, audio, video, and documents.
+        #
+        # Teams delivers attachments in two shapes:
+        #   1. ``content_type: "image/<sub>"`` (or "audio/...", "video/...") with
+        #      a Bot Framework URL in ``content_url``. These can be cached
+        #      directly from the URL.
+        #   2. ``content_type: "application/vnd.microsoft.teams.file.download.info"``
+        #      — file uploads from the Teams web/desktop client. The real
+        #      filename and download URL live in ``content`` (a SharePoint
+        #      tempauth URL — Authorization header MUST be omitted on the GET
+        #      or it returns 401). We fetch the bytes ourselves and route to
+        #      the appropriate cache_* helper based on file extension.
         media_urls = []
         media_types = []
-        for att in getattr(activity, "attachments", None) or []:
-            content_url = getattr(att, "content_url", None)
-            content_type = getattr(att, "content_type", None) or ""
-            if content_url and content_type.startswith("image/"):
-                try:
+        msg_type_override: Optional[MessageType] = None  # set by first non-image/non-text attachment
+        _IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+        _AUDIO_EXTS = {"mp3", "ogg", "wav", "m4a", "aac", "flac"}
+        _VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "avi"}
+        _DOC_EXT_TO_MIME = {
+            ext.lstrip("."): mime for ext, mime in SUPPORTED_DOCUMENT_TYPES.items()
+        }
+
+        attachments = getattr(activity, "attachments", None) or []
+        logger.info("[teams][attach] received %d attachment(s)", len(attachments))
+
+        # Context for Graph hostedContents fallback. Channel attachments
+        # (not DM uploads) carry team_id + channel_id under channel_data;
+        # without all three of (team, channel, activity_id) the fallback
+        # cannot address the blob and we just take the direct-failure path.
+        channel_data = getattr(activity, "channel_data", None) or {}
+        graph_team_id: Optional[str] = None
+        graph_channel_id: Optional[str] = None
+        graph_activity_id: str = str(getattr(activity, "id", "") or "")
+        if isinstance(channel_data, dict):
+            team_block = channel_data.get("team") or {}
+            channel_block = channel_data.get("channel") or {}
+            graph_team_id = team_block.get("id")
+            graph_channel_id = channel_block.get("id")
+
+        for idx, att in enumerate(attachments):
+            content_url = getattr(att, "content_url", None) or getattr(att, "contentUrl", None)
+            content_type = (getattr(att, "content_type", None) or getattr(att, "contentType", None) or "").lower()
+            att_name = getattr(att, "name", None)
+            logger.info(
+                "[teams][attach][%d] content_type=%r name=%r content_url=%r has_content=%s",
+                idx, content_type, att_name, content_url, getattr(att, "content", None) is not None,
+            )
+
+            try:
+                # ── Shape 1: classic content_url with image/audio/video MIME ─
+                if content_url and content_type.startswith("image/"):
+                    if _is_bf_attachment_url(content_url):
+                        logger.info("[teams][attach][%d] dispatch=image_bf_url", idx)
+                        data = await self._fetch_bf_attachment_bytes(content_url)
+                        cached = None
+                        if data is not None:
+                            from gateway.platforms.base import cache_image_from_bytes
+                            sub = content_type.split("/", 1)[1].split(";")[0].strip()
+                            ext = _resolve_media_ext(sub, data, "image")
+                            try:
+                                cached = cache_image_from_bytes(data, ext=ext)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception(
+                                    "[teams][attach][%d] cache_image_from_bytes failed: %s",
+                                    idx, exc,
+                                )
+                                cached = None
+                            logger.info("[teams][attach][%d] cache_image_from_bytes -> %r", idx, cached)
+                        if cached is None:
+                            cached = await self._try_graph_hosted_fallback(
+                                idx=idx,
+                                url=content_url,
+                                team_id=graph_team_id,
+                                channel_id=graph_channel_id,
+                                activity_id=graph_activity_id,
+                                kind="image",
+                                ext=".jpg",
+                                filename=att_name,
+                            )
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                        continue
+                    logger.info("[teams][attach][%d] dispatch=image_url", idx)
                     cached = await cache_image_from_url(content_url)
+                    logger.info("[teams][attach][%d] cache_image_from_url -> %r", idx, cached)
+                    if cached is None:
+                        cached = await self._try_graph_hosted_fallback(
+                            idx=idx,
+                            url=content_url,
+                            team_id=graph_team_id,
+                            channel_id=graph_channel_id,
+                            activity_id=graph_activity_id,
+                            kind="image",
+                            ext=".jpg",  # default — most hosted contents are jpegs
+                            filename=att_name,
+                        )
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
-                except Exception as e:
-                    logger.warning("[teams] Failed to cache image attachment: %s", e)
+                    continue
+                if content_url and content_type.startswith("audio/"):
+                    sub = content_type.split("/", 1)[1].split(";")[0].strip()
+                    if _is_bf_attachment_url(content_url):
+                        logger.info("[teams][attach][%d] dispatch=audio_bf_url subtype=%s", idx, sub or "*")
+                        data = await self._fetch_bf_attachment_bytes(content_url)
+                        cached = None
+                        if data is not None:
+                            from gateway.platforms.base import cache_audio_from_bytes
+                            ext = _resolve_media_ext(sub, data, "audio")
+                            try:
+                                cached = cache_audio_from_bytes(data, ext=ext)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception(
+                                    "[teams][attach][%d] cache_audio_from_bytes failed: %s",
+                                    idx, exc,
+                                )
+                                cached = None
+                            logger.info("[teams][attach][%d] cache_audio_from_bytes -> %r (ext=%s)", idx, cached, ext)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            msg_type_override = msg_type_override or MessageType.VOICE
+                        continue
+                    ext = _resolve_media_ext(sub, b"", "audio")
+                    logger.info("[teams][attach][%d] dispatch=audio_url ext=%s", idx, ext)
+                    cached = await cache_audio_from_url(content_url, ext=ext)
+                    logger.info("[teams][attach][%d] cache_audio_from_url -> %r", idx, cached)
+                    if cached:
+                        media_urls.append(cached)
+                        media_types.append(content_type)
+                        msg_type_override = msg_type_override or MessageType.VOICE
+                    continue
+                if content_url and content_type.startswith("video/"):
+                    sub = content_type.split("/", 1)[1].split(";")[0].strip()
+                    if _is_bf_attachment_url(content_url):
+                        logger.info("[teams][attach][%d] dispatch=video_bf_url subtype=%s", idx, sub or "*")
+                        data = await self._fetch_bf_attachment_bytes(content_url)
+                        cached = None
+                        if data is not None:
+                            from gateway.platforms.base import cache_video_from_bytes
+                            ext = _resolve_media_ext(sub, data, "video")
+                            try:
+                                cached = cache_video_from_bytes(data, ext=ext)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception(
+                                    "[teams][attach][%d] cache_video_from_bytes failed: %s",
+                                    idx, exc,
+                                )
+                                cached = None
+                            logger.info("[teams][attach][%d] cache_video_from_bytes -> %r (ext=%s)", idx, cached, ext)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            msg_type_override = msg_type_override or MessageType.VIDEO
+                        continue
+                    ext = _resolve_media_ext(sub, b"", "video")
+                    logger.info("[teams][attach][%d] dispatch=video_url ext=%s", idx, ext)
+                    cached = await cache_video_from_url(content_url, ext=ext)
+                    logger.info("[teams][attach][%d] cache_video_from_url -> %r", idx, cached)
+                    if cached:
+                        media_urls.append(cached)
+                        media_types.append(content_type)
+                        msg_type_override = msg_type_override or MessageType.VIDEO
+                    continue
 
-        msg_type = MessageType.PHOTO if media_urls else MessageType.TEXT
+                # ── Shape 2: file.download.info ─────────────────────────────
+                if content_type == "application/vnd.microsoft.teams.file.download.info":
+                    logger.info("[teams][attach][%d] dispatch=file.download.info", idx)
+                    content_block = getattr(att, "content", None) or {}
+                    # Bot Framework SDK delivers `content` as either a dict or
+                    # a typed object — handle both.
+                    def _field(obj, *names):
+                        for n in names:
+                            if isinstance(obj, dict):
+                                v = obj.get(n)
+                            else:
+                                v = getattr(obj, n, None)
+                            if v is not None:
+                                return v
+                        return None
+
+                    file_type = str(_field(content_block, "file_type", "fileType") or "").lower().lstrip(".")
+                    download_url = str(_field(content_block, "download_url", "downloadUrl") or "")
+                    filename = str(getattr(att, "name", None) or "").strip() or f"attachment.{file_type or 'bin'}"
+                    logger.info(
+                        "[teams][attach][%d] file.download.info parsed: filename=%r file_type=%r download_url=%r",
+                        idx, filename, file_type, download_url,
+                    )
+
+                    if not download_url or not file_type:
+                        logger.info(
+                            "[teams][attach][%d] DROP missing fields (name=%r, file_type=%r, has_url=%s)",
+                            idx, filename, file_type, bool(download_url),
+                        )
+                        continue
+
+                    # SharePoint tempauth URLs reject the Authorization header — fetch raw.
+                    import aiohttp as _aiohttp
+                    timeout = _aiohttp.ClientTimeout(total=60)
+                    async with _aiohttp.ClientSession(timeout=timeout) as sess:
+                        async with sess.get(download_url) as resp:
+                            logger.info(
+                                "[teams][attach][%d] tempauth GET %s -> status=%s",
+                                idx, filename, resp.status,
+                            )
+                            if resp.status != 200:
+                                logger.warning(
+                                    "[teams][attach][%d] tempauth GET %s returned %s — trying Graph fallback",
+                                    idx, filename, resp.status,
+                                )
+                                data = await self._try_graph_hosted_bytes(
+                                    url=download_url,
+                                    team_id=graph_team_id,
+                                    channel_id=graph_channel_id,
+                                    activity_id=graph_activity_id,
+                                )
+                                if data is None:
+                                    logger.warning(
+                                        "[teams][attach][%d] Graph fallback also failed for %s",
+                                        idx, filename,
+                                    )
+                                    continue
+                            else:
+                                data = await resp.read()
+                    logger.info("[teams][attach][%d] tempauth body len=%d bytes", idx, len(data))
+
+                    if file_type in _IMAGE_EXTS:
+                        logger.info("[teams][attach][%d] dispatch=image_bytes ext=%s", idx, file_type)
+                        # Treat as image — no _from_url helper needed since we have bytes.
+                        from gateway.platforms.base import cache_image_from_bytes
+                        cached = cache_image_from_bytes(data, ext="." + file_type)
+                        logger.info("[teams][attach][%d] cache_image_from_bytes -> %r", idx, cached)
+                        media_urls.append(cached)
+                        media_types.append(f"image/{file_type if file_type != 'jpg' else 'jpeg'}")
+                    elif file_type in _AUDIO_EXTS:
+                        logger.info("[teams][attach][%d] dispatch=audio_bytes ext=%s", idx, file_type)
+                        from gateway.platforms.base import cache_audio_from_bytes
+                        cached = cache_audio_from_bytes(data, ext="." + file_type)
+                        logger.info("[teams][attach][%d] cache_audio_from_bytes -> %r", idx, cached)
+                        media_urls.append(cached)
+                        media_types.append(f"audio/{file_type}")
+                        msg_type_override = msg_type_override or MessageType.VOICE
+                    elif file_type in _VIDEO_EXTS:
+                        logger.info("[teams][attach][%d] dispatch=video_bytes ext=%s", idx, file_type)
+                        from gateway.platforms.base import cache_video_from_bytes
+                        cached = cache_video_from_bytes(data, ext="." + file_type)
+                        logger.info("[teams][attach][%d] cache_video_from_bytes -> %r", idx, cached)
+                        media_urls.append(cached)
+                        media_types.append(f"video/{file_type}")
+                        msg_type_override = msg_type_override or MessageType.VIDEO
+                    elif file_type in _DOC_EXT_TO_MIME:
+                        logger.info("[teams][attach][%d] dispatch=document_bytes ext=%s mime=%s", idx, file_type, _DOC_EXT_TO_MIME[file_type])
+                        cached = cache_document_from_bytes(data, filename)
+                        logger.info("[teams][attach][%d] cache_document_from_bytes -> %r", idx, cached)
+                        media_urls.append(cached)
+                        media_types.append(_DOC_EXT_TO_MIME[file_type])
+                        msg_type_override = msg_type_override or MessageType.DOCUMENT
+                    else:
+                        logger.info(
+                            "[teams][attach][%d] DROP unsupported file_type (file_type=%r, name=%r)",
+                            idx, file_type, filename,
+                        )
+                    continue
+
+                # ── Fell through every branch ────────────────────────────────
+                # FORENSICS: dump the full content payload for text/html and
+                # other dropped attachments so we can see whether Teams is
+                # shipping inline <img src=".../hostedContents/.../$value">
+                # references in there. DEBUG-level so it's off in production
+                # but available when troubleshooting the channel-message inline
+                # image flow (PR #2's Graph hostedContents fallback path).
+                # Truncate to 8KB to keep logs sane.
+                if content_type == "text/html":
+                    raw_content = getattr(att, "content", None)
+                    if isinstance(raw_content, str):
+                        html_text = raw_content
+                    elif isinstance(raw_content, dict):
+                        html_text = raw_content.get("text") or raw_content.get("html") or repr(raw_content)
+                    else:
+                        html_text = repr(raw_content)
+                    snippet = html_text[:8192]
+                    truncated = "...[truncated]" if len(html_text) > 8192 else ""
+                    # Pull out any hostedContents URLs explicitly so they're greppable
+                    import re as _re
+                    hc_urls = _re.findall(
+                        r"https?://[^\"'\s>]*?hostedContents/[^\"'\s>]+",
+                        html_text,
+                    )
+                    logger.debug(
+                        "[teams][attach][%d] dropped html payload (%d chars, %d hostedContents refs): %s%s",
+                        idx, len(html_text), len(hc_urls), snippet, truncated,
+                    )
+                    for hc_idx, hc_url in enumerate(hc_urls):
+                        logger.debug(
+                            "[teams][attach][%d] dropped hostedContents[%d]: %s",
+                            idx, hc_idx, hc_url,
+                        )
+                logger.info(
+                    "[teams][attach][%d] DROP unhandled (content_type=%r, has_url=%s)",
+                    idx, content_type, bool(content_url),
+                )
+            except Exception as e:
+                logger.warning("[teams][attach][%d] EXCEPTION (content_type=%s): %s", idx, content_type, e)
+
+        logger.info(
+            "[teams][attach] done: %d cached, types=%r, msg_override=%r",
+            len(media_urls), media_types, msg_type_override,
+        )
+
+        # Image always wins over other media for downstream classification —
+        # the vision pipeline is the most useful interpretation when the user
+        # sent both an image and (e.g.) a document in the same message.
+        if any(t.startswith("image/") for t in media_types):
+            msg_type = MessageType.PHOTO
+        elif msg_type_override is not None:
+            msg_type = msg_type_override
+        else:
+            msg_type = MessageType.TEXT
 
         event = MessageEvent(
             text=text,
@@ -1066,6 +1692,606 @@ class TeamsAdapter(BasePlatformAdapter):
             caption=caption,
             reply_to=reply_to,
         )
+
+    # ------------------------------------------------------------------
+    # Outbound files — documents, video, voice
+    #
+    # Teams' wire protocol for file delivery is split:
+    #   • DMs: the bot sends a FileConsentCard, the user clicks accept,
+    #     Teams fires a fileConsent/invoke with a OneDrive upload URL,
+    #     the bot PUTs the bytes there. The DM send path primes
+    #     _pending_uploads; the fileConsent/invoke handler drains it.
+    #   • Channels / group chats: the bot uploads to a SharePoint
+    #     document library via Microsoft Graph, then sends a
+    #     file.download.info attachment pointing at the resulting
+    #     drive item's webUrl.
+    # ------------------------------------------------------------------
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        # ``file_name`` and ``metadata`` are accepted for parity with the base
+        # class signature; Teams cards always render the on-disk basename and
+        # Teams has no per-message metadata channel like Telegram's.
+        del file_name, metadata
+        return await self._send_local_file(chat_id, file_path, caption, reply_to)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        del metadata
+        return await self._send_local_file(chat_id, video_path, caption, reply_to)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        del metadata
+        return await self._send_local_file(chat_id, audio_path, caption, reply_to)
+
+    async def _send_local_file(
+        self,
+        chat_id: str,
+        path: str,
+        caption: Optional[str],
+        reply_to: Optional[str],
+    ) -> SendResult:
+        """Read *path* from disk and dispatch via the right Teams flow."""
+        if not os.path.isfile(path):
+            return SendResult(
+                success=False,
+                error=f"file not found: {path}",
+                retryable=False,
+            )
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            return SendResult(
+                success=False,
+                error=f"could not read file {path}: {e}",
+                retryable=False,
+            )
+        filename = os.path.basename(path)
+        if self._is_channel_chat(chat_id):
+            return await self._send_channel_file(
+                chat_id, filename, data, caption, reply_to
+            )
+        return await self._send_dm_file_consent(
+            chat_id, filename, data, caption, reply_to
+        )
+
+    def _is_channel_chat(self, chat_id: str) -> bool:
+        """Return True if *chat_id* refers to a Teams channel conversation.
+
+        Channel ids are shaped ``19:<groupId>@thread.tacv2`` whereas DMs
+        use ``a:...`` or ``19:<userId>@unq.gbl.spaces``. The id-shape
+        heuristic is necessary for cold-path sends (no inbound activity
+        seen yet) but a stored conversation reference is authoritative
+        when present — Teams tells us the conversation type explicitly.
+        """
+        ref = self._conv_refs.get(chat_id)
+        if ref is not None:
+            convo = getattr(ref, "conversation", None)
+            convo_type = getattr(convo, "conversation_type", None)
+            if convo_type:
+                return convo_type == "channel"
+        return chat_id.startswith("19:") and "@thread." in chat_id
+
+    async def _handle_file_consent_invoke(
+        self,
+        ctx: "ActivityContext[FileConsentInvokeActivity]",
+    ) -> "Optional[InvokeResponse[None]]":
+        """Resolve a fileConsent/invoke (Allow/Decline) activity.
+
+        Looks up the pending upload by ``context.upload_id``, declines
+        silently or PUTs the bytes to OneDrive on accept, then posts a
+        FileInfoCard so the attachment renders natively in the DM. The
+        pending entry is popped under every exit path so a Teams retry
+        cannot double-handle the upload.
+
+        Always returns None (the SDK auto-acks 200) — fileConsent retries
+        are noisy, and we'd rather log + drop a flaky upload than
+        retry-loop on it.
+        """
+        # Sweep stale pending entries before lookup (mirrors send-side eviction).
+        self._evict_stale_pending_uploads()
+
+        value = ctx.activity.value
+        if value is None:
+            logger.warning("[teams] fileConsent/invoke without value")
+            return None
+
+        # Defensive: context may arrive as a dict, an arbitrary pydantic-
+        # serialised object, or a plain string. Only the dict shape carries
+        # the upload_id we seeded in build_file_consent_card.
+        context = value.context or {}
+        if isinstance(context, dict):
+            upload_id = str(context.get("upload_id") or "")
+        else:
+            upload_id = ""
+
+        pending = self._pending_uploads.pop(upload_id, None) if upload_id else None
+        if pending is None:
+            logger.info(
+                "[teams] fileConsent invoke for unknown upload_id=%r "
+                "(stale card from a previous gateway run, restart between "
+                "send and click, or eviction)",
+                upload_id,
+            )
+            return None
+
+        action = str(getattr(value, "action", "") or "").lower()
+        # Action enum stringifies as "Action.ACCEPT" — fall back to .value.
+        if action.startswith("action."):
+            action = action.split(".", 1)[1]
+        if action != "accept":
+            logger.info(
+                "[teams] fileConsent declined for %s", pending["filename"]
+            )
+            await self._delete_consent_card(ctx, pending)
+            return None
+
+        upload_info = value.upload_info
+        if upload_info is None or not upload_info.upload_url:
+            logger.warning(
+                "[teams] fileConsent/invoke missing upload_info.upload_url for %s",
+                pending["filename"],
+            )
+            return None
+
+        # PUT the bytes to the OneDrive upload session.
+        success = await self._put_consent_bytes(
+            upload_info.upload_url, pending["bytes"]
+        )
+        if not success:
+            return None
+
+        # Delete the consent card so the buttons don't sit grey-then-re-enabled.
+        # Done before the FileInfoCard so the user sees the card disappear
+        # then the file appear, rather than two cards stacked briefly.
+        await self._delete_consent_card(ctx, pending)
+
+        # Post the FileInfoCard so the file renders as a native attachment.
+        await self._post_file_info_card(
+            chat_id=pending["chat_id"],
+            filename=pending["filename"],
+            upload_info=upload_info,
+            caption=pending.get("caption"),
+            reply_to=pending.get("reply_to"),
+        )
+        return None
+
+    async def _delete_consent_card(
+        self,
+        ctx: "ActivityContext[FileConsentInvokeActivity]",
+        pending: Dict[str, Any],
+    ) -> None:
+        """Delete the FileConsentCard activity that triggered this invoke.
+
+        Without this, Teams shows the card buttons greying out for a moment
+        then re-enabling — the card never reaches a resolved state in the
+        UI. Failures are swallowed and logged; consent-card cleanup must
+        never break the invoke handler (the upload itself already succeeded
+        / was declined).
+        """
+        activity_id = pending.get("activity_id")
+        if not activity_id:
+            # Older entries (or send_failed paths) won't have one.
+            return
+        try:
+            conversation_id = ctx.activity.conversation.id
+        except AttributeError:
+            logger.warning(
+                "[teams] consent-card delete skipped — no conversation.id on ctx"
+            )
+            return
+        try:
+            await ctx.api.conversations.activities(conversation_id).delete(
+                activity_id
+            )
+        except Exception as e:
+            logger.warning(
+                "[teams] consent-card delete failed for activity_id=%s: %s",
+                activity_id,
+                e,
+            )
+
+    async def _put_consent_bytes(self, upload_url: str, data: bytes) -> bool:
+        """PUT *data* to a OneDrive upload-session URL using the
+        single-shot content-range protocol. Returns ``True`` on a 2xx
+        response.
+
+        A fresh ``aiohttp.ClientSession`` is created per call. File
+        uploads are rare and transient so the per-call cost is fine; if
+        throughput becomes a concern we can plumb a shared session
+        through the adapter (upstream caches one on a ``_get_http_session``
+        helper).
+        """
+        try:
+            import aiohttp
+        except ImportError:
+            logger.error("[teams] aiohttp missing; cannot PUT FileConsent bytes")
+            return False
+
+        size = len(data)
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+            "Content-Range": f"bytes 0-{max(size - 1, 0)}/{size}",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(upload_url, data=data, headers=headers) as resp:
+                    if resp.status not in (200, 201):
+                        body = await resp.text()
+                        logger.warning(
+                            "[teams] FileConsent PUT failed status=%d body=%s",
+                            resp.status,
+                            body[:200],
+                        )
+                        return False
+        except aiohttp.ClientError as exc:
+            logger.warning("[teams] FileConsent PUT transport error: %s", exc)
+            return False
+        except Exception:
+            logger.exception("[teams] FileConsent PUT raised")
+            return False
+        return True
+
+    async def _post_file_info_card(
+        self,
+        *,
+        chat_id: str,
+        filename: str,
+        upload_info: "FileUploadInfo",
+        caption: Optional[str],
+        reply_to: Optional[str],
+    ) -> None:
+        """Send the FileInfoCard follow-up after a successful PUT."""
+        from plugins.platforms.teams.cards import build_file_info_card
+
+        card = build_file_info_card(
+            filename=filename,
+            content_url=upload_info.content_url or "",
+            unique_id=upload_info.unique_id,
+            file_type=upload_info.file_type,
+        )
+        result = await self._send_attachment(
+            chat_id, card, caption=caption, reply_to=reply_to
+        )
+        if not result.success:
+            logger.warning(
+                "[teams] FileInfoCard follow-up failed for %s: %s",
+                filename,
+                result.error,
+            )
+
+    async def _send_dm_file_consent(
+        self,
+        chat_id: str,
+        filename: str,
+        data: bytes,
+        caption: Optional[str],
+        reply_to: Optional[str],
+    ) -> SendResult:
+        """Send a FileConsentCard and remember the bytes for the invoke handler."""
+        from plugins.platforms.teams.cards import build_file_consent_card
+
+        # Sweep TTL-expired entries on every DM send so a long-running
+        # gateway with users who never click Allow / Decline doesn't grow
+        # unboundedly.
+        self._evict_stale_pending_uploads()
+
+        size = len(data)
+        accept_ctx = {"filename": filename, "service_url_chat_id": chat_id}
+        card = build_file_consent_card(
+            filename=filename,
+            size_bytes=size,
+            description=caption or f"Hermes wants to send you {filename}",
+            accept_context=accept_ctx,
+        )
+        upload_id = card["content"]["acceptContext"]["upload_id"]
+        # Stash the bytes + routing info; the fileConsent/invoke handler
+        # reads this back when the user clicks Accept.
+        self._register_pending_upload(
+            upload_id,
+            {
+                "filename": filename,
+                "bytes": data,
+                "chat_id": chat_id,
+                "caption": caption,
+                "reply_to": reply_to,
+            },
+        )
+        result = await self._send_attachment(
+            chat_id, card, caption=caption, reply_to=reply_to
+        )
+        if not result.success:
+            # Send failed — drop the stashed bytes so we don't leak
+            # ~one-file-of-RAM per failed FileConsent send. The user
+            # never got a card to click, so the entry is dead weight.
+            self._pending_uploads.pop(upload_id, None)
+            logger.warning(
+                "[teams] FileConsent send failed for upload_id=%s — "
+                "bytes dropped, user got no card",
+                upload_id,
+            )
+        else:
+            # Stash the consent card's activity_id so the invoke handler
+            # can delete the card on Accept/Decline. Without this, Teams
+            # leaves the card buttons grey-then-re-enabled (no resolution
+            # state) — the user reports the card "doesn't go away".
+            entry = self._pending_uploads.get(upload_id)
+            if entry is not None:
+                entry["activity_id"] = result.message_id
+        return result
+
+    def _register_pending_upload(
+        self, upload_id: str, entry: Dict[str, Any]
+    ) -> None:
+        """Insert a pending-upload entry, stamping it and enforcing the size cap.
+
+        Entries are stored with a monotonic timestamp so
+        ``_evict_stale_pending_uploads`` can sweep stale ones. When the cap
+        is reached we drop the oldest (FIFO via OrderedDict insertion order)
+        and emit a warning so saturation is visible in logs.
+        """
+        self._evict_stale_pending_uploads()
+        entry["ts"] = time.monotonic()
+        self._pending_uploads[upload_id] = entry
+        while len(self._pending_uploads) > self._PENDING_UPLOAD_MAX:
+            evicted_id, _evicted = self._pending_uploads.popitem(last=False)
+            logger.warning(
+                "[teams] _pending_uploads at cap (%d) — evicted oldest upload_id=%s",
+                self._PENDING_UPLOAD_MAX,
+                evicted_id,
+            )
+
+    def _evict_stale_pending_uploads(self) -> None:
+        """Drop pending-upload entries older than the TTL."""
+        now = time.monotonic()
+        ttl = self._PENDING_UPLOAD_TTL_SECONDS
+        stale = [
+            uid
+            for uid, entry in self._pending_uploads.items()
+            if now - entry.get("ts", now) > ttl
+        ]
+        for uid in stale:
+            self._pending_uploads.pop(uid, None)
+            logger.info(
+                "[teams] _pending_uploads evicted stale entry upload_id=%s (TTL %ds)",
+                uid,
+                ttl,
+            )
+
+    async def _send_channel_file(
+        self,
+        chat_id: str,
+        filename: str,
+        data: bytes,
+        caption: Optional[str],
+        reply_to: Optional[str],
+    ) -> SendResult:
+        """Upload to SharePoint via Graph and post a FileDownload card."""
+        if not self._sharepoint_site_id:
+            return SendResult(
+                success=False,
+                error=(
+                    "TEAMS_SHAREPOINT_SITE_ID not configured — "
+                    "channel uploads disabled"
+                ),
+                retryable=False,
+            )
+        graph = await self._ensure_graph()
+        # Sanitize the chat_id for use as a folder name. Teams ids contain
+        # ':' and '@' which work in URLs but make for ugly SharePoint
+        # paths. The mapping is one-way; we never reverse-engineer the
+        # chat_id from the folder.
+        safe_chat_id = chat_id.replace(":", "_").replace("@", "_at_")
+        folder = f"{self._sharepoint_folder}/{safe_chat_id}"
+        url = await graph.upload_to_sharepoint(
+            site_id=self._sharepoint_site_id,
+            folder_path=folder,
+            filename=filename,
+            content=data,
+        )
+        if not url:
+            # Graph errors are logged inside the client; surface a
+            # retryable failure so the gateway can re-queue.
+            return SendResult(
+                success=False,
+                error="SharePoint upload failed",
+                retryable=True,
+            )
+        from plugins.platforms.teams.cards import build_file_download_card
+
+        # Channel uploads don't have a Graph drive-item id readily on hand
+        # here (upload_to_sharepoint returns the webUrl, not the item id).
+        # Pass the filename + URL; cards.py infers fileType from the
+        # extension. unique_id is omitted — the card still renders.
+        card = build_file_download_card(
+            filename=filename,
+            content_url=url,
+        )
+        return await self._send_attachment(
+            chat_id, card, caption=caption, reply_to=reply_to
+        )
+
+    async def _ensure_graph(self):
+        """Lazily build the GraphClient + GraphTokenProvider."""
+        # Lazy single-init: there's no await between the check and the
+        # assignments, so asyncio's cooperative scheduler guarantees this
+        # block is atomic. Even on the (impossible) double-init path,
+        # GraphTokenProvider's per-scope locks make duplicate construction
+        # harmless.
+        if self._graph is None:
+            from plugins.platforms.teams.auth_graph import GraphTokenProvider
+            from plugins.platforms.teams.graph import GraphClient
+
+            self._token_provider = GraphTokenProvider(
+                client_id=self._client_id,
+                tenant_id=self._tenant_id,
+                client_secret=self._client_secret,
+            )
+            self._graph = GraphClient(self._token_provider)
+        return self._graph
+
+    async def _try_graph_hosted_bytes(
+        self,
+        *,
+        url: str,
+        team_id: Optional[str],
+        channel_id: Optional[str],
+        activity_id: str,
+    ) -> Optional[bytes]:
+        """Best-effort Graph hostedContents retrieval.
+
+        Returns the bytes on success, None on every failure path
+        (missing context, no hostedContents id in the URL, Graph
+        SDK not installed, Graph call raised, or Graph returned no
+        data). Callers fall through to whatever the direct path
+        produced (which may also be None — that's fine, the
+        attachment is just dropped at the higher level).
+        """
+        hosted_id = _parse_hosted_content_id(url)
+        if not (hosted_id and team_id and channel_id and activity_id):
+            return None
+        try:
+            graph = await self._ensure_graph()
+        except Exception as exc:
+            logger.warning(
+                "[teams][graph-fallback] Graph not available: %s", exc,
+            )
+            return None
+        if graph is None:
+            return None
+        try:
+            data = await graph.download_hosted_content(
+                team_id=team_id,
+                channel_id=channel_id,
+                message_id=activity_id,
+                hosted_content_id=hosted_id,
+            )
+        except Exception:
+            logger.exception(
+                "[teams][graph-fallback] download_hosted_content raised "
+                "for msg=%s hc=%s", activity_id, hosted_id,
+            )
+            return None
+        if data is not None:
+            logger.info(
+                "[teams][graph-fallback] recovered %d bytes via Graph "
+                "hostedContents (msg=%s, hc=%s)",
+                len(data), activity_id, hosted_id,
+            )
+        return data
+
+    async def _try_graph_hosted_fallback(
+        self,
+        *,
+        idx: int,
+        url: str,
+        team_id: Optional[str],
+        channel_id: Optional[str],
+        activity_id: str,
+        kind: str,                 # "image" — only image path uses this v1
+        ext: str,
+        filename: Optional[str] = None,
+    ) -> Optional[str]:
+        """Attempt Graph hostedContents fallback then cache the bytes.
+
+        Image-path entry point. Returns a cached file path on
+        success, None on failure. Documents from the file.download.info
+        branch use _try_graph_hosted_bytes directly (they need to
+        fan out to image / audio / video / doc caches based on
+        file_type, which the caller already has).
+        """
+        data = await self._try_graph_hosted_bytes(
+            url=url,
+            team_id=team_id,
+            channel_id=channel_id,
+            activity_id=activity_id,
+        )
+        if data is None:
+            return None
+        try:
+            from gateway.platforms.base import cache_image_from_bytes
+            return cache_image_from_bytes(data, ext=ext)
+        except Exception:
+            logger.exception(
+                "[teams][graph-fallback][%d] cache failed for %r",
+                idx, filename,
+            )
+            return None
+
+    async def _send_attachment(
+        self,
+        chat_id: str,
+        attachment_dict: Dict[str, Any],
+        *,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a Bot Framework Attachment dict via the Teams SDK.
+
+        The card builders in :mod:`plugins.platforms.teams.cards` produce
+        dicts in Bot Framework wire shape. ``microsoft_teams.api.Attachment``
+        is a pydantic model whose ``content_type`` / ``content`` / ``name``
+        fields map cleanly. We wrap the dict, attach it to a fresh
+        ``MessageActivityInput``, and send via the same conv_ref / direct
+        path the existing ``send_image`` uses.
+
+        ``reply_to`` is currently ignored — matching ``send_image``'s
+        behaviour. Threading file deliveries to a parent message can be
+        added later without changing the public surface.
+        """
+        # reply_to is a parity arg for the public send_* methods; threading
+        # behaviour is a future improvement.
+        del reply_to
+
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        try:
+            from microsoft_teams.api import Attachment, MessageActivityInput
+
+            att = Attachment(
+                content_type=attachment_dict["contentType"],
+                content_url=attachment_dict.get("contentUrl"),
+                content=attachment_dict.get("content"),
+                name=attachment_dict.get("name"),
+            )
+            activity = MessageActivityInput().add_attachments(att)
+            if caption:
+                activity = activity.add_text(caption)
+
+            conv_ref = self._conv_refs.get(chat_id)
+            if conv_ref:
+                result = await self._app.activity_sender.send(activity, conv_ref)
+            else:
+                result = await self._app.send(chat_id, activity)
+            return SendResult(success=True, message_id=getattr(result, "id", None))
+        except Exception as e:
+            logger.error("[teams] _send_attachment failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e), retryable=True)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}

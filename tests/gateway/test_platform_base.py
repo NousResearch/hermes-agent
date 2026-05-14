@@ -251,6 +251,86 @@ class TestExtractImages:
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
 
+    # ----- HTML <img> allowlist (slash-bug regression) ------------------------
+    # The HTML <img src=...> branch must apply the same allowlist (image
+    # extension or known CDN host) as the markdown branch. Otherwise, when the
+    # bot quotes an <img> tag in prose — even inside a backticked code span —
+    # the regex peels the URL out and ships it as a native attachment, which
+    # the platform can't authenticate/fetch and renders as a broken-image
+    # placeholder. Reproduced repeatedly on Teams DM today.
+
+    def test_html_img_placeholder_url_not_extracted(self):
+        """Pure prose teaching-example like `<img src="https://...">` must
+        not become a real attachment. This is the literal trigger that
+        produced a slash icon in Teams DM today."""
+        content = '`<img src="https://...">`'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_html_img_no_extension_not_extracted(self):
+        """An <img> tag whose URL has no image extension and is not on an
+        allowlisted CDN must not be extracted — even if otherwise well-formed."""
+        content = 'See `<img src="https://example.com/some/path">` for the shape.'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_html_img_ams_skype_url_not_extracted(self):
+        """AMSImage URL from Skype/Teams object store has no extension and is
+        not on the allowlist. The bot only sees these because Teams sent them
+        inbound; quoting them in prose must not boomerang them as outbound
+        attachments."""
+        content = (
+            'Inbound HTML payload contained '
+            '`<img src="https://us-api.asm.skype.com/v1/objects/0-eus-d16-abc/views/imgo">` '
+            'which is the AMS object-store URL.'
+        )
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_html_img_graph_hostedcontents_url_not_extracted(self):
+        """Microsoft Graph hostedContents URL (`/$value`) has no extension and
+        requires Graph auth; must not be extracted as a public image URL."""
+        content = (
+            'Channel inline path uses '
+            '`<img src="https://graph.microsoft.com/v1.0/chats/x/messages/y/'
+            'hostedContents/z/$value">` references.'
+        )
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_html_img_with_image_extension_still_extracted(self):
+        """Regression: real <img> tags with image extensions must keep working."""
+        content = '<img src="https://example.com/cat.png">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/cat.png"
+
+    def test_html_img_with_query_string_and_image_extension(self):
+        """Image URL with a query string (e.g. CDN cache-busting) should still
+        match the allowlist via the extension-in-path check."""
+        content = '<img src="https://example.com/cat.png?w=400&h=300">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/cat.png?w=400&h=300"
+
+    def test_html_img_with_allowlisted_cdn_still_extracted(self):
+        """Regression: <img> with a known image-CDN host (e.g. fal.media) must
+        still be extracted even without a recognized extension."""
+        content = '<img src="https://fal.media/files/abc/output">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://fal.media/files/abc/output"
+
+    def test_html_img_non_image_url_preserved_in_cleaned_text(self):
+        """When an <img> tag is rejected by the allowlist, the original tag
+        must survive in the cleaned content — we don't extract it AND we
+        don't silently strip it."""
+        original = '`<img src="https://example.com/some/path">`'
+        content = f"Discussion: {original} as an example."
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert original in cleaned
+
 
 # ---------------------------------------------------------------------------
 # extract_media

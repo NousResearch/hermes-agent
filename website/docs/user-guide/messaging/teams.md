@@ -135,6 +135,8 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
+| `TEAMS_SHAREPOINT_SITE_ID` | SharePoint site ID for outbound channel/group file uploads (e.g. `tenant.sharepoint.com,GUID,GUID`). Optional — leave unset for DM-only file sends. |
+| `TEAMS_SHAREPOINT_FOLDER` | Folder path under the SharePoint site's default drive where uploads land. Default: `hermes`. Created on first upload. |
 
 ### config.yaml
 
@@ -165,6 +167,49 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 - **Deny** — reject the command
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
+
+### File Attachments
+
+The Teams adapter handles file attachments in both directions, so the agent can read what users send it and reply with images, audio, video, and documents.
+
+#### Inbound (user → Hermes)
+
+When you attach a file in a Teams chat, the adapter downloads the bytes and hands them to the agent as a regular file the model can see (images and PDFs go through vision; audio is transcribed; video and other documents arrive as cached files the agent can `read_file`).
+
+| Type | Supported |
+|------|-----------|
+| Images | PNG, JPEG, GIF, WebP (rendered via vision) |
+| Audio | MP3, WAV, M4A, OGG (transcribed) |
+| Video | MP4, MOV, WebM (cached as a file reference) |
+| Documents | PDF, DOCX, XLSX, TXT (cached as a file reference) |
+
+The adapter first tries the Bot Framework attachment URL, then falls back to **Microsoft Graph hosted-content download** if the Bot Framework returns 401/403. The Graph fallback uses the same Azure AD app credentials (`TEAMS_CLIENT_ID` / `TEAMS_CLIENT_SECRET` / `TEAMS_TENANT_ID`) — no extra setup is needed when the bot already has the standard Teams permissions, but tenants with stricter scopes may need to grant the bot additional Graph application permissions to download hosted content.
+
+#### Outbound (Hermes → user)
+
+When the agent sends a file (via `send_message` with a `MEDIA:<path>` body, or any tool that produces a file artifact), the path the adapter takes depends on the conversation type:
+
+| Conversation | Delivery mechanism |
+|--------------|--------------------|
+| **Personal chat (DM)** | **FileConsent card flow.** The bot posts a `FileConsentCard`, the user clicks **Accept**, and the adapter uploads bytes to the Teams-provided OneDrive upload URL. No SharePoint required. |
+| **Channel or group chat** | **SharePoint upload.** The adapter uploads the file to the configured SharePoint document library, then posts a `FileInfoCard` linking to it. Requires `TEAMS_SHAREPOINT_SITE_ID` to be set. |
+
+To enable channel/group file sends, set the SharePoint site and (optionally) folder:
+
+```bash
+TEAMS_SHAREPOINT_SITE_ID=tenant.sharepoint.com,<site-guid>,<web-guid>
+TEAMS_SHAREPOINT_FOLDER=hermes   # default; created on first upload
+```
+
+Find the site ID via Microsoft Graph:
+
+```
+GET https://graph.microsoft.com/v1.0/sites/{hostname}:/{server-relative-path}
+```
+
+The bot's Azure AD app needs `Files.ReadWrite.All` and `Sites.ReadWrite.All` application permissions for SharePoint uploads. DM file sends via FileConsent need no extra Graph permissions.
+
+If `TEAMS_SHAREPOINT_SITE_ID` is unset, the adapter still handles DM file sends; channel/group file sends will be skipped with a warning in the logs.
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 

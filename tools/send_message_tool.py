@@ -685,11 +685,33 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Teams: outbound media via the *running* adapter (FileConsent +
+    # SharePoint/Graph fallback). Cannot use a fresh adapter — the live
+    # instance owns _pending_uploads / _conv_refs which back the
+    # outbound→inbound webhook rendezvous. See _send_teams docstring.
+    # Teams is a plugin adapter so it has no static Platform.TEAMS — use
+    # the value-based comparison (Platform._missing_ caches the pseudo-
+    # member, so identity is stable across calls). ---
+    if platform == Platform("teams") and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_teams(
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and teams; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -697,7 +719,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and teams"
         )
 
     last_result = None
@@ -1758,6 +1780,135 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _send_teams(chat_id, message, media_files=None, thread_id=None):
+    """Send via the *running* Microsoft Teams adapter held by the gateway.
+
+    Unlike stateless REST adapters (Feishu, Telegram, Discord, ...) the
+    Teams adapter holds per-process state — most importantly
+    ``_pending_uploads``, the rendezvous between an outbound
+    ``FileConsentCard`` and the later inbound ``fileConsent/invoke``
+    webhook the user triggers by clicking *Accept*. Instantiating a
+    fresh ``TeamsAdapter`` here would seed *its own* dict, send the
+    card, and exit; the user's Accept click would then route to the
+    gateway's running adapter (whose state was never seeded) and the
+    upload would silently fail. Same trap will recur in any future
+    Bot-Framework-style adapter (Webex, Zoom Apps, Google Chat).
+
+    Cross-loop bridge
+    -----------------
+    The Microsoft Teams SDK ``App`` is constructed at gateway startup
+    on the gateway's main event loop. It caches ``asyncio.Event`` /
+    ``asyncio.Lock`` primitives that are forever bound to *that* loop.
+
+    Tool calls reach this helper via ``model_tools._run_async``, which
+    — when an outer loop is already running — spawns a fresh worker
+    loop in a sidecar thread and runs the coroutine there. Awaiting
+    ``adapter.send_*`` from that worker loop touches the SDK's
+    loop-bound primitives and raises::
+
+        RuntimeError: <Event ... [unset]> is bound to a different
+        event loop
+
+    Workaround: ``TeamsAdapter.connect()`` records ``self._loop`` (the
+    gateway's loop) and we hop to it via
+    ``asyncio.run_coroutine_threadsafe`` when the call site loop
+    differs.
+
+    Architecture writeup: ``hermes-agent-pilot`` skill, reference
+    ``outbound-media-wiring-by-send-model.md``.
+    """
+    from tools._running_adapters import get_running_adapter
+
+    adapter = get_running_adapter("teams")
+    if adapter is None:
+        return _error(
+            "Teams not connected — no running adapter registered. "
+            "Outbound Teams sends require the gateway's Teams adapter to "
+            "be active so per-process state (_pending_uploads, "
+            "_conv_refs) is available for the FileConsent rendezvous."
+        )
+
+    media_files = media_files or []
+    metadata = {"thread_id": thread_id} if thread_id else None
+
+    # Bridge factory: returns an awaitable that runs ``coro`` on the
+    # adapter's loop when one was captured and differs from ours;
+    # otherwise awaits inline. Wrapping every send in this keeps the
+    # cross-loop trap from re-emerging if a new send_* is added later.
+    async def _on_adapter_loop(coro_factory):
+        adapter_loop = getattr(adapter, "_loop", None)
+        # Treat anything that isn't a real running loop as "not captured"
+        # — protects against MagicMock auto-attributes and adapters that
+        # haven't opted in yet.
+        if not isinstance(adapter_loop, asyncio.AbstractEventLoop):
+            return await coro_factory()
+
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+
+        if current is adapter_loop or not adapter_loop.is_running():
+            # Same loop, or adapter loop isn't running (test/teardown) —
+            # inline await is correct and avoids a thread hop.
+            return await coro_factory()
+
+        # Cross-loop: schedule on the adapter's loop, await the result
+        # from ours via asyncio.wrap_future.
+        future = asyncio.run_coroutine_threadsafe(coro_factory(), adapter_loop)
+        return await asyncio.wrap_future(future)
+
+    try:
+        last_result = None
+        if message.strip():
+            last_result = await _on_adapter_loop(
+                lambda: adapter.send(chat_id, message, metadata=metadata)
+            )
+            if not last_result.success:
+                return _error(f"Teams send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await _on_adapter_loop(
+                    lambda p=media_path: adapter.send_image_file(chat_id, p, metadata=metadata)
+                )
+            elif ext in _VIDEO_EXTS:
+                last_result = await _on_adapter_loop(
+                    lambda p=media_path: adapter.send_video(chat_id, p, metadata=metadata)
+                )
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await _on_adapter_loop(
+                    lambda p=media_path: adapter.send_voice(chat_id, p, metadata=metadata)
+                )
+            elif ext in _AUDIO_EXTS:
+                last_result = await _on_adapter_loop(
+                    lambda p=media_path: adapter.send_voice(chat_id, p, metadata=metadata)
+                )
+            else:
+                last_result = await _on_adapter_loop(
+                    lambda p=media_path: adapter.send_document(chat_id, p, metadata=metadata)
+                )
+
+            if not last_result.success:
+                return _error(f"Teams media send failed: {last_result.error}")
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {
+            "success": True,
+            "platform": "teams",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return _error(f"Teams send failed: {e}")
 
 
 def _check_send_message():

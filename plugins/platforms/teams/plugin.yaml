@@ -46,3 +46,19 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TEAMS_SHAREPOINT_SITE_ID
+    description: >
+      SharePoint site ID where the bot uploads files when sending to a
+      channel or group chat (e.g. tenant.sharepoint.com,GUID,GUID).
+      Required only for outbound channel/group file sends — DM file
+      sends use the FileConsent flow and skip SharePoint entirely.
+      Find via Graph: GET /sites/{hostname}:/{server-relative-path}.
+    prompt: "SharePoint site ID (or empty for DM-only file sends)"
+    password: false
+  - name: TEAMS_SHAREPOINT_FOLDER
+    description: >
+      Folder path under the SharePoint site's default drive where bot
+      uploads land (default: hermes). Created on first upload if it
+      doesn't exist. Only used when TEAMS_SHAREPOINT_SITE_ID is set.
+    prompt: "SharePoint folder (default: hermes)"
+    password: false

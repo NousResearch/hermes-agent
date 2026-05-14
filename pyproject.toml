@@ -148,6 +148,22 @@ termux-all = [
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+# Microsoft Graph SDK — used by the Teams platform plugin's outbound file
+# upload path (cards/graph/auth_graph). Kept separate from any base `teams`
+# extra so Graph stays opt-in; lazy-installs on first use via
+# `platform.teams.graph` in tools/lazy_deps.py.
+# Pinned exactly per the policy block at the top of this file
+# (post-Mini-Shai-Hulud, 2026-05-12). These are auth/identity packages —
+# the policy applies even more strongly. msal is kept as an explicit pin
+# (in addition to azure-identity, which depends on it transitively) because
+# the Graph token-acquisition path uses msal.ConfidentialClientApplication
+# directly for client-credentials flow.
+teams-files = [
+  "msgraph-sdk==1.57.0",
+  "msgraph-core==1.3.8",
+  "azure-identity==1.25.3",
+  "msal==1.36.0",
+]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with

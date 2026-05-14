@@ -2389,6 +2389,7 @@ class AIAgent:
                     platform=self.platform or "cli",
                     model=self.model,
                     context_length=getattr(self.context_compressor, "context_length", 0),
+                    conversation_id=self._gateway_session_key,
                 )
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
@@ -2583,6 +2584,7 @@ class AIAgent:
                 "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
+                "conversation_id": getattr(self, "_gateway_session_key", None),
             }
             start_context.update(extra_context)
             start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
@@ -10538,6 +10540,7 @@ class AIAgent:
                     self.session_id or "",
                     boundary_reason="compression",
                     old_session_id=_old_sid,
+                    conversation_id=getattr(self, "_gateway_session_key", None),
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)

@@ -30,6 +30,7 @@ class TestCompressionBoundaryHook:
                 quiet_mode=True,
                 session_db=session_db,
                 session_id="original-session",
+                gateway_session_key="agent:main:telegram:group:-1002285219667:17585",
                 skip_context_files=True,
                 skip_memory=True,
             )
@@ -85,6 +86,7 @@ class TestCompressionBoundaryHook:
                 f"Expected new session_id as first positional arg, got {call!r}"
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+            assert call.kwargs.get("conversation_id") == "agent:main:telegram:group:-1002285219667:17585"
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""

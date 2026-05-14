@@ -127,6 +127,7 @@ class TestResetSessionState:
         agent.session_id = "new-session-id"
         agent.platform = "cli"
         agent.model = "test-model"
+        agent._gateway_session_key = "agent:main:telegram:dm:123"
 
         class FakePluginEngine:
             context_length = 1234
@@ -165,4 +166,5 @@ class TestResetSessionState:
         assert engine.started_with[1]["old_session_id"] == "old-session-id"
         assert engine.started_with[1]["carry_over_context"] is True
         assert engine.started_with[1]["context_length"] == 1234
+        assert engine.started_with[1]["conversation_id"] == "agent:main:telegram:dm:123"
         assert engine.carried_over == ("old-session-id", "new-session-id")

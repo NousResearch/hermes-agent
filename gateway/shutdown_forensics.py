@@ -33,7 +33,6 @@ for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"):
     if _val is not None:
         _SIGNAL_NAME_BY_NUM[int(_val)] = _name
 
-
 def _signal_name(sig: Any) -> str:
     """Return a human-readable signal name (or ``str(sig)`` as fallback)."""
     if sig is None:
@@ -43,7 +42,6 @@ def _signal_name(sig: Any) -> str:
     except (TypeError, ValueError):
         return str(sig)
     return _SIGNAL_NAME_BY_NUM.get(sig_int, f"signal#{sig_int}")
-
 
 def _read_proc_field(pid: int, key: str) -> Optional[str]:
     """Read a single field from /proc/<pid>/status.  Linux only; None elsewhere."""
@@ -56,7 +54,6 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
         pass
     return None
 
-
 def _read_proc_cmdline(pid: int) -> Optional[str]:
     """Read /proc/<pid>/cmdline as a printable string.  Linux only; None elsewhere."""
     try:
@@ -68,7 +65,6 @@ def _read_proc_cmdline(pid: int) -> Optional[str]:
         return None
     # cmdline uses NUL separators
     return data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
-
 
 def _proc_summary(pid: int) -> Dict[str, Any]:
     """Compact /proc/<pid> snapshot: pid, ppid, state, uid, cmdline.
@@ -100,7 +96,6 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
         summary["cmdline"] = cmdline[:300]
     return summary
 
-
 def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down.
 
@@ -108,7 +103,8 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
 
     * The signal number/name (so SIGINT vs SIGTERM is visible)
     * Our own PID/ppid + parent process info from /proc (Linux)
-    * Whether systemd is our parent (``ppid==1`` or ``INVOCATION_ID`` set)
+    * Whether systemd is our parent (``INVOCATION_ID`` set, or
+      ``ppid==1`` on Linux where PID 1 is reliably systemd)
     * Whether takeover/planned-stop markers exist (consumed lazily by the caller)
     * /proc/self limits + load average (1-min)
     * Wall-clock and monotonic timestamps for cross-correlating later phases
@@ -132,15 +128,18 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     }
 
     # systemd context.  If we were started by a systemd unit, INVOCATION_ID
-    # is set in our env.  ppid==1 (init) is also a strong signal that
-    # systemd reaped+forwarded the SIGTERM.
+    # is set in our env.  ppid==1 (init) is also a strong signal on Linux
+    # that systemd reaped+forwarded the SIGTERM.  On macOS, PID 1 is
+    # launchd (not systemd), so ppid==1 must NOT be treated as systemd.
     invocation_id = os.environ.get("INVOCATION_ID")
     if invocation_id:
         ctx["systemd_invocation_id"] = invocation_id
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    ctx["under_systemd"] = bool(invocation_id) or (
+        sys.platform.startswith("linux") and ppid == 1
+    )
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".
@@ -192,7 +191,6 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
         pass
 
     return ctx
-
 
 def spawn_async_diagnostic(
     log_path: Path,
@@ -277,7 +275,6 @@ def spawn_async_diagnostic(
 
     return proc.pid
 
-
 def format_context_for_log(ctx: Dict[str, Any]) -> str:
     """Render a shutdown context dict as a single, scannable log line."""
     sig = ctx.get("signal", "?")
@@ -310,14 +307,12 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
         f"parent_cmdline={parent_cmd!r}"
     )
 
-
 def context_as_json(ctx: Dict[str, Any]) -> str:
     """JSON-serialise a context dict for structured ingestion.  Never raises."""
     try:
         return json.dumps(ctx, default=str, sort_keys=True)
     except (TypeError, ValueError):
         return "{}"
-
 
 def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec >= drain_timeout.
@@ -404,7 +399,6 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         "expected_min": expected,
         "mismatch": timeout_stop_sec < expected,
     }
-
 
 def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds.

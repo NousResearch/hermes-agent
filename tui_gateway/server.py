@@ -5531,6 +5531,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "loop",
     }
 )
 
@@ -5920,7 +5921,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from hermes_cli.loop import LoopManager, _parse_interval
+            from hermes_cli.loop import LoopManager, _parse_loop_command
         except Exception as exc:
             return _err(rid, 5030, f"loop unavailable: {exc}")
 
@@ -5938,60 +5939,67 @@ def _(rid, params: dict) -> dict:
             )
             session["_loop_manager"] = mgr
 
-        lower = arg.strip().lower()
-        if not arg.strip() or lower == "status":
+        parsed = _parse_loop_command(arg)
+        action = parsed["action"]
+
+        if action == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
-        if lower == "pause":
-            state = mgr.pause(reason="user-paused")
-            out = "No loop set." if state is None else f"⏸ Loop paused: {state.prompt}"
-            return _ok(rid, {"type": "exec", "output": out})
-        if lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                return _ok(rid, {"type": "exec", "output": "No loop to resume."})
-            return _ok(rid, {"type": "exec", "output": f"▶ Loop resumed: {state.prompt}"})
-        if lower in {"clear", "stop", "done"}:
-            had = mgr.is_active() or (mgr.state is not None)
-            mgr.clear()
+
+        if action == "pause_all":
+            paused = mgr.pause()
+            if not paused:
+                return _ok(rid, {"type": "exec", "output": "No active loops."})
+            ids = ", ".join(f"#{s.id}" for s in paused)
+            return _ok(rid, {"type": "exec", "output": f"⏸ Paused: {ids}"})
+
+        if action == "pause":
+            paused = mgr.pause(uid=parsed["uid"])
+            if not paused:
+                return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+            return _ok(rid, {"type": "exec", "output": f"⏸ Loop #{parsed['uid']} paused: {paused[0].prompt}"})
+
+        if action == "resume_all":
+            resumed = mgr.resume()
+            if not resumed:
+                return _ok(rid, {"type": "exec", "output": "No paused loops."})
+            ids = ", ".join(f"#{s.id}" for s in resumed)
+            return _ok(rid, {"type": "exec", "output": f"▶ Resumed: {ids}"})
+
+        if action == "resume":
+            resumed = mgr.resume(uid=parsed["uid"])
+            if not resumed:
+                return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+            return _ok(rid, {"type": "exec", "output": f"▶ Loop #{parsed['uid']} resumed: {resumed[0].prompt}"})
+
+        if action == "clear_all":
+            count = mgr.clear()
+            if count:
+                return _ok(rid, {"type": "exec", "output": f"✓ {count} loop(s) cleared."})
+            return _ok(rid, {"type": "exec", "output": "No active loops."})
+
+        if action == "clear":
+            count = mgr.clear(uid=parsed["uid"])
+            if count:
+                return _ok(rid, {"type": "exec", "output": f"✓ Loop #{parsed['uid']} cleared."})
+            return _ok(rid, {"type": "exec", "output": f"No loop #{parsed['uid']}."})
+
+        if action == "set":
+            try:
+                state = mgr.add(
+                    parsed["prompt"],
+                    interval_seconds=parsed["interval"],
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"invalid loop: {exc}")
+
+            notice = (
+                f"⊙ Loop #{state.id} set: every {state.interval_seconds}s → {state.prompt}\n"
+                "Controls: /loop list · /loop status · /loop pause · /loop resume · /loop clear"
+            )
             return _ok(
                 rid,
-                {"type": "exec",
-                 "output": "✓ Loop cleared." if had else "No active loop."},
+                {"type": "send", "notice": notice, "message": state.prompt},
             )
-
-        # Parse optional interval prefix: "5m <prompt>" or "every 5m <prompt>"
-        interval_seconds = 300  # default 5 minutes
-        prompt = arg
-        tokens = arg.split(None, 2)
-        if len(tokens) >= 2 and tokens[0].lower() == "every":
-            parsed = _parse_interval(tokens[1])
-            if parsed is not None:
-                interval_seconds = parsed
-                prompt = tokens[2] if len(tokens) > 2 else ""
-        else:
-            parsed = _parse_interval(tokens[0])
-            if parsed is not None and len(tokens) > 1:
-                interval_seconds = parsed
-                prompt = " ".join(tokens[1:])
-
-        if not prompt.strip():
-            return _err(rid, 4004, "usage: /loop [interval] <prompt>  e.g. /loop 5m check deployment")
-
-        try:
-            state = mgr.set(prompt, interval_seconds=interval_seconds)
-        except ValueError as exc:
-            return _err(rid, 4004, f"invalid loop: {exc}")
-
-        notice = (
-            f"⊙ Loop set: every {state.interval_seconds}s → {state.prompt}\n"
-            "Controls: /loop status · /loop pause · /loop resume · /loop clear"
-        )
-        # Send the loop prompt as kickoff. The daemon ticker handles
-        # subsequent ticks.
-        return _ok(
-            rid,
-            {"type": "send", "notice": notice, "message": state.prompt},
-        )
 
     if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""

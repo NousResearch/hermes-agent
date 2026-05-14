@@ -2,12 +2,14 @@
 
 A loop is a prompt that repeats at a user‑specified interval.  A background
 daemon thread ticks every second, checks whether the agent is idle (not
-mid‑turn), and injects the loop prompt into the session's pending‑input
-queue.  This matches Claude Code's /loop behaviour: non‑blocking, fires
-only between turns, user can type at any time.
+mid‑turn), and injects the loop prompt into the session.
 
-State is persisted in SessionDB's ``state_meta`` table keyed by
-``loop:<session_id>`` so ``/loop resume`` picks it up.
+Multiple loops coexist in one session, each with an auto‑generated UID.
+No names — every ``/loop <interval> <prompt>`` creates a new loop.
+
+State is persisted in SessionDB's ``state_meta`` table under
+``loop:<session_id>:<uid>`` keys.  A registry at ``loop:<session_id>:__ids__``
+tracks all active UIDs.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ import logging
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, asdict
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 MIN_INTERVAL_SECONDS = 60       # 1 minute minimum
+DEFAULT_INTERVAL_SECONDS = 300   # 5 minutes
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -40,12 +44,13 @@ MIN_INTERVAL_SECONDS = 60       # 1 minute minimum
 class LoopState:
     """Serializable loop state stored per session."""
 
+    id: str                          # auto-generated short UID, e.g. "a3f1c2"
     prompt: str
-    interval_seconds: int = 300       # default 5m
-    status: str = "active"            # active | paused | done
+    interval_seconds: int = 300
+    status: str = "active"           # active | paused | done
     last_fired_at: float = 0.0
     created_at: float = 0.0
-    turns_completed: int = 0          # turns that have finished while loop active
+    turns_completed: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -54,6 +59,7 @@ class LoopState:
     def from_json(cls, raw: str) -> "LoopState":
         data = json.loads(raw)
         return cls(
+            id=data.get("id", ""),
             prompt=data.get("prompt", ""),
             interval_seconds=int(data.get("interval_seconds", 300) or 300),
             status=data.get("status", "active"),
@@ -64,12 +70,26 @@ class LoopState:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# UID helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _gen_uid() -> str:
+    """Generate a short loop UID — 6 hex chars from a UUID4."""
+    return uuid.uuid4().hex[:6]
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Persistence (SessionDB state_meta)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _meta_key(session_id: str) -> str:
-    return f"loop:{session_id}"
+def _loop_key(session_id: str, uid: str) -> str:
+    return f"loop:{session_id}:{uid}"
+
+
+def _ids_registry_key(session_id: str) -> str:
+    return f"loop:{session_id}:__ids__"
 
 
 _DB_CACHE: Dict[str, Any] = {}
@@ -102,15 +122,66 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
-def load_loop(session_id: str) -> Optional[LoopState]:
-    """Load the loop for a session, or None if none exists."""
+def _load_ids(session_id: str) -> List[str]:
+    """Load the list of loop UIDs from the registry."""
     if not session_id:
+        return []
+    db = _get_session_db()
+    if db is None:
+        return []
+    try:
+        raw = db.get_meta(_ids_registry_key(session_id))
+    except Exception:
+        return []
+    if not raw:
+        return []
+    try:
+        ids = json.loads(raw)
+        if isinstance(ids, list):
+            return [str(i) for i in ids]
+    except Exception:
+        pass
+    return []
+
+
+def _save_ids(session_id: str, ids: List[str]) -> None:
+    if not session_id:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    try:
+        if ids:
+            db.set_meta(_ids_registry_key(session_id), json.dumps(ids))
+        else:
+            db.set_meta(_ids_registry_key(session_id), "")
+    except Exception as exc:
+        logger.debug("LoopManager: save_ids failed: %s", exc)
+
+
+def _add_id_to_registry(session_id: str, uid: str) -> None:
+    ids = _load_ids(session_id)
+    if uid not in ids:
+        ids.append(uid)
+        _save_ids(session_id, ids)
+
+
+def _remove_id_from_registry(session_id: str, uid: str) -> None:
+    ids = _load_ids(session_id)
+    if uid in ids:
+        ids.remove(uid)
+        _save_ids(session_id, ids)
+
+
+def _load_loop(session_id: str, uid: str) -> Optional[LoopState]:
+    """Load a single loop by UID from SessionDB."""
+    if not session_id or not uid:
         return None
     db = _get_session_db()
     if db is None:
         return None
     try:
-        raw = db.get_meta(_meta_key(session_id))
+        raw = db.get_meta(_loop_key(session_id, uid))
     except Exception as exc:
         logger.debug("LoopManager: get_meta failed: %s", exc)
         return None
@@ -119,34 +190,65 @@ def load_loop(session_id: str) -> Optional[LoopState]:
     try:
         return LoopState.from_json(raw)
     except Exception as exc:
-        logger.warning("LoopManager: could not parse stored loop for %s: %s", session_id, exc)
+        logger.warning("LoopManager: could not parse loop %s/%s: %s",
+                       session_id, uid, exc)
         return None
 
 
-def save_loop(session_id: str, state: LoopState) -> None:
-    """Persist a loop to SessionDB.  No-op if DB unavailable."""
+def load_all_loops(session_id: str) -> Dict[str, LoopState]:
+    """Load all loops for a session. Returns dict keyed by UID."""
+    states: Dict[str, LoopState] = {}
     if not session_id:
+        return states
+    for uid in _load_ids(session_id):
+        st = _load_loop(session_id, uid)
+        if st is not None and st.status != "done":
+            states[uid] = st
+    return states
+
+
+def _save_loop(session_id: str, state: LoopState) -> None:
+    """Persist a loop to SessionDB."""
+    if not session_id or not state.id:
         return
     db = _get_session_db()
     if db is None:
         return
     try:
-        db.set_meta(_meta_key(session_id), state.to_json())
+        db.set_meta(_loop_key(session_id, state.id), state.to_json())
+        if state.status != "done":
+            _add_id_to_registry(session_id, state.id)
     except Exception as exc:
         logger.debug("LoopManager: set_meta failed: %s", exc)
 
 
-def _del_loop_meta(session_id: str) -> None:
-    """Remove loop metadata from SessionDB."""
+def _del_loop_meta(session_id: str, uid: str) -> None:
+    """Remove a loop's metadata from SessionDB and registry."""
+    if not session_id or not uid:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    try:
+        db.set_meta(_loop_key(session_id, uid), "")
+    except Exception as exc:
+        logger.debug("LoopManager: delete_meta failed: %s", exc)
+    _remove_id_from_registry(session_id, uid)
+
+
+def _del_all_loop_meta(session_id: str) -> None:
+    """Remove ALL loop metadata for a session."""
     if not session_id:
         return
     db = _get_session_db()
     if db is None:
         return
     try:
-        db.set_meta(_meta_key(session_id), "")
+        for uid in _load_ids(session_id):
+            db.set_meta(_loop_key(session_id, uid), "")
+        db.set_meta(_ids_registry_key(session_id), "")
     except Exception as exc:
-        logger.debug("LoopManager: delete_meta failed: %s", exc)
+        logger.debug("LoopManager: delete_all_meta failed: %s", exc)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -158,28 +260,102 @@ def _parse_interval(token: str) -> Optional[int]:
     """Parse a duration token into seconds.
 
     Examples:
-        "5m" → 300
-        "30m" → 1800
-        "2h" → 7200
-        "1d" → 86400
+        "5m" → 300, "30m" → 1800, "2h" → 7200, "1d" → 86400
+        "60" → 60 (bare number = seconds)
     """
     if not token:
         return None
     s = token.strip().lower()
     match = re.match(
-        r"^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$",
+        r"^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|"
+        r"h|hr|hrs|hour|hours|d|day|days)$",
         s,
     )
     if not match:
-        # Bare number — treat as seconds
         bare = re.match(r"^(\d+)$", s)
         if bare:
             return int(bare.group(1))
         return None
     value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: s, m, h, or d
+    unit = match.group(2)[0]  # s, m, h, or d
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     return value * multipliers[unit]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Command parser
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _parse_loop_command(arg: str) -> dict:
+    """Parse a /loop command into an action dict.
+
+    Every ``/loop [interval] <prompt>`` creates a **new** loop with
+    an auto‑generated UID.  No names, no overwriting.
+
+    Returns a dict with at least an ``action`` key:
+
+    ================ ===================================================
+    action           meaning
+    ================ ===================================================
+    ``"status"``     list all loops (``/loop list`` or ``/loop`` alone)
+    ``"pause_all"``  pause every loop
+    ``"pause"``      pause one loop (``uid`` key present, e.g. ``#a3f1``)
+    ``"resume_all"`` resume every loop
+    ``"resume"``     resume one loop (``uid`` key present)
+    ``"clear_all"``  clear every loop
+    ``"clear"``      clear one loop (``uid`` key present)
+    ``"set"``        create a new loop (``interval``, ``prompt`` keys)
+    ================ ===================================================
+    """
+    text = (arg or "").strip()
+
+    # Strip leading "every " prefix
+    if text.lower().startswith("every "):
+        text = text[6:].strip()
+
+    if not text:
+        return {"action": "status"}
+
+    tokens = text.split()
+    first = tokens[0].lower()
+
+    # --- status / list ---
+    if first in ("status", "list"):
+        return {"action": "status"}
+
+    # --- pause ---
+    if first == "pause":
+        if len(tokens) == 1:
+            return {"action": "pause_all"}
+        target = tokens[1].lstrip("#")
+        return {"action": "pause", "uid": target}
+
+    # --- resume ---
+    if first == "resume":
+        if len(tokens) == 1:
+            return {"action": "resume_all"}
+        target = tokens[1].lstrip("#")
+        return {"action": "resume", "uid": target}
+
+    # --- clear / stop / done ---
+    if first in ("clear", "stop", "done"):
+        if len(tokens) == 1:
+            return {"action": "clear_all"}
+        target = tokens[1].lstrip("#")
+        return {"action": "clear", "uid": target}
+
+    # --- /loop <interval> <prompt> → new loop ---
+    parsed = _parse_interval(tokens[0])
+    if parsed is not None and len(tokens) > 1:
+        interval = max(parsed, MIN_INTERVAL_SECONDS)
+        prompt = " ".join(tokens[1:])
+        return {"action": "set", "interval": interval, "prompt": prompt}
+
+    # --- /loop <prompt> → new loop, default interval ---
+    return {"action": "set",
+            "interval": DEFAULT_INTERVAL_SECONDS,
+            "prompt": text}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -191,14 +367,10 @@ class LoopManager:
     """Per-session loop state + background scheduler.
 
     The CLI and gateway each hold one ``LoopManager`` per live session.
-    When a loop is set, a background daemon thread starts ticking every
-    second.  It only fires the loop prompt when the agent is idle.
+    A background daemon thread ticks every second, checking all loops.
 
-    If *dispatch* is provided, the scheduler is auto-managed — started
-    on set/resume, stopped on pause/clear/delete.  If *dispatch* is
-    ``None`` (slash_worker mode), only persistence happens — the caller
-    is responsible for ticking (usually the TUI gateway via its own
-    LoopManager, or the CLI via the process_loop).
+    If *dispatch* is provided, the scheduler is auto‑managed.  If
+    *dispatch* is ``None`` (slash_worker mode), only persistence happens.
     """
 
     def __init__(self, session_id: str, *,
@@ -207,14 +379,12 @@ class LoopManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._dispatch = dispatch
-        self._state: Optional[LoopState] = load_loop(session_id)
+        self._states: Dict[str, LoopState] = load_all_loops(session_id)
         self._scheduler: Optional[LoopScheduler] = None
 
         # Always start scheduler when dispatch is available — it polls
         # SessionDB every tick and picks up loops persisted by the
-        # slash_worker (which runs with dispatch=None).  Without this,
-        # the gateway's LoopManager sleeps forever if the slash_worker
-        # was the one who set the loop.
+        # slash_worker (which runs with dispatch=None).
         if dispatch is not None:
             self._start_scheduler()
 
@@ -222,39 +392,49 @@ class LoopManager:
 
     @property
     def state(self) -> Optional[LoopState]:
-        return self._state
+        """Return the first active loop, or None."""
+        for s in self._states.values():
+            if s.status == "active":
+                return s
+        return None
+
+    @property
+    def all_states(self) -> Dict[str, LoopState]:
+        return self._states
 
     def is_active(self) -> bool:
-        return self._state is not None and self._state.status == "active"
+        return any(s.status == "active" for s in self._states.values())
 
     def is_running(self) -> bool:
         return self._scheduler is not None and self._scheduler.running
 
     def status_line(self) -> str:
-        s = self._state
-        if s is None or s.status == "done":
-            return "No active loop. Set one with /loop <prompt>."
+        """Multi-line status listing all loops with UIDs."""
+        if not self._states:
+            return "No active loops. Set one with /loop [interval] <prompt>."
+        lines = []
         running = "running" if self.is_running() else "stopped"
-        turns = f"{s.turns_completed}/{self.default_max_turns} turns"
-        if s.status == "active":
-            return f"⊙ Loop (active, {running}, {turns}): {s.prompt}"
-        if s.status == "paused":
-            return f"⏸ Loop (paused, {running}, {turns}): {s.prompt}"
-        return f"Loop ({s.status}, {running}, {turns}): {s.prompt}"
+        for uid, s in sorted(self._states.items()):
+            turns = f"{s.turns_completed}/{self.default_max_turns} turns"
+            if s.status == "active":
+                lines.append(f"⊙ Loop #{uid} (active, {running}, "
+                             f"{s.interval_seconds}s, {turns}): {s.prompt}")
+            elif s.status == "paused":
+                lines.append(f"⏸ Loop #{uid} (paused, "
+                             f"{s.interval_seconds}s, {turns}): {s.prompt}")
+        return "\n".join(lines)
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, prompt: str, *,
-            interval_seconds: Optional[int] = None) -> LoopState:
+    def add(self, prompt: str, *,
+            interval_seconds: int = DEFAULT_INTERVAL_SECONDS) -> LoopState:
+        """Create a new loop with an auto‑generated UID."""
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("loop prompt is empty")
-        self._stop_scheduler()
-        effective_interval = max(
-            int(interval_seconds) if interval_seconds else 300,
-            MIN_INTERVAL_SECONDS,
-        )
+        effective_interval = max(int(interval_seconds), MIN_INTERVAL_SECONDS)
         state = LoopState(
+            id=_gen_uid(),
             prompt=prompt,
             interval_seconds=effective_interval,
             status="active",
@@ -262,56 +442,100 @@ class LoopManager:
             created_at=time.time(),
             turns_completed=0,
         )
-        self._state = state
-        save_loop(self.session_id, state)
-        if self._dispatch is not None:
-            self._start_scheduler()
+        self._states[state.id] = state
+        _save_loop(self.session_id, state)
         return state
 
-    def pause(self, reason: str = "user-paused") -> Optional[LoopState]:
-        if not self._state:
-            return None
-        self._state.status = "paused"
-        save_loop(self.session_id, self._state)
-        self._stop_scheduler()
-        return self._state
+    # Legacy set() alias — always creates new loop now
+    def set(self, prompt: str, *,
+            interval_seconds: Optional[int] = None,
+            name: Optional[str] = None) -> LoopState:
+        """Create a new loop. *name* is ignored (kept for backward compat)."""
+        return self.add(prompt,
+                        interval_seconds=int(interval_seconds or DEFAULT_INTERVAL_SECONDS))
 
-    def resume(self) -> Optional[LoopState]:
-        if not self._state:
-            return None
-        self._state.status = "active"
-        save_loop(self.session_id, self._state)
-        if self._dispatch is not None:
-            self._start_scheduler()
-        return self._state
+    def pause(self, uid: Optional[str] = None) -> List[LoopState]:
+        """Pause one loop by UID, or all if uid is None."""
+        if uid is not None:
+            s = self._states.get(uid)
+            if s is None:
+                s = _load_loop(self.session_id, uid)
+                if s is not None and s.status != "done":
+                    self._states[uid] = s
+            if s is None:
+                return []
+            s.status = "paused"
+            _save_loop(self.session_id, s)
+            return [s]
 
-    def clear(self) -> None:
-        if self._state is None:
-            return
-        self._stop_scheduler()
-        self._state.status = "done"
-        save_loop(self.session_id, self._state)
-        self._state = None
+        paused = []
+        for s in self._states.values():
+            if s.status == "active":
+                s.status = "paused"
+                _save_loop(self.session_id, s)
+                paused.append(s)
+        return paused
+
+    def resume(self, uid: Optional[str] = None) -> List[LoopState]:
+        """Resume one loop by UID, or all if uid is None."""
+        if uid is not None:
+            s = self._states.get(uid)
+            if s is None:
+                s = _load_loop(self.session_id, uid)
+                if s is not None and s.status != "done":
+                    self._states[uid] = s
+            if s is None:
+                return []
+            s.status = "active"
+            s.last_fired_at = 0.0  # fire immediately on next tick
+            _save_loop(self.session_id, s)
+            return [s]
+
+        resumed = []
+        for s in self._states.values():
+            if s.status == "paused":
+                s.status = "active"
+                s.last_fired_at = 0.0
+                _save_loop(self.session_id, s)
+                resumed.append(s)
+        return resumed
+
+    def clear(self, uid: Optional[str] = None) -> int:
+        """Clear one loop by UID, or all if uid is None. Returns count."""
+        if uid is not None:
+            s = self._states.pop(uid, None)
+            if s is None:
+                return 0
+            s.status = "done"
+            _save_loop(self.session_id, s)
+            _del_loop_meta(self.session_id, uid)
+            return 1
+
+        count = len(self._states)
+        for s in list(self._states.values()):
+            s.status = "done"
+            _save_loop(self.session_id, s)
+        self._states.clear()
+        _del_all_loop_meta(self.session_id)
+        return count
 
     def delete(self) -> bool:
-        """Remove loop from SessionDB entirely. Returns True if something was deleted."""
-        existed = self._state is not None
+        """Remove all loops from SessionDB entirely."""
+        existed = bool(self._states)
         self._stop_scheduler()
-        self._state = None
+        self._states.clear()
         try:
-            _del_loop_meta(self.session_id)
+            _del_all_loop_meta(self.session_id)
         except Exception:
             pass
         return existed
 
     def shutdown(self) -> None:
-        """Stop scheduler — called on session exit."""
         self._stop_scheduler()
 
     # --- internal -----------------------------------------------------
 
     def _start_scheduler(self) -> None:
-        """Create and start a LoopScheduler if dispatch is configured."""
         if self._dispatch is None:
             return
         self._stop_scheduler()
@@ -339,27 +563,16 @@ class LoopScheduler:
     """Background daemon thread that ticks every second.
 
     On each tick:
-    1. Reloads loop state from SessionDB (handles external pause/clear)
-    2. Checks if loop is active
-    3. Checks if interval has elapsed since last fire
-    4. Calls ``dispatch(prompt)`` — returns True if fire succeeded,
-       False if busy (will retry next tick)
-    5. Updates ``last_fired_at`` and ``turns_completed`` on success
-
-    This is the single tick engine used by both CLI and TUI paths.
-    The difference is in the *dispatch* callback:
-      - CLI:  puts prompt into ``pending_input`` queue
-      - TUI:  calls ``_run_prompt_submit`` to inject into the session
+    1. Reloads all loop states from SessionDB
+    2. For each active loop whose interval has elapsed,
+       calls ``dispatch(prompt)``
+    3. Updates ``last_fired_at`` and ``turns_completed`` on success
     """
 
-    TICK_INTERVAL = 1.0  # seconds — Claude Code uses 1s
+    TICK_INTERVAL = 1.0
 
-    def __init__(
-        self,
-        session_id: str,
-        *,
-        dispatch: Callable[[str], bool],
-    ):
+    def __init__(self, session_id: str, *,
+                 dispatch: Callable[[str], bool]):
         self._session_id = session_id
         self._dispatch = dispatch
         self._running = False
@@ -387,7 +600,6 @@ class LoopScheduler:
             self._running = False
 
     def _tick_loop(self) -> None:
-        """Main scheduler loop — runs in daemon thread."""
         while self._running:
             time.sleep(self.TICK_INTERVAL)
             try:
@@ -396,31 +608,21 @@ class LoopScheduler:
                 logger.debug("LoopScheduler tick error: %s", exc)
 
     def _tick(self) -> None:
-        """One tick of the scheduler.
-
-        Equivalent: the ``v()`` function in Claude Code's ``createCronScheduler``.
-        """
-        # 1. Reload state from DB — might have been modified externally,
-        #    or a loop was set after the scheduler started (slash_worker
-        #    persisted it while this scheduler was already ticking).
-        state = load_loop(self._session_id)
-        if state is None:
-            # No loop yet — keep ticking in case one appears later
-            return
-        if state.status != "active":
+        states = load_all_loops(self._session_id)
+        if not states:
             return
 
-        # 2. Interval check — has enough time elapsed?
         now = time.time()
-        if (state.last_fired_at > 0
-                and (now - state.last_fired_at) < state.interval_seconds):
-            return
-
-        # 3. Fire via dispatch callback
-        if self._dispatch(state.prompt):
-            state.last_fired_at = now
-            state.turns_completed += 1
-            save_loop(self._session_id, state)
+        for state in states.values():
+            if state.status != "active":
+                continue
+            if (state.last_fired_at > 0
+                    and (now - state.last_fired_at) < state.interval_seconds):
+                continue
+            if self._dispatch(state.prompt):
+                state.last_fired_at = now
+                state.turns_completed += 1
+                _save_loop(self._session_id, state)
 
 
 __all__ = [
@@ -429,25 +631,32 @@ __all__ = [
     "LoopScheduler",
     "DEFAULT_MAX_TURNS",
     "MIN_INTERVAL_SECONDS",
-    "load_loop",
-    "save_loop",
-    "delete_loop",
+    "load_all_loops",
     "_parse_interval",
+    "_parse_loop_command",
+    "delete_loop",
 ]
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Convenience helpers for external callers (Ed's terminal, tests, etc.)
+# Convenience helpers
 # ──────────────────────────────────────────────────────────────────────
 
 
-def delete_loop(session_id: str) -> bool:
-    """Delete a loop from SessionDB without creating a LoopManager.
+def delete_loop(session_id: str, uid: Optional[str] = None) -> bool:
+    """Delete loop(s) from SessionDB without creating a LoopManager.
 
-    Returns True if a loop was found and deleted.
+    If *uid* is None, deletes all loops.  Returns True if anything deleted.
     """
-    state = load_loop(session_id)
-    if state is None:
+    if uid is not None:
+        state = _load_loop(session_id, uid)
+        if state is None:
+            return False
+        _del_loop_meta(session_id, uid)
+        return True
+
+    states = load_all_loops(session_id)
+    if not states:
         return False
-    _del_loop_meta(session_id)
+    _del_all_loop_meta(session_id)
     return True

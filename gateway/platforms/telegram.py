@@ -4478,8 +4478,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg, is_command=True):
             return
-        await self._ensure_forum_commands(update.message)
-        
+        await self._ensure_forum_commands(msg)
+
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
 

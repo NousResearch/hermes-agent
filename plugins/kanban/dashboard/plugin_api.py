@@ -224,6 +224,11 @@ def _compute_task_diagnostics(
     rule definitions.
     """
     from hermes_cli import kanban_diagnostics as kd
+    from hermes_cli.config import load_config
+
+    diag_config = kd.config_from_kanban_config(
+        (load_config().get("kanban") or {})
+    )
 
     # Build the candidate task list. We need each task's row + its
     # events + its runs. Doing N separate queries works but scales
@@ -270,6 +275,7 @@ def _compute_task_diagnostics(
             r,
             events_by_task.get(tid, []),
             runs_by_task.get(tid, []),
+            config=diag_config,
         )
         if diags:
             out[tid] = [d.to_dict() for d in diags]

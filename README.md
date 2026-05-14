@@ -152,6 +152,59 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ---
 
+## Production Readiness (Operator Quickstart)
+
+Kurzfassung für Deployments ohne Secrets im Repo:
+
+### 1) Setup
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install -e ".[all]"
+```
+
+### 2) Runtime-Start
+
+```bash
+# CLI smoke start
+hermes --help
+
+# Optional: Gateway process
+hermes gateway start
+```
+
+### 3) Environment
+
+- Konfigurationsdatei: `~/.hermes/config.yaml`
+- Secrets nur in `~/.hermes/.env` (nicht committen)
+- Logs: `~/.hermes/logs/agent.log`, `~/.hermes/logs/errors.log`, `~/.hermes/logs/gateway.log`
+
+### 4) Healthcheck (Liveness + Readiness)
+
+```bash
+# One-shot check (Exit 0 = healthy)
+python scripts/healthcheck.py
+
+# HTTP-Probes für Orchestrierung
+python scripts/healthcheck.py --serve --host 127.0.0.1 --port 8787
+curl -fsS http://127.0.0.1:8787/live
+curl -fsS http://127.0.0.1:8787/ready
+```
+
+### 5) Kurz-Runbook
+
+- **Symptom:** Agent antwortet nicht / startet nicht  
+  **Aktion:** `source .venv/bin/activate && hermes doctor`
+- **Symptom:** Gateway-Integration instabil  
+  **Aktion:** `tail -n 200 ~/.hermes/logs/gateway.log` und Plattform-spezifische Token/Config in `~/.hermes/config.yaml` prüfen
+- **Symptom:** Readiness FAIL  
+  **Aktion:** `python scripts/healthcheck.py` ausführen, fehlgeschlagenes Modul aus Fehlerausgabe reparieren (fehlende deps/venv)
+
+---
+
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.

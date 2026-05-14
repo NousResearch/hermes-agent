@@ -19,7 +19,8 @@ Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blo
 hermes
 
 # Single query mode (non-interactive)
-hermes chat -q "Hello"
+hermes chat -q "Hello"   # Portable across all versions
+hermes -z "Hello"        # One-shot mode (v0.12.0+) — prints only the final response
 
 # With a specific model
 hermes chat --model "anthropic/claude-sonnet-4"
@@ -46,6 +47,29 @@ hermes chat --verbose
 hermes -w                         # Interactive mode in worktree
 hermes -w -q "Fix issue #123"     # Single query in worktree
 ```
+
+## One-Shot / Non-Interactive Invocation
+
+For scripts, pipes, and automation there are two non-interactive entry points:
+
+| Invocation | Available since | Notes |
+|------------|-----------------|-------|
+| `hermes chat -q "prompt"` | All releases | Portable across every Hermes version. Prints the final response plus session info. |
+| `hermes -z "prompt"` | v0.12.0 (v2026.4.30) | Top-level one-shot mode. Prints **only** the final response text — no banner, spinner, tool previews, or session line. Pairs with top-level `-m/--model` and `--provider`. |
+
+`hermes -z` / `--oneshot` was added in **v0.12.0**; releases before that only ship
+`hermes chat -q`. Scripts that must run against older installs should prefer
+`hermes chat -q`, or check `hermes --version` before using `-z`.
+
+:::info Bounding run time
+Neither `hermes -z` nor `hermes chat -q` accepts a `--timeout` flag — there is no
+built-in time limit for a one-shot run. To bound execution time, wrap the call with
+your own timeout, e.g. the shell `timeout` command or a subprocess timeout:
+
+```bash
+timeout 300 hermes -z "summarize this repo"
+```
+:::
 
 ## Interface Layout
 

@@ -91,8 +91,13 @@ def register(
         session_key=session_key,
         question=question,
         choices=list(choices) if choices else None,
-        # Open-ended (no choices) → next message IS the response, no buttons needed.
-        awaiting_text=not bool(choices),
+        # Text-fallback adapters (e.g. Mattermost) render a numbered list
+        # and intercept the user's text reply via get_pending_for_session,
+        # which only matches entries with awaiting_text=True.
+        # Button-based adapters (e.g. Telegram) resolve via
+        # resolve_gateway_clarify directly and do not check awaiting_text.
+        # So we always set awaiting_text=True so both paths work.
+        awaiting_text=True,
     )
     with _lock:
         _entries[clarify_id] = entry

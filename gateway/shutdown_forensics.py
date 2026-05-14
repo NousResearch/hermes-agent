@@ -140,7 +140,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    ctx["under_systemd"] = bool(invocation_id) or (sys.platform.startswith("linux") and ppid == 1)
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".

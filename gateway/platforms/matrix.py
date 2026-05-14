@@ -1434,12 +1434,23 @@ class MatrixAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
         last_event_id = None
+        split_response = len(chunks) > 1
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
             if i == 0:
                 self._apply_formatted_body_metadata(msg_content, metadata)
 
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            # Matrix clients render m.in_reply_to as a quoted fallback. On a
+            # multi-part response, repeating that fallback on every chunk makes
+            # the original user message appear again mid-answer. Keep all
+            # chunks in the Matrix thread, but only attach reply fallback to
+            # the first chunk.
+            self._apply_relation_metadata(
+                msg_content,
+                reply_to=reply_to if i == 0 else None,
+                metadata=metadata,
+                include_reply_fallback=not split_response or i == 0,
+            )
 
             try:
                 event_id = await asyncio.wait_for(
@@ -3681,6 +3692,7 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        include_reply_fallback: bool = True,
     ) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
@@ -3694,10 +3706,11 @@ class MatrixAdapter(BasePlatformAdapter):
             # Matrix clients that do not render threads still use reply
             # fallback. If no explicit reply target is available, fall back
             # to the thread root.
-            relates_to.setdefault(
-                "m.in_reply_to",
-                {"event_id": reply_to or thread_id},
-            )
+            if include_reply_fallback:
+                relates_to.setdefault(
+                    "m.in_reply_to",
+                    {"event_id": reply_to or thread_id},
+                )
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

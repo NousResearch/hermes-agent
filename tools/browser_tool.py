@@ -2058,6 +2058,8 @@ def _extract_relevant_content(
 
     Falls back to simple truncation when no auxiliary text model is configured.
     """
+    if os.environ.get("HERMES_BROWSER_SNAPSHOT_LLM", "1") == "0":
+        return _truncate_snapshot(snapshot_text)
     if user_task:
         extraction_prompt = (
             f"You are a content extractor for a browser automation agent.\n\n"

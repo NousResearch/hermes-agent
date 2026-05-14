@@ -149,6 +149,25 @@ class TestBrowserSnapshotRedaction:
         assert "Continue" in captured_prompts[0]
 
 
+class TestBrowserSnapshotLLMOptOut:
+    """Verify HERMES_BROWSER_SNAPSHOT_LLM=0 bypasses the LLM call."""
+
+    def test_browser_snapshot_llm_opt_out(self, monkeypatch):
+        from unittest.mock import patch, MagicMock
+        from tools.browser_tool import _extract_relevant_content, _truncate_snapshot
+
+        monkeypatch.setenv("HERMES_BROWSER_SNAPSHOT_LLM", "0")
+
+        snapshot = "x" * 9000
+
+        mock_llm = MagicMock()
+        with patch("tools.browser_tool.call_llm", mock_llm):
+            result = _extract_relevant_content(snapshot)
+
+        mock_llm.assert_not_called()
+        assert result == _truncate_snapshot(snapshot)
+
+
 class TestCamofoxAnnotationRedaction:
     """Verify annotation context is redacted before vision LLM call."""
 

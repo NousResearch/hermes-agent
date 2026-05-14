@@ -2558,6 +2558,44 @@ class GatewayRunner:
         else:
             pending_slot[session_key] = queued_event
 
+    def _dispatch_loop_prompt(
+        self,
+        prompt: str,
+        source: "SessionSource",
+    ) -> None:
+        """Dispatch a loop prompt as a synthetic user message.
+
+        Schedules the prompt for agent processing on the gateway's asyncio
+        event loop.  This bypasses ``_enqueue_fifo`` because the TUI and
+        other non-adapter platforms don't have ``_pending_messages``.
+
+        Called from the daemon ticker thread (non-async context), so uses
+        ``asyncio.run_coroutine_threadsafe`` to hand off to the event loop.
+        """
+        loop = getattr(self, "_gateway_loop", None)
+        if loop is None:
+            logger.debug("loop dispatch: no gateway loop available")
+            return
+
+        async def _run():
+            try:
+                event = MessageEvent(
+                    text=prompt,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=None,
+                    channel_prompt=None,
+                )
+                _qk = self._session_key_for_source(source)
+                await self._handle_message_with_agent(event, source, _qk, 1)
+            except Exception as exc:
+                logger.debug("loop dispatch: agent run failed: %s", exc)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_run(), loop)
+        except Exception as exc:
+            logger.debug("loop dispatch: schedule failed: %s", exc)
+
     def _promote_queued_event(
         self,
         session_key: str,

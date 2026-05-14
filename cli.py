@@ -1479,7 +1479,16 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception as _e:
+            # NoConsoleScreenBufferError on Windows when no console is attached
+            # (e.g. Kanban task runner, Scheduled Task, non-interactive context).
+            # Fall back to plain print so output is not lost (issue #25535).
+            if "NoConsoleScreenBufferError" in type(_e).__name__ or "console" in str(_e).lower():
+                print(text)
+            else:
+                raise
         return
 
     try:

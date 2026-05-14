@@ -144,7 +144,7 @@ class GoalState:
     """Serializable goal state stored per session."""
 
     goal: str
-    status: str = "active"          # active | paused | done | cleared
+    status: str = "active"          # active | paused | done | cleared | pending_confirmation
     turns_used: int = 0
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
@@ -159,6 +159,7 @@ class GoalState:
     # them into the verdict. Backwards-compatible: defaults to empty so
     # old state_meta rows load unchanged.
     subgoals: List[str] = field(default_factory=list)
+    confirm_mode: bool = False                # True when goal was set with --confirm
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -182,6 +183,7 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             subgoals=subgoals,
+            confirm_mode=bool(data.get("confirm_mode", False)),
         )
 
     # --- subgoals helpers -------------------------------------------------
@@ -500,7 +502,7 @@ class GoalManager:
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in {"active", "paused"}
+        return self._state is not None and self._state.status in {"active", "paused", "pending_confirmation"}
 
     def status_line(self) -> str:
         s = self._state
@@ -508,6 +510,8 @@ class GoalManager:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+        if s.status == "pending_confirmation":
+            return f"⏳ Goal (awaiting confirmation, {turns}{sub}): {s.goal}"
         if s.status == "active":
             return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
         if s.status == "paused":
@@ -519,17 +523,26 @@ class GoalManager:
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, confirm: bool = False) -> GoalState:
+        """Create a new standing goal.
+
+        Args:
+            confirm: If True, set status to 'pending_confirmation' instead of
+                     'active'. The caller must then confirm before the agent
+                     starts working.
+        """
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        initial_status = "pending_confirmation" if confirm else "active"
         state = GoalState(
             goal=goal,
-            status="active",
+            status=initial_status,
             turns_used=0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            confirm_mode=confirm,
         )
         self._state = state
         save_goal(self.session_id, state)
@@ -543,9 +556,24 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
+    def confirm(self) -> Optional[GoalState]:
+        """Transition a pending_confirmation goal to active.
+
+        Returns the updated state, or None if no goal or not in
+        pending_confirmation status.
+        """
+        if not self._state or self._state.status != "pending_confirmation":
+            return None
+        self._state.status = "active"
+        save_goal(self.session_id, self._state)
+        return self._state
+
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None
+        # pending_confirmation 的 resume 等同于 confirm
+        if self._state.status == "pending_confirmation":
+            return self.confirm()
         self._state.status = "active"
         self._state.paused_reason = None
         if reset_budget:

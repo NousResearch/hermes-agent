@@ -8603,25 +8603,65 @@ class HermesCLI:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
+        # ── Parse --confirm flag ──
+        confirm = False
+        goal_text = arg
+        if arg.startswith("--confirm"):
+            confirm = True
+            # /goal --confirm <text>  or  /goal --confirm  (no text → error)
+            remainder = arg[len("--confirm"):].strip()
+            if not remainder:
+                _cprint(f"  Usage: /goal --confirm <text>")
+                return
+            goal_text = remainder
+
         # Otherwise treat the arg as the goal text.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_text, confirm=confirm)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
-        _cprint(
-            f"  {_DIM}After each turn, a judge model will check if the goal is done. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
-        )
-        # Kick the loop off immediately so the user doesn't have to send a
-        # separate message after setting the goal.
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
+        if confirm:
+            # ── Confirm mode: do NOT inject into _pending_input ──
+            _cprint(f"  ⏳ Goal set (awaiting confirmation, {state.max_turns}-turn budget): {state.goal}")
+            _cprint(
+                f"  {_DIM}Send any message to confirm and start, or /goal clear to cancel."
+                f"  Hermes will not begin until you confirm.{_RST}"
+            )
+        else:
+            _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+            _cprint(
+                f"  {_DIM}After each turn, a judge model will check if the goal is done. "
+                f"Hermes keeps working until it is, you pause/clear it, or the budget is "
+                f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
+            )
+            # Kick the loop off immediately so the user doesn't have to send a
+            # separate message after setting the goal.
+            try:
+                self._pending_input.put(state.goal)
+            except Exception:
+                pass
+
+    def _check_goal_confirmation(self, user_input: str) -> bool:
+        """If a goal is pending_confirmation, treat user_input as confirmation.
+
+        Returns True if a confirmation was processed (input consumed),
+        False if no confirmation needed (input should be handled normally).
+        """
+        mgr = self._get_goal_manager()
+        if not mgr or not mgr.state or mgr.state.status != "pending_confirmation":
+            return False
+
+        # User sent any message → confirm the goal
+        state = mgr.confirm()
+        if state:
+            _cprint(f"  ▶ Goal confirmed — starting: {state.goal}")
+            try:
+                self._pending_input.put(state.goal)
+            except Exception:
+                pass
+        return True  # Input consumed as confirmation signal
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.
@@ -13591,6 +13631,17 @@ class HermesCLI:
                                 f"[User attached file: {_drop_path}]"
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
+
+                    # ── Goal confirmation intercept ──
+                    # If a goal is pending_confirmation, treat any non-command user
+                    # input as confirmation and kick off the goal instead of sending
+                    # the input to the agent.
+                    if (
+                        isinstance(user_input, str)
+                        and not _looks_like_slash_command(user_input)
+                        and self._check_goal_confirmation(user_input)
+                    ):
+                        continue
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")

@@ -2297,9 +2297,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Message body: render as plain text (message already contains
-            # markdown formatting from the gateway primitive).
-            preview = message if len(message) <= 3800 else message[:3800] + "..."
+            preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -2315,7 +2313,7 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": preview,
-                "parse_mode": ParseMode.MARKDOWN,
+                "parse_mode": ParseMode.MARKDOWN_V2,
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }

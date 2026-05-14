@@ -188,7 +188,6 @@ class TestQueryLocalContextLengthModelsList:
         """Finds context length for model in /v1/models list."""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [
                 {"id": "other-model", "max_model_len": 4096},
@@ -196,18 +195,11 @@ class TestQueryLocalContextLengthModelsList:
             ]
         })
 
-        call_count = [0]
-        def side_effect(url, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return detail_resp  # /v1/models/omnicoder-9b
-            return list_resp  # /v1/models
-
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
         client_mock.__exit__ = MagicMock(return_value=False)
         client_mock.post.return_value = self._make_resp(404, {})
-        client_mock.get.side_effect = side_effect
+        client_mock.get.return_value = list_resp
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
@@ -219,23 +211,15 @@ class TestQueryLocalContextLengthModelsList:
         """Returns None when model is not in the /v1/models list."""
         from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
             "data": [{"id": "other-model", "max_model_len": 4096}]
         })
-
-        call_count = [0]
-        def side_effect(url, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return detail_resp
-            return list_resp
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
         client_mock.__exit__ = MagicMock(return_value=False)
         client_mock.post.return_value = self._make_resp(404, {})
-        client_mock.get.side_effect = side_effect
+        client_mock.get.return_value = list_resp
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
@@ -510,6 +494,68 @@ class TestQueryLocalContextLengthNetworkError:
             result = _query_local_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result is None
+
+
+class TestQueryLocalContextLengthUnrecognisedServer:
+    """_query_local_context_length skips admin-gated probe for unrecognised servers."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_unrecognised_server_skips_single_model_probe(self):
+        """When server_type is None, /v1/models/{model} is not probed.
+
+        LiteLLM proxies gate GET /v1/models/{model} behind admin auth and log
+        an ERROR even though the 401 falls through.  The function should skip
+        this probe entirely and go straight to the /v1/models list endpoint.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "my-model", "context_length": 32768},
+            ]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = list_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("my-model", "http://litellm-proxy:4000/v1")
+
+        assert result == 32768
+        # Verify only the /v1/models list was called, not /v1/models/{model}
+        get_urls = [call.args[0] for call in client_mock.get.call_args_list]
+        assert not any("/v1/models/my-model" in url for url in get_urls), \
+            f"Should not probe /v1/models/{{model}} for unrecognised server, but got: {get_urls}"
+
+    def test_known_server_type_probes_single_model(self):
+        """When server_type is known, /v1/models/{model} IS probed."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {"max_model_len": 65536})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("my-model", "http://vllm-server:8000/v1")
+
+        assert result == 65536
+        get_urls = [call.args[0] for call in client_mock.get.call_args_list]
+        assert any("/v1/models/my-model" in url for url in get_urls), \
+            f"Should probe /v1/models/{{model}} for vllm server, but got: {get_urls}"
 
 
 # ---------------------------------------------------------------------------

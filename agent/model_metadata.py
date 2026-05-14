@@ -1162,13 +1162,17 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                             break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
-            resp = client.get(f"{server_url}/v1/models/{model}")
-            if resp.status_code == 200:
-                data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
-                if ctx and isinstance(ctx, (int, float)):
-                    return int(ctx)
+            # Only probe when the server type is explicitly identified; unrecognised
+            # servers (e.g. LiteLLM proxies) gate this endpoint behind admin auth
+            # and produce spurious ERROR-level logs even though the 401 falls through.
+            if server_type in ("ollama", "lm-studio", "vllm", "llamacpp"):
+                resp = client.get(f"{server_url}/v1/models/{model}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # vLLM returns max_model_len
+                    ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                    if ctx and isinstance(ctx, (int, float)):
+                        return int(ctx)
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".

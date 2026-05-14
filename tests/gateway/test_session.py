@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
     SessionStore,
@@ -428,6 +429,76 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+
+
+class TestSenderPrefixWithBackfill:
+    """Regression: sender prefix must not wrap the backfill context block.
+
+    Tests exercise the real GatewayRunner._prepare_inbound_message_text()
+    method to ensure the [sender_name] prefix applies only to the trigger
+    message, not the channel_context backfill block.
+    """
+
+    @pytest.fixture()
+    def runner(self):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.config = GatewayConfig(group_sessions_per_user=False)
+        r.adapters = {}
+        r._model = "test-model"
+        r._base_url = ""
+        r._has_setup_skill = lambda: False
+        return r
+
+    @pytest.fixture()
+    def source(self):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_name="Alice",
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_message_gets_prefix(self, runner, source):
+        """Normal message without backfill gets [sender] prefix."""
+        event = MessageEvent(text="hello world", source=source)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == "[Alice] hello world"
+
+    @pytest.mark.asyncio
+    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender prefix."""
+        event = MessageEvent(
+            text="hello world",
+            source=source,
+            channel_context="[Recent channel messages]\n[Bob] some context",
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith("[Recent channel messages]")
+        assert "[Alice] [Recent channel messages]" not in result
+        assert "[New message]\n[Alice] hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_backfill_preserves_context_block(self, runner, source):
+        """The backfill block should pass through unchanged — no double-prefixing."""
+        context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
+        event = MessageEvent(
+            text="hey everyone", source=source, channel_context=context,
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith(context)
+        assert "[Alice] hey everyone" in result
+        assert "[Alice] [Bob]" not in result
+        assert "[Alice] [Charlie" not in result
+        assert "[Alice] [Recent" not in result
 
 
 class TestSessionStoreRewriteTranscript:

@@ -6809,6 +6809,12 @@ class GatewayRunner:
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        # Prepend channel context from history backfill (if any).  This
+        # happens after sender-prefix so the prefix only applies to the
+        # trigger message, not the backfill block.
+        if getattr(event, "channel_context", None):
+            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+
         if event.media_urls:
             image_paths = []
             audio_paths = []

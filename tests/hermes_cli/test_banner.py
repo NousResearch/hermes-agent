@@ -133,3 +133,39 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+def test_chatconsole_strips_osc8_hyperlinks():
+    """ChatConsole.print() must strip OSC-8 hyperlink sequences that Rich emits
+    for ``[link=URL]`` markup.  prompt_toolkit's ANSI parser removes the
+    ``\x1b]`` / ``\x1b\\`` delimiters but leaves the URL parameters
+    visible, producing garbage text in the welcome banner after /clear.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/25939
+    """
+    from cli import _OSC_8_RE, ChatConsole, _cprint
+
+    # -- regex unit tests --
+    # BEL-terminated OSC-8
+    assert _OSC_8_RE.sub("", "\x1b]8;;https://example.com\x07click\x1b]8;;\x07") == "click"
+    # ST-terminated OSC-8 (\x1b\\)
+    assert _OSC_8_RE.sub("", "\x1b]8;id=1;https://example.com\x1b\\click\x1b]8;;\x1b\\") == "click"
+    # SGR color codes must survive
+    sgr = "\x1b[1;32mHello\x1b[0m"
+    assert _OSC_8_RE.sub("", sgr) == sgr
+
+    # -- integration: ChatConsole strips OSC-8 before _cprint --
+    captured = []
+    import cli as cli_mod
+    original_cprint = cli_mod._cprint
+    cli_mod._cprint = captured.append
+    try:
+        console = ChatConsole()
+        from rich.text import Text
+        # Rich ``[link=URL]text[/link]`` becomes an OSC-8 wrapped string
+        t = Text("v0.13.0", style="link=https://example.com")
+        console.print(t)
+        rendered = "\n".join(captured)
+        assert "\x1b]8;" not in rendered, f"OSC-8 leaked into _cprint: {rendered!r}"
+        assert "v0.13.0" in rendered, "Version label lost during OSC-8 strip"
+    finally:
+        cli_mod._cprint = original_cprint

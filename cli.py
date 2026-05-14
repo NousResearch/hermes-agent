@@ -2052,6 +2052,14 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
     return message, deduped
 
 
+# OSC-8 terminal hyperlink sequences.  Rich emits these for ``[link=URL]``
+# markup, but prompt_toolkit's ANSI parser strips only the ``\x1b]`` / ``\x1b\\``
+# delimiters and leaves the URL parameters visible as garbage text.
+# A targeted strip keeps SGR colors intact while removing the invisible
+# hyperlink metadata that ChatConsole's _cprint path cannot handle.
+_OSC_8_RE = re.compile(r"\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -2078,6 +2086,7 @@ class ChatConsole:
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
+        output = _OSC_8_RE.sub("", output)
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 

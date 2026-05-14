@@ -465,6 +465,25 @@ def _is_legacy_provider_registry_overridden() -> bool:
         return False
 
 
+def _ensure_browser_plugins_loaded() -> None:
+    """Idempotently trigger plugin discovery so the browser registry is populated.
+
+    Normally `model_tools` is imported early in any session and that
+    triggers `discover_plugins()` as a side effect. But `_get_cloud_provider`
+    can be called from contexts that haven't gone through `model_tools` —
+    standalone scripts, certain unit-test paths, the parity-sweep harness.
+    Make discovery idempotent and side-effect-only here so users always
+    see registered plugins regardless of import order. Cheap: subsequent
+    calls early-return inside `_ensure_plugins_discovered`.
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:
+        logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
+
+
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
@@ -509,6 +528,9 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                     if factory is not None:
                         resolved = factory()
                 else:
+                    # Ensure plugins are discovered so the registry is
+                    # populated. Idempotent — cheap on subsequent calls.
+                    _ensure_browser_plugins_loaded()
                     resolved = _registry_get_browser_provider(provider_key)
             except Exception:
                 logger.warning(

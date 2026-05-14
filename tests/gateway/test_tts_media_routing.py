@@ -221,7 +221,7 @@ async def test_streaming_delivery_routes_bare_pdf_path_to_document_sender(monkey
     monkeypatch.setattr("os.path.isfile", lambda p: p == "/tmp/report.pdf")
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _fake_runner({"thread_id": "topic-1"}),
         "Finished. File saved to /tmp/report.pdf",
         event,
         adapter,
@@ -251,7 +251,7 @@ async def test_streaming_delivery_routes_bare_ics_path_to_document_sender(monkey
     monkeypatch.setattr("os.path.isfile", lambda p: p == "/tmp/team-sync.ics")
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _fake_runner({"thread_id": "topic-1"}),
         "Calendar ready at /tmp/team-sync.ics",
         event,
         adapter,

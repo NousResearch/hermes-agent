@@ -83,6 +83,12 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     assert "messaging" in enabled
 
 
+def test_get_platform_tools_default_whatsapp_includes_web():
+    enabled = _get_platform_tools({}, "whatsapp")
+
+    assert "web" in enabled
+
+
 def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
     enabled = _get_platform_tools({}, "homeassistant")
 

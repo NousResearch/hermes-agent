@@ -230,6 +230,52 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
 RuleFn = Callable[[Any, list[Any], list[Any], int, dict], list[Diagnostic]]
 
 
+def triage_specifier_configured(config: Optional[dict]) -> Optional[bool]:
+    """Return whether config clearly provides a triage specifier backend.
+
+    ``None`` means "unknown" and suppresses the diagnostic. The diagnostics
+    engine is called from tests and low-level helpers that may not have loaded
+    user config; guessing in those paths would create noisy false positives.
+    """
+    if not isinstance(config, dict):
+        return None
+
+    explicit = config.get("triage_specifier_configured")
+    if explicit is not None:
+        return bool(explicit)
+
+    aux = config.get("auxiliary")
+    if isinstance(aux, dict) and "triage_specifier" in aux:
+        spec = aux.get("triage_specifier")
+        if not isinstance(spec, dict):
+            return False
+        provider = str(spec.get("provider") or "").strip().lower()
+        if provider == "auto":
+            return True
+        for key in ("provider", "model", "base_url", "api_key"):
+            if str(spec.get(key) or "").strip():
+                return True
+        return False
+
+    if isinstance(aux, dict):
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            provider = str(model_cfg.get("provider") or "").strip()
+            model = str(
+                model_cfg.get("default")
+                or model_cfg.get("model")
+                or model_cfg.get("name")
+                or ""
+            ).strip()
+            if provider and model:
+                return True
+        elif str(model_cfg or "").strip():
+            return True
+        return False
+
+    return None
+
+
 def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked-hallucination gate fires: a worker called kanban_complete
     with created_cards that didn't exist or weren't created by the
@@ -274,6 +320,58 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=last,
         count=len(hits),
         data={"phantom_ids": phantom_ids},
+    )]
+
+
+def _rule_triage_missing_specifier(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A triage task cannot be auto-specified without a configured helper.
+
+    The dispatcher does not run rough ``triage`` cards directly; they need
+    ``hermes kanban specify`` (or the dashboard button) to flesh the request
+    out and promote it to ``todo``. If the config is missing the specifier
+    backend, those tasks can sit in triage indefinitely with no visible reason.
+    """
+    if _task_field(task, "status") != "triage":
+        return []
+
+    configured = triage_specifier_configured(cfg)
+    if configured is not False:
+        return []
+
+    task_id = _task_field(task, "id") or "<task_id>"
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label="Configure auxiliary.triage_specifier",
+            payload={
+                "command": (
+                    "hermes config set auxiliary.triage_specifier.provider auto"
+                )
+            },
+            suggested=True,
+        ),
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Specify manually: hermes kanban specify {task_id}",
+            payload={"command": f"hermes kanban specify {task_id}"},
+        ),
+    ]
+    return [Diagnostic(
+        kind="triage_missing_specifier",
+        severity="warning",
+        title="Triage specifier is not configured",
+        detail=(
+            "This task is still in triage, but the current config does not "
+            "define auxiliary.triage_specifier and no main model fallback is "
+            "visible to diagnostics. Triage tasks are not dispatched until "
+            "they are specified and promoted, so configure the specifier or "
+            "run the specify command after fixing model config."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data={"task_id": task_id},
     )]
 
 
@@ -695,6 +793,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
+    _rule_triage_missing_specifier,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
     _rule_repeated_crashes,
@@ -707,6 +806,7 @@ _RULES: list[RuleFn] = [
 # rules are added.
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
+    "triage_missing_specifier",
     "prose_phantom_refs",
     "repeated_failures",
     "repeated_crashes",
@@ -716,6 +816,7 @@ DIAGNOSTIC_KINDS = (
 
 
 DEFAULT_CONFIG = {
+    "triage_specifier_configured": None,
     "failure_threshold": 3,
     # Legacy alias accepted at read time by _rule_repeated_failures.
     "spawn_failure_threshold": 3,
@@ -726,6 +827,25 @@ DEFAULT_CONFIG = {
     # next dispatcher tick (default 60s) and would just be noise.
     "stranded_threshold_seconds": 30 * 60,
 }
+
+
+def config_from_runtime_config(raw_config: Optional[dict]) -> dict:
+    """Build diagnostics config from the full Hermes runtime config."""
+    raw_config = raw_config or {}
+    cfg: dict = {}
+    if isinstance(raw_config, dict):
+        kanban_cfg = raw_config.get("kanban")
+        if isinstance(kanban_cfg, dict):
+            builder = globals().get("config_from_kanban_config")
+            if callable(builder):
+                cfg.update(builder(kanban_cfg))
+        aux = raw_config.get("auxiliary")
+        if aux is not None:
+            cfg["auxiliary"] = aux
+        model = raw_config.get("model")
+        if model is not None:
+            cfg["model"] = model
+    return cfg
 
 
 def compute_task_diagnostics(

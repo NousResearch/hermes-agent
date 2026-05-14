@@ -1265,7 +1265,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # of show output so CLI users see them before scrolling through
     # comments / runs.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs)
+    try:
+        from hermes_cli.config import read_raw_config
+        diagnostics_config = kd.config_from_runtime_config(read_raw_config())
+    except Exception:
+        diagnostics_config = None
+    diags = kd.compute_task_diagnostics(
+        task, events, runs, config=diagnostics_config,
+    )
     if diags:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")
@@ -1393,6 +1400,11 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     the dashboard uses, so CLI output matches what the UI shows.
     """
     from hermes_cli import kanban_diagnostics as kd
+    try:
+        from hermes_cli.config import read_raw_config
+        diagnostics_config = kd.config_from_runtime_config(read_raw_config())
+    except Exception:
+        diagnostics_config = None
 
     with kb.connect() as conn:
         # Either one-task mode or fleet mode.
@@ -1406,6 +1418,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    config=diagnostics_config,
                 )
             }
         else:
@@ -1433,7 +1446,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
-                    dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []))
+                    dl = kd.compute_task_diagnostics(
+                        r,
+                        ev_by.get(tid, []),
+                        run_by.get(tid, []),
+                        config=diagnostics_config,
+                    )
                     if dl:
                         diags_by_task[tid] = dl
 

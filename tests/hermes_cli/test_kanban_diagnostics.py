@@ -129,6 +129,68 @@ def test_prose_phantom_refs_clears_on_later_clean_edit():
     assert diags == []
 
 
+def test_triage_missing_specifier_fires_when_config_missing():
+    task = _task(id="t_triage1", status="triage")
+    diags = kd.compute_task_diagnostics(
+        task,
+        [],
+        [],
+        config={"auxiliary": {}},
+    )
+    triage = [d for d in diags if d.kind == "triage_missing_specifier"]
+    assert len(triage) == 1
+    d = triage[0]
+    assert d.severity == "warning"
+    assert "auxiliary.triage_specifier" in d.detail
+    suggested = [a for a in d.actions if a.suggested]
+    assert suggested
+    assert "auxiliary.triage_specifier.provider" in suggested[0].payload["command"]
+
+
+def test_triage_missing_specifier_silent_when_configured_auto():
+    task = _task(status="triage")
+    diags = kd.compute_task_diagnostics(
+        task,
+        [],
+        [],
+        config={"auxiliary": {"triage_specifier": {"provider": "auto"}}},
+    )
+    assert [d for d in diags if d.kind == "triage_missing_specifier"] == []
+
+
+def test_triage_missing_specifier_silent_without_config_context():
+    task = _task(status="triage")
+    diags = kd.compute_task_diagnostics(task, [], [])
+    assert [d for d in diags if d.kind == "triage_missing_specifier"] == []
+
+
+def test_triage_specifier_configured_recognises_main_model_fallback():
+    assert kd.triage_specifier_configured({
+        "auxiliary": {},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+    }) is True
+
+
+def test_config_from_runtime_config_exposes_triage_context():
+    cfg = kd.config_from_runtime_config({
+        "auxiliary": {"triage_specifier": {"provider": "auto"}},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+    })
+    assert cfg["auxiliary"]["triage_specifier"]["provider"] == "auto"
+    assert cfg["model"]["default"] == "qwen/qwen3"
+
+
+def test_triage_missing_specifier_skips_non_triage_tasks():
+    task = _task(status="todo")
+    diags = kd.compute_task_diagnostics(
+        task,
+        [],
+        [],
+        config={"auxiliary": {}},
+    )
+    assert [d for d in diags if d.kind == "triage_missing_specifier"] == []
+
+
 def test_repeated_failures_fires_at_threshold_on_spawn():
     """A task with multiple spawn_failed runs gets a spawn-flavoured
     diagnostic (title mentions 'spawn', suggested action is ``doctor``).

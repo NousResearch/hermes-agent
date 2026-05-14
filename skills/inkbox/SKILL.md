@@ -1,7 +1,8 @@
 ---
 name: inkbox
-description: Runtime guidance for agents routed through the Inkbox platform plugin — email, SMS, and live voice. Covers the contact-keyed session model, common pitfalls, and the minimal SDK surface needed to inspect live state during a turn.
-user-invocable: false
+description: "Inkbox — runtime guidance for agents routed via the Inkbox platform plugin: email, SMS, live voice. Contact-keyed sessions, common pitfalls, minimal SDK surface."
+version: 1.0.0
+platforms: [linux, macos, windows]
 ---
 
 # Inkbox

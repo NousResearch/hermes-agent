@@ -1,0 +1,19 @@
+name: mq9
+version: 0.2.0
+description: "mq9 transport plugin for Hermes with lifecycle-safe register/discover/call and passive inbox serving"
+author: RobustMQ
+kind: standalone
+provides_tools:
+  - mq9_register_self
+  - mq9_unregister_self
+  - mq9_discover
+  - mq9_call
+  - mq9_status
+provides_hooks:
+  - on_session_start
+  - on_session_finalize
+  - on_session_reset
+hooks:
+  - on_session_start
+  - on_session_finalize
+  - on_session_reset

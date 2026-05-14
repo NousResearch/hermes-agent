@@ -2288,6 +2288,37 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+
+    # ── Service-account mismatch guard ─────────────────────────────────
+    # When the unit's User= points to a dedicated system account whose home
+    # differs from the CLI user's home, remap-based regeneration would write
+    # paths that don't exist on disk (the actual venv/repo live under the
+    # CLI user).  The safest fix is to skip the rewrite entirely — the unit
+    # was hand-configured during the service-account migration and any path
+    # update must be done deliberately by the admin.  (Issue #25282)
+    if system and expected_user:
+        import getpass as _getpass
+        import pwd as _pwd
+        try:
+            cli_user = _getpass.getuser()
+            if cli_user != expected_user:
+                # Check if the homes actually differ — same home (e.g. both
+                # resolve to /home/user) means remap is a no-op and safe.
+                cli_home = Path.home()
+                try:
+                    svc_home = Path(_pwd.getpwnam(expected_user).pw_dir)
+                except KeyError:
+                    svc_home = cli_home  # unknown user, can't compare
+                if cli_home != svc_home:
+                    logger.info(
+                        "Skipping systemd unit refresh: service user %s "
+                        "(home %s) differs from CLI user %s (home %s)",
+                        expected_user, svc_home, cli_user, cli_home,
+                    )
+                    return False
+        except Exception:
+            pass  # non-fatal; proceed with normal refresh
+
     new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
 
     # ── Test-environment safety belt ─────────────────────────────────────

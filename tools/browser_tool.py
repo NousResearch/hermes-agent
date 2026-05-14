@@ -90,7 +90,6 @@ except Exception:
 # shims for callers that import them from this module.
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # noqa: F401  (legacy alias)
 from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
-    get_active_browser_provider as _registry_get_active_browser_provider,
     get_provider as _registry_get_browser_provider,
 )
 from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
@@ -425,6 +424,10 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
 }
+# Frozen copy of the import-time _PROVIDER_REGISTRY, used by
+# ``_is_legacy_provider_registry_overridden`` to detect test-time
+# monkeypatching. NEVER mutate this dict.
+_DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
@@ -442,25 +445,23 @@ _browser_engine_resolved = False
 def _is_legacy_provider_registry_overridden() -> bool:
     """Return True when a test has patched ``_PROVIDER_REGISTRY`` to a custom value.
 
-    Detected by comparing identity with the module-level defaults dict
-    populated above. Tests that ``monkeypatch.setattr(browser_tool,
-    "_PROVIDER_REGISTRY", ...)`` swap in a new object; identity differs
-    even when the contents happen to match. Used by ``_get_cloud_provider``
-    to honour test-time overrides (which expect a factory-callable shape)
-    instead of routing through the plugin registry.
+    Detected by spotting any registered class that *isn't* the canonical
+    plugin-backed class for that name. Tests that
+    ``monkeypatch.setattr(browser_tool, "_PROVIDER_REGISTRY", ...)`` install
+    custom factories (`exploding_factory`, `lambda: fake_provider`, etc.);
+    those entries fail the canonical-class identity check below.
+
+    Note: a future maintainer adding a 4th built-in provider only needs to
+    extend ``_DEFAULT_PROVIDER_REGISTRY`` below — they do NOT need to update
+    a hardcoded set of keys here. The detection just compares each registered
+    value against the corresponding canonical class.
     """
-    # The module-level _PROVIDER_REGISTRY is built once at import time. A test
-    # that swaps it via monkeypatch creates a new dict; we detect that via
-    # the registered class identities, not by ``is`` on the dict itself
-    # (the patch may install a dict whose values happen to be the same
-    # classes; treat that as "not overridden").
     try:
-        return (
-            _PROVIDER_REGISTRY.get("browserbase") is not BrowserbaseProvider
-            or _PROVIDER_REGISTRY.get("browser-use") is not BrowserUseProvider
-            or _PROVIDER_REGISTRY.get("firecrawl") is not FirecrawlProvider
-            or set(_PROVIDER_REGISTRY.keys()) != {"browserbase", "browser-use", "firecrawl"}
-        )
+        for key, default_cls in _DEFAULT_PROVIDER_REGISTRY.items():
+            if _PROVIDER_REGISTRY.get(key) is not default_cls:
+                return True
+        # Extra keys not in the default registry → also an override.
+        return len(_PROVIDER_REGISTRY) != len(_DEFAULT_PROVIDER_REGISTRY)
     except Exception:
         return False
 
@@ -532,6 +533,20 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                     # populated. Idempotent — cheap on subsequent calls.
                     _ensure_browser_plugins_loaded()
                     resolved = _registry_get_browser_provider(provider_key)
+                    if resolved is None:
+                        # Explicit config name unknown to the registry —
+                        # might be a typo, an uninstalled plugin, or a
+                        # registry-population failure. Warn the user
+                        # (legacy code would have surfaced a typed
+                        # credentials error via direct class instantiation;
+                        # post-migration we surface this WARNING instead).
+                        logger.warning(
+                            "browser.cloud_provider=%r is not a registered "
+                            "browser plugin; falling back to auto-detect "
+                            "(install the corresponding plugin or fix the "
+                            "config key spelling).",
+                            provider_key,
+                        )
             except Exception:
                 logger.warning(
                     "Failed to instantiate explicit cloud_provider %r; will retry on next call",
@@ -545,12 +560,15 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
     if resolved is None:
-        # Auto-detect path. When tests have patched the per-class names
-        # on this module (BrowserUseProvider / BrowserbaseProvider), honour
-        # them — the test_browser_cloud_provider_cache test relies on this.
-        # Otherwise route through the plugin registry's legacy preference
-        # walk so third-party plugins still get a chance to be selected
-        # when they're explicitly configured.
+        # Auto-detect path: Browser Use first (managed Nous gateway or
+        # direct API key), then Browserbase (direct credentials). Uses
+        # the legacy class names imported at the top of this module so
+        # tests that ``monkeypatch.setattr(browser_tool, "BrowserUseProvider", ...)``
+        # keep driving this branch deterministically. Third-party browser
+        # plugins are intentionally NOT reachable from auto-detect — they
+        # participate only via explicit ``browser.cloud_provider: <name>``,
+        # mirroring the firecrawl gate documented on
+        # :data:`agent.browser_registry._LEGACY_PREFERENCE`.
         try:
             fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():

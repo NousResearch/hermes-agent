@@ -479,6 +479,17 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _should_omit_management_footer(job: dict) -> bool:
+    """Return True for notifier jobs where the cron management footer is noise."""
+    script = job.get("script")
+    script_basename = Path(str(script)).name if script else ""
+    return (
+        job.get("name") == "HERMES-BRIDGE approval notifier"
+        and script_basename == "mcp_bridge_approval_notifier.py"
+        and job.get("no_agent") is True
+    )
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -514,12 +525,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+        footer = ""
+        if not _should_omit_management_footer(job):
+            footer = (
+                "\n\n"
+                f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            )
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{content}"
+            f"{footer}"
         )
     else:
         delivery_content = content

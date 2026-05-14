@@ -470,6 +470,35 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_mcp_bridge_notifier_omits_management_footer_only(self):
+        """Bridge approval notifications keep cron context without the generic manage hint."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            job = {
+                "id": "bridge-notifier",
+                "name": "HERMES-BRIDGE approval notifier",
+                "script": "/Users/emillomliev/.hermes/scripts/mcp_bridge_approval_notifier.py",
+                "no_agent": True,
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Approve task HERMES-BRIDGE-002BR.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: HERMES-BRIDGE approval notifier" in sent_content
+        assert "(job_id: bridge-notifier)" in sent_content
+        assert "Approve task HERMES-BRIDGE-002BR." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform

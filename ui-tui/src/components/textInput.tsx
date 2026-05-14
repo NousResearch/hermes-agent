@@ -179,6 +179,25 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
 
 export { offsetFromPosition }
 
+export type ReturnKeyAction = 'newline' | 'submit'
+
+export function returnKeyAction(
+  key: Pick<Key, 'ctrl' | 'meta' | 'shift' | 'super'>,
+  mac = isMac
+): ReturnKeyAction {
+  // On macOS, plain Enter should edit the draft and a real Cmd+Enter
+  // should submit. `key.meta` is Alt/Option in modern terminal protocols,
+  // so require the unambiguous `super` bit for submit and keep Alt+Enter as
+  // a newline fallback.
+  const macSubmit = mac && key.super === true && !key.shift
+
+  if (macSubmit || (!mac && !key.shift && !key.ctrl && !key.meta)) {
+    return 'submit'
+  }
+
+  return 'newline'
+}
+
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
@@ -762,12 +781,12 @@ export function TextInput({
       }
 
       if (k.return) {
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
-          flushParentChange()
-          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
-        } else {
-          flushParentChange()
+        flushParentChange()
+
+        if (returnKeyAction(k) === 'submit') {
           cbSubmit.current?.(vRef.current)
+        } else {
+          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         }
 
         return

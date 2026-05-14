@@ -4633,6 +4633,36 @@ class TestStreamingApiCall:
         assert tc[1].function.arguments == '{"path":"x.py"}'
         assert tc[1].id == "call_b"
 
+    def test_concatenated_json_arguments_split_into_parallel_tool_calls(self, agent):
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(
+                0,
+                "call_relate",
+                "yantrikdb_relate",
+                (
+                    '{"entity":"Don Bowman","relationship":"works_at","target":"Agilicus"}'
+                    '{"entity":"Agilicus","relationship":"employs","target":"Don Bowman"}'
+                ),
+            )]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2
+        assert tc[0].function.name == "yantrikdb_relate"
+        assert tc[0].function.arguments == (
+            '{"entity":"Don Bowman","relationship":"works_at","target":"Agilicus"}'
+        )
+        assert tc[0].id == "call_relate"
+        assert tc[1].function.name == "yantrikdb_relate"
+        assert tc[1].function.arguments == (
+            '{"entity":"Agilicus","relationship":"employs","target":"Don Bowman"}'
+        )
+        assert tc[1].id == "call_relate-split-2"
+
     def test_ollama_reused_index_streamed_args(self, agent):
         """Ollama with streamed arguments across multiple chunks at same index."""
         chunks = [

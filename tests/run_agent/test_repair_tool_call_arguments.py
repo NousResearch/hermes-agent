@@ -3,7 +3,10 @@
 import json
 import pytest
 
-from run_agent import _repair_tool_call_arguments
+from run_agent import (
+    _repair_tool_call_arguments,
+    _split_concatenated_tool_call_arguments,
+)
 
 
 class TestRepairToolCallArguments:
@@ -141,3 +144,13 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Concatenated top-level tool-call payloads --
+
+    def test_split_concatenated_tool_call_arguments(self):
+        raw = '{"entity":"Don Bowman"}{"entity":"Agilicus"}'
+        result = _split_concatenated_tool_call_arguments(raw)
+        assert result == ['{"entity":"Don Bowman"}', '{"entity":"Agilicus"}']
+
+    def test_split_concatenated_tool_call_arguments_rejects_partial_tail(self):
+        raw = '{"entity":"Don Bowman"}{"entity":"Agilic'
+        assert _split_concatenated_tool_call_arguments(raw) is None

@@ -90,6 +90,41 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+def test_kill_process_tolerates_pty_wait_without_timeout(monkeypatch):
+    """PTY-backed process cleanup must not pass timeout through as a hard crash.
+
+    ``ptyprocess.PtyProcess.wait()`` accepts no timeout argument.  The local
+    backend's final best-effort wait runs after SIGTERM/SIGKILL cleanup, so a
+    PTY object should skip that timed wait instead of surfacing TypeError to
+    terminal_tool callers such as sudo commands.
+    """
+    env = object.__new__(LocalEnvironment)
+
+    class PtyLikeProc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    monotonic_values = iter([0.0, 2.0, 2.0, 5.0])
+
+    monkeypatch.setattr(os, "getpgid", lambda _pid: 67890)
+    monkeypatch.setattr(os, "killpg", lambda _pgid, _sig: None)
+    monkeypatch.setattr(
+        "tools.environments.local.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr("tools.environments.local.time.sleep", lambda _seconds: None)
+
+    env._kill_process(PtyLikeProc())
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

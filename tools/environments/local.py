@@ -556,6 +556,12 @@ class LocalEnvironment(BaseEnvironment):
                 _wait_for_group_exit(pgid, 2.0)
                 try:
                     proc.wait(timeout=0.2)
+                except TypeError:
+                    # ptyprocess.PtyProcess.wait() does not accept a timeout
+                    # argument. This final wait is only a best-effort reap
+                    # after process-group termination, so do not let PTY-backed
+                    # terminal cleanup crash sudo/interactive command paths.
+                    pass
                 except (subprocess.TimeoutExpired, OSError):
                     pass
         except (ProcessLookupError, PermissionError, OSError):

@@ -17,7 +17,8 @@ class CloudflareProfile(ProviderProfile):
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Cloudflare's /models endpoint requires account_id in the URL."""
-        account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+        from hermes_cli.config import get_env_value
+        account_id = get_env_value("CLOUDFLARE_ACCOUNT_ID")
         if not account_id:
             return None
 

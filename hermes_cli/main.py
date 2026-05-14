@@ -2418,6 +2418,8 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
+    elif selected_provider == "cloudflare":
+        _model_flow_cloudflare(config, current_model)
     elif selected_provider in {
         "openai-api",
         "gemini",
@@ -5571,6 +5573,98 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+def _model_flow_cloudflare(config, current_model=""):
+    """Cloudflare Workers AI setup flow."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        load_config,
+        save_config,
+    )
+    from hermes_cli.models import (
+        fetch_api_models,
+        curated_models_for_provider,
+    )
+
+    provider_id = "cloudflare"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0]
+
+    print()
+    print("Cloudflare Workers AI Configuration")
+    print("=" * 50)
+    print()
+    print("Run open-source models (Llama 3.1, Mistral, Hermes) on")
+    print("Cloudflare's global GPU network.")
+    print()
+    print("You will need:")
+    print("  1. An API Token (with Workers AI - Read permissions)")
+    print("  2. Your Cloudflare Account ID")
+    print()
+
+    # Step 1: API Token
+    existing_key = get_env_value(key_env) or os.getenv(key_env, "")
+    api_token, abort = _prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+    if abort:
+        return
+
+    # Step 2: Account ID
+    existing_account = get_env_value("CLOUDFLARE_ACCOUNT_ID") or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+    try:
+        account_id = input(f"Cloudflare Account ID [{existing_account or 'required'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if not account_id and existing_account:
+        account_id = existing_account
+
+    if not account_id:
+        print("  Error: Account ID is required for Cloudflare Workers AI.")
+        return
+
+    save_env_value("CLOUDFLARE_ACCOUNT_ID", account_id)
+    print("  ✓ Account ID saved")
+    print()
+
+    # Step 3: Model Selection
+    effective_base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    
+    print("  Fetching available models from Cloudflare...")
+    model_ids = fetch_api_models(api_token, effective_base)
+    
+    if not model_ids:
+        # Fallback to curated list if live fetch fails
+        print("  Warning: Could not fetch live models. Using curated list.")
+        curated = curated_models_for_provider(provider_id)
+        model_ids = [m[0] for m in curated]
+
+    if model_ids:
+        selected = _prompt_model_selection(model_ids, current_model=current_model)
+    else:
+        try:
+            selected = input("Enter model ID (e.g., @cf/meta/llama-3.1-8b-instruct): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(
+            config,
+            provider_id,
+            selected,
+            base_url=effective_base,
+            api_key=api_token,
+        )
+        print()
+        print_success(f"Default model set to: {selected} (via {provider_id})")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):

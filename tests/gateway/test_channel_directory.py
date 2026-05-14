@@ -17,6 +17,7 @@ from gateway.channel_directory import (
     _build_slack,
     DIRECTORY_PATH,
 )
+from gateway.config import Platform
 
 
 def _write_directory(tmp_path, platforms):
@@ -69,6 +70,23 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+    def test_does_not_resurrect_disabled_platforms_from_session_history(self, tmp_path):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps({
+            "old_slack": {"origin": {"platform": "slack", "chat_id": "C01", "chat_name": "legacy-slack"}},
+            "active_telegram": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "Active Chat"}},
+        }))
+        cache_file = tmp_path / "channel_directory.json"
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+
+        assert "telegram" in directory["platforms"]
+        assert "slack" not in directory["platforms"]
+        assert directory["platforms"]["telegram"][0]["id"] == "123"
 
 
 class TestResolveChannelName:

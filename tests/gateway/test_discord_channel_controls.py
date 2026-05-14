@@ -77,6 +77,14 @@ class FakeThread:
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    for env_name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -110,7 +118,7 @@ async def test_ignored_channel_blocks_message(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
@@ -140,7 +148,7 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500,600")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
@@ -155,7 +163,7 @@ async def test_ignored_channels_csv_parsing(adapter, monkeypatch):
 
     for ch_id in (500, 600, 700):
         adapter.handle_message.reset_mock()
-        message = make_message(channel=FakeTextChannel(channel_id=ch_id), content="hello")
+        message = make_message(channel=FakeTextChannel(channel_id=ch_id), content="please inspect port 443")
         await adapter._handle_message(message)
         adapter.handle_message.assert_not_awaited()
 
@@ -167,7 +175,7 @@ async def test_ignored_channels_empty_string_ignores_nothing(adapter, monkeypatc
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
@@ -214,7 +222,7 @@ async def test_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
 
     adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
 
-    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_not_awaited()
@@ -235,7 +243,7 @@ async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
     fake_thread = FakeThread(channel_id=999, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
-    message = make_message(channel=FakeTextChannel(channel_id=900), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=900), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_awaited_once()
@@ -258,7 +266,7 @@ async def test_no_thread_channels_csv_parsing(adapter, monkeypatch):
     for ch_id in (800, 900):
         adapter._auto_create_thread.reset_mock()
         adapter.handle_message.reset_mock()
-        message = make_message(channel=FakeTextChannel(channel_id=ch_id), content="hello")
+        message = make_message(channel=FakeTextChannel(channel_id=ch_id), content="please inspect port 443")
         await adapter._handle_message(message)
         adapter._auto_create_thread.assert_not_awaited()
 
@@ -274,7 +282,7 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
 
     adapter._auto_create_thread = AsyncMock()
 
-    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="please inspect port 443")
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_not_awaited()
@@ -324,6 +332,28 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
+def test_config_bridges_discord_text_batch_delays(monkeypatch, tmp_path):
+    """gateway/config.py bridges Discord text batch latency knobs to env vars."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "text_batch_delay_seconds": 0.15,
+            "text_batch_split_delay_seconds": 0.75,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "")
+    monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS") == "0.15"
+    assert os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS") == "0.75"
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml
@@ -331,10 +361,12 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     config_file.write_text(yaml.dump({
         "discord": {
             "ignored_channels": ["111"],
+            "text_batch_delay_seconds": 0.15,
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "999")
+    monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.4")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
@@ -342,3 +374,4 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     import os
     # Env var should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+    assert os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS") == "0.4"

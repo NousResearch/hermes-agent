@@ -919,6 +919,10 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                if "text_batch_delay_seconds" in discord_cfg and not os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS"):
+                    os.environ["HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS"] = str(discord_cfg["text_batch_delay_seconds"])
+                if "text_batch_split_delay_seconds" in discord_cfg and not os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS"):
+                    os.environ["HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS"] = str(discord_cfg["text_batch_split_delay_seconds"])
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

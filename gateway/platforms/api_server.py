@@ -2726,6 +2726,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
             }
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
@@ -2994,6 +2996,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
                     }
                     return r, u
 
@@ -3022,13 +3026,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
-                        "usage": usage,
+                        "usage": _build_usage_dict(usage),
                     })
                     self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
-                        usage=usage,
+                        usage=_build_usage_dict(usage),
                         last_event="run.completed",
                     )
             except asyncio.CancelledError:

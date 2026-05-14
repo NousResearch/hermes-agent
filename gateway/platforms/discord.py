@@ -3613,7 +3613,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
-        return os.getenv("DISCORD_HISTORY_BACKFILL", "false").lower() in ("true", "1", "yes")
+        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in ("true", "1", "yes")
 
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
@@ -4644,8 +4644,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # ── History backfill ─────────────────────────────────────────
         # When require_mention is active, the bot only processes messages
-        # that @mention it.  This means channel messages between bot turns
-        # are invisible to the session transcript.  To recover that context,
+        # that @mention it.  Messages in the channel between bot turns are
+        # invisible to the session transcript.  To recover that context,
         # fetch recent channel history and prepend it to the user message.
         #
         # The fetch window is: everything after the bot's last message in
@@ -4653,9 +4653,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # cold start (no prior bot message found), fetch the last N messages
         # and stop at the first self-message encountered.
         #
-        # This only runs for shared sessions (group_sessions_per_user=False
-        # or shared threads) where multiple users contribute context the bot
-        # would otherwise miss.
+        # Threads naturally scope to thread-only history (channel.history()
+        # on a thread returns only that thread's messages).  DMs are skipped
+        # because every DM message triggers the bot — there's no mention gap
+        # to fill; the session transcript already has everything.
+        #
+        # Per-user sessions also benefit: Alice's session is missing the
+        # other-channel-participants' context, and her own messages from
+        # before she mentioned the bot.  Backfill fills that gap.
         #
         # Messages that arrive while the bot is processing (between trigger
         # and response) are not captured — this is an accepted simplification
@@ -4663,17 +4668,13 @@ class DiscordAdapter(BasePlatformAdapter):
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm:
-            _is_shared = (
-                (is_thread and not self.config.extra.get("thread_sessions_per_user", False))
-                or (not is_thread and not self.config.extra.get("group_sessions_per_user", True))
-            )
             _needed_mention = (
                 require_mention
                 and not is_free_channel
                 and not in_bot_thread
             )
             _backfill_enabled = self._discord_history_backfill()
-            if _is_shared and _needed_mention and _backfill_enabled:
+            if _needed_mention and _backfill_enabled:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )

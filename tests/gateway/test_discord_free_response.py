@@ -87,6 +87,12 @@ class FakeThread:
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
         self.topic = None
 
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        async def _iter():
+            return
+            yield
+        return _iter()
+
 
 @pytest.fixture
 def adapter(monkeypatch):
@@ -820,7 +826,9 @@ async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_discord_per_user_channel_does_not_backfill(adapter, monkeypatch):
+async def test_discord_per_user_channel_backfills_too(adapter, monkeypatch):
+    """Per-user sessions also benefit from backfill: Alice's session is missing
+    other-channel-participants' context and her own pre-mention messages."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
@@ -837,9 +845,42 @@ async def test_discord_per_user_channel_does_not_backfill(adapter, monkeypatch):
 
     await adapter._handle_message(message)
 
-    adapter._fetch_channel_context.assert_not_awaited()
+    adapter._fetch_channel_context.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
-    assert event.channel_context is None
+    assert event.channel_context == "[Recent channel messages]\n[Alice] context"
+
+
+@pytest.mark.asyncio
+async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
+    """DMs skip backfill — every DM triggers the bot, so there's no mention gap."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
+
+    bot_user = adapter._client.user
+    dm_channel = SimpleNamespace(
+        id=999,
+        name=None,
+        guild=None,
+        topic=None,
+    )
+    # Make isinstance(channel, discord.DMChannel) return True
+    monkeypatch.setattr(
+        discord_platform.discord, "DMChannel", type(dm_channel), raising=False,
+    )
+
+    message = make_message(
+        channel=dm_channel,
+        content="hello in DM",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._fetch_channel_context.assert_not_awaited()
+    if adapter.handle_message.await_args is not None:
+        event = adapter.handle_message.await_args.args[0]
+        assert event.channel_context is None
 
 

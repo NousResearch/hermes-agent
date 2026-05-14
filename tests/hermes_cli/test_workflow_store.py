@@ -4,17 +4,20 @@ import sqlite3
 
 import pytest
 
-from hermes_cli.workflow import WorkflowArtifact, WorkflowGate
+from hermes_cli.workflow import WorkflowArtifact, WorkflowGate, WorkflowInboxItem
 from hermes_cli.workflow.store import (
     add_artifact,
     add_event,
     add_gate,
     connect,
+    create_inbox_item,
     create_workflow,
+    get_inbox_item,
     get_workflow,
     list_artifacts,
     list_events,
     list_gates,
+    list_inbox_items,
     list_workflows,
     resolve_gate,
     save_dag,
@@ -27,6 +30,10 @@ def test_public_workflow_package_exports_artifact_record():
 
 def test_public_workflow_package_exports_gate_record():
     assert WorkflowGate.__name__ == "WorkflowGate"
+
+
+def test_public_workflow_package_exports_inbox_item_record():
+    assert WorkflowInboxItem.__name__ == "WorkflowInboxItem"
 
 
 def test_connect_initializes_schema_version_and_tables(tmp_path):
@@ -47,10 +54,79 @@ def test_connect_initializes_schema_version_and_tables(tmp_path):
         "workflow_edges",
         "workflow_events",
         "workflow_gates",
+        "workflow_inbox_items",
         "workflow_kanban_mappings",
         "workflow_nodes",
         "workflows",
     }
+
+
+def test_create_get_and_list_inbox_items_preserves_intake_classification_and_metadata(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        older = create_inbox_item(
+            conn,
+            inbox_item_id="inbox_old",
+            title="  Improve workflow DAG  ",
+            body="Make the DAG operational.",
+            source="webui_chat",
+            status="new",
+            classification="needs_shaping",
+            workspace_path=tmp_path / "webui",
+            created_by="user",
+            metadata={"labels": ["workflow-system"]},
+            now=1.0,
+        )
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_other",
+            title="Other",
+            source="github_issue",
+            status="new",
+            classification="one_off",
+            now=3.0,
+        )
+        newer = create_inbox_item(
+            conn,
+            inbox_item_id="inbox_new",
+            title="Build inbox",
+            source="webui_chat",
+            status="triaged",
+            classification="decomposition_worthy",
+            assigned_workflow_id="wf_future",
+            now=5.0,
+        )
+
+        fetched = get_inbox_item(conn, "inbox_old")
+        webui_items = list_inbox_items(conn, source="webui_chat")
+        new_items = list_inbox_items(conn, status="new")
+
+    assert fetched == older
+    assert older.title == "Improve workflow DAG"
+    assert older.workspace_path == str(tmp_path / "webui")
+    assert older.metadata == {"labels": ["workflow-system"]}
+    assert older.to_dict() == {
+        "id": "inbox_old",
+        "title": "Improve workflow DAG",
+        "body": "Make the DAG operational.",
+        "source": "webui_chat",
+        "status": "new",
+        "classification": "needs_shaping",
+        "workspacePath": str(tmp_path / "webui"),
+        "assignedWorkflowId": None,
+        "createdAt": 1.0,
+        "updatedAt": 1.0,
+        "createdBy": "user",
+        "metadata": {"labels": ["workflow-system"]},
+    }
+    assert newer.assigned_workflow_id == "wf_future"
+    assert [item.id for item in webui_items] == ["inbox_new", "inbox_old"]
+    assert [item.id for item in new_items] == ["inbox_other", "inbox_old"]
+
+
+def test_create_inbox_item_requires_non_empty_title(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="inbox item title must be non-empty"):
+            create_inbox_item(conn, title="   ", source="webui_chat")
 
 
 def test_create_get_and_serialize_workflow_preserves_policy_and_routing_metadata(tmp_path):

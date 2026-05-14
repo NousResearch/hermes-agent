@@ -49,10 +49,12 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from hermes_cli.workflow import (
+    create_inbox_item as workflow_create_inbox_item,
     get_workflow_artifacts as workflow_get_workflow_artifacts,
     get_workflow_dag as workflow_get_workflow_dag,
     get_workflow_events as workflow_get_workflow_events,
     get_workflow_node as workflow_get_workflow_node,
+    list_inbox_item_summaries as workflow_list_inbox_item_summaries,
     list_workflow_summaries as workflow_list_workflow_summaries,
 )
 from hermes_cli.workflow.store import connect as workflow_connect
@@ -653,6 +655,51 @@ async def list_workflows_endpoint(board: Optional[str] = None, status: Optional[
     try:
         with workflow_connect() as conn:
             return workflow_list_workflow_summaries(conn, board=board, status=status, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/workflows/inbox")
+async def list_workflow_inbox_endpoint(
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    classification: Optional[str] = None,
+    limit: int = 100,
+):
+    try:
+        with workflow_connect() as conn:
+            return workflow_list_inbox_item_summaries(
+                conn,
+                status=status,
+                source=source,
+                classification=classification,
+                limit=limit,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/workflows/inbox")
+async def create_workflow_inbox_endpoint(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            item = workflow_create_inbox_item(
+                conn,
+                title=str(payload.get("title") or ""),
+                body=str(payload.get("body") or ""),
+                source=str(payload.get("source") or "webui"),
+                status=str(payload.get("status") or "new"),
+                classification=payload.get("classification"),
+                workspace_path=payload.get("workspacePath"),
+                assigned_workflow_id=payload.get("assignedWorkflowId"),
+                created_by=payload.get("createdBy"),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            )
+            return {"facts": {"inboxItem": item.to_dict()}, "insights": None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

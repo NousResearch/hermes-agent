@@ -4,10 +4,12 @@ import pytest
 
 from hermes_cli import kanban_db
 from hermes_cli.workflow import (
+    create_inbox_item,
     get_workflow_artifacts,
     get_workflow_dag,
     get_workflow_events,
     get_workflow_node,
+    list_inbox_item_summaries,
     list_workflow_summaries,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
@@ -62,6 +64,21 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(get_workflow_node)
     assert callable(get_workflow_events)
     assert callable(get_workflow_artifacts)
+    assert callable(list_inbox_item_summaries)
+
+
+def test_list_inbox_item_summaries_returns_intake_facts_shape_and_filters(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(conn, inbox_item_id="inbox_old", title="Old", source="webui_chat", status="new", now=1.0)
+        create_inbox_item(conn, inbox_item_id="inbox_other", title="Other", source="github_issue", status="new", now=3.0)
+        create_inbox_item(conn, inbox_item_id="inbox_new", title="New", source="webui_chat", status="triaged", classification="decomposition_worthy", now=5.0)
+
+        payload = list_inbox_item_summaries(conn, source="webui_chat")
+
+    assert payload["insights"] is None
+    assert [item["id"] for item in payload["facts"]["inboxItems"]] == ["inbox_new", "inbox_old"]
+    assert payload["facts"]["count"] == 2
+    assert payload["facts"]["inboxItems"][0]["classification"] == "decomposition_worthy"
 
 
 def test_list_workflow_summaries_returns_facts_insights_shape_and_filters(tmp_path):

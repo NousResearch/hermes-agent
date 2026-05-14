@@ -90,6 +90,38 @@ class WorkflowRecord:
 
 
 @dataclass(frozen=True)
+class WorkflowInboxItem:
+    id: str
+    title: str
+    body: str
+    source: str
+    status: str
+    classification: str | None
+    workspace_path: str | None
+    assigned_workflow_id: str | None
+    created_at: float
+    updated_at: float
+    created_by: str | None
+    metadata: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "body": self.body,
+            "source": self.source,
+            "status": self.status,
+            "classification": self.classification,
+            "workspacePath": self.workspace_path,
+            "assignedWorkflowId": self.assigned_workflow_id,
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+            "createdBy": self.created_by,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass(frozen=True)
 class WorkflowGate:
     id: str
     workflow_id: str
@@ -219,6 +251,21 @@ def init_db(conn: sqlite3.Connection) -> None:
           metadata_json TEXT NOT NULL DEFAULT '{}'
         );
 
+        CREATE TABLE IF NOT EXISTS workflow_inbox_items (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'new',
+          classification TEXT,
+          workspace_path TEXT,
+          assigned_workflow_id TEXT,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          created_by TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+
         CREATE TABLE IF NOT EXISTS workflow_artifacts (
           id TEXT PRIMARY KEY,
           workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -302,6 +349,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_workflows_board_status ON workflows(board, status);
+        CREATE INDEX IF NOT EXISTS idx_workflow_inbox_status_source ON workflow_inbox_items(status, source);
         CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow_created ON workflow_events(workflow_id, created_at);
         """
     )
@@ -310,6 +358,87 @@ def init_db(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def create_inbox_item(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    body: str = "",
+    source: str = "manual",
+    status: str = "new",
+    classification: str | None = None,
+    workspace_path: str | Path | None = None,
+    assigned_workflow_id: str | None = None,
+    created_by: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    inbox_item_id: str | None = None,
+    now: float | None = None,
+) -> WorkflowInboxItem:
+    """Capture a raw, not-yet-shaped workflow intake item."""
+
+    if not title.strip():
+        raise ValueError("inbox item title must be non-empty")
+    if not source.strip():
+        raise ValueError("inbox item source must be non-empty")
+    ts = time.time() if now is None else now
+    iid = inbox_item_id or f"inbox_{secrets.token_hex(8)}"
+    conn.execute(
+        """
+        INSERT INTO workflow_inbox_items (
+          id, title, body, source, status, classification, workspace_path,
+          assigned_workflow_id, created_at, updated_at, created_by, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            iid,
+            title.strip(),
+            body,
+            source.strip(),
+            status,
+            classification,
+            str(workspace_path) if workspace_path is not None else None,
+            assigned_workflow_id,
+            ts,
+            ts,
+            created_by,
+            _json(metadata or {}),
+        ),
+    )
+    conn.commit()
+    return get_inbox_item(conn, iid)  # type: ignore[return-value]
+
+
+def get_inbox_item(conn: sqlite3.Connection, inbox_item_id: str) -> WorkflowInboxItem | None:
+    row = conn.execute("SELECT * FROM workflow_inbox_items WHERE id = ?", (inbox_item_id,)).fetchone()
+    return _inbox_item_from_row(row) if row else None
+
+
+def list_inbox_items(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    source: str | None = None,
+    classification: str | None = None,
+    limit: int = 100,
+) -> list[WorkflowInboxItem]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
+    if classification:
+        clauses.append("classification = ?")
+        params.append(classification)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM workflow_inbox_items {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    return [_inbox_item_from_row(row) for row in rows]
 
 
 def create_workflow(
@@ -656,6 +785,23 @@ def list_events(conn: sqlite3.Connection, workflow_id: str, *, limit: int = 100)
         (workflow_id, limit),
     ).fetchall()
     return [_event_from_row(row) for row in rows]
+
+
+def _inbox_item_from_row(row: sqlite3.Row) -> WorkflowInboxItem:
+    return WorkflowInboxItem(
+        id=row["id"],
+        title=row["title"],
+        body=row["body"],
+        source=row["source"],
+        status=row["status"],
+        classification=row["classification"],
+        workspace_path=row["workspace_path"],
+        assigned_workflow_id=row["assigned_workflow_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        created_by=row["created_by"],
+        metadata=_loads(row["metadata_json"], {}),
+    )
 
 
 def _workflow_from_row(row: sqlite3.Row) -> WorkflowRecord:

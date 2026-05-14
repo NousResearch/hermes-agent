@@ -6,7 +6,20 @@ import json
 import sqlite3
 from typing import Any
 
-from .store import get_workflow, list_artifacts, list_gates, list_workflows
+from .store import get_workflow, list_artifacts, list_gates, list_inbox_items, list_workflows
+
+
+def list_inbox_item_summaries(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    source: str | None = None,
+    classification: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    _validate_limit(limit)
+    items = list_inbox_items(conn, status=status, source=source, classification=classification, limit=limit)
+    return _response({"inboxItems": [item.to_dict() for item in items], "count": len(items)})
 
 
 def list_workflow_summaries(

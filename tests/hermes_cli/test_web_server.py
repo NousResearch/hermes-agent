@@ -125,6 +125,30 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_workflow_inbox_endpoints_create_and_list_raw_intake_items(self):
+        created = self.client.post(
+            "/api/workflows/inbox",
+            json={
+                "title": "  Shape workflow inbox  ",
+                "body": "Capture raw work before DAG creation.",
+                "source": "webui_chat",
+                "classification": "needs_shaping",
+                "metadata": {"labels": ["workflow-system"]},
+            },
+        )
+        assert created.status_code == 200
+        item = created.json()["facts"]["inboxItem"]
+        assert item["title"] == "Shape workflow inbox"
+        assert item["status"] == "new"
+        assert item["classification"] == "needs_shaping"
+
+        listed = self.client.get("/api/workflows/inbox?source=webui_chat")
+        assert listed.status_code == 200
+        payload = listed.json()
+        assert payload["insights"] is None
+        assert payload["facts"]["count"] == 1
+        assert payload["facts"]["inboxItems"][0]["id"] == item["id"]
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

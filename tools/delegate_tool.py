@@ -2422,12 +2422,27 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    api_mode = runtime.get("api_mode")
+
+    # Fix: when delegation uses copilot with a different model than the main
+    # agent, the api_mode resolved by resolve_runtime_provider is based on the
+    # main model (model.default in config).  We must re-derive it for the
+    # delegation model.  E.g. main model gpt-5.4 → codex_responses, but
+    # delegation model gpt-4.1 → chat_completions.  Without this, the
+    # subagent sends gpt-4.1 to the Responses API which returns HTTP 400.
+    if configured_model and configured_provider in ("copilot",):
+        try:
+            from hermes_cli.models import copilot_model_api_mode
+            api_mode = copilot_model_api_mode(configured_model, api_key=api_key)
+        except Exception:
+            api_mode = "chat_completions"
+
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": api_mode,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

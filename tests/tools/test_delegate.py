@@ -957,6 +957,46 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["model"])
         self.assertIsNone(creds["provider"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_copilot_delegation_api_mode_uses_delegation_model(self, mock_resolve):
+        """When copilot resolves codex_responses (main model GPT-5+), delegation model
+        GPT-4.x should override to chat_completions.
+
+        Regression test for: delegation api_mode was derived from main model
+        (gpt-5.4 → codex_responses) instead of delegation model (gpt-4.1 →
+        chat_completions), causing HTTP 400 on subagent creation.
+        """
+        # Simulate: resolve_runtime_provider returns codex_responses because
+        # the main model is gpt-5.4 (GPT-5+ triggers Responses API)
+        mock_resolve.return_value = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "ghu_test_key_123",
+            "api_mode": "codex_responses",  # Wrong for gpt-4.1
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-4.1", "provider": "copilot"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # The fix should override api_mode to chat_completions for gpt-4.1
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        self.assertEqual(creds["model"], "gpt-4.1")
+        self.assertEqual(creds["provider"], "copilot")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_copilot_delegation_api_mode_preserves_responses_for_gpt5(self, mock_resolve):
+        """When delegation model is also GPT-5+, codex_responses should be preserved."""
+        mock_resolve.return_value = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "ghu_test_key_123",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-5.4", "provider": "copilot"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # GPT-5.4 should keep codex_responses
+        self.assertEqual(creds["api_mode"], "codex_responses")
+
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""

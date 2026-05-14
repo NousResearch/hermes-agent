@@ -30,19 +30,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _import_audio():
-    """Lazy-import sounddevice and numpy.  Returns (sd, np).
+    """Lazy-import sounddevice.  Returns sd.
 
     Raises ImportError or OSError if the libraries are not available
     (e.g. PortAudio missing on headless servers).
     """
     import sounddevice as sd
-    import numpy as np
-    return sd, np
+    return sd
 
 
 def _audio_available() -> bool:
     """Return True if audio libraries can be imported."""
     try:
+        import numpy as np  # noqa: F401
         _import_audio()
         return True
     except (ImportError, OSError):
@@ -126,7 +126,7 @@ def detect_audio_environment() -> dict:
 
     # Check audio libraries
     try:
-        sd, _ = _import_audio()
+        sd = _import_audio()
         try:
             devices = sd.query_devices()
             if not devices:
@@ -209,7 +209,8 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         count: Number of beeps to play (with short gap between).
     """
     try:
-        sd, np = _import_audio()
+        import numpy as np
+        sd = _import_audio()
     except (ImportError, OSError):
         return
     try:
@@ -445,7 +446,8 @@ class AudioRecorder:
         if self._stream is not None:
             return  # already alive
 
-        sd, np = _import_audio()
+        import numpy as np
+        sd = _import_audio()
 
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
             if status:
@@ -580,6 +582,7 @@ class AudioRecorder:
         or if a recording is already in progress.
         """
         try:
+            import numpy as np  # noqa: F401
             _import_audio()
         except (ImportError, OSError) as e:
             raise RuntimeError(
@@ -655,7 +658,7 @@ class AudioRecorder:
                 return None
 
             # Concatenate frames and write WAV
-            _, np = _import_audio()
+            import numpy as np
             audio_data = np.concatenate(self._frames, axis=0)
             self._frames = []
 
@@ -835,7 +838,7 @@ def stop_playback() -> None:
             pass
     # Also stop sounddevice playback if active
     try:
-        sd, _ = _import_audio()
+        sd = _import_audio()
         sd.stop()
     except Exception:
         pass
@@ -863,7 +866,8 @@ def play_audio_file(file_path: str) -> bool:
     # Try sounddevice for WAV files
     if file_path.endswith(".wav"):
         try:
-            sd, np = _import_audio()
+            import numpy as np
+            sd = _import_audio()
             with wave.open(file_path, "rb") as wf:
                 frames = wf.readframes(wf.getnframes())
                 audio_data = np.frombuffer(frames, dtype=np.int16)

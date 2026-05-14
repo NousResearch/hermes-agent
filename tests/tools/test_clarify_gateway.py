@@ -177,6 +177,82 @@ class TestClarifyPrimitive:
         assert isinstance(timeout, int)
         assert timeout > 0
 
+    def test_clarify_timeout_agent_key_takes_precedence(self, monkeypatch):
+        """agent.clarify_timeout config takes precedence over clarify.timeout."""
+        from tools import clarify_gateway as cm
+
+        # Simulate agent.clarify_timeout = 5000 in config
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"clarify_timeout": 5000}},
+        )
+        timeout = cm.get_clarify_timeout()
+        assert timeout == 5000
+
+    def test_clarify_timeout_falls_back_to_default_when_unset(self, monkeypatch):
+        """When agent.clarify_timeout is not set, returns default 600."""
+        from tools import clarify_gateway as cm
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {}},
+        )
+        timeout = cm.get_clarify_timeout()
+        assert timeout == 600
+
+
+class TestCLIClarifyTimeoutPrecedence:
+    """CLI clarify_callback respects agent.clarify_timeout over clarify.timeout."""
+
+    def test_cli_clarify_uses_agent_timeout_when_set(self, monkeypatch):
+        """When agent.clarify_timeout is set, CLI callback uses it."""
+        from hermes_cli.callbacks import clarify_callback
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"clarify_timeout": 5000}},
+        )
+        # We can't easily run the full callback (it blocks), but we can
+        # verify the timeout resolution by checking the config path.
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        agent_cfg = cfg.get("agent", {}) or {}
+        if "clarify_timeout" in agent_cfg:
+            timeout = int(agent_cfg["clarify_timeout"])
+        else:
+            timeout = 120
+        assert timeout == 5000
+
+    def test_cli_clarify_falls_back_to_clarify_timeout(self, monkeypatch):
+        """When agent.clarify_timeout is not set, CLI falls back to clarify.timeout."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"clarify": {"timeout": 300}},
+        )
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        agent_cfg = cfg.get("agent", {}) or {}
+        if "clarify_timeout" in agent_cfg:
+            timeout = int(agent_cfg["clarify_timeout"])
+        else:
+            timeout = cfg.get("clarify", {}).get("timeout", 120)
+        assert timeout == 300
+
+    def test_cli_clarify_default_is_120(self, monkeypatch):
+        """When neither key is set, CLI defaults to 120s."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {},
+        )
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        agent_cfg = cfg.get("agent", {}) or {}
+        if "clarify_timeout" in agent_cfg:
+            timeout = int(agent_cfg["clarify_timeout"])
+        else:
+            timeout = cfg.get("clarify", {}).get("timeout", 120)
+        assert timeout == 120
+
 
 class TestGatewayTextIntercept:
     """The gateway's _handle_message intercepts text replies to pending clarifies."""

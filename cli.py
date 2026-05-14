@@ -10009,7 +10009,15 @@ class HermesCLI:
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        # agent.clarify_timeout takes precedence over clarify.timeout
+        # so a single config key controls both CLI and gateway timeouts.
+        from hermes_cli.config import load_config as _load_cfg
+        _cfg = _load_cfg() or {}
+        _agent_cfg = _cfg.get("agent", {}) or {}
+        if "clarify_timeout" in _agent_cfg:
+            timeout = int(_agent_cfg["clarify_timeout"])
+        else:
+            timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
         response_queue = queue.Queue()
         is_open_ended = not choices
 

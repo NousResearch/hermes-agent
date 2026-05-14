@@ -21,9 +21,16 @@ def clarify_callback(cli, question, choices):
     Sets up the interactive selection UI, then blocks until the user
     responds. Returns the user's choice or a timeout message.
     """
-    from cli import CLI_CONFIG
-
-    timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+    # agent.clarify_timeout takes precedence over clarify.timeout
+    # so a single config key controls both CLI and gateway timeouts.
+    from hermes_cli.config import load_config
+    cfg = load_config() or {}
+    agent_cfg = cfg.get("agent", {}) or {}
+    if "clarify_timeout" in agent_cfg:
+        timeout = int(agent_cfg["clarify_timeout"])
+    else:
+        from cli import CLI_CONFIG
+        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
     is_open_ended = not choices
 

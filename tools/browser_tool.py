@@ -83,11 +83,12 @@ try:
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
-from tools.browser_providers.base import CloudBrowserProvider
+from tools.browser_providers.base import BrowserProviderBillingBlocker, CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from tools.tool_result_signals import billing_blocker_tool_error
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
@@ -115,6 +116,15 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
+
+
+def _browser_billing_blocker_tool_error(exc: BrowserProviderBillingBlocker) -> str:
+    """Convert a typed browser provider billing blocker into a tool error string."""
+    return billing_blocker_tool_error(
+        exc.message,
+        provider=exc.provider,
+        status_code=exc.status_code,
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -1590,6 +1600,8 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                     # CDP discovery URL instead of a raw websocket endpoint.
                     session_info = dict(session_info)
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+            except BrowserProviderBillingBlocker:
+                raise
             except Exception as e:
                 provider_name = type(provider).__name__
                 logger.warning(
@@ -1798,6 +1810,8 @@ def _run_browser_command(
     # Get session info (creates Browserbase session with proxies if needed)
     try:
         session_info = _get_session_info(task_id)
+    except BrowserProviderBillingBlocker as exc:
+        return json.loads(_browser_billing_blocker_tool_error(exc))
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
@@ -2226,7 +2240,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(nav_session_key)
+    try:
+        session_info = _get_session_info(nav_session_key)
+    except BrowserProviderBillingBlocker as exc:
+        return _browser_billing_blocker_tool_error(exc)
     is_first_nav = session_info.get("_first_nav", True)
 
     # Auto-start recording if configured and this is first navigation

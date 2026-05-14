@@ -105,11 +105,33 @@ from tools.managed_tool_gateway import (
     resolve_managed_tool_gateway,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_result_signals import billing_blocker_tool_error
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_http_status_code(exc: BaseException) -> int | None:
+    """Extract an HTTP status code from SDK/http client exceptions when available."""
+    response = getattr(exc, "response", None)
+    for value in (getattr(exc, "status_code", None), getattr(response, "status_code", None)):
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _tool_error_from_backend_exception(exc: BaseException, *, backend: str, action: str) -> str | None:
+    """Convert explicit provider billing responses into typed tool errors."""
+    status_code = _extract_http_status_code(exc)
+    if status_code != 402:
+        return None
+    return billing_blocker_tool_error(
+        f"Error {action}: backend '{backend}' returned HTTP 402 Payment Required.",
+        provider=backend,
+        status_code=status_code,
+    )
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
@@ -1329,6 +1351,14 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return result_json
         
     except Exception as e:
+        backend = locals().get("backend", _get_backend())
+        typed_error = _tool_error_from_backend_exception(e, backend=backend, action="searching web")
+        if typed_error is not None:
+            debug_call_data["error"] = str(e)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return typed_error
+
         error_msg = f"Error searching web: {str(e)}"
         logger.debug("%s", error_msg)
 
@@ -1665,6 +1695,14 @@ async def web_extract_tool(
         return cleaned_result
             
     except Exception as e:
+        backend = locals().get("backend", _get_backend())
+        typed_error = _tool_error_from_backend_exception(e, backend=backend, action="extracting content")
+        if typed_error is not None:
+            debug_call_data["error"] = str(e)
+            _debug.log_call("web_extract_tool", debug_call_data)
+            _debug.save()
+            return typed_error
+
         error_msg = f"Error extracting content: {str(e)}"
         logger.debug("%s", error_msg)
         
@@ -2087,6 +2125,14 @@ async def web_crawl_tool(
         return cleaned_result
         
     except Exception as e:
+        backend = locals().get("backend", _get_backend())
+        typed_error = _tool_error_from_backend_exception(e, backend=backend, action="crawling website")
+        if typed_error is not None:
+            debug_call_data["error"] = str(e)
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return typed_error
+
         error_msg = f"Error crawling website: {str(e)}"
         logger.debug("%s", error_msg)
         

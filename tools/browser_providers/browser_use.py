@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from tools.browser_providers.base import CloudBrowserProvider
+from tools.browser_providers.base import BrowserProviderBillingBlocker, CloudBrowserProvider
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 
@@ -147,6 +147,12 @@ class BrowserUseProvider(CloudBrowserProvider):
         if not response.ok:
             if managed_mode and not _should_preserve_pending_create_key(response):
                 _clear_pending_create_key(task_id)
+            if response.status_code == 402:
+                raise BrowserProviderBillingBlocker(
+                    provider=self.provider_name().lower(),
+                    status_code=402,
+                    message="Failed to create Browser Use session: 402 Payment Required",
+                )
             raise RuntimeError(
                 f"Failed to create Browser Use session: "
                 f"{response.status_code} {response.text}"

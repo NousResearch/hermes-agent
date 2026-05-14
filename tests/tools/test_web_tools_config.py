@@ -9,6 +9,7 @@ Coverage:
 """
 
 import importlib
+import asyncio
 import json
 import os
 import sys
@@ -625,3 +626,61 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_search_tool_returns_typed_billing_blocker_on_firecrawl_402():
+    response = MagicMock()
+    response.status_code = 402
+
+    class FirecrawlBillingError(Exception):
+        def __init__(self):
+            super().__init__("Payment Required")
+            self.response = response
+
+    client = MagicMock()
+    client.search.side_effect = FirecrawlBillingError()
+
+    with (
+        patch("tools.web_tools._get_backend", return_value="firecrawl"),
+        patch("tools.web_tools._get_firecrawl_client", return_value=client),
+        patch("tools.interrupt.is_interrupted", return_value=False),
+    ):
+        from tools.web_tools import web_search_tool
+
+        result = json.loads(web_search_tool("billing wall"))
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert result["status_code"] == 402
+    assert result["provider"] == "firecrawl"
+    assert result["_hermes_tool_signal"]["code"] == "billing_blocker"
+
+
+def test_web_extract_tool_returns_typed_billing_blocker_on_tavily_402():
+    response = MagicMock()
+    response.status_code = 402
+
+    class TavilyBillingError(Exception):
+        def __init__(self):
+            super().__init__("Payment Required")
+            self.response = response
+
+    with (
+        patch("tools.web_tools._get_backend", return_value="tavily"),
+        patch("tools.web_tools._tavily_request", side_effect=TavilyBillingError()),
+        patch("tools.web_tools.is_safe_url", return_value=True),
+        patch("tools.web_tools.check_website_access", return_value=None),
+    ):
+        from tools.web_tools import web_extract_tool
+
+        result = json.loads(
+            asyncio.get_event_loop().run_until_complete(
+                web_extract_tool(["https://example.com"], use_llm_processing=False)
+            )
+        )
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert result["status_code"] == 402
+    assert result["provider"] == "tavily"
+    assert result["_hermes_tool_signal"]["code"] == "billing_blocker"

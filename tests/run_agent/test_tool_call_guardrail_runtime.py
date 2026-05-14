@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from tools.tool_result_signals import billing_blocker_tool_error
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -273,3 +274,63 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         call_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
         following_results = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") in call_ids]
         assert len(following_results) == len(call_ids)
+
+
+def test_run_conversation_halts_on_typed_tool_billing_blocker_without_hard_stop_config():
+    agent = _make_agent("web_search", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "same"}), "c-billing")],
+        ),
+        _mock_response(content="should not be used", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch(
+            "run_agent.handle_function_call",
+            return_value=billing_blocker_tool_error(
+                "Error searching web: backend 'firecrawl' returned HTTP 402 Payment Required.",
+                provider="firecrawl",
+                status_code=402,
+            ),
+        ) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search once")
+
+    assert mock_hfc.call_count == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "typed_tool_billing_blocker"
+    assert result["guardrail"]["tool_name"] == "web_search"
+    assert "non-retryable billing blocker" in result["final_response"]
+
+
+def test_run_conversation_does_not_halt_on_plain_error_text_that_mentions_payment_required():
+    agent = _make_agent("web_search", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "debug"}), "c-plain")],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+
+    plain_error = json.dumps({"error": "HTTP/1.1 402 Payment Required shown in a fixture"})
+
+    with (
+        patch("run_agent.handle_function_call", return_value=plain_error) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("debug one tool result")
+
+    assert mock_hfc.call_count == 1
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
+    assert result["final_response"] == "done"

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from tools.browser_providers.base import CloudBrowserProvider
+from tools.browser_providers.base import BrowserProviderBillingBlocker, CloudBrowserProvider
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,13 @@ class BrowserbaseProvider(CloudBrowserProvider):
                     json=session_config,
                     timeout=30,
                 )
+
+        if response.status_code == 402:
+            raise BrowserProviderBillingBlocker(
+                provider=self.provider_name().lower(),
+                status_code=402,
+                message="Failed to create Browserbase session: 402 Payment Required",
+            )
 
         if not response.ok:
             raise RuntimeError(

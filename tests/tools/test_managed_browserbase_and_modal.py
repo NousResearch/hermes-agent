@@ -352,6 +352,85 @@ def test_browser_use_managed_gateway_uses_new_idempotency_key_for_a_new_session_
     assert first_headers["X-Idempotency-Key"] != second_headers["X-Idempotency-Key"]
 
 
+def test_firecrawl_browser_provider_raises_typed_billing_blocker_on_402():
+    _install_fake_tools_package()
+
+    class _Response:
+        status_code = 402
+        ok = False
+        text = "Payment Required"
+        headers = {}
+
+    with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}, clear=True):
+        firecrawl_module = _load_tool_module(
+            "tools.browser_providers.firecrawl",
+            "browser_providers/firecrawl.py",
+        )
+        provider = firecrawl_module.FirecrawlProvider()
+
+        with patch.object(firecrawl_module.requests, "post", return_value=_Response()):
+            with pytest.raises(firecrawl_module.BrowserProviderBillingBlocker) as excinfo:
+                provider.create_session("task-firecrawl-402")
+
+    assert excinfo.value.status_code == 402
+    assert excinfo.value.provider == "firecrawl"
+
+
+def test_browserbase_provider_only_raises_billing_blocker_when_402_is_terminal():
+    _install_fake_tools_package()
+
+    class _Response:
+        def __init__(self, status_code, ok, text, payload=None):
+            self.status_code = status_code
+            self.ok = ok
+            self.text = text
+            self.headers = {}
+            self._payload = payload or {"id": "bb_sess", "connectUrl": "wss://bb.example"}
+
+        def json(self):
+            return self._payload
+
+    with patch.dict(
+        os.environ,
+        {
+            "BROWSERBASE_API_KEY": "bb-key",
+            "BROWSERBASE_PROJECT_ID": "bb-project",
+            "BROWSERBASE_KEEP_ALIVE": "true",
+            "BROWSERBASE_PROXIES": "true",
+        },
+        clear=True,
+    ):
+        browserbase_module = _load_tool_module(
+            "tools.browser_providers.browserbase",
+            "browser_providers/browserbase.py",
+        )
+        provider = browserbase_module.BrowserbaseProvider()
+
+        with patch.object(
+            browserbase_module.requests,
+            "post",
+            side_effect=[
+                _Response(402, False, "Payment Required"),
+                _Response(402, False, "Payment Required"),
+                _Response(402, False, "Payment Required"),
+            ],
+        ):
+            with pytest.raises(browserbase_module.BrowserProviderBillingBlocker):
+                provider.create_session("task-browserbase-terminal-402")
+
+        with patch.object(
+            browserbase_module.requests,
+            "post",
+            side_effect=[
+                _Response(402, False, "Payment Required"),
+                _Response(200, True, "", {"id": "bb_ok", "connectUrl": "wss://bb.ok"}),
+            ],
+        ):
+            session = provider.create_session("task-browserbase-recovered")
+
+    assert session["bb_session_id"] == "bb_ok"
+
+
 def test_terminal_tool_prefers_managed_modal_when_gateway_ready_and_no_direct_creds():
     _install_fake_tools_package()
     env = os.environ.copy()

@@ -133,6 +133,7 @@ from tools.terminal_tool import (
     _get_sudo_password_callback,
 )
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from tools.tool_result_signals import is_billing_blocker_signal, parse_tool_result_signal
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -10435,12 +10436,36 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "typed_tool_billing_blocker":
+            return (
+                f"I stopped after {tool} hit a non-retryable billing blocker. "
+                "The tool returned a typed provider billing failure, so repeating "
+                "the same call would not make progress. Fix the provider credits "
+                "or billing state before retrying."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "
             "attempts. The last tool result explains the blocker; the next step is "
             "to change strategy instead of repeating the same call."
         )
+
+    def _maybe_apply_typed_tool_halt(self, tool_name: str, function_result: str) -> str:
+        """React only to explicit typed tool-result halt signals."""
+        signal = parse_tool_result_signal(function_result)
+        if not is_billing_blocker_signal(signal):
+            return function_result
+
+        self._set_tool_guardrail_halt(
+            ToolGuardrailDecision(
+                action="halt",
+                code="typed_tool_billing_blocker",
+                message=signal.message,
+                tool_name=tool_name,
+                count=1,
+            )
+        )
+        return function_result
 
     def _append_guardrail_observation(
         self,
@@ -10925,6 +10950,7 @@ class AIAgent:
                         function_result,
                         failed=is_error,
                     )
+                    function_result = self._maybe_apply_typed_tool_halt(function_name, function_result)
 
                 if is_error:
                     _err_text = _multimodal_text_summary(function_result)
@@ -11360,6 +11386,7 @@ class AIAgent:
                     function_result,
                     failed=_is_error_result,
                 )
+                function_result = self._maybe_apply_typed_tool_halt(function_name, function_result)
                 result_preview = function_result if self.verbose_logging else (
                     function_result[:200] if len(function_result) > 200 else function_result
                 )

@@ -3,12 +3,14 @@
 Covers the fallback logic in _get_session_info() when a cloud provider
 is configured but fails at runtime (issue #10883).
 """
+import json
 import logging
 from unittest.mock import Mock, patch
 
 import pytest
 
 import tools.browser_tool as browser_tool
+from tools.browser_providers.base import BrowserProviderBillingBlocker
 
 
 def _reset_session_state(monkeypatch):
@@ -164,3 +166,47 @@ class TestCloudProviderRuntimeFallback:
 
         assert session["fallback_from_cloud"] is True
         assert "invalid session" in session["fallback_reason"]
+
+    def test_billing_blocker_does_not_fall_back_to_local(self, monkeypatch):
+        """A typed billing blocker should propagate instead of hiding behind local fallback."""
+        _reset_session_state(monkeypatch)
+
+        provider = Mock()
+        provider.create_session.side_effect = BrowserProviderBillingBlocker(
+            provider="firecrawl",
+            status_code=402,
+            message="Failed to create Firecrawl browser session: 402 Payment Required",
+        )
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+
+        with pytest.raises(BrowserProviderBillingBlocker):
+            browser_tool._get_session_info("task-billing")
+
+    def test_browser_navigate_returns_typed_billing_blocker_tool_error(self, monkeypatch):
+        """browser_navigate should surface the typed billing blocker result to the runtime."""
+        _reset_session_state(monkeypatch)
+
+        monkeypatch.setattr(
+            browser_tool,
+            "_get_session_info",
+            Mock(
+                side_effect=BrowserProviderBillingBlocker(
+                    provider="browser use",
+                    status_code=402,
+                    message="Failed to create Browser Use session: 402 Payment Required",
+                )
+            ),
+        )
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+
+        result = json.loads(browser_tool.browser_navigate("https://example.com", task_id="typed-billing"))
+
+        assert result["success"] is False
+        assert result["status_code"] == 402
+        assert result["retryable"] is False
+        assert result["provider"] == "browser use"
+        assert result["_hermes_tool_signal"]["code"] == "billing_blocker"

@@ -1,7 +1,20 @@
 """Abstract base class for cloud browser providers."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict
+
+
+@dataclass
+class BrowserProviderBillingBlocker(RuntimeError):
+    """Typed terminal billing blocker raised by browser provider wrappers."""
+
+    provider: str
+    status_code: int
+    message: str
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, self.message)
 
 
 class CloudBrowserProvider(ABC):

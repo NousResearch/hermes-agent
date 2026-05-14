@@ -1,0 +1,62 @@
+name: CI Self-Hosted Minimal
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-selfhosted-minimal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: [self-hosted, linux, x64, hermes-local]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Ruff
+        run: |
+          . .venv/bin/activate
+          ruff check .
+
+  tests-targeted:
+    runs-on: [self-hosted, linux, x64, hermes-local]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Run targeted tests
+        env:
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto

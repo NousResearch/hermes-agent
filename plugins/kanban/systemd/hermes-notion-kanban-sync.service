@@ -1,0 +1,9 @@
+[Unit]
+Description=Hermes ↔ Notion Task Board sync watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HOME=%h/.hermes/profiles/dev
+ExecStart=%h/.hermes/profiles/dev/scripts/notion_kanban_sync_watchdog.sh

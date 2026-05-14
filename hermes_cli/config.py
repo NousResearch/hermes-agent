@@ -971,6 +971,21 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Hide the token/cost analytics surfaces (Analytics page, token bars and
+        # cost figures on the Models page) by default.  The numbers shown there
+        # are a local debug estimate: they only count successful main-agent
+        # responses with a usable ``response.usage``, and silently exclude every
+        # auxiliary call (context compression, title generation, vision,
+        # session search, web extract, smart approval, MCP routing, plugin LLM
+        # access) plus provider-side retries, fallback attempts, and any call
+        # whose usage block didn't come back.  Cache writes are also missing
+        # from the API response.  On models with heavy auxiliary traffic
+        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
+        # the provider bill, which is worse than hiding the numbers entirely
+        # because they look precise enough to compare against the provider.
+        # Set this to True to re-enable the surfaces with the understanding
+        # that the numbers are a local lower-bound estimate, not billing.
+        "show_token_analytics": False,
     },
 
     # Privacy settings

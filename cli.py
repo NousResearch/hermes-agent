@@ -10064,7 +10064,7 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = 60
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
             self._approval_state = {

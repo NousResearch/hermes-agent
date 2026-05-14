@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -162,6 +162,206 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
+# Markdown table parsing helpers
+# ---------------------------------------------------------------------------
+
+_MAX_TABLE_COLUMNS = 50
+_MAX_TABLES_PER_CARD = 5
+_MAX_CARD_JSON_BYTES = 100 * 1024
+
+
+class _ParsedTable(NamedTuple):
+    headers: List[str]
+    alignments: List[str]
+    rows: List[List[str]]
+
+
+class _ContentSegment(NamedTuple):
+    kind: str  # "table" or "prose"
+    content: str  # original markdown text
+    table: Optional[_ParsedTable]
+
+
+def _parse_table_alignment(separator: str) -> str:
+    s = separator.strip()
+    if s.startswith(":") and s.endswith(":"):
+        return "center"
+    if s.endswith(":"):
+        return "right"
+    return "left"
+
+
+def _parse_markdown_table(lines: List[str]) -> _ParsedTable:
+    """Parse consecutive markdown table lines into structured data."""
+    headers = [c.strip() for c in lines[0].strip().strip("|").split("|")]
+    alignments = [_parse_table_alignment(s) for s in lines[1].strip().strip("|").split("|")]
+    rows: List[List[str]] = []
+    for line in lines[2:]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        # Pad or trim to match header count.
+        if len(cells) < len(headers):
+            cells.extend([""] * (len(headers) - len(cells)))
+        rows.append(cells[: len(headers)])
+    return _ParsedTable(headers=headers, alignments=alignments, rows=rows)
+
+
+def _extract_tables_and_prose(content: str) -> List[_ContentSegment]:
+    """Split mixed markdown content into ordered table and prose segments."""
+    if not content:
+        return []
+
+    segments: List[_ContentSegment] = []
+    lines = content.splitlines()
+    i = 0
+    in_code_block = False
+    prose_start = 0
+
+    def _flush_prose(end: int) -> None:
+        if end > prose_start:
+            text = "\n".join(lines[prose_start:end])
+            if text.strip():
+                segments.append(_ContentSegment(kind="prose", content=text, table=None))
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+
+        # Track fenced code blocks — tables inside them are not real tables.
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            in_code_block = not in_code_block
+            i += 1
+            continue
+
+        if in_code_block:
+            i += 1
+            continue
+
+        # Look for table start: header line + separator line.
+        if (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and i + 1 < len(lines)
+            and re.match(r"^\|[-|: ]+\|$", lines[i + 1].strip())
+        ):
+            _flush_prose(i)
+            table_lines = [lines[i], lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|") and lines[j].strip().endswith("|"):
+                table_lines.append(lines[j])
+                j += 1
+            parsed = _parse_markdown_table(table_lines)
+            segments.append(
+                _ContentSegment(kind="table", content="\n".join(table_lines), table=parsed)
+            )
+            prose_start = j
+            i = j
+            continue
+
+        i += 1
+
+    _flush_prose(len(lines))
+    return segments
+
+
+# ---------------------------------------------------------------------------
+# Interactive card table builders
+# ---------------------------------------------------------------------------
+
+
+
+_LARK_MD_RE = re.compile(r"\*\*|`|\[.*?\]\(|~~|<font ")
+
+
+def _build_table_element(table: _ParsedTable) -> dict:
+    """Convert a parsed markdown table into a Feishu card table component."""
+    col_count = min(len(table.headers), _MAX_TABLE_COLUMNS)
+
+    columns = []
+    for idx in range(col_count):
+        data_type = "text"
+        for row_data in table.rows:
+            if idx < len(row_data) and _LARK_MD_RE.search(row_data[idx]):
+                data_type = "lark_md"
+                break
+        columns.append(
+            {
+                "name": f"col_{idx}",
+                "display_name": table.headers[idx],
+                "data_type": data_type,
+                "width": "auto",
+            }
+        )
+
+    rows = []
+    for row_data in table.rows:
+        row: Dict[str, str] = {}
+        for idx in range(col_count):
+            row[f"col_{idx}"] = row_data[idx] if idx < len(row_data) else ""
+        rows.append(row)
+
+    page_size = min(5, max(1, len(rows)))
+
+    return {
+        "tag": "table",
+        "page_size": page_size,
+        "header_style": {
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "grey",
+            "text_color": "default",
+            "bold": True,
+        },
+        "columns": columns,
+        "rows": rows,
+    }
+
+
+def _build_table_card_payload(
+    content: str, segments: List[_ContentSegment]
+) -> tuple[str, str]:
+    """Build an interactive card payload from parsed content segments.
+
+    Returns ("interactive", json_str) on success, or ("text", json_str)
+    as fallback when the card would be too large.
+    """
+    elements: List[dict] = []
+    table_count = 0
+
+    for seg in segments:
+        if seg.kind == "prose":
+            text = seg.content.strip()
+            if not text:
+                continue
+            elements.append({"tag": "markdown", "content": text})
+        elif seg.kind == "table" and seg.table is not None:
+            if table_count >= _MAX_TABLES_PER_CARD:
+                # Beyond the limit — show raw markdown text instead.
+                elements.append({"tag": "markdown", "content": seg.content})
+            else:
+                elements.append(_build_table_element(seg.table))
+                table_count += 1
+
+    if not elements:
+        return "text", json.dumps({"text": content}, ensure_ascii=False)
+
+    card: Dict[str, Any] = {
+        "schema": "2.0",
+        "body": {"elements": elements},
+    }
+    payload = json.dumps(card, ensure_ascii=False)
+
+    if len(payload.encode("utf-8")) > _MAX_CARD_JSON_BYTES:
+        return "text", json.dumps({"text": content}, ensure_ascii=False)
+
+    return "interactive", payload
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1724,13 +1924,39 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning(
+                            "[Feishu] Interactive card send failed; falling back to text: %s", exc
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": chunk}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning(
+                        "[Feishu] Interactive card rejected by API response; falling back to text"
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps({"text": chunk}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -4175,10 +4401,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # When tables are detected, build an interactive card with native
+        # table components instead.
         if _MARKDOWN_TABLE_RE.search(content):
+            segments = _extract_tables_and_prose(content)
+            card_msg_type, card_payload = _build_table_card_payload(content, segments)
+            if card_msg_type == "interactive":
+                return card_msg_type, card_payload
+            # Card too large or empty — fall back to plain text.
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

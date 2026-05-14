@@ -324,7 +324,7 @@ class TestFormatCompatibility:
         """BMP file should land as image/png in the data URL, not image/bmp,
         because not every provider (Anthropic in particular) accepts BMP.
         """
-        from PIL import Image
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
         from agent.image_routing import _file_to_data_url
 
         img_path = tmp_path / "scan.bmp"
@@ -336,7 +336,7 @@ class TestFormatCompatibility:
         )
 
     def test_tiff_transcoded_to_png(self, tmp_path: Path):
-        from PIL import Image
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
         from agent.image_routing import _file_to_data_url
 
         img_path = tmp_path / "scan.tiff"

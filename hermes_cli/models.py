@@ -1521,6 +1521,16 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     provider from the input or *current_provider* if none was specified.
     """
     stripped = raw.strip()
+
+    # Provider-qualified input normally uses ``provider:model``.  A common
+    # human mistake is ``openai-codex/gpt-5.5`` because OpenRouter-style model
+    # slugs also use slashes.  Treat only the Codex OAuth provider this way:
+    # broad ``provider/model`` parsing would break legitimate aggregator slugs
+    # such as ``anthropic/claude-sonnet-4.5`` on OpenRouter.
+    codex_prefix = "openai-codex/"
+    if stripped.lower().startswith(codex_prefix) and len(stripped) > len(codex_prefix):
+        return ("openai-codex", stripped[len(codex_prefix):].strip())
+
     colon = stripped.find(":")
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()

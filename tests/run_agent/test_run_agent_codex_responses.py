@@ -1965,3 +1965,84 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def test_switch_model_scrubs_provider_reasoning_state_on_provider_change(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.context_compressor = None
+    agent.messages = [
+        {
+            "role": "assistant",
+            "content": "Old provider turn",
+            "reasoning_details": [{"type": "reasoning.encrypted_content", "encrypted_content": "opaque"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "enc_a"}],
+            "codex_message_items": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+        },
+        {"role": "user", "content": "keep context"},
+    ]
+    agent._fallback_chain = [
+        {"provider": "openai-codex", "model": "gpt-5-codex"},
+        {"provider": "xai", "model": "grok-4.3"},
+        {"provider": "copilot", "model": "gpt-5.4"},
+    ]
+    monkeypatch.setattr(agent, "_create_openai_client", lambda kwargs, reason, shared: object())
+    monkeypatch.setattr(agent, "_anthropic_prompt_cache_policy", lambda **kwargs: (False, False))
+    monkeypatch.setattr(agent, "_ensure_lmstudio_runtime_loaded", lambda: None)
+
+    agent.switch_model(
+        "grok-4.3",
+        "xai",
+        api_key="xai-token",
+        base_url="https://api.x.ai/v1",
+        api_mode="codex_responses",
+    )
+
+    assistant_msg = agent.messages[0]
+    assert agent.provider == "xai"
+    assert "reasoning_details" not in assistant_msg
+    assert "codex_reasoning_items" not in assistant_msg
+    assert "codex_message_items" not in assistant_msg
+    assert agent._fallback_chain == [{"provider": "copilot", "model": "gpt-5.4"}]
+
+
+def test_run_conversation_xai_encrypted_content_error_retries_after_scrub(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "xai"
+    agent.api_mode = "codex_responses"
+    agent.base_url = "https://api.x.ai/v1"
+    agent._base_url_hostname = "api.x.ai"
+    calls = {"api": 0}
+    history = [
+        {
+            "role": "assistant",
+            "content": "Old provider turn",
+            "reasoning_details": [{"type": "reasoning.encrypted_content", "encrypted_content": "opaque"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "enc_a"}],
+            "codex_message_items": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+        }
+    ]
+
+    class _BadRequestError(RuntimeError):
+        def __init__(self):
+            super().__init__(
+                "Error code: 400 - Could not decrypt the provided encrypted_content. "
+                "Ensure the value is the unmodified encrypted_content from a previous response."
+            )
+            self.status_code = 400
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _BadRequestError()
+        return _codex_message_response("Recovered after xAI scrub")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Say OK", conversation_history=history)
+
+    assert calls["api"] == 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after xAI scrub"
+    assert "reasoning_details" not in result["messages"][0]
+    assert "codex_reasoning_items" not in result["messages"][0]
+    assert "codex_message_items" not in result["messages"][0]

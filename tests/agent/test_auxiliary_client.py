@@ -33,13 +33,18 @@ from agent.auxiliary_client import (
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Strip provider env vars so each test starts clean."""
+    """Strip provider env vars and reset provider-health globals for each test."""
+    from agent.auxiliary_client import _reset_aux_unhealthy_cache
+
+    _reset_aux_unhealthy_cache()
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+    yield
+    _reset_aux_unhealthy_cache()
 
 
 @pytest.fixture
@@ -2706,6 +2711,30 @@ class TestAuxUnhealthyCache:
         )
         _mark_provider_unhealthy("codex")
         assert _is_provider_unhealthy("openai-codex") is True
+
+    def test_try_openrouter_without_key_does_not_mark_unhealthy(self, monkeypatch):
+        """Missing credentials are not a payment failure and must not poison the cache."""
+        from agent.auxiliary_client import _try_openrouter, _is_provider_unhealthy
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        client, model = _try_openrouter()
+
+        assert client is None
+        assert model is None
+        assert _is_provider_unhealthy("openrouter") is False
+
+    def test_try_nous_without_auth_does_not_mark_unhealthy(self):
+        """Absent Nous auth should fall through quietly, not mark the provider unhealthy."""
+        from agent.auxiliary_client import _try_nous, _is_provider_unhealthy
+
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
+             patch("agent.nous_rate_guard.nous_rate_limit_remaining", return_value=None):
+            client, model = _try_nous()
+
+        assert client is None
+        assert model is None
+        assert _is_provider_unhealthy("nous") is False
 
     def test_resolve_auto_skips_unhealthy_step2(self):
         """_resolve_auto Step-2 chain skips unhealthy providers."""

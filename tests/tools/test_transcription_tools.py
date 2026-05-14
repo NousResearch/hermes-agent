@@ -48,6 +48,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
@@ -1405,3 +1406,56 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+# ============================================================================
+# _get_provider — Deepgram
+# ============================================================================
+
+class TestGetProviderDeepgram:
+    """Deepgram-specific provider selection tests."""
+
+    def test_deepgram_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "deepgram"}) == "deepgram"
+
+    def test_deepgram_explicit_no_key_returns_none(self, monkeypatch):
+        """Explicit deepgram with no key returns none — no cross-provider fallback."""
+        monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "deepgram"}) == "none"
+
+
+# ============================================================================
+# transcribe_audio — Deepgram dispatch
+# ============================================================================
+
+class TestTranscribeAudioDeepgramDispatch:
+    def test_dispatches_to_deepgram(self, sample_ogg):
+        config = {"provider": "deepgram", "deepgram": {"model": "nova-3"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="deepgram"), \
+             patch(
+                 "tools.transcription_tools._transcribe_deepgram",
+                 return_value={"success": True, "transcript": "hi", "provider": "deepgram"},
+             ) as mock_deepgram:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "deepgram"
+        mock_deepgram.assert_called_once_with(sample_ogg, "nova-3")
+
+    def test_config_model_used_for_deepgram(self, sample_ogg):
+        config = {"provider": "deepgram", "deepgram": {"model": "nova-3-medical"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="deepgram"), \
+             patch(
+                 "tools.transcription_tools._transcribe_deepgram",
+                 return_value={"success": True, "transcript": "hi", "provider": "deepgram"},
+             ) as mock_deepgram:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_deepgram.call_args[0][1] == "nova-3-medical"

@@ -2860,6 +2860,12 @@ class AIAgent:
         new_norm = (new_provider or "").strip().lower()
         fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
         if old_norm and new_norm and old_norm != new_norm:
+            stripped = self._strip_provider_reasoning_state(getattr(self, "messages", None))
+            if stripped:
+                logging.info(
+                    "Provider switch scrubbed %d provider-specific reasoning fields from in-memory history",
+                    stripped,
+                )
             fallback_chain = [
                 entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
@@ -10529,6 +10535,36 @@ class AIAgent:
         api_msg.pop("reasoning_content", None)
 
     @staticmethod
+    def _strip_provider_reasoning_state(messages: Optional[list]) -> int:
+        """Remove provider-specific reasoning continuity blobs from assistant turns.
+
+        Some providers persist opaque state that must only be replayed back to the
+        SAME backend on the next turn:
+
+        - ``reasoning_details`` (Anthropic/OpenRouter signatures, etc.)
+        - ``codex_reasoning_items`` (Responses API ``encrypted_content`` blobs)
+        - ``codex_message_items`` (Responses API exact assistant replay items)
+
+        When a session switches providers mid-conversation, replaying those blobs
+        into a different backend can trigger 400s (for example xAI rejecting
+        encrypted_content produced by another Responses-compatible provider).
+
+        Returns the number of fields removed across all assistant messages.
+        """
+        if not isinstance(messages, list):
+            return 0
+
+        stripped = 0
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for key in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+                if key in msg:
+                    msg.pop(key, None)
+                    stripped += 1
+        return stripped
+
+    @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
 
@@ -12891,6 +12927,7 @@ class AIAgent:
             nous_auth_retry_attempted=False
             copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
+            xai_encrypted_retry_attempted = False
             image_shrink_retry_attempted = False
             oauth_1m_beta_retry_attempted = False
             llama_cpp_grammar_retry_attempted = False
@@ -14067,6 +14104,42 @@ class AIAgent:
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                         print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                         print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+
+                    # ── xAI encrypted-content recovery ──────────────────────
+                    # Grok Responses requires ``reasoning.encrypted_content``
+                    # blobs to come back to the SAME provider that issued them.
+                    # Mid-session provider switches can leave stale Responses
+                    # history from OpenAI/Codex/CommandCode in memory; replaying
+                    # that into xAI yields HTTP 400 "Could not decrypt the
+                    # provided encrypted_content". Recovery: strip all
+                    # provider-specific reasoning continuity fields from the
+                    # replay history and retry once.
+                    _err_text_lower = str(api_error).lower()
+                    _xai_encrypted_error = (
+                        "could not decrypt the provided encrypted_content" in _err_text_lower
+                        or "invalid_encrypted_content" in _err_text_lower
+                    )
+                    if (
+                        self.api_mode == "codex_responses"
+                        and (self.provider == "xai" or self._base_url_hostname == "api.x.ai")
+                        and status_code == 400
+                        and _xai_encrypted_error
+                        and not xai_encrypted_retry_attempted
+                    ):
+                        xai_encrypted_retry_attempted = True
+                        stripped_history = self._strip_provider_reasoning_state(messages)
+                        stripped_api = self._strip_provider_reasoning_state(api_messages)
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  xAI rejected encrypted reasoning from earlier provider history — stripped provider-specific reasoning state and retrying...",
+                            force=True,
+                        )
+                        logger.warning(
+                            "%sxAI encrypted_content recovery: stripped %d fields from history and %d fields from api_messages",
+                            self.log_prefix,
+                            stripped_history,
+                            stripped_api,
+                        )
+                        continue
 
                     # ── Thinking block signature recovery ─────────────────
                     # Anthropic signs thinking blocks against the full turn

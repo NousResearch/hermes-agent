@@ -376,6 +376,18 @@ class GatewayStreamConsumer:
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
             )
+            # Send an empty placeholder draft immediately so the user sees
+            # visual feedback before any token arrives.  Non-fatal — the
+            # normal _send_draft_frame path retries when deltas flow.
+            try:
+                await self.adapter.send_draft(
+                    chat_id=self.chat_id,
+                    draft_id=self._draft_id,
+                    content=" ",
+                    metadata=self.metadata,
+                )
+            except Exception:
+                pass
 
         try:
             while True:

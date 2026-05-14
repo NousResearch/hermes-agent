@@ -4118,6 +4118,116 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    def _discord_thread_context_messages(self) -> int:
+        """Number of prior thread messages to inject for Discord thread context."""
+        raw = os.getenv("DISCORD_THREAD_CONTEXT_MESSAGES", "5").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 5
+        return max(0, min(value, 20))
+
+    def _discord_thread_context_max_chars(self) -> int:
+        """Maximum size of injected Discord thread context."""
+        raw = os.getenv("DISCORD_THREAD_CONTEXT_MAX_CHARS", "4000").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 4000
+        return max(500, min(value, 20000))
+
+    @staticmethod
+    def _discord_message_author_name(message: Any) -> str:
+        author = getattr(message, "author", None)
+        return (
+            getattr(author, "display_name", None)
+            or getattr(author, "name", None)
+            or getattr(author, "id", None)
+            or "unknown"
+        )
+
+    @staticmethod
+    def _discord_message_text(message: Any) -> str:
+        text = (getattr(message, "content", None) or "").strip()
+        if text:
+            return text
+        attachments = getattr(message, "attachments", None) or []
+        if attachments:
+            names = [getattr(att, "filename", None) for att in attachments]
+            names = [name for name in names if name]
+            return f"[attachments: {', '.join(names)}]" if names else "[attachments]"
+        return ""
+
+    async def _build_thread_context_injection(self, thread: Any, current_message: Any) -> Optional[str]:
+        """Fetch a small, bounded snapshot of the thread body for agent context.
+
+        Discord only delivers the new message event to the gateway; it does not
+        automatically include the thread starter/body.  In threads, fetch a few
+        earlier messages so short follow-ups like "can this be implemented?"
+        carry the actual thread body into the agent turn.
+        """
+        context_message_limit = self._discord_thread_context_messages()
+        if context_message_limit <= 0:
+            return None
+
+        current_id = str(getattr(current_message, "id", ""))
+        seen_ids = {current_id} if current_id else set()
+        entries: list[tuple[str, str, str]] = []
+
+        def add(label: str, msg: Any) -> None:
+            msg_id = str(getattr(msg, "id", ""))
+            if msg_id and msg_id in seen_ids:
+                return
+            if msg_id:
+                seen_ids.add(msg_id)
+            text = self._discord_message_text(msg)
+            if not text:
+                return
+            author = str(self._discord_message_author_name(msg))
+            entries.append((label, author, text))
+
+        starter = getattr(thread, "starter_message", None)
+        if starter:
+            add("starter", starter)
+        else:
+            parent = getattr(thread, "parent", None)
+            fetch_message = getattr(parent, "fetch_message", None)
+            thread_id = getattr(thread, "id", None)
+            if callable(fetch_message) and thread_id is not None:
+                try:
+                    add("starter", await fetch_message(thread_id))
+                except Exception as e:
+                    logger.debug("[%s] Could not fetch Discord thread starter: %s", self.name, e)
+
+        history = getattr(thread, "history", None)
+        if callable(history):
+            try:
+                message_entries = 0
+                async for msg in history(limit=context_message_limit + 1, oldest_first=True):
+                    before_count = len(entries)
+                    add("message", msg)
+                    if len(entries) > before_count and entries[-1][0] == "message":
+                        message_entries += 1
+                    if message_entries >= context_message_limit:
+                        break
+            except Exception as e:
+                logger.debug("[%s] Could not fetch Discord thread history: %s", self.name, e)
+
+        if not entries:
+            return None
+
+        title = getattr(thread, "name", None) or getattr(thread, "id", "thread")
+        lines = ["[Discord thread context]", f"Thread: {title}"]
+        for label, author, text in entries:
+            prefix = "Starter" if label == "starter" else "Message"
+            lines.append(f"{prefix} from {author}: {text}")
+
+        injected = "\n".join(lines)
+        max_chars = self._discord_thread_context_max_chars()
+        if len(injected) > max_chars:
+            injected = injected[: max_chars - 20].rstrip() + "\n[truncated]"
+        return injected
+
     # ------------------------------------------------------------------
     # Attachment download helpers
     #
@@ -4503,6 +4613,11 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        if is_thread and msg_type != MessageType.COMMAND:
+            thread_context = await self._build_thread_context_injection(effective_channel, message)
+            if thread_context:
+                event_text = f"{thread_context}\n\n{event_text}" if event_text else thread_context
 
         # Defense-in-depth: prevent empty user messages from entering session
         # (can happen when user sends @mention-only with no other text)

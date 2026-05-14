@@ -1179,6 +1179,7 @@ class AIAgent:
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
+        requests_per_minute: int = 0,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
@@ -1263,6 +1264,9 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self._requests_per_minute = int(requests_per_minute or 0)
+        from agent.model_rate_limiter import ModelRateLimiterGlobal
+        self._model_rate_limiter = ModelRateLimiterGlobal.get_or_create(self.provider, self.model)
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2478,6 +2482,7 @@ class AIAgent:
             "compressor_provider": getattr(_cc, "provider", self.provider),
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
+            "requests_per_minute": self._requests_per_minute,
         }
         if self.api_mode == "anthropic_messages":
             self._primary_runtime.update({
@@ -2651,6 +2656,8 @@ class AIAgent:
         if base_url:
             self.base_url = base_url
         self.api_mode = api_mode
+        # Update rate limiter for the new (provider, model) pair.
+        self._model_rate_limiter = ModelRateLimiterGlobal.get_or_create(self.provider, self.model)
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(self, "_transport_cache"):
             self._transport_cache.clear()
@@ -2758,6 +2765,7 @@ class AIAgent:
             "compressor_provider": getattr(_cc, "provider", self.provider) if _cc else self.provider,
             "compressor_context_length": _cc.context_length if _cc else 0,
             "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+            "requests_per_minute": self._requests_per_minute,
         }
         if api_mode == "anthropic_messages":
             self._primary_runtime.update({
@@ -7423,6 +7431,9 @@ class AIAgent:
         request_client_holder = {"client": None}
 
         def _call():
+            # Proactive rate limiting: space requests to avoid 429 errors.
+            # No-op when _requests_per_minute is 0 (disabled).
+            self._model_rate_limiter.acquire_sync(self._requests_per_minute)
             try:
                 if self.api_mode == "codex_responses":
                     request_client_holder["client"] = self._create_request_openai_client(
@@ -8748,6 +8759,7 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self._model_rate_limiter = ModelRateLimiterGlobal.get_or_create(self.provider, self.model)
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
@@ -8871,6 +8883,8 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
+            self._model_rate_limiter = ModelRateLimiterGlobal.get_or_create(self.provider, self.model)
+            self._requests_per_minute = int(rt.get("requests_per_minute", 0) or 0)
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
@@ -11630,6 +11644,7 @@ class AIAgent:
                     _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_summary_result.content or "").strip()
                 else:
+                    self._model_rate_limiter.acquire_sync(self._requests_per_minute)
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                     _summary_result = self._get_transport().normalize_response(summary_response)
                     final_response = (_summary_result.content or "").strip()
@@ -11673,6 +11688,7 @@ class AIAgent:
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 
+                    self._model_rate_limiter.acquire_sync(self._requests_per_minute)
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                     _retry_result = self._get_transport().normalize_response(summary_response)
                     final_response = (_retry_result.content or "").strip()

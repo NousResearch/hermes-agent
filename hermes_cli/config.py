@@ -436,6 +436,10 @@ def _ensure_hermes_home_managed(home: Path):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Per-model rate limiting (requests per minute).  0 = disabled.
+    # Proactively spaces API calls to avoid 429 errors on providers
+    # with strict RPM limits (e.g. Nvidia NIM: 40 req/min on minimax).
+    "requests_per_minute": 0,
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

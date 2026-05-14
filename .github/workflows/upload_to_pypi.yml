@@ -1,0 +1,114 @@
+name: Publish to PyPI
+
+# Triggered by CalVer tag pushes from scripts/release.py (e.g. v2026.5.15)
+# Can also be triggered manually from the Actions tab as an escape hatch.
+on:
+  push:
+    tags:
+      - 'v20*'  # CalVer tags: v2026.5.15, v2026.5.15.2, etc.
+  workflow_dispatch:
+
+# Restrict default token to read-only; each job escalates as needed.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution 📦
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hermes-agent
+    permissions:
+      id-token: write  # OIDC trusted publishing
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  sign:
+    name: Sign and attach to GitHub Release
+    # Only runs on tag pushes — release.py creates the GitHub Release,
+    # and workflow_dispatch won't have a matching release to attach to.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # attach assets to the existing release
+      id-token: write   # sigstore signing
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Wait for GitHub Release to exist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        # release.py creates the GitHub Release after pushing the tag,
+        # but this workflow starts from the tag push — wait for it.
+        run: |
+          for i in $(seq 1 30); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $GITHUB_REF_NAME found"
+              exit 0
+            fi
+            echo "Waiting for release... ($i/30)"
+            sleep 10
+          done
+          echo "::warning::Release $GITHUB_REF_NAME not found after 5 minutes — skipping signature upload"
+          exit 1
+
+      - name: Sign with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: >-
+            ./dist/*.tar.gz
+            ./dist/*.whl
+
+      - name: Attach signed artifacts to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        # release.py already created the GitHub Release — just upload
+        # the Sigstore signatures alongside the existing assets.
+        run: >-
+          gh release upload
+          "$GITHUB_REF_NAME" dist/*.sigstore.json
+          --repo "$GITHUB_REPOSITORY"
+          --clobber

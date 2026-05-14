@@ -4186,6 +4186,17 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+
+        snapshot_attachments = []
+        if hasattr(message, "message_snapshots") and message.message_snapshots:
+            snapshot_text_parts = []
+            for snap in message.message_snapshots:
+                if getattr(snap, "content", None):
+                    snapshot_text_parts.append(snap.content.strip())
+                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
+            if snapshot_text_parts and not raw_content:
+                raw_content = "\n".join(snapshot_text_parts)
+                normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
@@ -4261,13 +4272,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
+        all_attachments = list(message.attachments) + snapshot_attachments
+
         # Determine message type
         msg_type = MessageType.TEXT
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif message.attachments:
+        elif all_attachments:
             # Check attachment types
-            for att in message.attachments:
+            for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
                         msg_type = MessageType.PHOTO
@@ -4326,7 +4339,7 @@ class DiscordAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
-        for att in message.attachments:
+        for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
                 try:

@@ -441,6 +441,72 @@ def list_inbox_items(
     return [_inbox_item_from_row(row) for row in rows]
 
 
+_UNSET = object()
+
+
+def update_inbox_item(
+    conn: sqlite3.Connection,
+    inbox_item_id: str,
+    *,
+    title: str | object = _UNSET,
+    body: str | object = _UNSET,
+    source: str | object = _UNSET,
+    status: str | object = _UNSET,
+    classification: str | None | object = _UNSET,
+    workspace_path: str | Path | None | object = _UNSET,
+    assigned_workflow_id: str | None | object = _UNSET,
+    metadata: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> WorkflowInboxItem | None:
+    """Update triage fields for an inbox item, preserving unspecified fields."""
+
+    current = get_inbox_item(conn, inbox_item_id)
+    if current is None:
+        return None
+    updates: list[str] = []
+    params: list[Any] = []
+
+    if title is not _UNSET:
+        clean_title = str(title).strip()
+        if not clean_title:
+            raise ValueError("inbox item title must be non-empty")
+        updates.append("title = ?")
+        params.append(clean_title)
+    if body is not _UNSET:
+        updates.append("body = ?")
+        params.append(str(body))
+    if source is not _UNSET:
+        clean_source = str(source).strip()
+        if not clean_source:
+            raise ValueError("inbox item source must be non-empty")
+        updates.append("source = ?")
+        params.append(clean_source)
+    if status is not _UNSET:
+        updates.append("status = ?")
+        params.append(str(status))
+    if classification is not _UNSET:
+        updates.append("classification = ?")
+        params.append(classification)
+    if workspace_path is not _UNSET:
+        updates.append("workspace_path = ?")
+        params.append(str(workspace_path) if workspace_path is not None else None)
+    if assigned_workflow_id is not _UNSET:
+        updates.append("assigned_workflow_id = ?")
+        params.append(assigned_workflow_id)
+    if metadata is not None:
+        merged_metadata = {**current.metadata, **metadata}
+        updates.append("metadata_json = ?")
+        params.append(_json(merged_metadata))
+
+    ts = time.time() if now is None else now
+    updates.append("updated_at = ?")
+    params.append(ts)
+    params.append(inbox_item_id)
+    conn.execute(f"UPDATE workflow_inbox_items SET {', '.join(updates)} WHERE id = ?", tuple(params))
+    conn.commit()
+    return get_inbox_item(conn, inbox_item_id)
+
+
 def create_workflow(
     conn: sqlite3.Connection,
     *,

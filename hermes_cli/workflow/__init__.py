@@ -6,12 +6,14 @@ modules instead of inferring workflow state from Kanban prose.
 """
 
 from .api import (
+    get_inbox_item_detail,
     get_workflow_artifacts,
     get_workflow_dag,
     get_workflow_events,
     get_workflow_node,
     list_inbox_item_summaries,
     list_workflow_summaries,
+    update_inbox_item_triage,
 )
 from .dag import DagValidationResult, normalize_dag, validate_dag
 from .errors import WorkflowError, WorkflowValidationError
@@ -39,6 +41,7 @@ from .store import (
     list_workflows,
     resolve_gate,
     save_dag,
+    update_inbox_item,
 )
 
 __all__ = [
@@ -63,6 +66,7 @@ __all__ = [
     "create_inbox_item",
     "create_workflow",
     "get_inbox_item",
+    "get_inbox_item_detail",
     "get_workflow",
     "get_workflow_artifacts",
     "get_workflow_dag",
@@ -80,5 +84,7 @@ __all__ = [
     "normalize_dag",
     "resolve_gate",
     "save_dag",
+    "update_inbox_item",
+    "update_inbox_item_triage",
     "validate_dag",
 ]

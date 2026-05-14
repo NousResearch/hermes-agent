@@ -21,6 +21,7 @@ from hermes_cli.workflow.store import (
     list_workflows,
     resolve_gate,
     save_dag,
+    update_inbox_item,
 )
 
 
@@ -127,6 +128,52 @@ def test_create_inbox_item_requires_non_empty_title(tmp_path):
     with connect(tmp_path / "workflow.db") as conn:
         with pytest.raises(ValueError, match="inbox item title must be non-empty"):
             create_inbox_item(conn, title="   ", source="webui_chat")
+
+
+def test_update_inbox_item_persists_triage_fields_without_losing_metadata(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_triage",
+            title="Rough workflow idea",
+            body="Please turn this into agent work.",
+            source="webui_chat",
+            status="new",
+            metadata={"labels": ["workflow-system"], "priority": "high"},
+            now=10.0,
+        )
+
+        updated = update_inbox_item(
+            conn,
+            "inbox_triage",
+            status="triaged",
+            classification="decomposition_worthy",
+            workspace_path=tmp_path / "workspace",
+            assigned_workflow_id="wf_triage",
+            metadata={"priority": "urgent", "reviewedBy": "planner"},
+            now=15.0,
+        )
+
+        fetched = get_inbox_item(conn, "inbox_triage")
+
+    assert updated is not None
+    assert fetched == updated
+    assert updated.status == "triaged"
+    assert updated.classification == "decomposition_worthy"
+    assert updated.workspace_path == str(tmp_path / "workspace")
+    assert updated.assigned_workflow_id == "wf_triage"
+    assert updated.created_at == 10.0
+    assert updated.updated_at == 15.0
+    assert updated.metadata == {
+        "labels": ["workflow-system"],
+        "priority": "urgent",
+        "reviewedBy": "planner",
+    }
+
+
+def test_update_inbox_item_returns_none_for_missing_item(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        assert update_inbox_item(conn, "missing", status="triaged") is None
 
 
 def test_create_get_and_serialize_workflow_preserves_policy_and_routing_metadata(tmp_path):

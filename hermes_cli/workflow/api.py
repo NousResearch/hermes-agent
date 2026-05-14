@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .store import get_workflow, list_artifacts, list_gates, list_inbox_items, list_workflows
+from .store import get_inbox_item, get_workflow, list_artifacts, list_gates, list_inbox_items, list_workflows, update_inbox_item
 
 
 def list_inbox_item_summaries(
@@ -20,6 +20,37 @@ def list_inbox_item_summaries(
     _validate_limit(limit)
     items = list_inbox_items(conn, status=status, source=source, classification=classification, limit=limit)
     return _response({"inboxItems": [item.to_dict() for item in items], "count": len(items)})
+
+
+def get_inbox_item_detail(conn: sqlite3.Connection, inbox_item_id: str) -> dict[str, Any]:
+    item = get_inbox_item(conn, inbox_item_id)
+    if item is None:
+        raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+    return _response({"inboxItem": item.to_dict()})
+
+
+def update_inbox_item_triage(
+    conn: sqlite3.Connection,
+    inbox_item_id: str,
+    *,
+    status: str | None = None,
+    classification: str | None = None,
+    workspace_path: str | None = None,
+    assigned_workflow_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    updates: dict[str, Any] = {"status": status if status is not None else "triaged", "metadata": metadata, "now": now}
+    if classification is not None:
+        updates["classification"] = classification
+    if workspace_path is not None:
+        updates["workspace_path"] = workspace_path
+    if assigned_workflow_id is not None:
+        updates["assigned_workflow_id"] = assigned_workflow_id
+    item = update_inbox_item(conn, inbox_item_id, **updates)
+    if item is None:
+        raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+    return _response({"inboxItem": item.to_dict()})
 
 
 def list_workflow_summaries(

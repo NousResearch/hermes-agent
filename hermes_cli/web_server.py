@@ -50,12 +50,14 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 from hermes_cli.workflow import (
     create_inbox_item as workflow_create_inbox_item,
+    get_inbox_item_detail as workflow_get_inbox_item_detail,
     get_workflow_artifacts as workflow_get_workflow_artifacts,
     get_workflow_dag as workflow_get_workflow_dag,
     get_workflow_events as workflow_get_workflow_events,
     get_workflow_node as workflow_get_workflow_node,
     list_inbox_item_summaries as workflow_list_inbox_item_summaries,
     list_workflow_summaries as workflow_list_workflow_summaries,
+    update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
 from hermes_cli.workflow.store import connect as workflow_connect
 
@@ -702,6 +704,42 @@ async def create_workflow_inbox_endpoint(request: Request):
             return {"facts": {"inboxItem": item.to_dict()}, "insights": None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/workflows/inbox/{inbox_item_id}")
+async def get_workflow_inbox_item_endpoint(inbox_item_id: str):
+    try:
+        with workflow_connect() as conn:
+            return workflow_get_inbox_item_detail(conn, inbox_item_id)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow inbox item not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.patch("/api/workflows/inbox/{inbox_item_id}")
+async def update_workflow_inbox_item_endpoint(inbox_item_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_update_inbox_item_triage(
+                conn,
+                inbox_item_id,
+                status=payload.get("status"),
+                classification=payload.get("classification"),
+                workspace_path=payload.get("workspacePath"),
+                assigned_workflow_id=payload.get("assignedWorkflowId"),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow inbox item not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
 
 
 @app.get("/api/workflows/{workflow_id}/dag")

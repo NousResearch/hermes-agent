@@ -149,6 +149,46 @@ class TestWebServerEndpoints:
         assert payload["facts"]["count"] == 1
         assert payload["facts"]["inboxItems"][0]["id"] == item["id"]
 
+    def test_workflow_inbox_detail_and_patch_triage_endpoint(self):
+        created = self.client.post(
+            "/api/workflows/inbox",
+            json={
+                "title": "Triage this rough idea",
+                "body": "Decide whether it needs a DAG.",
+                "source": "webui_chat",
+                "metadata": {"labels": ["workflow-system"]},
+            },
+        )
+        item_id = created.json()["facts"]["inboxItem"]["id"]
+
+        detail = self.client.get(f"/api/workflows/inbox/{item_id}")
+        assert detail.status_code == 200
+        assert detail.json()["facts"]["inboxItem"]["id"] == item_id
+
+        updated = self.client.patch(
+            f"/api/workflows/inbox/{item_id}",
+            json={
+                "status": "triaged",
+                "classification": "decomposition_worthy",
+                "workspacePath": "/tmp/workspace",
+                "assignedWorkflowId": "wf_triaged",
+                "metadata": {"triagedBy": "planner"},
+            },
+        )
+        assert updated.status_code == 200
+        patched = updated.json()["facts"]["inboxItem"]
+        assert patched["status"] == "triaged"
+        assert patched["classification"] == "decomposition_worthy"
+        assert patched["workspacePath"] == "/tmp/workspace"
+        assert patched["assignedWorkflowId"] == "wf_triaged"
+        assert patched["metadata"] == {"labels": ["workflow-system"], "triagedBy": "planner"}
+
+    def test_workflow_inbox_detail_returns_404_for_missing_item(self):
+        resp = self.client.get("/api/workflows/inbox/missing")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "workflow inbox item not found: missing"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

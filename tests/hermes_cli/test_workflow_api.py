@@ -5,12 +5,14 @@ import pytest
 from hermes_cli import kanban_db
 from hermes_cli.workflow import (
     create_inbox_item,
+    get_inbox_item_detail,
     get_workflow_artifacts,
     get_workflow_dag,
     get_workflow_events,
     get_workflow_node,
     list_inbox_item_summaries,
     list_workflow_summaries,
+    update_inbox_item_triage,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
 from hermes_cli.workflow.store import add_artifact, add_event, add_gate, connect, create_workflow, resolve_gate, save_dag
@@ -65,6 +67,8 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(get_workflow_events)
     assert callable(get_workflow_artifacts)
     assert callable(list_inbox_item_summaries)
+    assert callable(get_inbox_item_detail)
+    assert callable(update_inbox_item_triage)
 
 
 def test_list_inbox_item_summaries_returns_intake_facts_shape_and_filters(tmp_path):
@@ -79,6 +83,80 @@ def test_list_inbox_item_summaries_returns_intake_facts_shape_and_filters(tmp_pa
     assert [item["id"] for item in payload["facts"]["inboxItems"]] == ["inbox_new", "inbox_old"]
     assert payload["facts"]["count"] == 2
     assert payload["facts"]["inboxItems"][0]["classification"] == "decomposition_worthy"
+
+
+def test_get_inbox_item_detail_returns_single_intake_record(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_detail",
+            title="Shape workflow",
+            source="webui_chat",
+            status="new",
+            metadata={"labels": ["workflow-system"]},
+            now=4.0,
+        )
+
+        payload = get_inbox_item_detail(conn, "inbox_detail")
+
+    assert payload == {
+        "facts": {
+            "inboxItem": {
+                "id": "inbox_detail",
+                "title": "Shape workflow",
+                "body": "",
+                "source": "webui_chat",
+                "status": "new",
+                "classification": None,
+                "workspacePath": None,
+                "assignedWorkflowId": None,
+                "createdAt": 4.0,
+                "updatedAt": 4.0,
+                "createdBy": None,
+                "metadata": {"labels": ["workflow-system"]},
+            }
+        },
+        "insights": None,
+    }
+
+
+def test_get_inbox_item_detail_raises_for_missing_item(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="workflow inbox item not found: missing"):
+            get_inbox_item_detail(conn, "missing")
+
+
+def test_update_inbox_item_triage_returns_updated_item_payload(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_update",
+            title="Rough idea",
+            source="webui_chat",
+            status="new",
+            metadata={"labels": ["workflow-system"]},
+            now=2.0,
+        )
+
+        payload = update_inbox_item_triage(
+            conn,
+            "inbox_update",
+            status="triaged",
+            classification="decomposition_worthy",
+            workspace_path="/tmp/workspace",
+            assigned_workflow_id="wf_update",
+            metadata={"triagedBy": "planner"},
+            now=8.0,
+        )
+
+    item = payload["facts"]["inboxItem"]
+    assert payload["insights"] is None
+    assert item["status"] == "triaged"
+    assert item["classification"] == "decomposition_worthy"
+    assert item["workspacePath"] == "/tmp/workspace"
+    assert item["assignedWorkflowId"] == "wf_update"
+    assert item["updatedAt"] == 8.0
+    assert item["metadata"] == {"labels": ["workflow-system"], "triagedBy": "planner"}
 
 
 def test_list_workflow_summaries_returns_facts_insights_shape_and_filters(tmp_path):

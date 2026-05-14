@@ -226,3 +226,182 @@ class TestIsAvailable:
         monkeypatch.setitem(ld.LAZY_DEPS, "test.miss", ("zzzfake>=1",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         assert ld.is_available("test.miss") is False
+
+
+# ---------------------------------------------------------------------------
+# Version-aware _is_satisfied (Piece B — "stale pin" detection)
+#
+# The original implementation returned True the moment the package name
+# was importable, ignoring the spec's version range. That meant pin bumps
+# in LAZY_DEPS never propagated to users who already lazy-installed the
+# backend at an older version. _is_satisfied now parses the spec and
+# checks the installed version against the constraint.
+# ---------------------------------------------------------------------------
+
+
+class TestIsSatisfiedVersionAware:
+    def _fake_version(self, monkeypatch, installed_versions: dict):
+        """Patch importlib.metadata.version() inside lazy_deps."""
+        from importlib.metadata import PackageNotFoundError
+
+        def _version(pkg):
+            if pkg in installed_versions:
+                return installed_versions[pkg]
+            raise PackageNotFoundError(pkg)
+
+        # Patch at the import site lazy_deps uses (inside the function).
+        import importlib.metadata as _md
+        monkeypatch.setattr(_md, "version", _version)
+
+    def test_exact_pin_match_returns_true(self, monkeypatch):
+        self._fake_version(monkeypatch, {"honcho-ai": "2.0.1"})
+        assert ld._is_satisfied("honcho-ai==2.0.1") is True
+
+    def test_exact_pin_mismatch_returns_false(self, monkeypatch):
+        # Installed 2.0.0, spec requires 2.0.1 → False (needs upgrade).
+        self._fake_version(monkeypatch, {"honcho-ai": "2.0.0"})
+        assert ld._is_satisfied("honcho-ai==2.0.1") is False
+
+    def test_range_within_returns_true(self, monkeypatch):
+        self._fake_version(monkeypatch, {"slack-bolt": "1.27.0"})
+        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is True
+
+    def test_range_above_returns_false(self, monkeypatch):
+        # Installed too new for the upper bound.
+        self._fake_version(monkeypatch, {"slack-bolt": "2.0.0"})
+        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is False
+
+    def test_range_below_returns_false(self, monkeypatch):
+        self._fake_version(monkeypatch, {"slack-bolt": "1.0.0"})
+        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is False
+
+    def test_package_not_installed_returns_false(self, monkeypatch):
+        self._fake_version(monkeypatch, {})
+        assert ld._is_satisfied("anthropic==0.86.0") is False
+
+    def test_bare_package_name_presence_is_enough(self, monkeypatch):
+        # No version constraint — presence alone counts as satisfied.
+        self._fake_version(monkeypatch, {"somepkg": "1.0.0"})
+        assert ld._is_satisfied("somepkg") is True
+
+    def test_extras_block_in_spec_is_stripped(self, monkeypatch):
+        # mautrix[encryption]==0.21.0 — the [encryption] block must not
+        # confuse the specifier parser.
+        self._fake_version(monkeypatch, {"mautrix": "0.21.0"})
+        assert ld._is_satisfied("mautrix[encryption]==0.21.0") is True
+
+    def test_extras_block_mismatch_returns_false(self, monkeypatch):
+        self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
+        assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
+
+
+# ---------------------------------------------------------------------------
+# active_features + refresh_active_features (Piece A — hermes update wiring)
+# ---------------------------------------------------------------------------
+
+
+class TestActiveFeatures:
+    def test_no_packages_installed_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(ld, "_is_present", lambda spec: False)
+        assert ld.active_features() == []
+
+    def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
+        # Pretend only honcho-ai is installed; nothing else.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "honcho-ai",
+        )
+        active = ld.active_features()
+        assert "memory.honcho" in active
+        # Backends the user never enabled stay quiet.
+        assert "memory.hindsight" not in active
+        assert "platform.slack" not in active
+
+    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
+        # platform.slack has 3 packages; only one needs to be present
+        # for the feature to count as active (user activated it before,
+        # one transitive may have been uninstalled separately).
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
+        )
+        assert "platform.slack" in ld.active_features()
+
+
+class TestRefreshActiveFeatures:
+    def test_no_active_features_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(ld, "active_features", lambda: [])
+        assert ld.refresh_active_features() == {}
+
+    def test_already_current_is_noop(self, monkeypatch):
+        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==1.0.0",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        # If pip were called, this would fail loudly.
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.refresh_active_features()
+        assert result == {"test.feat": "current"}
+
+    def test_stale_pin_triggers_reinstall(self, monkeypatch):
+        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
+        # First _is_satisfied check (in feature_missing) says no; after
+        # install, post-install check says yes.
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        result = ld.refresh_active_features()
+        assert result == {"test.feat": "refreshed"}
+
+    def test_install_failure_recorded_not_raised(self, monkeypatch):
+        # A failed refresh must NOT raise out of hermes update.
+        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(
+                False, "", "ERROR: PyPI 404 quarantine"
+            ),
+        )
+        result = ld.refresh_active_features()
+        assert "test.feat" in result
+        assert result["test.feat"].startswith("failed:")
+        assert "404 quarantine" in result["test.feat"]
+
+    def test_lazy_installs_disabled_marked_skipped(self, monkeypatch):
+        # security.allow_lazy_installs=false → don't error, mark skipped
+        # so hermes update can render "respecting your config" message.
+        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+        result = ld.refresh_active_features()
+        assert "test.feat" in result
+        assert result["test.feat"].startswith("skipped:")
+
+    def test_mixed_results_returns_per_feature_status(self, monkeypatch):
+        monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "a.ok", ("pkga==1.0",))
+        monkeypatch.setitem(ld.LAZY_DEPS, "b.fail", ("pkgb==1.0",))
+        # a.ok: already satisfied → "current"
+        # b.fail: missing + install fails → "failed:"
+        def fake_satisfied(spec):
+            return ld._pkg_name_from_spec(spec) == "pkga"
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(False, "", "nope"),
+        )
+        result = ld.refresh_active_features()
+        assert result["a.ok"] == "current"
+        assert result["b.fail"].startswith("failed:")

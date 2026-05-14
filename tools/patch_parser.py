@@ -423,6 +423,17 @@ def apply_v4a_operations(operations: List[PatchOperation],
                   + "\n".join(f"  • {e}" for e in errors),
         )
 
+    # No effective changes — all operations were no-ops (e.g. pure-context
+    # hunks with identical removed/added lines). Report as successful noop
+    # with guidance instead of an empty success.
+    if not files_modified and not files_created and not files_deleted:
+        return PatchResult(
+            success=True,
+            noop=True,
+            message="No effective changes: the patch operations resulted in identical content. "
+                    "The file(s) already match the desired state.",
+        )
+
     return PatchResult(
         success=True,
         diff=combined_diff,

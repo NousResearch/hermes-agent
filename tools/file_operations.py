@@ -146,6 +146,10 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
+    # True when the patch was a no-op (identical content or no effective change).
+    noop: bool = False
+    # Human-readable message describing the result (e.g. "no changes needed").
+    message: Optional[str] = None
     
     def to_dict(self) -> dict:
         result = {"success": self.success}
@@ -163,6 +167,10 @@ class PatchResult:
             result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
             result["error"] = self.error
+        if self.noop:
+            result["noop"] = self.noop
+        if self.message:
+            result["message"] = self.message
         return result
 
 
@@ -1021,7 +1029,15 @@ class ShellFileOperations(FileOperations):
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
-        
+
+        # Identical old/new strings — no-op, report success without writing.
+        if error and "identical" in error:
+            return PatchResult(
+                success=True,
+                noop=True,
+                message=f"No changes needed: old_string and new_string are identical in {path}",
+            )
+
         if error or match_count == 0:
             err_msg = error or f"Could not find match for old_string in {path}"
             try:

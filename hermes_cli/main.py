@@ -2414,30 +2414,31 @@ def _prompt_provider_choice(choices, *, default=0):
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
     from hermes_cli.auth import (
+        ProviderConfig,
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value
 
-    api_key = get_env_value("OPENROUTER_API_KEY")
-    if not api_key:
-        print("No OpenRouter API key configured.")
+    # Route through _prompt_api_key so users can replace a stale/broken key
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
+    # previous bypass-when-key-exists branch left no way to recover from a
+    # bad paste short of re-running `hermes setup` from scratch. OpenRouter
+    # isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
+    pconfig = ProviderConfig(
+        id="openrouter",
+        name="OpenRouter",
+        auth_type="api_key",
+        api_key_env_vars=("OPENROUTER_API_KEY",),
+    )
+    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
-        try:
-            import getpass
-
-            key = getpass.getpass("OpenRouter API key (or Enter to cancel): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return
-        if not key:
-            print("Cancelled.")
-            return
-        save_env_value("OPENROUTER_API_KEY", key)
-        print("API key saved.")
-        print()
+    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="openrouter")
+    if abort:
+        return
 
     from hermes_cli.models import model_ids, get_pricing_for_provider
 
@@ -2473,33 +2474,26 @@ def _model_flow_openrouter(config, current_model=""):
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
     from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value
 
-    api_key = get_env_value("AI_GATEWAY_API_KEY")
-    if not api_key:
-        print("No Vercel AI Gateway API key configured.")
+    # Route through _prompt_api_key so users can replace a stale/broken key
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
+    pconfig = PROVIDER_REGISTRY["ai-gateway"]
+    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
+    if not existing_key:
         print(
             "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
         )
         print("Add a payment method to get $5 in free credits.")
         print()
-        try:
-            import getpass
-
-            key = getpass.getpass("AI Gateway API key (or Enter to cancel): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return
-        if not key:
-            print("Cancelled.")
-            return
-        save_env_value("AI_GATEWAY_API_KEY", key)
-        print("API key saved.")
-        print()
+    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
+    if abort:
+        return
 
     from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
 

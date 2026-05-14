@@ -5,6 +5,7 @@ import android.os.Environment
 import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
@@ -25,6 +26,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.io.FileInputStream
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
@@ -123,6 +125,7 @@ class NativeAppChatAndToolInstrumentedTest {
         val html = htmlFile.readText()
         assertTrue(html, html.contains("<canvas id=\"game\"") || html.contains("<canvas id='game'"))
         assertTrue(html, html.contains("HERMES_GEMMA_FLAPPY"))
+        assertBrowserFocused()
     }
 
     @Test
@@ -263,6 +266,42 @@ class NativeAppChatAndToolInstrumentedTest {
         return latestReply
     }
 
+    private fun assertBrowserFocused() {
+        val focusedPackage = waitForFocusedPackage(BROWSER_PACKAGES)
+        assertTrue(
+            "Expected Gemma browser automation to focus a browser, got '$focusedPackage'",
+            focusedPackage in BROWSER_PACKAGES,
+        )
+    }
+
+    private fun waitForFocusedPackage(packages: Set<String>, timeoutMs: Long = 10_000L): String {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var latest = ""
+        while (SystemClock.elapsedRealtime() < deadline) {
+            latest = focusedPackage()
+            if (latest in packages) {
+                return latest
+            }
+            Thread.sleep(250L)
+        }
+        return latest.ifBlank { focusedPackage() }
+    }
+
+    private fun focusedPackage(): String {
+        val output = shellOutput("dumpsys window")
+        return FOCUS_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            .ifBlank {
+                FOCUSED_APP_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            }
+    }
+
+    private fun shellOutput(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return descriptor.use { fd ->
+            FileInputStream(fd.fileDescriptor).bufferedReader().use { it.readText() }
+        }
+    }
+
     private fun assumeQwenBackendReady(runtime: HermesRuntimeManager.RuntimeState) =
         OnDeviceBackendManager.currentStatus().also { backendStatus ->
             assumeTrue(
@@ -354,5 +393,16 @@ class NativeAppChatAndToolInstrumentedTest {
         private const val QWEN_SOURCE_URL =
             "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/$QWEN_GGUF_FILE_NAME"
         private const val QWEN_GGUF_BYTES = 556_982_432L
+        private val BROWSER_PACKAGES = setOf(
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "org.mozilla.firefox",
+            "org.mozilla.firefox_beta",
+            "com.brave.browser",
+            "com.microsoft.emmx",
+        )
+        private val FOCUS_PACKAGE_REGEX = Regex("""mCurrentFocus=Window\{[^ ]+ u\d+ ([^/\s]+)/""")
+        private val FOCUSED_APP_PACKAGE_REGEX = Regex("""mFocusedApp=ActivityRecord\{[^ ]+ u\d+ ([^/\s]+)/""")
     }
 }

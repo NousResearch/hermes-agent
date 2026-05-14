@@ -27,6 +27,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.io.FileInputStream
 
 @RunWith(AndroidJUnit4::class)
 class HermesAutomationInstrumentedTest {
@@ -1038,6 +1039,11 @@ class HermesAutomationInstrumentedTest {
         assertTrue(opened.toString(), opened.getBoolean("success"))
         assertEquals("open_uri", opened.getString("action"))
         assertEquals(htmlFile.absolutePath, opened.getString("data_uri"))
+        assertTrue(opened.toString(), opened.getString("resolved_uri").startsWith("content://${app.packageName}.files/"))
+        assertEquals("text/html", opened.getString("resolved_mime_type"))
+        assertTrue(opened.toString(), opened.getBoolean("resolved_with_file_provider"))
+        assertTrue(opened.toString(), opened.getString("preferred_browser_package").isNotBlank())
+        assertBrowserFocused()
     }
 
     @Test
@@ -2249,5 +2255,55 @@ class HermesAutomationInstrumentedTest {
             Thread.sleep(100L)
         }
         return condition()
+    }
+
+    private fun assertBrowserFocused() {
+        val focusedPackage = waitForFocusedPackage(BROWSER_PACKAGES)
+        assertTrue(
+            "Expected a browser to be focused after open_uri, got '$focusedPackage'",
+            focusedPackage in BROWSER_PACKAGES,
+        )
+    }
+
+    private fun waitForFocusedPackage(packages: Set<String>, timeoutMs: Long = 10_000L): String {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var latest = ""
+        while (System.currentTimeMillis() < deadline) {
+            latest = focusedPackage()
+            if (latest in packages) {
+                return latest
+            }
+            Thread.sleep(250L)
+        }
+        return latest.ifBlank { focusedPackage() }
+    }
+
+    private fun focusedPackage(): String {
+        val output = shellOutput("dumpsys window")
+        return FOCUS_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            .ifBlank {
+                FOCUSED_APP_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            }
+    }
+
+    private fun shellOutput(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return descriptor.use { fd ->
+            FileInputStream(fd.fileDescriptor).bufferedReader().use { it.readText() }
+        }
+    }
+
+    private companion object {
+        private val BROWSER_PACKAGES = setOf(
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "org.mozilla.firefox",
+            "org.mozilla.firefox_beta",
+            "com.brave.browser",
+            "com.microsoft.emmx",
+        )
+        private val FOCUS_PACKAGE_REGEX = Regex("""mCurrentFocus=Window\{[^ ]+ u\d+ ([^/\s]+)/""")
+        private val FOCUSED_APP_PACKAGE_REGEX = Regex("""mFocusedApp=ActivityRecord\{[^ ]+ u\d+ ([^/\s]+)/""")
     }
 }

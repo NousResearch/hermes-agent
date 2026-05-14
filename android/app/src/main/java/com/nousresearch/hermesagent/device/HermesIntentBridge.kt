@@ -30,7 +30,8 @@ object HermesIntentBridge {
         }
 
         val appContext = context.applicationContext
-        val intent = buildIntent(appContext, intentTaskAction, payload)
+        val builtIntent = buildIntent(appContext, intentTaskAction, payload)
+        val intent = builtIntent.intent
         return when (intentTaskAction) {
             INTENT_TASK_SEND_BROADCAST -> runCatching {
                 appContext.sendBroadcast(intent)
@@ -46,6 +47,12 @@ object HermesIntentBridge {
                 successJson(intentTaskAction, payload, "Started Android intent").also { result ->
                     if (intentTaskAction == INTENT_TASK_OPEN_URI) {
                         result.put("external_activity_handoff", true)
+                        builtIntent.resolvedOpenUri?.let { resolved ->
+                            result.put("resolved_uri", resolved.uri.toString())
+                            result.put("resolved_mime_type", resolved.mimeType.orEmpty())
+                            result.put("resolved_with_file_provider", resolved.grantReadPermission)
+                            result.put("preferred_browser_package", intent.getPackage().orEmpty())
+                        }
                         localBackendRelease?.let { result.put("local_backend_release", it) }
                     }
                 }
@@ -81,7 +88,7 @@ object HermesIntentBridge {
         return INTENT_TASK_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in INTENT_TASK_ACTIONS }
     }
 
-    private fun buildIntent(context: Context, intentTaskAction: String, payload: JSONObject): Intent {
+    private fun buildIntent(context: Context, intentTaskAction: String, payload: JSONObject): BuiltIntent {
         val intent = Intent()
         val intentAction = payload.optString("intent_action").ifBlank {
             if (intentTaskAction == INTENT_TASK_OPEN_URI) Intent.ACTION_VIEW else ""
@@ -136,7 +143,7 @@ object HermesIntentBridge {
                 }
             }
         }
-        return intent
+        return BuiltIntent(intent, resolvedOpenUri)
     }
 
     private fun resolveOpenUri(context: Context, intentTaskAction: String, rawUri: String): ResolvedOpenUri {
@@ -372,6 +379,11 @@ object HermesIntentBridge {
         val mimeType: String? = null,
         val grantReadPermission: Boolean = false,
         val preferBrowserPackage: Boolean = false,
+    )
+
+    private data class BuiltIntent(
+        val intent: Intent,
+        val resolvedOpenUri: ResolvedOpenUri?,
     )
 
     private const val INTENT_TASK_START_ACTIVITY = "start_activity"

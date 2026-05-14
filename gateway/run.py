@@ -11382,6 +11382,55 @@ class GatewayRunner:
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
+    async def _post_turn_loop_continuation(
+        self,
+        *,
+        session_entry: Any,
+        source: Any,
+        final_response: str,
+    ) -> None:
+        """Check loop timer and enqueue next turn if interval elapsed.
+
+        The gateway does not run a background scheduler thread (unlike the
+        CLI).  Instead, this post-turn hook reloads the loop state, checks
+        whether the interval has elapsed since last_fired_at, and enqueues
+        the next prompt through the adapter FIFO when ready.
+        """
+        try:
+            from hermes_cli.loop import load_loop, save_loop
+            import time as _t
+        except Exception:
+            return
+
+        if (
+            session_entry is None
+            or not getattr(session_entry, "session_id", None)
+        ):
+            return
+        sid = session_entry.session_id
+
+        state = load_loop(sid)
+        if state is None or state.status != "active":
+            return
+
+        now = _t.time()
+        elapsed = now - state.last_fired_at
+        if state.last_fired_at > 0 and elapsed < state.interval_seconds:
+            return  # not time yet
+
+        # Fire!
+        state.last_fired_at = now
+        state.turns_completed += 1
+        save_loop(sid, state)
+
+        try:
+            self._dispatch_loop_prompt(
+                prompt=state.prompt,
+                source=source,
+            )
+        except Exception as exc:
+            logger.debug("loop continuation dispatch failed: %s", exc)
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
         source = event.source

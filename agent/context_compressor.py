@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
+from agent.safe_truncate import safe_truncate as _safe_truncate
+from agent.entity_state_tracker import EntityStateTracker
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -461,6 +463,10 @@ class ContextCompressor(ContextEngine):
             )
         self._context_probed = False  # True after a step-down from context error
 
+        # Entity state tracker for detecting conflicts after compression
+        self._entity_tracker = EntityStateTracker()
+        self._pre_compression_snapshotted = False
+
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
@@ -727,15 +733,15 @@ class ContextCompressor(ContextEngine):
             # Tool results: keep enough content for the summarizer
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content, _ = _safe_truncate(content, max_length=self._CONTENT_MAX,
+                                                head=self._CONTENT_HEAD, tail=self._CONTENT_TAIL)
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content, _ = _safe_truncate(content, max_length=self._CONTENT_MAX,
+                                                head=self._CONTENT_HEAD, tail=self._CONTENT_TAIL)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -757,8 +763,8 @@ class ContextCompressor(ContextEngine):
                 continue
 
             # User and other roles
-            if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+            content, _ = _safe_truncate(content, max_length=self._CONTENT_MAX,
+                                            head=self._CONTENT_HEAD, tail=self._CONTENT_TAIL)
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
@@ -1462,6 +1468,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
+        # Snapshot entity state before compression for conflict detection
+        self._entity_tracker.snapshot_all()
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # Phase 4: Assemble compressed message list
@@ -1571,5 +1579,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # Check for entity state conflicts after compression
+        conflicts = self._entity_tracker.check_conflicts()
+        if conflicts and not self.quiet_mode:
+            warnings = self._entity_tracker.get_warnings()
+            for warning in warnings:
+                logger.warning("Entity state conflict detected: %s", warning)
 
         return compressed

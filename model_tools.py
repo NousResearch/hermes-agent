@@ -286,6 +286,16 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    try:
+        from tools.mcp_tool import wait_for_mcp_ready
+        if not wait_for_mcp_ready(timeout=30):
+            logger.warning(
+                "MCP discovery did not complete within 30s; "
+                "proceeding without MCP tools"
+            )
+    except ImportError:
+        pass
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).

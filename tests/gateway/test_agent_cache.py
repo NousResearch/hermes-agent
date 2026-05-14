@@ -386,6 +386,54 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
 
+    def test_evict_runs_soft_cleanup_and_clears_session_messages(self):
+        """Hard evictions from the cache path should call release_clients, not close()."""
+        from run_agent import AIAgent
+
+        runner = _make_runner()
+        session_key = "agent:test"
+        session_messages = [
+            {"role": "user", "content": "please clear memory"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=5,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._session_messages = session_messages
+
+        # Replace release_clients so we can observe async cleanup while
+        # preserving the built-in client-shutdown behavior.
+        release_calls = MagicMock()
+        _original_release = agent.release_clients
+
+        def _release_with_signal():
+            _original_release()
+            release_calls(agent)
+
+        agent.release_clients = _release_with_signal
+
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (agent, "sig123")
+
+        runner._evict_cached_agent(session_key)
+
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+
+        assert session_key not in runner._agent_cache
+        release_calls.assert_called_once_with(agent)
+        assert session_messages == []
+        assert agent.client is None
+
     def test_evict_does_not_affect_other_sessions(self):
         """Evicting one session leaves other sessions cached."""
         runner = _make_runner()

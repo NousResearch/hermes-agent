@@ -4038,6 +4038,15 @@ class GatewayRunner:
                         # be garbage-collected.  Otherwise the cache grows
                         # unbounded across the gateway's lifetime.
                         self._evict_cached_agent(key)
+                        # Session-scoped override/request state is no longer
+                        # needed after expiry finalization.
+                        if hasattr(self, "_session_model_overrides"):
+                            self._session_model_overrides.pop(key, None)
+                        self._set_session_reasoning_override(key, None)
+                        if hasattr(self, "_pending_approvals"):
+                            self._pending_approvals.pop(key, None)
+                        if hasattr(self, "_update_prompt_pending"):
+                            self._update_prompt_pending.pop(key, None)
                         # Mark as finalized and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -13751,9 +13760,32 @@ class GatewayRunner:
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache is None:
+            return
+        evicted = None
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                evicted = _cache.pop(session_key, None)
+        else:
+            evicted = _cache.pop(session_key, None)
+
+        agent = None
+        if isinstance(evicted, tuple) and evicted:
+            agent = evicted[0]
+        elif evicted is not None:
+            agent = evicted
+
+        if agent is not None:
+            try:
+                threading.Thread(
+                    target=self._release_evicted_agent_soft,
+                    args=(agent,),
+                    daemon=True,
+                    name=f"agent-cache-evict-{session_key[:24]}",
+                ).start()
+            except Exception:
+                pass
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -13793,6 +13825,12 @@ class GatewayRunner:
                 # Older agent instance (shouldn't happen in practice) —
                 # fall back to the legacy full-close path.
                 self._cleanup_agent_resources(agent)
+        except Exception:
+            pass
+        try:
+            session_messages = getattr(agent, "_session_messages", None)
+            if isinstance(session_messages, list):
+                session_messages.clear()
         except Exception:
             pass
 

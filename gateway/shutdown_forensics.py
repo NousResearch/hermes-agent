@@ -108,7 +108,8 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
 
     * The signal number/name (so SIGINT vs SIGTERM is visible)
     * Our own PID/ppid + parent process info from /proc (Linux)
-    * Whether systemd is our parent (``ppid==1`` or ``INVOCATION_ID`` set)
+    * Whether systemd is our parent (``INVOCATION_ID`` set, or
+      ``ppid==1`` on Linux where PID 1 is reliably systemd)
     * Whether takeover/planned-stop markers exist (consumed lazily by the caller)
     * /proc/self limits + load average (1-min)
     * Wall-clock and monotonic timestamps for cross-correlating later phases
@@ -132,15 +133,18 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     }
 
     # systemd context.  If we were started by a systemd unit, INVOCATION_ID
-    # is set in our env.  ppid==1 (init) is also a strong signal that
-    # systemd reaped+forwarded the SIGTERM.
+    # is set in our env.  ppid==1 (init) is also a strong signal on Linux
+    # that systemd reaped+forwarded the SIGTERM.  On macOS, PID 1 is
+    # launchd (not systemd), so ppid==1 must NOT be treated as systemd.
     invocation_id = os.environ.get("INVOCATION_ID")
     if invocation_id:
         ctx["systemd_invocation_id"] = invocation_id
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    ctx["under_systemd"] = bool(invocation_id) or (
+        sys.platform.startswith("linux") and ppid == 1
+    )
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".

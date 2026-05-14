@@ -2858,6 +2858,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
+        # --- Gmail-triage callbacks (gt:verb:arg) ---
+        if data.startswith("gt:"):
+            await self._handle_gmail_triage_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -3171,6 +3183,120 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
+    # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback
+    # data is always passed as the first positional arg.
+    # is_state=True means the verb is a sticky sender-rule change (mute, trust,
+    # vip) that should leave the keyboard tappable for follow-on actions.
+    # is_state=False is a per-email one-shot (send, archive, draft, spam) that
+    # strips the keyboard on success.
+    _GT_VERB_DISPATCH = {
+        "send":         ("send-draft.sh",      [],         "✓ sent draft",         False),
+        "archive":      ("archive.sh",         [],         "✓ archived",           False),
+        "draft":        ("draft-blank.sh",     [],         "✓ drafted reply",      False),
+        "spam":         ("spam.sh",            [],         "✓ marked spam",        False),
+        "mute":         ("mute-add.sh",        ["email"],  "✓ muted",              True),
+        "mute-domain":  ("mute-add.sh",        ["domain"], "✓ muted domain",       True),
+        "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trusted",            True),
+        "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trusted domain",     True),
+        "vip":          ("vip-add.sh",         ["email"],  "✓ marked VIP",         True),
+        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True),
+    }
+
+    async def _handle_gmail_triage_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid gmail-triage data.")
+            return
+        verb, arg = parts[1], parts[2]
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to act on this email.")
+            return
+
+        entry = self._GT_VERB_DISPATCH.get(verb)
+        if not entry:
+            await query.answer(text=f"Unknown verb: {verb}")
+            return
+        script_name, extra_args, success_label, is_state_verb = entry
+
+        script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        if not script_path.exists():
+            await query.answer(text=f"❌ {script_name} missing")
+            logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
+            return
+
+        cmd = [str(script_path), arg, *extra_args]
+        success = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=60,
+            )
+            if proc.returncode == 0:
+                label = success_label
+                success = True
+                logger.info(
+                    "[%s] gmail-triage callback ok: verb=%s arg=%s",
+                    self.name, verb, arg,
+                )
+            else:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
+                label = f"❌ {verb} failed: {last_line[:80]}"
+                logger.error(
+                    "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s",
+                    self.name, verb, arg, proc.returncode, stderr_text,
+                )
+        except asyncio.TimeoutError:
+            label = f"❌ {verb} timed out"
+            logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
+        except Exception as exc:
+            label = f"❌ {verb} error: {exc}"
+            logger.error(
+                "[%s] gmail-triage callback exception: verb=%s arg=%s err=%s",
+                self.name, verb, arg, exc, exc_info=True,
+            )
+
+        await query.answer(text=label)
+        if not success:
+            return
+
+        user_display = getattr(query.from_user, "first_name", "User")
+        original_text = (query.message.text or "") if query.message else ""
+        appended = f"{original_text}\n— {label} by {user_display}"
+        try:
+            if is_state_verb:
+                # Sticky state change: append confirmation, KEEP keyboard so
+                # the user can stack further actions on this email.
+                await query.edit_message_text(text=appended)
+            else:
+                # Per-email one-shot: strip keyboard so the action can't fire twice.
+                await query.edit_message_text(text=appended, reply_markup=None)
+        except Exception:
+            pass
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

@@ -223,6 +223,7 @@ AUTHOR_MAP = {
     "hitesh@gmail.com": "htsh",
     "pty819@outlook.com": "pty819",
     "pty819@users.noreply.github.com": "pty819",
+    "14341805+pty819@users.noreply.github.com": "pty819",
     "517024110@qq.com": "chennest",
     # Curator fixes (Apr 30 2026)
     "yuxiangl490@gmail.com": "y0shua1ee",

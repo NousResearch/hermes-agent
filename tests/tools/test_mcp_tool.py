@@ -1592,6 +1592,40 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_initial_oauth_failure_does_not_retry(self):
+        """Initial OAuth failures stop immediately to avoid repeated browser prompts."""
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+        oauth_error = RuntimeError("Token exchange failed (400): Unknown client_id")
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise oauth_error
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._is_auth_error", return_value=True), \
+                 patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                await server.run({"command": "test"})
+
+            assert run_count == 1
+            assert server._error is oauth_error
+            assert server._ready.is_set()
+            assert mock_sleep.await_count == 0
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # Configurable timeouts

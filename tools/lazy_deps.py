@@ -59,7 +59,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -440,3 +440,56 @@ def feature_install_command(feature: str) -> Optional[str]:
         return None
     specs = LAZY_DEPS[feature]
     return "uv pip install " + " ".join(repr(s) for s in specs)
+
+
+def ensure_and_bind(
+    feature: str,
+    importer: Callable[[], dict[str, Any]],
+    target_globals: dict,
+    *,
+    prompt: bool = False,
+) -> bool:
+    """Ensure a feature is installed, then rebind names into the caller's globals.
+
+    Combines :func:`ensure` with a post-install import step that rebinds
+    module-level names.  This eliminates the error-prone pattern of manually
+    listing every global that needs updating after lazy-install.
+
+    ``importer`` is a zero-arg callable that returns a dict of
+    ``{name: value}`` for all symbols the caller needs rebound.  It is called
+    only after :func:`ensure` succeeds (or if the packages are already
+    installed).
+
+    Returns True on success, False if deps couldn't be installed or imported.
+
+    Example usage in a platform adapter::
+
+        def check_slack_requirements() -> bool:
+            if SLACK_AVAILABLE:
+                return True
+            def _import():
+                from slack_bolt.async_app import AsyncApp
+                from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+                from slack_sdk.web.async_client import AsyncWebClient
+                import aiohttp
+                return {
+                    "AsyncApp": AsyncApp,
+                    "AsyncSocketModeHandler": AsyncSocketModeHandler,
+                    "AsyncWebClient": AsyncWebClient,
+                    "aiohttp": aiohttp,
+                    "SLACK_AVAILABLE": True,
+                }
+            return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
+    """
+    try:
+        ensure(feature, prompt=prompt)
+    except (FeatureUnavailable, Exception):
+        return False
+
+    try:
+        bindings = importer()
+    except ImportError:
+        return False
+
+    target_globals.update(bindings)
+    return True

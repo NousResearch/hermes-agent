@@ -4286,20 +4286,38 @@ class TelegramAdapter(BasePlatformAdapter):
         for source_text, entities in _iter_sources():
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
-                if entity_type != "mention":
+                if entity_type not in {"mention", "bot_command"}:
                     continue
                 offset = int(getattr(entity, "offset", -1))
                 length = int(getattr(entity, "length", 0))
                 if offset < 0 or length <= 0:
                     continue
-                handle = source_text[offset:offset + length].strip().lstrip("@").lower()
-                if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
-                    mentioned_bot_usernames.add(handle)
 
-        for raw_text in (getattr(message, "text", None), getattr(message, "caption", None)):
-            if not raw_text:
+                entity_text = source_text[offset:offset + length].strip()
+                if entity_type == "mention":
+                    handle = entity_text.lstrip("@").lower()
+                    if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                        mentioned_bot_usernames.add(handle)
+                    continue
+
+                # Telegram emits /cmd@botname as one bot_command entity, not as
+                # a separate mention entity. Treat that suffix as an explicit
+                # bot address for exclusive multi-bot routing even when the
+                # group has require_mention/free-response disabled.
+                at_index = entity_text.find("@")
+                if at_index < 0:
+                    continue
+                command_target = entity_text[at_index + 1:].strip().lower()
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
+                    mentioned_bot_usernames.add(command_target)
+
+        # Entity-less fallback for older/client-specific updates. If Telegram
+        # supplied entities for a source, trust them and do not regex-rescue
+        # malformed/URL/code spans that the server did not mark as mentions.
+        for raw_text, entities in _iter_sources():
+            if not raw_text or entities:
                 continue
-            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
                 mentioned_bot_usernames.add(match.group(1).lower())
 
         return mentioned_bot_usernames

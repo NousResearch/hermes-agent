@@ -200,6 +200,27 @@ def test_entityless_multi_bot_mentions_still_route_exclusively():
     assert ops_bot._should_process_message(_group_message(text)) is True
 
 
+def test_intern_bots_ignore_messages_addressed_to_other_intern_bot():
+    text = "@Interntestnumber1bot you're not supposed to do the blog"
+
+    test2_bot = _make_adapter(require_mention=False, bot_username="Interntestnumber2bot")
+    test1_bot = _make_adapter(require_mention=False, bot_username="Interntestnumber1bot")
+
+    assert test2_bot._should_process_message(_group_message(text, reply_to_bot=True)) is False
+    assert test1_bot._should_process_message(_group_message(text)) is True
+
+
+def test_bot_command_addressed_to_other_bot_is_exclusive_even_when_mentions_not_required():
+    text = "/stop@Interntestnumber1bot"
+    entity = _bot_command_entity(text, text)
+
+    test2_bot = _make_adapter(require_mention=False, bot_username="Interntestnumber2bot")
+    test1_bot = _make_adapter(require_mention=False, bot_username="Interntestnumber1bot")
+
+    assert test2_bot._should_process_message(_group_message(text, entities=[entity]), is_command=True) is False
+    assert test1_bot._should_process_message(_group_message(text, entities=[entity]), is_command=True) is True
+
+
 def test_raw_bot_mention_fallback_does_not_match_email_or_substring():
     adapter = _make_adapter(require_mention=True, bot_username="hermes_bot")
 

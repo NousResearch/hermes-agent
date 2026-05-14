@@ -6,6 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
+from .materialize import materialize_workflow
 from .store import get_inbox_item, get_workflow, list_artifacts, list_gates, list_inbox_items, list_workflows, update_inbox_item
 
 
@@ -128,6 +129,18 @@ def get_workflow_artifacts(
     artifacts = list_artifacts(conn, workflow_id, kind=kind, limit=limit)
     artifact_rows = [artifact.to_dict() for artifact in artifacts]
     return _response({"workflowId": workflow_id, "artifacts": artifact_rows, "count": len(artifact_rows)})
+
+
+def materialize_workflow_to_kanban(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    kanban_conn: sqlite3.Connection | None = None,
+    actor_id: str = "webui",
+    now: float | None = None,
+) -> dict[str, Any]:
+    result = materialize_workflow(conn, workflow_id, kanban_conn=kanban_conn, actor_id=actor_id, now=now)
+    return _response(result.to_dict())
 
 
 def _response(facts: dict[str, Any]) -> dict[str, Any]:

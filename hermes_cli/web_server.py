@@ -57,6 +57,7 @@ from hermes_cli.workflow import (
     get_workflow_node as workflow_get_workflow_node,
     list_inbox_item_summaries as workflow_list_inbox_item_summaries,
     list_workflow_summaries as workflow_list_workflow_summaries,
+    materialize_workflow_to_kanban as workflow_materialize_workflow_to_kanban,
     update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
 from hermes_cli.workflow.store import connect as workflow_connect
@@ -738,6 +739,26 @@ async def update_workflow_inbox_item_endpoint(inbox_item_id: str, request: Reque
     except ValueError as exc:
         message = str(exc)
         if message.startswith("workflow inbox item not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+
+
+@app.post("/api/workflows/{workflow_id}/materialize")
+async def materialize_workflow_endpoint(workflow_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_materialize_workflow_to_kanban(
+                conn,
+                workflow_id,
+                actor_id=payload.get("actorId") or "webui",
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow not found:"):
             raise HTTPException(status_code=404, detail=message)
         raise HTTPException(status_code=400, detail=message)
 

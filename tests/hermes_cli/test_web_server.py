@@ -396,6 +396,61 @@ class TestWebServerEndpoints:
         assert data["facts"]["workflowId"] == "wf_artifacts"
         assert [artifact["kind"] for artifact in data["facts"]["artifacts"]] == ["spec"]
 
+    def test_workflow_materialize_endpoint_creates_kanban_tasks(self):
+        from hermes_cli import kanban_db
+        from hermes_cli.workflow.store import connect, create_workflow, save_dag
+
+        dag = {
+            "workflow_id": "wf_materialize_api",
+            "nodes": [
+                {"id": "plan", "title": "Plan", "role": "architect", "profile": "architect", "status": "waiting"},
+                {
+                    "id": "build",
+                    "title": "Build",
+                    "role": "engineer",
+                    "profile": "engineer",
+                    "status": "waiting",
+                    "parents": ["plan"],
+                },
+            ],
+            "edges": [{"source": "plan", "target": "build", "kind": "depends_on"}],
+        }
+        with connect() as conn:
+            create_workflow(
+                conn,
+                workflow_id="wf_materialize_api",
+                title="Materialize API",
+                board="core",
+                status="dag_approved",
+                now=1.0,
+            )
+            save_dag(conn, workflow_id="wf_materialize_api", normalized_dag=dag, now=2.0)
+
+        resp = self.client.post("/api/workflows/wf_materialize_api/materialize", json={"actorId": "webui-test"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insights"] is None
+        assert data["facts"]["workflowId"] == "wf_materialize_api"
+        assert data["facts"]["status"] == "materialized"
+        assert [task["nodeId"] for task in data["facts"]["tasks"]] == ["plan", "build"]
+        with kanban_db.connect(board="core") as kconn:
+            assert [task.title for task in kanban_db.list_tasks(kconn, include_archived=True)] == ["Plan", "Build"]
+
+    def test_workflow_materialize_endpoint_maps_validation_errors(self):
+        from hermes_cli.workflow.store import connect, create_workflow
+
+        with connect() as conn:
+            create_workflow(conn, workflow_id="wf_unready", title="Unready", status="running", now=1.0)
+
+        missing = self.client.post("/api/workflows/missing/materialize")
+        unready = self.client.post("/api/workflows/wf_unready/materialize")
+
+        assert missing.status_code == 404
+        assert "workflow not found: missing" in missing.json()["detail"]
+        assert unready.status_code == 400
+        assert "workflow is not approved for materialization" in unready.json()["detail"]
+
     def test_workflow_events_and_artifacts_endpoints_map_read_model_errors(self):
         missing_events_resp = self.client.get("/api/workflows/missing/events")
         invalid_limit_resp = self.client.get("/api/workflows/missing/artifacts?limit=0")
@@ -417,6 +472,7 @@ class TestWebServerEndpoints:
         node_resp = unauthenticated_client.get("/api/workflows/wf_dag/nodes/build")
         events_resp = unauthenticated_client.get("/api/workflows/wf_dag/events")
         artifacts_resp = unauthenticated_client.get("/api/workflows/wf_dag/artifacts")
+        materialize_resp = unauthenticated_client.post("/api/workflows/wf_dag/materialize")
 
         assert list_resp.status_code == 401
         assert list_resp.json()["detail"] == "Unauthorized"
@@ -428,6 +484,8 @@ class TestWebServerEndpoints:
         assert events_resp.json()["detail"] == "Unauthorized"
         assert artifacts_resp.status_code == 401
         assert artifacts_resp.json()["detail"] == "Unauthorized"
+        assert materialize_resp.status_code == 401
+        assert materialize_resp.json()["detail"] == "Unauthorized"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

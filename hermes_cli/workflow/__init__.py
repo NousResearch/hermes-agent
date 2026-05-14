@@ -13,6 +13,7 @@ from .api import (
     get_workflow_node,
     list_inbox_item_summaries,
     list_workflow_summaries,
+    materialize_workflow_to_kanban,
     update_inbox_item_triage,
 )
 from .dag import DagValidationResult, normalize_dag, validate_dag
@@ -81,6 +82,7 @@ __all__ = [
     "list_workflows",
     "load_policy",
     "materialize_workflow",
+    "materialize_workflow_to_kanban",
     "normalize_dag",
     "resolve_gate",
     "save_dag",

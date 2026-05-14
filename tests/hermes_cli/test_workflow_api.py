@@ -12,6 +12,7 @@ from hermes_cli.workflow import (
     get_workflow_node,
     list_inbox_item_summaries,
     list_workflow_summaries,
+    materialize_workflow_to_kanban,
     update_inbox_item_triage,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
@@ -68,6 +69,7 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(get_workflow_artifacts)
     assert callable(list_inbox_item_summaries)
     assert callable(get_inbox_item_detail)
+    assert callable(materialize_workflow_to_kanban)
     assert callable(update_inbox_item_triage)
 
 
@@ -242,6 +244,26 @@ def test_read_model_helpers_filter_events_and_artifacts(tmp_path):
     assert events["facts"]["count"] == 1
     assert [artifact["kind"] for artifact in artifacts["facts"]["artifacts"]] == ["spec"]
     assert artifacts["facts"]["count"] == 1
+
+
+def test_materialize_workflow_to_kanban_returns_control_action_payload(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        kanban_conn = kanban_db.connect(tmp_path / "kanban.db")
+        _create_workflow(conn)
+
+        payload = materialize_workflow_to_kanban(conn, "wf_api", kanban_conn=kanban_conn, actor_id="webui", now=9.0)
+
+    facts = payload["facts"]
+    assert payload["insights"] is None
+    assert facts["workflowId"] == "wf_api"
+    assert facts["board"] == "core"
+    assert facts["status"] == "materialized"
+    assert facts["alreadyMaterialized"] is False
+    assert [task["nodeId"] for task in facts["tasks"]] == ["backend-api", "integration"]
+    assert facts["tasks"][0]["taskId"]
+    assert facts["linksCreated"] == [
+        {"parentTaskId": facts["tasks"][0]["taskId"], "childTaskId": facts["tasks"][1]["taskId"]}
+    ]
 
 
 def test_get_workflow_node_uses_direct_related_record_queries_not_prefiltered_defaults(tmp_path):

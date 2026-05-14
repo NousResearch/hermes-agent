@@ -71,3 +71,9 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
     result = agent.run_conversation("read the file")
 
     assert result["final_response"] == "done"
+    trace = result["agent_run_trace"]
+    assert trace["schema_version"] == "agent_run_trace.v1"
+    assert trace["origin"] == "cli"
+    assert trace["run_id"]
+    assert {tool["name"]: tool["count"] for tool in trace["tools_used"]}["read_file"] >= 1
+    assert "README.md" in trace["files_touched"]

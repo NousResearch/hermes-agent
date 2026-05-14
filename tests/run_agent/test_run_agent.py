@@ -95,6 +95,31 @@ def agent_with_memory_tool():
         return a
 
 
+def test_invoke_tool_respects_prechecked_execution_policy_without_duplicate_audit(agent):
+    agent.policy_audit_events = []
+
+    with (
+        patch("run_agent.get_toolset_for_tool", return_value="terminal"),
+        patch("run_agent.handle_function_call", return_value="ok") as handle_call,
+    ):
+        decision = agent._authorize_tool_call("terminal")
+        assert decision.action == "audit"
+        assert len(agent.policy_audit_events) == 1
+
+        result = agent._invoke_tool(
+            "terminal",
+            {"command": "echo ok"},
+            effective_task_id="task-1",
+            pre_tool_block_checked=True,
+            pre_policy_checked=True,
+        )
+
+    assert result == "ok"
+    assert len(agent.policy_audit_events) == 1
+    assert "execution_policy" not in handle_call.call_args.kwargs
+    assert "policy_audit_events" not in handle_call.call_args.kwargs
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

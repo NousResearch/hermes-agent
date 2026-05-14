@@ -8497,6 +8497,92 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    def _get_session_agent_for_usage(self, session_key: str) -> Any:
+        """Return the live or cached agent for usage/status account details."""
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+        return agent
+
+    async def _get_account_usage_lines(
+        self,
+        *,
+        session_id: str,
+        agent: Any = None,
+        persisted: Optional[dict[str, Any]] = None,
+    ) -> list[str]:
+        """Fetch rendered account quota/usage lines for gateway status surfaces.
+
+        Provider account quotas are not session-token counters, so commands like
+        `/status` should show them even when the agent is idle. Prefer the live
+        agent, then fall back to persisted billing metadata from SessionDB.
+        """
+        provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+
+        if not isinstance(provider, str) or not provider.strip():
+            provider = None
+        if not isinstance(base_url, str) or not base_url.strip():
+            base_url = None
+        if not isinstance(api_key, str) or not api_key.strip():
+            api_key = None
+
+        if not provider and getattr(self, "_session_db", None) is not None:
+            if persisted is None:
+                try:
+                    persisted = self._session_db.get_session(session_id) or {}
+                except Exception:
+                    persisted = {}
+            provider = persisted.get("billing_provider") if isinstance(persisted, dict) else None
+            base_url = base_url or (persisted.get("billing_base_url") if isinstance(persisted, dict) else None)
+            if not isinstance(provider, str) or not provider.strip():
+                provider = None
+            if not isinstance(base_url, str) or not base_url.strip():
+                base_url = None
+
+        if not provider and getattr(self, "_account_usage_config_fallback_enabled", True):
+            # Fresh slash-command-only sessions can have no live/cached agent
+            # and no SessionDB billing metadata yet.  Fall back to the active
+            # gateway runtime config so `/status` still shows provider account
+            # quota before the first agent turn.
+            try:
+                runtime = await asyncio.to_thread(_resolve_runtime_agent_kwargs)
+            except Exception:
+                runtime = {}
+            if isinstance(runtime, dict):
+                provider = runtime.get("provider")
+                base_url = base_url or runtime.get("base_url")
+                api_key = api_key or runtime.get("api_key")
+            if not isinstance(provider, str) or not provider.strip():
+                provider = None
+            if not isinstance(base_url, str) or not base_url.strip():
+                base_url = None
+            if not isinstance(api_key, str) or not api_key.strip():
+                api_key = None
+
+        if not provider:
+            return []
+
+        try:
+            account_snapshot = await asyncio.to_thread(
+                fetch_account_usage,
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        except Exception:
+            account_snapshot = None
+        if not account_snapshot:
+            return []
+        return render_account_usage_lines(account_snapshot, markdown=True)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -8507,6 +8593,7 @@ class GatewayRunner:
         # Check if there's an active agent
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
+        agent = self._get_session_agent_for_usage(session_key)
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
@@ -8520,23 +8607,30 @@ class GatewayRunner:
         # single source of truth; reading it here keeps /status accurate
         # without duplicating token writes into two stores.
         db_total_tokens = 0
+        persisted_row = None
         if self._session_db:
             try:
                 title = self._session_db.get_session_title(session_entry.session_id)
             except Exception:
                 title = None
             try:
-                row = self._session_db.get_session(session_entry.session_id)
-                if row:
+                persisted_row = self._session_db.get_session(session_entry.session_id)
+                if persisted_row:
                     db_total_tokens = (
-                        (row.get("input_tokens") or 0)
-                        + (row.get("output_tokens") or 0)
-                        + (row.get("cache_read_tokens") or 0)
-                        + (row.get("cache_write_tokens") or 0)
-                        + (row.get("reasoning_tokens") or 0)
+                        (persisted_row.get("input_tokens") or 0)
+                        + (persisted_row.get("output_tokens") or 0)
+                        + (persisted_row.get("cache_read_tokens") or 0)
+                        + (persisted_row.get("cache_write_tokens") or 0)
+                        + (persisted_row.get("reasoning_tokens") or 0)
                     )
             except Exception:
                 db_total_tokens = 0
+
+        account_lines = await self._get_account_usage_lines(
+            session_id=session_entry.session_id,
+            agent=agent,
+            persisted=persisted_row,
+        )
 
         lines = [
             t("gateway.status.header"),
@@ -8557,6 +8651,9 @@ class GatewayRunner:
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
+        if account_lines:
+            lines.append("")
+            lines.extend(account_lines)
 
         return "\n".join(lines)
 
@@ -11689,47 +11786,16 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         # Try running agent first (mid-turn), then cached agent (between turns)
-        agent = self._running_agents.get(session_key)
-        if not agent or agent is _AGENT_PENDING_SENTINEL:
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
-                with _cache_lock:
-                    cached = _cache.get(session_key)
-                    if cached:
-                        agent = cached[0]
+        agent = self._get_session_agent_for_usage(session_key)
 
-        # Resolve provider/base_url/api_key for the account-usage fetch.
-        # Prefer the live agent; fall back to persisted billing data on the
-        # SessionDB row so `/usage` still returns account info between turns
-        # when no agent is resident.
-        provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        if not provider and getattr(self, "_session_db", None) is not None:
-            try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
-                persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
-            except Exception:
-                persisted = {}
-            provider = provider or persisted.get("billing_provider")
-            base_url = base_url or persisted.get("billing_base_url")
-
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
-        if provider:
-            try:
-                account_snapshot = await asyncio.to_thread(
-                    fetch_account_usage,
-                    provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                )
-            except Exception:
-                account_snapshot = None
-            if account_snapshot:
-                account_lines = render_account_usage_lines(account_snapshot, markdown=True)
+        # Fetch provider account limits via the same helper used by `/status`.
+        # This covers live/cached agents, persisted SessionDB billing metadata,
+        # and fresh slash-command-only sessions that need config/runtime fallback.
+        session_entry_for_billing = self.session_store.get_or_create_session(source)
+        account_lines = await self._get_account_usage_lines(
+            session_id=session_entry_for_billing.session_id,
+            agent=agent,
+        )
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []

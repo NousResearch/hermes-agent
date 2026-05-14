@@ -589,6 +589,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Startup guard: after outages/reconnects, Discord can deliver stale queued
+        # messages right after READY. Ignore messages created before this adapter's
+        # current connection attempt so old operator commands do not replay.
+        self._connection_started_at: float = 0.0
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -730,6 +734,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.author == self._client.user:
                     return
 
+                # Drop stale Discord events replayed from before this gateway
+                # process connected. This prevents old outage-era commands from
+                # executing after a restart and recursively restarting the
+                # gateway again.
+                try:
+                    if self._connection_started_at and message.created_at.timestamp() < self._connection_started_at:
+                        logger.info(
+                            "[%s] Ignoring stale Discord message %s from before gateway start",
+                            adapter_self.name,
+                            message.id,
+                        )
+                        return
+                except Exception:
+                    logger.debug("[%s] Could not evaluate Discord message age", adapter_self.name, exc_info=True)
+
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
@@ -844,6 +863,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # Register slash commands
             if self._slash_commands:
                 self._register_slash_commands()
+
+            # Mark the local start boundary before connecting. on_message uses
+            # this to drop stale Discord events replayed after outages/restarts.
+            self._connection_started_at = time.time()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))

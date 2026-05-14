@@ -850,6 +850,56 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_includes_agent_run_trace_in_output_and_cache(self, tmp_path):
+        """LLM cron runs persist the compact run trace into the saved markdown path."""
+        import cron.scheduler as scheduler
+
+        job = {
+            "id": "trace-job",
+            "name": "trace",
+            "prompt": "run tests",
+        }
+        fake_db = MagicMock()
+        trace = {
+            "schema_version": "agent_run_trace.v1",
+            "run_id": "cron_trace-job_20260514",
+            "origin": "cron",
+            "risk_level": "medium",
+            "verifier_detected": True,
+            "verifier": {"type": "test", "command_or_endpoint": "pytest", "result": "pass"},
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "ok",
+                "agent_run_trace": trace,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "## Agent Run Trace" in output
+        parsed = json.loads(output.split("## Agent Run Trace", 1)[1].split("```json", 1)[1].split("```", 1)[0])
+        assert parsed == trace
+        assert scheduler._LAST_AGENT_RUN_TRACE_BY_JOB["trace-job"] == trace
+
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
         # agent was previously leaked — over days of ticks this accumulated

@@ -58,6 +58,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
     # the populated path override this.
     runner._session_db.get_session.return_value = None
+    runner._account_usage_config_fallback_enabled = False
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -122,6 +123,114 @@ async def test_status_command_includes_session_title_when_present():
 
     assert "**Session ID:** `sess-1`" in result
     assert "**Title:** My titled session" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_account_usage_from_persisted_provider(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://chatgpt.com/backend-api/codex",
+    }
+
+    calls = {}
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        "gateway.run.fetch_account_usage",
+        lambda provider, base_url=None, api_key=None: object(),
+    )
+    monkeypatch.setattr(
+        "gateway.run.render_account_usage_lines",
+        lambda snapshot, markdown=False: [
+            "📈 **OpenAI Codex OAuth Quota**",
+            "Plan: pro",
+            "5h used: 3% (97% remaining)",
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert calls["args"] == ("openai-codex",)
+    assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert "📊 **Hermes Gateway Status**" in result
+    assert "📈 **OpenAI Codex OAuth Quota**" in result
+    assert "5h used: 3% (97% remaining)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_account_usage_from_runtime_config_for_fresh_session(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-fresh",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._account_usage_config_fallback_enabled = True
+    runner._session_db.get_session.return_value = None
+
+    calls = []
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        calls.append((fn, args, kwargs))
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "runtime-key",
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run.fetch_account_usage",
+        lambda provider, base_url=None, api_key=None: {
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run.render_account_usage_lines",
+        lambda snapshot, markdown=False: [
+            "📈 **OpenAI Codex OAuth Quota**",
+            f"Provider: {snapshot['provider']}",
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    fetch_call = calls[-1]
+    assert fetch_call[1] == ("openai-codex",)
+    assert fetch_call[2]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert fetch_call[2]["api_key"] == "runtime-key"
+    assert "**Session ID:** `sess-fresh`" in result
+    assert "📈 **OpenAI Codex OAuth Quota**" in result
 
 
 @pytest.mark.asyncio

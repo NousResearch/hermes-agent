@@ -40,6 +40,8 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+_LAST_POLICY_AUDIT_EVENTS_BY_JOB: dict[str, list] = {}
+_LAST_AGENT_RUN_TRACE_BY_JOB: dict[str, dict] = {}
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -1423,6 +1425,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        from agent.execution_policy import normalize_execution_policy
+        _execution_policy = normalize_execution_policy(job.get("execution_policy"), source="cron").to_dict()
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1454,6 +1459,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            execution_policy=_execution_policy,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run
@@ -1566,6 +1572,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""
+        policy_audit_events = result.get("policy_audit_events") or []
+        agent_run_trace = result.get("agent_run_trace") if isinstance(result.get("agent_run_trace"), dict) else {}
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
@@ -1573,6 +1581,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
+        _policy_section = ""
+        if policy_audit_events:
+            try:
+                _policy_section = "\n## Policy Audit\n\n```json\n" + json.dumps(policy_audit_events, indent=2) + "\n```\n"
+            except Exception:
+                _policy_section = "\n## Policy Audit\n\n(policy audit events unavailable)\n"
+        _trace_section = ""
+        if agent_run_trace:
+            try:
+                _trace_section = "\n## Agent Run Trace\n\n```json\n" + json.dumps(agent_run_trace, indent=2, sort_keys=True) + "\n```\n"
+            except Exception:
+                _trace_section = "\n## Agent Run Trace\n\n(agent run trace unavailable)\n"
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -1586,9 +1606,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 ## Response
 
 {logged_response}
-"""
+{_policy_section}{_trace_section}"""
         
         logger.info("Job '%s' completed successfully", job_name)
+        _LAST_POLICY_AUDIT_EVENTS_BY_JOB[job_id] = policy_audit_events
+        _LAST_AGENT_RUN_TRACE_BY_JOB[job_id] = agent_run_trace
         return True, output, final_response, None
         
     except Exception as e:
@@ -1611,6 +1633,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
+        _LAST_POLICY_AUDIT_EVENTS_BY_JOB[job_id] = []
+        _LAST_AGENT_RUN_TRACE_BY_JOB[job_id] = {}
         return False, output, "", error_msg
 
     finally:
@@ -1733,6 +1757,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
                 success, output, final_response, error = run_job(job)
+                policy_audit_events = _LAST_POLICY_AUDIT_EVENTS_BY_JOB.pop(job["id"], [])
+                agent_run_trace = _LAST_AGENT_RUN_TRACE_BY_JOB.pop(job["id"], {})
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:
@@ -1762,7 +1788,14 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
+                    policy_audit_events=policy_audit_events,
+                    agent_run_trace=agent_run_trace,
+                )
                 return True
 
             except Exception as e:

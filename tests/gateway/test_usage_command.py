@@ -61,6 +61,7 @@ def _make_runner(session_key, agent=None, cached_agent=None):
 
     # Wire helper
     runner._session_key_for_source = MagicMock(return_value=session_key)
+    runner._account_usage_config_fallback_enabled = False
 
     return runner
 

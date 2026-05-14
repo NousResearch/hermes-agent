@@ -28,6 +28,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
+      - name: Fetch validation base
+        run: git fetch --no-tags --prune --depth=1 origin main:refs/remotes/origin/main
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
@@ -46,7 +49,7 @@ jobs:
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          scripts/check.sh tests/ -q --tb=short
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""

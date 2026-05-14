@@ -172,8 +172,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
+scripts/check.sh
 ```
+
+`scripts/check.sh` is the local PR handoff gate. It runs executable validators
+and focused validation smoke tests by default; pass explicit pytest paths such as
+`scripts/check.sh tests/` when you need to expand the test scope.
 
 > **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
 

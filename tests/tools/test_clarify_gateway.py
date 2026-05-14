@@ -205,3 +205,23 @@ class TestGatewayTextIntercept:
         pending2 = cm.get_pending_for_session("sk")
         assert pending2 is not None
         assert pending2.clarify_id == "first"
+    def test_text_fallback_enables_awaiting_text_for_multi_choice(self):
+        """When base send_clarify renders choices as text, mark_awaiting_text
+        is called so the gateway text-intercept can capture the reply."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-tf", "sk-tf", "Pick one", ["A", "B", "C"])
+        # Initially, multi-choice does NOT await text (button path)
+        assert entry.awaiting_text is False
+
+        # After the base send_clarify text fallback calls mark_awaiting_text:
+        flipped = cm.mark_awaiting_text("id-tf")
+        assert flipped is True
+
+        # Now get_pending_for_session should find it
+        pending = cm.get_pending_for_session("sk-tf")
+        assert pending is not None
+        assert pending.clarify_id == "id-tf"
+        
+        # Clean up
+        cm.clear_session("sk-tf")

@@ -223,10 +223,14 @@ class ProviderSetupWebActivityInstrumentedTest {
     private fun currentForegroundPackage(): String {
         val output = shellOutput("dumpsys window")
         return FOCUS_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            .ifBlank {
+                FOCUSED_APP_PACKAGE_REGEX.find(output)?.groupValues?.getOrNull(1).orEmpty()
+            }
     }
 
     companion object {
         private val FOCUS_PACKAGE_REGEX = Regex("""mCurrentFocus=Window\{[^ ]+ u\d+ ([^/\s]+)/""")
+        private val FOCUSED_APP_PACKAGE_REGEX = Regex("""mFocusedApp=ActivityRecord\{[^ ]+ u\d+ ([^/\s]+)/""")
     }
 
 }

@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -372,6 +373,10 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._continuous_compaction_candidate = None
+        self._continuous_compaction_thread = None
+        self._continuous_compaction_running = False
+        self._continuous_compaction_generation = 0
 
     def update_model(
         self,
@@ -484,6 +489,10 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        self._continuous_compaction_candidate: Optional[Dict[str, Any]] = None
+        self._continuous_compaction_thread: Optional[threading.Thread] = None
+        self._continuous_compaction_running: bool = False
+        self._continuous_compaction_generation: int = 0
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -683,6 +692,215 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    # ------------------------------------------------------------------
+    # Continuous high-quality compaction ledger
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _stable_messages_hash(messages: List[Dict[str, Any]]) -> str:
+        """Return a deterministic hash for candidate freshness checks."""
+        payload = json.dumps(messages, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _prepare_compaction_region(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int, int, List[Dict[str, Any]], int]:
+        """Mirror final compression's cheap pruning and boundary selection."""
+        prepared, _pruned = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+        compress_start = self._align_boundary_forward(prepared, self._protect_head_size(prepared))
+        compress_end = self._find_tail_cut_by_tokens(prepared, compress_start)
+        turns_to_summarize = prepared[compress_start:compress_end] if compress_start < compress_end else []
+        return prepared, compress_start, compress_end, turns_to_summarize, _pruned
+
+    @staticmethod
+    def _strip_summary_prefix(summary: str) -> str:
+        text = (summary or "").strip()
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
+            if text.startswith(prefix):
+                return text[len(prefix):].lstrip()
+        return text
+
+    def _quality_gate_summary(self, summary: str) -> tuple[bool, List[str]]:
+        """Deterministic minimum quality gate for durable compaction summaries.
+
+        The LLM remains the source of summary quality; this gate prevents the
+        runtime from accepting obvious low-quality, stale, or shape-corrupt
+        output as the durable summary. It intentionally checks the concrete
+        handoff sections used by the existing GPT compaction prompt.
+        """
+        body = self._strip_summary_prefix(summary)
+        errors: List[str] = []
+        required_sections = [
+            "Active Task",
+            "Goal",
+            "Completed Actions",
+            "Active State",
+            "Blocked",
+            "Pending User Asks",
+            "Critical Context",
+        ]
+        for section in required_sections:
+            if re.search(rf"(?im)^##\s+{re.escape(section)}\b", body) is None:
+                errors.append(f"Missing required section: {section}")
+        if len(body) < 300:
+            errors.append("Summary too short for high-quality compaction")
+        if re.search(r"(?i)(api[_-]?key|password|token|secret)\s*[:=]\s*[^\s\]]+", body):
+            errors.append("Summary appears to contain an unredacted secret-like value")
+        return not errors, errors
+
+    def get_continuous_compaction_status(self) -> Dict[str, Any]:
+        candidate = self._continuous_compaction_candidate or {}
+        return {
+            "accepted": bool(candidate.get("accepted")),
+            "running": bool(self._continuous_compaction_running),
+            "quality_gate_status": candidate.get("quality_gate_status"),
+            "quality_gate_errors": list(candidate.get("quality_gate_errors") or []),
+            "accepted_message_count": candidate.get("message_count") if candidate.get("accepted") else None,
+            "accepted_summary": candidate.get("summary") if candidate.get("accepted") else None,
+            "created_at": candidate.get("created_at"),
+            "generation": candidate.get("generation"),
+        }
+
+    def _record_continuous_candidate(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        prepared_messages: List[Dict[str, Any]],
+        compress_start: int,
+        compress_end: int,
+        summary: Optional[str],
+        quality_ok: bool,
+        quality_errors: List[str],
+        generation: int,
+    ) -> Optional[str]:
+        candidate = {
+            "accepted": bool(summary and quality_ok),
+            "summary": summary if summary and quality_ok else None,
+            "message_count": len(messages),
+            "messages_hash": self._stable_messages_hash(messages),
+            "prepared_hash": self._stable_messages_hash(prepared_messages),
+            "region_hash": self._stable_messages_hash(prepared_messages[compress_start:compress_end]),
+            "compress_start": compress_start,
+            "compress_end": compress_end,
+            "quality_gate_status": "pass" if quality_ok else "fail",
+            "quality_gate_errors": quality_errors,
+            "created_at": time.time(),
+            "generation": generation,
+        }
+        self._continuous_compaction_candidate = candidate
+        if candidate["accepted"]:
+            logger.info(
+                "continuous_compaction_ready: messages=%d range=%d-%d generation=%d",
+                len(messages), compress_start, compress_end, generation,
+            )
+            return summary
+        logger.warning(
+            "continuous_compaction_quality_gate_fail: messages=%d range=%d-%d errors=%s",
+            len(messages), compress_start, compress_end, quality_errors,
+        )
+        return None
+
+    def prepare_continuous_summary(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        *,
+        synchronous: bool = False,
+        focus_topic: str = None,
+    ) -> Optional[str]:
+        """Prepare a GPT-quality compaction candidate before final threshold.
+
+        In normal runtime this can be scheduled asynchronously after a turn.
+        Tests and manual compaction can pass ``synchronous=True`` to wait for
+        the candidate immediately. Accepted candidates are versioned by full
+        message hash and compression-region hash and are only reused when still
+        fresh at final compaction time.
+        """
+        self._continuous_compaction_generation += 1
+        generation = self._continuous_compaction_generation
+
+        def _work() -> Optional[str]:
+            self._continuous_compaction_running = True
+            logger.info(
+                "incremental_compaction_start: messages=%d tokens=~%s generation=%d",
+                len(messages), f"{current_tokens:,}" if current_tokens else "unknown", generation,
+            )
+            try:
+                prepared, compress_start, compress_end, turns, _pruned = self._prepare_compaction_region(messages)
+                if not turns:
+                    self._continuous_compaction_candidate = {
+                        "accepted": False,
+                        "quality_gate_status": "skip",
+                        "quality_gate_errors": ["No compressible middle region"],
+                        "message_count": len(messages),
+                        "created_at": time.time(),
+                        "generation": generation,
+                    }
+                    return None
+                previous_summary = self._previous_summary
+                summary = self._generate_summary(turns, focus_topic=focus_topic)
+                quality_ok, quality_errors = self._quality_gate_summary(summary or "")
+                if not quality_ok:
+                    # Rejecting a candidate must not poison iterative summaries.
+                    self._previous_summary = previous_summary
+                result = self._record_continuous_candidate(
+                    messages=messages,
+                    prepared_messages=prepared,
+                    compress_start=compress_start,
+                    compress_end=compress_end,
+                    summary=summary,
+                    quality_ok=quality_ok,
+                    quality_errors=quality_errors,
+                    generation=generation,
+                )
+                logger.info(
+                    "incremental_compaction_done: accepted=%s generation=%d",
+                    bool(result), generation,
+                )
+                return result
+            finally:
+                self._continuous_compaction_running = False
+
+        if synchronous:
+            return _work()
+        if self._continuous_compaction_running:
+            logger.debug("incremental_compaction_scheduled: skipped because worker already running")
+            return None
+        thread = threading.Thread(target=_work, name="continuous-context-compaction", daemon=True)
+        self._continuous_compaction_thread = thread
+        logger.info("incremental_compaction_scheduled: messages=%d generation=%d", len(messages), generation)
+        thread.start()
+        return None
+
+    def _fresh_prepared_summary(
+        self,
+        messages: List[Dict[str, Any]],
+        prepared_messages: List[Dict[str, Any]],
+        compress_start: int,
+        compress_end: int,
+    ) -> Optional[str]:
+        candidate = self._continuous_compaction_candidate or {}
+        if not candidate.get("accepted") or not candidate.get("summary"):
+            return None
+        if candidate.get("message_count") != len(messages):
+            return None
+        if candidate.get("messages_hash") != self._stable_messages_hash(messages):
+            return None
+        if candidate.get("prepared_hash") != self._stable_messages_hash(prepared_messages):
+            return None
+        if candidate.get("region_hash") != self._stable_messages_hash(prepared_messages[compress_start:compress_end]):
+            return None
+        logger.info(
+            "final_compaction_mode_done: reused_prepared_summary generation=%s range=%d-%d",
+            candidate.get("generation"), compress_start, compress_end,
+        )
+        return candidate.get("summary")
 
     # ------------------------------------------------------------------
     # Summarization
@@ -1408,27 +1626,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             return messages
 
+        original_messages = messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
-        # Phase 1: Prune old tool results (cheap, no LLM call)
-        messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
-        )
+        # Phase 1/2: cheap pruning plus deterministic boundary selection.
+        # Keep this shared with prepare_continuous_summary() so prepared
+        # candidates are validated against exactly the same final region.
+        messages, compress_start, compress_end, turns_to_summarize, pruned_count = self._prepare_compaction_region(messages)
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
-
-        # Phase 2: Determine boundaries
-        compress_start = self._protect_head_size(messages)
-        compress_start = self._align_boundary_forward(messages, compress_start)
-
-        # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        n_messages = len(messages)
 
         if compress_start >= compress_end:
             return messages
 
-        turns_to_summarize = messages[compress_start:compress_end]
         summary_idx, summary_body = self._find_latest_context_summary(
             messages,
             compress_start,
@@ -1461,8 +1672,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        # Phase 3: Use a fresh prepared high-quality candidate if available;
+        # otherwise visibly enter final compaction mode and complete the GPT
+        # summarization synchronously on the critical path.  No lower-quality
+        # deterministic candidate is accepted as durable compaction state.
+        logger.info(
+            "final_compaction_mode_start: messages=%d range=%d-%d prepared_candidate=%s",
+            n_messages,
+            compress_start,
+            compress_end,
+            bool((self._continuous_compaction_candidate or {}).get("accepted")),
+        )
+        summary = self._fresh_prepared_summary(original_messages, messages, compress_start, compress_end)
+        if not summary:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # Phase 4: Assemble compressed message list
         compressed = []

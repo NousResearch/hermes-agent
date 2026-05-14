@@ -10526,6 +10526,44 @@ class AIAgent:
         )
         return compressed, new_system_prompt
 
+    def _schedule_continuous_compaction(self, messages: list, system_prompt: str = "") -> None:
+        """Start non-blocking GPT-quality compaction preparation after a turn.
+
+        This moves the expensive summary call earlier in the session so final
+        threshold compression can usually reuse a validated candidate instead
+        of starting the whole GPT summary from scratch at the context cliff.
+        """
+        if not self.compression_enabled:
+            return
+        compressor = getattr(self, "context_compressor", None)
+        if not compressor or not hasattr(compressor, "prepare_continuous_summary"):
+            return
+        try:
+            threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+            if threshold <= 0:
+                return
+            prompt_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            if prompt_tokens <= 0:
+                prompt_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=system_prompt or "",
+                    tools=self.tools or None,
+                )
+            # Start before the hard threshold.  60% of the compression
+            # threshold gives long-running sessions several user turns to
+            # prepare a candidate while avoiding LLM summarization on tiny chats.
+            prepare_at = int(threshold * 0.60)
+            if prompt_tokens < prepare_at:
+                return
+            snapshot = copy.deepcopy(messages)
+            compressor.prepare_continuous_summary(
+                snapshot,
+                current_tokens=prompt_tokens,
+                synchronous=False,
+            )
+        except Exception as exc:
+            logger.debug("continuous compaction scheduling skipped: %s", exc)
+
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
@@ -15311,6 +15349,7 @@ class AIAgent:
                         messages.pop()
 
                     messages.append(final_msg)
+                    self._schedule_continuous_compaction(messages, active_system_prompt)
                     
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:

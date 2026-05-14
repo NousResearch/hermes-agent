@@ -82,7 +82,8 @@ class TestSendStreamingCard:
             return_value=SimpleNamespace(success=True, message_id="msg_card_1")
         )
 
-        result = await adapter.send_streaming_card("oc_test", "Hello")
+        with patch.object(FeishuAdapter, "streaming_cards_enabled", True):
+            result = await adapter.send_streaming_card("oc_test", "Hello")
         assert result.success is True
         assert result.message_id == "msg_card_1"
         adapter._create_streaming_card.assert_called_once_with("oc_test", "Hello", None)
@@ -95,7 +96,8 @@ class TestSendStreamingCard:
         adapter = object.__new__(FeishuAdapter)
         adapter._streaming_card = False
 
-        result = await adapter.send_streaming_card("oc_test", "Hello")
+        with patch.object(FeishuAdapter, "streaming_cards_enabled", False):
+            result = await adapter.send_streaming_card("oc_test", "Hello")
         assert result.success is False
 
     @pytest.mark.asyncio
@@ -107,7 +109,8 @@ class TestSendStreamingCard:
         adapter._streaming_card = True
         adapter._client = None
 
-        result = await adapter.send_streaming_card("oc_test", "Hello")
+        with patch.object(FeishuAdapter, "streaming_cards_enabled", True):
+            result = await adapter.send_streaming_card("oc_test", "Hello")
         assert result.success is False
 
 
@@ -118,13 +121,26 @@ class TestStreamConsumerStreamingCard:
     """Verify GatewayStreamConsumer routes to send_streaming_card."""
 
     @pytest.mark.asyncio
-    async def test_uses_streaming_card_on_first_send(self):
-        """When adapter has streaming_cards_enabled, first send uses send_streaming_card."""
+    async def test_first_send_defers_to_regular_send(self):
+        """When defer is active (default), first send uses regular send()."""
         adapter = _make_feishu_adapter(streaming_card=True)
         consumer = GatewayStreamConsumer(adapter, "oc_test")
         assert consumer._uses_streaming_card is True
+        assert consumer._defer_streaming_card is True
 
-        # First send should call send_streaming_card
+        # First send with defer active → regular send, not streaming card
+        result = await consumer._send_or_edit("Hello world")
+        assert result is True
+        adapter.send.assert_called_once()
+        adapter.send_streaming_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_uses_streaming_card_after_defer_disabled(self):
+        """After defer is disabled, send uses send_streaming_card."""
+        adapter = _make_feishu_adapter(streaming_card=True)
+        consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
+
         result = await consumer._send_or_edit("Hello world")
         assert result is True
         adapter.send_streaming_card.assert_called_once()
@@ -139,6 +155,7 @@ class TestStreamConsumerStreamingCard:
         )
 
         consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
         result = await consumer._send_or_edit("Hello world")
         assert result is True
         adapter.send_streaming_card.assert_called_once()
@@ -153,6 +170,7 @@ class TestStreamConsumerStreamingCard:
         adapter.send_streaming_card = AsyncMock(side_effect=RuntimeError("Network error"))
 
         consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
         result = await consumer._send_or_edit("Hello world")
         assert result is True
         adapter.send.assert_called_once()
@@ -176,6 +194,7 @@ class TestStreamConsumerStreamingCard:
         adapter = _make_feishu_adapter(streaming_card=True)
 
         consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
 
         # First send creates the streaming card
         await consumer._send_or_edit("Hello")
@@ -193,6 +212,7 @@ class TestStreamConsumerStreamingCard:
         adapter = _make_feishu_adapter(streaming_card=True)
 
         consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
         await consumer._send_or_edit("Hello")
         adapter.send_streaming_card.assert_called_once()
 
@@ -208,6 +228,7 @@ class TestStreamConsumerStreamingCard:
         adapter = _make_feishu_adapter(streaming_card=True)
 
         consumer = GatewayStreamConsumer(adapter, "oc_test")
+        consumer._defer_streaming_card = False  # simulate after first segment break
         assert consumer._uses_streaming_card is True
 
         # Simulate a failed card creation that disables streaming card

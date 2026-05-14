@@ -168,6 +168,14 @@ class GatewayStreamConsumer:
             getattr(adapter, "streaming_cards_enabled", False) is True
         )
 
+        # Defer streaming card creation until after the first segment break.
+        # The first segment (usually "Let me think...") is sent as a regular
+        # message, so tool progress bubbles (🔍/⚙️) appear ABOVE the streaming
+        # card which is created for the final response segment.
+        # Reset to False after the first segment break so subsequent segments
+        # use the streaming card.
+        self._defer_streaming_card: bool = self._uses_streaming_card
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -575,12 +583,19 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    # Deferred streaming card: the first segment was sent as
+                    # a regular message.  Now that tool progress bubbles will
+                    # appear below it, reset and disable defer so the next
+                    # segment creates the actual streaming card.
+                    if self._defer_streaming_card:
+                        self._defer_streaming_card = False
+                        self._reset_segment_state(preserve_no_edit=True)
                     # Streaming cards: keep the same card alive across
                     # segments.  Tool progress messages from the gateway
                     # appear as separate platform messages between card
                     # updates.  The card's streaming_md content keeps
                     # growing with the full accumulated text.
-                    if self._uses_streaming_card and self._message_id:
+                    elif self._uses_streaming_card and self._message_id:
                         # Don't reset — _accumulated keeps growing,
                         # _message_id stays so edits continue hitting
                         # the same card.
@@ -1260,7 +1275,11 @@ class GatewayStreamConsumer:
                 # When the adapter supports streaming cards (e.g. Feishu CardKit
                 # v2), try creating a streaming card first for typewriter-style
                 # rendering.  On failure, fall back to the regular send path.
-                if self._uses_streaming_card:
+                #
+                # Optimization: defer streaming card to the second segment so
+                # tool progress bubbles (🔍/⚙️) appear ABOVE the card.  The
+                # first segment is sent as a regular message.
+                if self._uses_streaming_card and not self._defer_streaming_card:
                     try:
                         result = await self.adapter.send_streaming_card(
                             chat_id=self.chat_id,

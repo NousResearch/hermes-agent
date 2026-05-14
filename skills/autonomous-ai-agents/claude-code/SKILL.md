@@ -1,14 +1,14 @@
 ---
 name: claude-code
 description: "Delegate coding to Claude Code CLI (features, PRs)."
-version: 2.2.0
+version: 2.3.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
-    related_skills: [codex, hermes-agent, opencode]
+    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation, Subagents]
+    related_skills: [codex, hermes-agent, opencode, github-pr-workflow]
 ---
 
 # Claude Code — Hermes Orchestration Guide
@@ -583,6 +583,25 @@ terminal(command="claude --agents '{\"reviewer\": {\"description\": \"Reviews co
 
 Claude can orchestrate multiple agents: "Use @db-expert to optimize queries, then @security to audit the changes."
 
+### Hermes parent orchestration contract
+
+When Hermes launches Claude Code to do subagent-style implementation, the Claude child is **not** the final authority. The parent Hermes agent must supervise the run, then independently review the git tree before committing, pushing, or opening a PR. Load `references/subagent-orchestration.md` for the full checklist whenever a task says Claude Code should use subagents, work autonomously in the background, or produce a PR.
+
+Minimum parent loop after Claude finishes:
+
+1. Wait for the Claude process/session to exit; capture `session_id`, stop reason, stderr, and cost if JSON output is available.
+2. Inspect `git status --short --branch`, `git diff --stat`, `git diff --check`, and recent commits directly. Do not trust the child summary alone.
+3. Review scope, secrets, local-machine paths, portability, and validation output. Fix or relaunch for gaps before committing.
+4. Commit coherent reviewed changes on a feature branch unless direct `main` work was explicitly authorized.
+5. Check for an existing PR for the branch; update it if present, otherwise push and create one with `gh pr create --body-file`.
+6. Notify the user with the branch/PR URL, commit SHA, local validation, and CI status if a messaging/final-response path is available.
+
+Short prompt clause to include in Claude Code launch prompts:
+
+```markdown
+You may use Claude Code subagents if useful. Leave the worktree reviewable. Final response must list files changed, validation run, skipped checks, and follow-up work. The parent Hermes agent will independently review, commit, open/update the PR, and notify the user.
+```
+
 ## Hooks — Automation on Events
 
 Configure in `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
@@ -741,5 +760,6 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
 7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
 8. **Report results to user** — after completion, summarize what Claude did and what changed
-9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
-10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+9. **For subagent orchestration, parent owns review/commit/PR** — after Claude finishes, inspect git state, run validation, commit coherent changes, open/update the PR if needed, and notify the user. See `references/subagent-orchestration.md`.
+10. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
+11. **Use `--allowedTools`** — restrict capabilities to what the task actually needs

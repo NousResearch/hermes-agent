@@ -133,6 +133,12 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "http": {
+        "description": "Structured HTTP requests (no shell). Prefer over `terminal` curl for API calls — eliminates the bash-quoting bug class on JSON bodies.",
+        "tools": ["http"],
+        "includes": []
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",

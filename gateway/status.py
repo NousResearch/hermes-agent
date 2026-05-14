@@ -128,6 +128,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
     On Linux, reads /proc/<pid>/cmdline directly.  On macOS and other
     platforms without /proc, falls back to ``ps -p <pid> -o command=``.
+    On Windows (no /proc, no ps), uses psutil.
     """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
@@ -148,6 +149,16 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Windows fallback: psutil (already used by _pid_exists)
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process(pid)
+        cmdline_parts = proc.cmdline()
+        if cmdline_parts:
+            return " ".join(cmdline_parts)
+    except Exception:
         pass
 
     return None
@@ -178,7 +189,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     if not isinstance(argv, list) or not argv:
         return False
 
-    cmdline = " ".join(str(part) for part in argv)
+    # Normalize Windows backslashes so patterns match cross-platform.
+    cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
     patterns = (
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",

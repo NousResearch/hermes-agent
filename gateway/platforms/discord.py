@@ -3858,6 +3858,51 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_deliverable_approval(
+        self, chat_id: str, record: Dict[str, Any], thread_id: Optional[str] = None,
+        approve_label: str = "Approve", revise_label: str = "Needs Work",
+        reject_label: str = "Reject",
+    ) -> SendResult:
+        """Send an interactive approval box for external deliverables/drafts."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = thread_id or chat_id
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            title = str(record.get("title") or "Approval requested")
+            body = str(record.get("body") or "")
+            max_desc = 4088
+            desc = body if len(body) <= max_desc else body[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title=title,
+                description=desc,
+                color=discord.Color.orange(),
+            )
+            drive_link = str(record.get("drive_link") or "")
+            artifact_path = str(record.get("artifact_path") or "")
+            if drive_link:
+                embed.add_field(name="Drive link", value=f"[Open deliverable]({drive_link})", inline=False)
+            if artifact_path:
+                embed.add_field(name="Local path", value=f"`{artifact_path}`", inline=False)
+            embed.add_field(name="Approval ID", value=f"`{record.get('approval_id')}`", inline=False)
+
+            view = DeliverableApprovalView(
+                approval_id=str(record.get("approval_id") or ""),
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+                approve_label=approve_label,
+                revise_label=revise_label,
+                reject_label=reject_label,
+            )
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[dict] = None,
@@ -4702,6 +4747,80 @@ def _component_check_auth(
 
 
 if DISCORD_AVAILABLE:
+
+    class DeliverableApprovalView(discord.ui.View):
+        """Three-button approval view for external deliverables and drafts."""
+
+        def __init__(
+            self,
+            approval_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+            approve_label: str = "Approve",
+            revise_label: str = "Needs Work",
+            reject_label: str = "Reject",
+        ):
+            super().__init__(timeout=None)
+            self.approval_id = approval_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+            # discord.py creates Button children from decorators before __init__
+            # completes, so customize labels here.
+            if len(self.children) >= 3:
+                self.children[0].label = approve_label
+                self.children[1].label = revise_label
+                self.children[2].label = reject_label
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _resolve(
+            self, interaction: discord.Interaction, status: str,
+            color: discord.Color,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This approval has already been resolved.", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to approve deliverables.", ephemeral=True
+                )
+                return
+            self.resolved = True
+            display_name = getattr(interaction.user, "display_name", None) or str(interaction.user)
+            try:
+                from tools.approval_box_state import decision_label, resolve_record
+                record = resolve_record(self.approval_id, status, display_name)
+                final_status = record.get("status", status) if record else status
+                footer_text = decision_label(final_status, display_name)
+            except Exception as exc:
+                logger.error("Failed to resolve deliverable approval: %s", exc, exc_info=True)
+                footer_text = f"Resolved by {display_name}"
+
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=footer_text)
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+        async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "approved", discord.Color.green())
+
+        @discord.ui.button(label="Needs Work", style=discord.ButtonStyle.grey)
+        async def needs_work(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "needs_work", discord.Color.gold())
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
+        async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await self._resolve(interaction, "rejected", discord.Color.red())
 
     class ExecApprovalView(discord.ui.View):
         """

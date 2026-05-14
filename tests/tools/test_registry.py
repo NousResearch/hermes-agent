@@ -291,6 +291,7 @@ class TestCheckFnExceptionHandling:
 class TestBuiltinDiscovery:
     def test_matches_previous_manual_builtin_tool_set(self):
         expected = {
+            "tools.approval_box_tool",
             "tools.browser_cdp_tool",
             "tools.browser_dialog_tool",
             "tools.browser_tool",

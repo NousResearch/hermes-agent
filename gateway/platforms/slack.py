@@ -681,6 +681,15 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register Block Kit action handlers for deliverable approval boxes
+            # (Approve / Needs Work / Reject; see tools/approval_box_tool.py).
+            for _action_id in (
+                "hermes_deliverable_approve",
+                "hermes_deliverable_needs_work",
+                "hermes_deliverable_reject",
+            ):
+                self._app.action(_action_id)(self._handle_deliverable_approval_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -2319,6 +2328,73 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_deliverable_approval(
+        self, chat_id: str, record: Dict[str, Any], thread_ts: Optional[str] = None,
+        approve_label: str = "Approve", revise_label: str = "Needs Work",
+        reject_label: str = "Reject",
+    ) -> SendResult:
+        """Send a Block Kit approval box for external deliverables/drafts."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            approval_id = str(record.get("approval_id", ""))
+            title = str(record.get("title") or "Approval requested")
+            body = str(record.get("body") or "")
+            drive_link = str(record.get("drive_link") or "")
+            artifact_path = str(record.get("artifact_path") or "")
+            text = body[:2800] + "..." if len(body) > 2800 else body
+
+            section_text = f"*{title}*\n\n{text}"
+            fields = []
+            if drive_link:
+                fields.append({"type": "mrkdwn", "text": f"*Drive link:*\n<{drive_link}|Open deliverable>"})
+            if artifact_path:
+                fields.append({"type": "mrkdwn", "text": f"*Local path:*\n`{artifact_path}`"})
+            fields.append({"type": "mrkdwn", "text": f"*Approval ID:*\n`{approval_id}`"})
+
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": section_text}},
+                {"type": "section", "fields": fields},
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": approve_label},
+                            "style": "primary",
+                            "action_id": "hermes_deliverable_approve",
+                            "value": approval_id,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": revise_label},
+                            "action_id": "hermes_deliverable_needs_work",
+                            "value": approval_id,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": reject_label},
+                            "style": "danger",
+                            "action_id": "hermes_deliverable_reject",
+                            "value": approval_id,
+                        },
+                    ],
+                },
+            ]
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"Approval requested: {title}",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            return SendResult(success=True, message_id=result.get("ts", ""), raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_deliverable_approval failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -2480,6 +2556,59 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
+
+    async def _handle_deliverable_approval_action(self, ack, body, action) -> None:
+        """Handle Approve / Needs Work / Reject clicks for deliverable boxes."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        approval_id = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized deliverable approval click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        status_map = {
+            "hermes_deliverable_approve": "approved",
+            "hermes_deliverable_needs_work": "needs_work",
+            "hermes_deliverable_reject": "rejected",
+        }
+        status = status_map.get(action_id, "rejected")
+
+        try:
+            from tools.approval_box_state import decision_label, resolve_record
+            record = resolve_record(approval_id, status, user_name)
+            decision_text = decision_label(record.get("status", status) if record else status, user_name)
+        except Exception as exc:
+            logger.error("[Slack] Failed to resolve deliverable approval: %s", exc, exc_info=True)
+            decision_text = f"Resolved by {user_name}"
+
+        original_blocks = message.get("blocks", [])
+        kept_blocks = [b for b in original_blocks if b.get("type") != "actions"]
+        kept_blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": decision_text}],
+        })
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=kept_blocks,
+            )
+        except Exception as exc:
+            logger.warning("[Slack] Failed to update deliverable approval message: %s", exc)
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""

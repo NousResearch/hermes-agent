@@ -130,16 +130,17 @@ class FirecrawlBrowserProvider(BrowserProvider):
             return False
 
     def emergency_cleanup(self, session_id: str) -> None:
+        if not self.is_available():
+            logger.warning(
+                "Cannot emergency-cleanup Firecrawl session %s — missing credentials",
+                session_id,
+            )
+            return
         try:
             requests.delete(
                 f"{self._api_url()}/v2/browser/{session_id}",
                 headers=self._headers(),
                 timeout=5,
-            )
-        except ValueError:
-            logger.warning(
-                "Cannot emergency-cleanup Firecrawl session %s — missing credentials",
-                session_id,
             )
         except Exception as e:
             logger.debug(

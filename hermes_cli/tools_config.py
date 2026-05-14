@@ -2469,6 +2469,11 @@ def _reconfigure_provider(provider: dict, config: dict):
         if plugin_name:
             _select_plugin_image_gen_provider(plugin_name, config)
             return
+        # Plugin-registered video_gen provider — same flow, different registry.
+        video_plugin = provider.get("video_gen_plugin_name")
+        if video_plugin:
+            _select_plugin_video_gen_provider(video_plugin, config)
+            return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
         if backend:
@@ -2499,6 +2504,12 @@ def _reconfigure_provider(provider: dict, config: dict):
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
         _select_plugin_image_gen_provider(plugin_name, config)
+        return
+
+    # Plugin-registered video_gen provider — same flow, different registry.
+    video_plugin = provider.get("video_gen_plugin_name")
+    if video_plugin:
+        _select_plugin_video_gen_provider(video_plugin, config)
         return
 
     backend = provider.get("imagegen_backend")

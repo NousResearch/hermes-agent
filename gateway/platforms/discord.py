@@ -1038,7 +1038,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 for command in tree.get_commands()
             ]
         desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
-        payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
+        payload = json.dumps(
+            {
+                "allow_recreate": self._allow_discord_command_recreate(),
+                "commands": desired,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
@@ -1214,16 +1221,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     http.max_ratelimit_timeout = previous_ratelimit_timeout
 
             self._record_command_sync_success(app_id, fingerprint, summary)
-            logger.info(
-                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
-                self.name,
-                summary["total"],
-                summary["unchanged"],
-                summary["updated"],
-                summary["recreated"],
-                summary["created"],
-                summary["deleted"],
-            )
+            self._log_discord_command_sync_summary(summary)
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] Slash command sync timed out — Discord rate-limit bucket "
@@ -1246,6 +1244,33 @@ class DiscordAdapter(BasePlatformAdapter):
                 raw,
             )
         return "safe"
+
+    def _allow_discord_command_recreate(self) -> bool:
+        """Return whether slash-command sync may churn command IDs.
+
+        Delete/recreate is intentionally opt-in because Discord clients can
+        briefly cache stale command IDs after a restart-time command sync.
+        """
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_ALLOW_RECREATE", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _log_discord_command_sync_summary(self, summary: Dict[str, int]) -> None:
+        logger.info(
+            "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
+            self.name,
+            summary["total"],
+            summary["unchanged"],
+            summary["updated"],
+            summary["recreated"],
+            summary["created"],
+            summary["deleted"],
+        )
+        if summary["recreated"]:
+            logger.warning(
+                "[%s] Recreated %d Discord slash command(s); Discord clients may show stale slash commands briefly",
+                self.name,
+                summary["recreated"],
+            )
 
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
@@ -1400,11 +1425,31 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
-                recreated += 1
+                if self._allow_discord_command_recreate():
+                    logger.debug(
+                        "[%s] Discord slash command diff action=recreate name=%s type=%s",
+                        self.name,
+                        desired_payload["name"],
+                        desired_payload["type"],
+                    )
+                    await mutate(http.delete_global_command, app_id, current.id)
+                    await mutate(http.upsert_global_command, app_id, desired)
+                    recreated += 1
+                    continue
+                logger.warning(
+                    "[%s] Skipping slash command recreate for %s to avoid command-id churn; set DISCORD_COMMAND_SYNC_ALLOW_RECREATE=true to allow",
+                    self.name,
+                    desired_payload["name"],
+                )
+                unchanged += 1
                 continue
 
+            logger.debug(
+                "[%s] Discord slash command diff action=update name=%s type=%s",
+                self.name,
+                desired_payload["name"],
+                desired_payload["type"],
+            )
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
 

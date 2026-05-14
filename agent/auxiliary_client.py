@@ -2064,6 +2064,30 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_server_error(exc: Exception) -> bool:
+    """Detect server-side errors (HTTP 5xx) that warrant provider fallback.
+
+    Server errors (502, 503, 504, etc.) are transient — the endpoint is
+    temporarily broken regardless of whether it was explicitly chosen by the
+    user.  This is fundamentally different from payment/rate-limit errors
+    where the ``is_auto`` gate makes sense (explicit provider = hard constraint).
+
+    Returns True for:
+      - HTTP 5xx status codes (500–599)
+      - Common server error text patterns in the exception message
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 500 <= status <= 599:
+        return True
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "server error", "internal server error",
+        "bad gateway", "service unavailable", "gateway timeout",
+        "unavailable", "temporarily unavailable",
+        "overloaded", "try again later",
+    ))
+
+
 def _is_auth_error(exc: Exception) -> bool:
     """Detect auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
@@ -4380,12 +4404,15 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
+        # Exception: server errors (5xx) are transient and warrant fallback
+        # even for explicit providers — the endpoint is broken regardless. (#25822)
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback and (is_auto or _is_server_error(first_err)):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4397,6 +4424,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_server_error(first_err):
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -4712,9 +4741,10 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback and (is_auto or _is_server_error(first_err)):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
@@ -4722,6 +4752,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_server_error(first_err):
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

@@ -1429,15 +1429,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+        # A persisted handoff summary can sit in the protected head after a
+        # resume (commonly immediately after the system prompt). Search from
+        # the first non-system message through the compression window so we can
+        # rehydrate iterative-summary state without serializing that handoff as
+        # a new turn. Protected messages after the handoff remain live context,
+        # so only summarize messages that are both after the handoff and inside
+        # the current compression window.
+        summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
         summary_idx, summary_body = self._find_latest_context_summary(
             messages,
-            compress_start,
+            summary_search_start,
             compress_end,
         )
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
-            turns_to_summarize = messages[summary_idx + 1:compress_end]
+            turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
 
         if not self.quiet_mode:
             logger.info(

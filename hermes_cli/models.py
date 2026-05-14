@@ -2772,6 +2772,59 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     return []
 
 
+def supports_reasoning(model_id: str, provider: str = "") -> list[str]:
+    """Detect if a model supports reasoning and return available effort levels.
+
+    Known reasoning-supporting model patterns:
+      o1, o3, o4, gpt-5, claude-sonnet-4, claude-opus-4,
+      deepseek-r1, deepseek-reasoner, grok-4, gemini-2.5, qwq
+
+    Returns a list of effort levels (e.g. ["low", "medium", "high"])
+    or an empty list if reasoning is not supported.
+    """
+    raw = (model_id or "").strip().lower()
+    prov = (provider or "").strip().lower()
+
+    # Check copilot_codex_oauth provider
+    if prov == "copilot_codex_oauth":
+        return _github_reasoning_efforts_for_model_id(model_id)
+
+    # Strip provider/ prefix like openai/, anthropic/ etc.
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+
+    # O-series
+    if raw.startswith(("o1", "o3", "o4")):
+        return ["low", "medium", "high"]
+
+    # GPT-5+
+    import re
+    if re.match(r"^gpt-5", raw):
+        return ["minimal", "low", "medium", "high"]
+
+    # Claude reasoning
+    if raw.startswith(("claude-sonnet-4", "claude-opus-4")):
+        return ["low", "medium", "high"]
+
+    # DeepSeek
+    if raw.startswith(("deepseek-r1", "deepseek-reasoner")):
+        return ["low", "medium", "high"]
+
+    # Grok
+    if raw.startswith("grok-4"):
+        return ["low", "medium", "high"]
+
+    # Gemini 2.5
+    if raw.startswith("gemini-2.5"):
+        return ["low", "medium", "high"]
+
+    # QwQ
+    if raw.startswith("qwq"):
+        return ["low", "medium", "high"]
+
+    return []
+
+
 def _should_use_copilot_responses_api(model_id: str) -> bool:
     """Decide whether a Copilot model should use the Responses API.
 

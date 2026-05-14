@@ -6424,6 +6424,19 @@ class HermesCLI:
         }
         self._invalidate(min_interval=0.0)
 
+    @staticmethod
+    def _load_model_picker_config() -> dict:
+        """Load model favorites/recent config for picker display."""
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _model_section = _cfg.get("model", {})
+            if isinstance(_model_section, dict):
+                return _model_section
+        except Exception:
+            pass
+        return {}
+
     def _close_model_picker(self) -> None:
         self._model_picker_state = None
         self._restore_modal_input_snapshot()
@@ -6541,6 +6554,20 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+        # Record model to LRU list
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _model_section = _cfg.get("model", {})
+            if not isinstance(_model_section, dict):
+                _model_section = {}
+            _recent = list(_model_section.get("recent", []))
+            _recent = [m for m in _recent if m != result.new_model]
+            _recent.insert(0, result.new_model)
+            save_config_value("model.recent", _recent[:10])
+        except Exception:
+            pass
+
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
         if not state:
@@ -6586,8 +6613,19 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             if selected < len(model_list):
-                from hermes_cli.model_switch import switch_model
                 chosen_model = model_list[selected]
+                # Check for reasoning support for the sub-picker
+                from hermes_cli.models import supports_reasoning
+                provider_slug = provider_data.get("slug", "")
+                reasoning_efforts = supports_reasoning(chosen_model, provider_slug)
+                if reasoning_efforts:
+                    state["stage"] = "reasoning"
+                    state["chosen_model"] = chosen_model
+                    state["reasoning_efforts"] = reasoning_efforts
+                    state["selected"] = 0
+                    self._invalidate(min_interval=0.0)
+                    return
+                from hermes_cli.model_switch import switch_model
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -6595,7 +6633,7 @@ class HermesCLI:
                     current_base_url=self.base_url or "",
                     current_api_key=self.api_key or "",
                     is_global=persist_global,
-                    explicit_provider=provider_data.get("slug"),
+                    explicit_provider=provider_slug,
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
@@ -6603,6 +6641,78 @@ class HermesCLI:
                 self._apply_model_switch_result(result, persist_global)
                 return
             self._close_model_picker()
+            return
+        if stage == "reasoning":
+            from hermes_cli.models import supports_reasoning
+            reasoning_efforts = state.get("reasoning_efforts") or []
+            cancel_idx = len(reasoning_efforts)
+            if selected >= cancel_idx:
+                # Back to model selection
+                state["stage"] = "model"
+                state.pop("chosen_model", None)
+                state.pop("reasoning_efforts", None)
+                state["selected"] = 0
+                self._invalidate(min_interval=0.0)
+                return
+            chosen_model = state.get("chosen_model", "")
+            provider_data = state.get("provider_data") or {}
+            provider_slug = provider_data.get("slug", "")
+            selected_effort = reasoning_efforts[selected]
+            # Persist reasoning per model
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                _model_section = _cfg.get("model", {})
+                if not isinstance(_model_section, dict):
+                    _model_section = {}
+                _reasoning_defaults = dict(_model_section.get("reasoning_defaults", {}))
+                _reasoning_defaults[chosen_model] = selected_effort
+                save_config_value("model.reasoning_defaults", _reasoning_defaults)
+            except Exception:
+                pass
+            # Apply reasoning effort to agent
+            if self.agent is not None:
+                try:
+                    self.agent.reasoning_config = {
+                        "enabled": selected_effort != "none" if selected_effort else False,
+                        "effort": selected_effort if selected_effort else "medium",
+                    }
+                except Exception:
+                    pass
+            from hermes_cli.model_switch import switch_model
+            result = switch_model(
+                raw_input=chosen_model,
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+                current_api_key=self.api_key or "",
+                is_global=persist_global,
+                explicit_provider=provider_slug,
+                user_providers=state.get("user_provs"),
+                custom_providers=state.get("custom_provs"),
+            )
+            self._close_model_picker()
+            self._apply_model_switch_result(result, persist_global)
+            _cprint(f"    Reasoning effort: {selected_effort}")
+            return
+
+    def _toggle_favorite(self, model_id: str, add: bool) -> None:
+        """Add or remove a model from config's favorites list."""
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _model_section = _cfg.get("model", {})
+            if not isinstance(_model_section, dict):
+                _model_section = {}
+            _favorites = list(_model_section.get("favorites", []))
+            if add:
+                if model_id not in _favorites:
+                    _favorites.append(model_id)
+            else:
+                _favorites = [m for m in _favorites if m != model_id]
+            save_config_value("model.favorites", _favorites)
+        except Exception:
+            pass
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model for this session.
@@ -6613,6 +6723,8 @@ class HermesCLI:
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model --favorite <name>            — add model to favorites
+          /model --unfavorite <name>          — remove model from favorites
         """
         from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
         from hermes_cli.providers import get_label
@@ -6620,6 +6732,32 @@ class HermesCLI:
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        # Handle --favorite / --unfavorite
+        _fav_match = None
+        _unfav_match = None
+        # Check for --favorite <name>
+        _parts_split = raw_args.split()
+        for i, _p in enumerate(_parts_split):
+            if _p == "--favorite" and i + 1 < len(_parts_split):
+                _fav_match = _parts_split[i + 1]
+                raw_args = raw_args.replace(f"--favorite {_parts_split[i + 1]}", "").strip()
+                break
+        _parts_split = raw_args.split()
+        for i, _p in enumerate(_parts_split):
+            if _p == "--unfavorite" and i + 1 < len(_parts_split):
+                _unfav_match = _parts_split[i + 1]
+                raw_args = raw_args.replace(f"--unfavorite {_parts_split[i + 1]}", "").strip()
+                break
+
+        if _fav_match is not None:
+            self._toggle_favorite(_fav_match, add=True)
+            _cprint(f"  ✓ Added `{_fav_match}` to favorites")
+            return
+        if _unfav_match is not None:
+            self._toggle_favorite(_unfav_match, add=False)
+            _cprint(f"  ✓ Removed `{_unfav_match}` from favorites")
+            return
 
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
@@ -6773,6 +6911,22 @@ class HermesCLI:
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+        # Record model to LRU list
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _model_section = _cfg.get("model", {})
+            if not isinstance(_model_section, dict):
+                _model_section = {}
+            _recent = list(_model_section.get("recent", []))
+            # Deduplicate and prepend
+            _recent = [m for m in _recent if m != result.new_model]
+            _recent.insert(0, result.new_model)
+            # Keep max 10
+            save_config_value("model.recent", _recent[:10])
+        except Exception:
+            pass
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
@@ -12706,15 +12860,42 @@ class HermesCLI:
                     choices.append(label)
                 choices.append("Cancel")
                 hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
-            else:
+            elif stage == "model":
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
+                # Sort: favorites first (with star), recents second (with clock), rest as-is
+                _model_cfg = cli_ref._load_model_picker_config()
+                _favorites = set(_model_cfg.get("favorites", []))
+                _recent = _model_cfg.get("recent", [])
+                def _sort_key(m):
+                    if m in _favorites:
+                        return (0, _recent.index(m) if m in _recent else 999)
+                    if m in _recent:
+                        return (1, _recent.index(m))
+                    return (2, 0)
+                sorted_models = sorted(model_list, key=_sort_key)
+                def _label(m):
+                    if m in _favorites:
+                        return f"★ {m}"
+                    if m in _recent:
+                        return f"🕐 {m}"
+                    return f"  {m}"
+                choices = [_label(m) for m in sorted_models] + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
+            else:
+                # Reasoning stage
+                _chosen = state.get("chosen_model", "")
+                _efforts = state.get("reasoning_efforts") or []
+                title = f"⚙ Reasoning Effort — {_chosen}"
+                choices = list(_efforts) + ["← Back"]
+                _model_cfg = cli_ref._load_model_picker_config()
+                _saved = _model_cfg.get("reasoning_defaults", {})
+                _current_saved = _saved.get(_chosen, "")
+                hint = f"Saved: {_current_saved}" if _current_saved else "Select reasoning effort level"
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)

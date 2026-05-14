@@ -435,7 +435,12 @@ def _ensure_hermes_home_managed(home: Path):
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "",
+    "model": {
+        "default": "",
+        "recent": [],
+        "favorites": [],
+        "reasoning_defaults": {},
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
@@ -4009,6 +4014,20 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
+def _normalize_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate old model: string to model: dict format."""
+    model = config.get("model")
+    if not isinstance(model, dict):
+        config = dict(config)
+        config["model"] = {
+            "default": model if model else "",
+            "recent": [],
+            "favorites": [],
+            "reasoning_defaults": {},
+        }
+    return config
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -4183,7 +4202,7 @@ def load_config() -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = _normalize_model_config(_normalize_root_model_keys(_normalize_max_turns_config(config)))
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:

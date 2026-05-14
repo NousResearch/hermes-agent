@@ -15577,7 +15577,7 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        return result.get("final_response") or result.get("response") or ""
 
     def _run_codex_app_server_turn(
         self,

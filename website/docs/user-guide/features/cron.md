@@ -240,8 +240,19 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"all"` | Fan out to every connected home channel | Resolved at fire time |
+| `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
+| `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+
+### Routing intent (`all`)
+
+`all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.
+
+Semantics: `all` expands to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
+
+`all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
 
 ### Response wrapping
 
@@ -330,6 +341,61 @@ cronjob(action="create", schedule="every 5m",
 It picks `no_agent=True` automatically when the message content is fully determined by the script (watchdogs, threshold alerts, heartbeats). The same tool also lets the agent pause, resume, edit, and remove jobs — so the whole lifecycle is chat-driven without anyone touching the CLI.
 
 See the [Script-Only Cron Jobs guide](/docs/guides/cron-script-only) for worked examples.
+
+## Chaining jobs with `context_from`
+
+Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+
+```python
+# Job 1: Collect raw data
+cronjob(
+    action="create",
+    prompt="Fetch the top 10 AI/ML stories from Hacker News. Save them to ~/.hermes/data/briefs/raw.md in markdown format with title, URL, and score.",
+    schedule="0 7 * * *",
+    name="AI News Collector",
+)
+
+# Job 2: Triage — receives Job 1's output as context
+# Get Job 1's ID from: cronjob(action="list")
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/raw.md. Score each story 1–10 for engagement potential and novelty. Output the top 5 to ~/.hermes/data/briefs/ranked.md.",
+    schedule="30 7 * * *",
+    context_from="<job1_id>",
+    name="AI News Triage",
+)
+
+# Job 3: Ship — receives Job 2's output as context
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/ranked.md. Write 3 tweet drafts (hook + body + hashtags). Deliver to telegram:7976161601.",
+    schedule="0 8 * * *",
+    context_from="<job2_id>",
+    name="AI News Brief",
+)
+```
+
+**How it works:**
+
+- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- That output is prepended to Job 2's prompt automatically
+- Job 2 doesn't need to hardcode "read this file" — it receives the content as context
+- The chain can be any length: Job 1 → Job 2 → Job 3 → ...
+
+**What `context_from` accepts:**
+
+| Format | Example |
+|--------|---------|
+| Single job ID (string) | `context_from="a1b2c3d4"` |
+| Multiple job IDs (list) | `context_from=["job_a", "job_b"]` |
+
+Outputs are concatenated in the order listed.
+
+**When to use it:**
+
+- Multi-stage pipelines (collect → filter → format → deliver)
+- Dependent tasks where step N's work depends on step N−1's output
+- Fan-out/fan-in patterns where one job aggregates results from several others
 
 ## Provider recovery
 

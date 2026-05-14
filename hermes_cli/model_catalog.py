@@ -173,7 +173,7 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
     except (OSError, FileNotFoundError):
         return (None, 0.0)
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return (None, 0.0)
@@ -187,7 +187,7 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
         atomic_replace(tmp, path)

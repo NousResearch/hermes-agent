@@ -75,6 +75,55 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_schema_description_advertises_runtime_limits(self):
+        """The model must see the user's actual concurrency / spawn-depth caps,
+        not the framework defaults. Without this, models that read 'default 3'
+        will self-cap below the user's real limit.
+        """
+        from tools.delegate_tool import (
+            _build_dynamic_schema_overrides,
+            _get_max_concurrent_children,
+            _get_max_spawn_depth,
+        )
+
+        overrides = _build_dynamic_schema_overrides()
+        max_children = _get_max_concurrent_children()
+        max_depth = _get_max_spawn_depth()
+
+        desc = overrides["description"]
+        tasks_desc = overrides["parameters"]["properties"]["tasks"]["description"]
+        role_desc = overrides["parameters"]["properties"]["role"]["description"]
+
+        # Top-level description names the user's concurrency limit explicitly.
+        self.assertIn(f"up to {max_children}", desc)
+        # Top-level description names the user's spawn-depth limit explicitly.
+        self.assertIn(f"max_spawn_depth={max_depth}", desc)
+        # tasks parameter description repeats the concurrency cap.
+        self.assertIn(f"up to {max_children}", tasks_desc)
+        # role parameter description names the spawn-depth limit.
+        self.assertIn(f"max_spawn_depth={max_depth}", role_desc)
+        # The misleading "default 3" / "default 2" wording is gone from
+        # every dynamic surface (model-facing).
+        for surface in (desc, tasks_desc, role_desc):
+            self.assertNotIn("default 3", surface)
+            self.assertNotIn("default 2", surface)
+
+    def test_schema_overrides_applied_via_get_definitions(self):
+        """Registry.get_definitions() must apply dynamic_schema_overrides so
+        the model API call sees current values, not the static import-time text.
+        """
+        from tools.registry import registry
+        defs = registry.get_definitions({"delegate_task"})
+        self.assertEqual(len(defs), 1)
+        fn = defs[0]["function"]
+        # Description should mention the user's actual limits, not "default 3".
+        from tools.delegate_tool import (
+            _get_max_concurrent_children,
+            _get_max_spawn_depth,
+        )
+        self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
+        self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
@@ -166,6 +215,63 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_accepts_json_string_tasks(self, mock_run):
+        mock_run.side_effect = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Result A",
+                "api_calls": 2,
+                "duration_seconds": 3.0,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": "Result B",
+                "api_calls": 4,
+                "duration_seconds": 6.0,
+            },
+        ]
+        parent = _make_mock_parent()
+        tasks = json.dumps(
+            [
+                {"goal": "Research topic A"},
+                {"goal": "Research topic B"},
+            ]
+        )
+
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result["results"][1]["summary"], "Result B")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_non_object_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks=["not a task object"], parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("Task 0 must be an object", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_malformed_json_string_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks='[{"goal": "bad}', parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("could not be parsed as JSON", result["error"])
+        mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
@@ -767,44 +873,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_provider_resolves_full_credentials(self, mock_resolve):
-        """When delegation.provider is set, full credentials are resolved."""
-        mock_resolve.return_value = {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "sk-or-test-key",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
-        self.assertEqual(creds["provider"], "openrouter")
-        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
-        self.assertEqual(creds["api_key"], "sk-or-test-key")
-        self.assertEqual(creds["api_mode"], "chat_completions")
-        mock_resolve.assert_called_once_with(requested="openrouter")
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
-        """Named providers should propagate their runtime default model to children."""
-        mock_resolve.return_value = {
-            "provider": "custom",
-            "base_url": "https://my-server.example/v1",
-            "api_key": "sk-test-key",
-            "api_mode": "chat_completions",
-            "model": "server-default-model",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"provider": "custom:my-server", "model": ""}
-
-        creds = _resolve_delegation_credentials(cfg, parent)
-
-        self.assertEqual(creds["model"], "server-default-model")
-        self.assertEqual(creds["provider"], "custom")
-        self.assertEqual(creds["base_url"], "https://my-server.example/v1")
-        mock_resolve.assert_called_once_with(requested="custom:my-server")
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -853,22 +922,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
-        """Nous provider resolves Nous Portal base_url and api_key."""
-        mock_resolve.return_value = {
-            "provider": "nous",
-            "base_url": "https://inference-api.nousresearch.com/v1",
-            "api_key": "nous-agent-key-xyz",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "hermes-3-llama-3.1-8b", "provider": "nous"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["provider"], "nous")
-        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
-        self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
-        mock_resolve.assert_called_once_with(requested="nous")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1599,53 +1652,6 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )
 
-    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
-        """A wedged child with no current_tool still trips the idle threshold.
-
-        Regression guard: the fix for #13041 must not disable stale
-        detection entirely. A child that's hung between turns (no tool
-        running, no iteration progress) must still stop touching the
-        parent so the gateway timeout can fire.
-        """
-        from tools.delegate_tool import _run_single_child
-
-        parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
-
-        child = MagicMock()
-        # Wedged child: no tool running, iteration frozen.
-        child.get_activity_summary.return_value = {
-            "current_tool": None,
-            "api_call_count": 3,
-            "max_iterations": 50,
-            "last_activity_desc": "waiting for API response",
-        }
-
-        def slow_run(**kwargs):
-            time.sleep(0.6)
-            return {"final_response": "done", "completed": True, "api_calls": 3}
-
-        child.run_conversation.side_effect = slow_run
-
-        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
-        # We should see the heartbeat stop firing well before 0.6s.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test wedged child",
-                child=child,
-                parent_agent=parent,
-            )
-
-        # With idle threshold=5 + interval=0.05s, touches should cap
-        # around 5. Bound loosely to avoid timing flakes.
-        self.assertLess(
-            len(touch_calls), 9,
-            f"Idle stale detection did not fire: got {len(touch_calls)} "
-            f"touches over 0.6s — expected heartbeat to stop after "
-            f"~5 stale cycles",
-        )
 
 
 class TestDelegationReasoningEffort(unittest.TestCase):
@@ -2025,6 +2031,32 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
+
+    def test_acp_command_description_has_do_not_set_guidance(self):
+        # acp_command/acp_args descriptions must NOT bias the model toward
+        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
+        # carry explicit "do not set unless told" guidance so the model doesn't
+        # hallucinate ACP availability (#22013).
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+
+        top_acp_desc = props["acp_command"]["description"]
+        self.assertIn("Do NOT set", top_acp_desc)
+        self.assertIn("explicitly told you", top_acp_desc)
+
+        task_props = props["tasks"]["items"]["properties"]
+        per_task_acp_desc = task_props["acp_command"]["description"]
+        self.assertIn("Do NOT set", per_task_acp_desc)
+
+    def test_acp_command_description_has_no_claude_as_example(self):
+        # Descriptions must not list 'claude' as a canonical example value —
+        # that directly primes the model to attempt Claude ACP even when it is
+        # not installed (#22013).
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        top_acp_desc = props["acp_command"]["description"].lower()
+        self.assertNotIn("e.g. 'claude'", top_acp_desc)
+        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".

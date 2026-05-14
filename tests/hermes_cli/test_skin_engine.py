@@ -199,6 +199,37 @@ class TestUserSkins:
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
 
+    def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        import yaml
+
+        (skins_dir / "broken.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "broken",
+                    "colors": ["not", "a", "mapping"],
+                    "spinner": "invalid",
+                    "branding": ["also", "invalid"],
+                    "tool_emojis": ["invalid"],
+                    "tool_prefix": "!",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("broken")
+
+        assert skin.name == "broken"
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.spinner.get("waiting_faces", []) == []
+        assert skin.tool_emojis == {}
+        assert skin.tool_prefix == "!"
+
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"

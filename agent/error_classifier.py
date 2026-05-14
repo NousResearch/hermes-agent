@@ -55,6 +55,7 @@ class FailoverReason(enum.Enum):
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
+    llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -82,7 +83,7 @@ class ClassifiedError:
 
     @property
     def is_auth(self) -> bool:
-        return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
+        return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
 
 
@@ -251,6 +252,20 @@ _AUTH_PATTERNS = [
 # Anthropic thinking block signature patterns
 _THINKING_SIG_PATTERNS = [
     "signature",  # Combined with "thinking" check
+]
+
+# Message-string patterns that indicate a provider-side timeout even when
+# the exception type is generic (e.g. RuntimeError from a local shim that
+# wraps a subprocess timeout).  Checked before the type-based transport
+# heuristics so custom-provider "timed out" errors don't fall through to
+# the unknown bucket and get misreported as empty responses.
+_TIMEOUT_MESSAGE_PATTERNS = [
+    "timed out",
+    "turn timed out",
+    "request timed out",
+    "deadline exceeded",
+    "operation timed out",
+    "upstream timed out",
 ]
 
 # Transport error type names
@@ -470,6 +485,31 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
+    # server to build GBNF tool-call parsers) rejects regex escape classes
+    # like ``\d``/``\w``/``\s`` and most ``format`` values. MCP servers
+    # routinely emit ``"pattern": "\\d{4}-\\d{2}-\\d{2}"`` for date/phone/
+    # email params. llama.cpp surfaces this as HTTP 400 with one of a few
+    # recognizable phrases; on match we strip ``pattern``/``format`` from
+    # ``self.tools`` in the retry loop and retry once. Cloud providers are
+    # unaffected — they accept these keywords and we never hit this branch.
+    if (
+        status_code == 400
+        and (
+            "error parsing grammar" in error_msg
+            or "json-schema-to-grammar" in error_msg
+            or (
+                "unable to generate parser" in error_msg
+                and "template" in error_msg
+            )
+        )
+    ):
+        return _result(
+            FailoverReason.llama_cpp_grammar_pattern,
+            retryable=True,
+            should_compress=False,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -648,10 +688,10 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
-    if status_code in (500, 502):
+    if status_code in {500, 502}:
         return result_fn(FailoverReason.server_error, retryable=True)
 
-    if status_code in (503, 529):
+    if status_code in {503, 529}:
         return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Other 4xx — non-retryable
@@ -770,7 +810,7 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
-    is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
+    is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
     # still being far below their actual token budget.
@@ -801,14 +841,14 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
-    if code_lower in ("resource_exhausted", "throttled", "rate_limit_exceeded"):
+    if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
             should_rotate_credential=True,
         )
 
-    if code_lower in ("insufficient_quota", "billing_not_active", "payment_required"):
+    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -816,14 +856,14 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
-    if code_lower in ("model_not_found", "model_not_available", "invalid_model"):
+    if code_lower in {"model_not_found", "model_not_available", "invalid_model"}:
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,
             should_fallback=True,
         )
 
-    if code_lower in ("context_length_exceeded", "max_tokens_exceeded"):
+    if code_lower in {"context_length_exceeded", "max_tokens_exceeded"}:
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
@@ -936,6 +976,14 @@ def _classify_by_message(
             retryable=False,
             should_fallback=True,
         )
+
+    # Timeout message patterns — generic exception types (e.g. RuntimeError)
+    # raised by local shims or custom providers that internally wrap a
+    # subprocess/HTTP timeout.  Classified as transport timeout so the retry
+    # loop rebuilds the client instead of treating the turn as an empty
+    # model response.
+    if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
 
     return None
 

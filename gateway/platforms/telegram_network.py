@@ -59,7 +59,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
-        self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
+        self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
@@ -185,10 +185,13 @@ async def _query_doh_provider(
 async def discover_fallback_ips() -> list[str]:
     """Auto-discover Telegram API IPs via DNS-over-HTTPS.
 
-    Resolves api.telegram.org through Google and Cloudflare DoH, collects all
-    unique IPs, and excludes the system-DNS-resolved IP (which is presumably
-    unreachable on this network).  Falls back to a hardcoded seed list when DoH
-    is also unavailable.
+    Resolves api.telegram.org through Google and Cloudflare DoH and returns all
+    unique A records.  IPs that match the local system resolver are kept rather
+    than excluded: in many networks the system-DNS IP is the most reliable path
+    to api.telegram.org and a transient primary-path failure should be retried
+    against the same address via the IP-rewrite path before the seed list is
+    consulted (#14520).  Falls back to a hardcoded seed list only when DoH
+    yields no usable answers.
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
@@ -203,11 +206,11 @@ async def discover_fallback_ips() -> list[str]:
         if isinstance(r, list):
             doh_ips.extend(r)
 
-    # Deduplicate preserving order, exclude system-DNS IPs
+    # Deduplicate preserving order
     seen: set[str] = set()
     candidates: list[str] = []
     for ip in doh_ips:
-        if ip not in seen and ip not in system_ips:
+        if ip not in seen:
             seen.add(ip)
             candidates.append(ip)
 
@@ -219,7 +222,7 @@ async def discover_fallback_ips() -> list[str]:
         return validated
 
     logger.info(
-        "DoH discovery yielded no new IPs (system DNS: %s); using seed fallback IPs %s",
+        "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
         ", ".join(system_ips) or "unknown",
         ", ".join(_SEED_FALLBACK_IPS),
     )

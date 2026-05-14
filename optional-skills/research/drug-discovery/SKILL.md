@@ -7,6 +7,7 @@ description: >
   OpenFDA, interpret ADMET profiles, and assist with lead optimization.
   Use for medicinal chemistry questions, molecule property analysis, clinical
   pharmacology, and open-science drug research.
+platforms: [linux, macos, windows]
 version: 1.0.0
 author: bennytimz
 license: MIT

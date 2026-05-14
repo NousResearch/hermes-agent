@@ -62,7 +62,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     help: 'change or show model',
-    aliases: ['provider'],
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {
@@ -94,6 +93,19 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'browse and resume previous sessions',
+    name: 'sessions',
+    run: (arg, ctx) => {
+      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+        return
+      }
+      if (!arg.trim()) {
+        return patchOverlayState({ picker: true })
+      }
+    }
+  },
+
+  {
     help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
@@ -110,7 +122,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch or reset personality (history reset on set)',
+    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {

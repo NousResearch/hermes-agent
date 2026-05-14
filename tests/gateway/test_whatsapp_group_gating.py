@@ -296,3 +296,78 @@ def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
     assert config.platforms[Platform.WHATSAPP].extra["allow_from"] == ["6281234567890@s.whatsapp.net"]
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_ALLOWED_USERS"] == "6281234567890@s.whatsapp.net"
+
+
+# --- Broadcast / status / newsletter pseudo-chats are always dropped ---
+
+
+def test_status_broadcast_chats_are_always_dropped():
+    """Felipe's gateway.log showed the agent replying to status@broadcast
+    (a contact's WhatsApp Story update). These pseudo-chats aren't real
+    conversations and the adapter must drop them regardless of dm_policy.
+    """
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    # Even on the most permissive config — open DMs, no allowlist — Stories
+    # and Channel posts must not reach the agent.
+    adapter = _make_adapter(dm_policy="open")
+
+    # Classic Story update — what Felipe was seeing in production.
+    status_msg = _dm_message(
+        body="[video received]",
+        chatId="status@broadcast",
+        senderId="34612345678@s.whatsapp.net",
+    )
+    assert adapter._should_process_message(status_msg) is False
+
+    # Channel / Newsletter broadcast posts.
+    newsletter_msg = _dm_message(
+        body="check out our latest post",
+        chatId="120363999999999999@newsletter",
+        senderId="120363999999999999@newsletter",
+    )
+    assert adapter._should_process_message(newsletter_msg) is False
+
+
+def test_broadcast_filter_runs_before_allowlist():
+    """A status@broadcast message from an allowlisted sender still drops —
+    we never want to reply to Stories, even from authorized contacts.
+    """
+    adapter = _make_adapter(
+        dm_policy="allowlist",
+        allow_from=["34612345678@s.whatsapp.net"],
+    )
+
+    msg = _dm_message(
+        body="[image received]",
+        chatId="status@broadcast",
+        senderId="34612345678@s.whatsapp.net",
+    )
+    assert adapter._should_process_message(msg) is False
+
+
+def test_real_dm_still_processed_after_broadcast_filter():
+    """Sanity check: the broadcast filter doesn't accidentally drop real DMs."""
+    adapter = _make_adapter(dm_policy="open")
+
+    msg = _dm_message(
+        body="hello",
+        chatId="34612345678@s.whatsapp.net",
+        senderId="34612345678@s.whatsapp.net",
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_is_broadcast_chat_helper_recognizes_common_jids():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    assert WhatsAppAdapter._is_broadcast_chat("status@broadcast") is True
+    assert WhatsAppAdapter._is_broadcast_chat("STATUS@BROADCAST") is True
+    assert WhatsAppAdapter._is_broadcast_chat("  status@broadcast  ") is True
+    assert WhatsAppAdapter._is_broadcast_chat("120363999999999999@newsletter") is True
+    assert WhatsAppAdapter._is_broadcast_chat("1234@broadcast") is True  # broadcast list
+    # Real chats must not match.
+    assert WhatsAppAdapter._is_broadcast_chat("34612345678@s.whatsapp.net") is False
+    assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
+    assert WhatsAppAdapter._is_broadcast_chat("") is False
+    assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]

@@ -32,6 +32,21 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="web_search_plus",
+            toolset="web",
+            schema=_make_schema("web_search_plus", "Plugin web search"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        ts = get_toolset("web")
+        assert ts is not None
+        assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
@@ -231,3 +246,11 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
+
+
+class TestDefaultPlatformWebSearchCoverage:
+    def test_hermes_whatsapp_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-whatsapp")
+
+    def test_hermes_api_server_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-api-server")

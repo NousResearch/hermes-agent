@@ -154,6 +154,65 @@ class TestResolve:
         assert (r1 == "ran") ^ (r2 == "ran")
 
 
+class TestClaim:
+    def test_claim_pops_matching_entry(self):
+        async def handler(choice):
+            return f"resolved {choice}"
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+
+        claimed = slash_confirm.claim("sess1", "cid1")
+
+        assert claimed is not None
+        assert claimed["confirm_id"] == "cid1"
+        assert claimed["handler"] is handler
+        assert slash_confirm.get_pending("sess1") is None
+
+    def test_claim_mismatch_preserves_entry(self):
+        async def handler(choice):
+            return "should not run"
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+
+        claimed = slash_confirm.claim("sess1", "wrong")
+
+        assert claimed is None
+        assert slash_confirm.get_pending("sess1") is not None
+
+    @pytest.mark.asyncio
+    async def test_resolve_claimed_runs_handler(self):
+        calls = []
+
+        async def handler(choice):
+            calls.append(choice)
+            return f"resolved {choice}"
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+        claimed = slash_confirm.claim("sess1", "cid1")
+
+        result = await slash_confirm.resolve_claimed(claimed, "always")
+
+        assert result == "resolved always"
+        assert calls == ["always"]
+
+    def test_restore_claim_only_when_session_empty(self):
+        async def old_handler(choice):
+            return "old"
+
+        async def new_handler(choice):
+            return "new"
+
+        slash_confirm.register("sess1", "old", "cmd", old_handler)
+        claimed = slash_confirm.claim("sess1", "old")
+        slash_confirm.restore_claim("sess1", claimed)
+        assert slash_confirm.get_pending("sess1")["confirm_id"] == "old"
+
+        claimed = slash_confirm.claim("sess1", "old")
+        slash_confirm.register("sess1", "new", "cmd", new_handler)
+        slash_confirm.restore_claim("sess1", claimed)
+        assert slash_confirm.get_pending("sess1")["confirm_id"] == "new"
+
+
 class TestClear:
     def test_clear_removes_entry(self):
         async def h(c):

@@ -4,6 +4,7 @@ FROM hub.kaolayouran.cn:5000/dev/hermes-base:shenshan-v1.0
 
 # ---------- Mirror Configuration ----------
 ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV UV_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ENV PYTHONUNBUFFERED=1
 
 # Install extra system dependencies not in base
@@ -39,8 +40,10 @@ USER root
 RUN chmod -R a+rX /opt/hermes
 
 # ---------- Python virtualenv ----------
-RUN uv venv && \
+RUN sed -i '/exclude-newer/d' pyproject.toml && \
+    uv venv && \
     uv pip install --no-cache-dir \
+        --index-strategy unsafe-best-match \
         --exclude-newer-package "python-olm=false" \
         --exclude-newer-package "unpaddedbase64=false" \
         -e ".[all]"

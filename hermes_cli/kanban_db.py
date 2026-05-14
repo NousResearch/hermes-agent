@@ -796,7 +796,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Triage labels for routing. JSON-encoded array of strings (tags
+    -- like "bug", "infra", "needs-spec"). Populated by the Kanban
+    -- specifier (LLM) during triage and consumed by the routing engine
+    -- to pick an assignee/template. Stored separately from
+    -- ``metadata`` on ``task_runs`` so tags stay structurally distinct
+    -- from arbitrary per-run data. Defaults to ``'[]'`` so existing
+    -- reads never see NULL.
+    labels               TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1076,6 +1084,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
+    # Triage labels (JSON array of strings) for the Kanban routing
+    # layer. Adds NOT NULL DEFAULT '[]' so legacy rows immediately
+    # satisfy ``json.loads(labels)`` invariants.
+    _migrate_add_labels_column(conn)
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1167,6 +1180,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
+
+
+def _migrate_add_labels_column(conn: sqlite3.Connection) -> bool:
+    """Add ``tasks.labels`` (JSON array of strings) to legacy DBs.
+
+    Phase-1 of the Kanban triage layer: the column is written by the
+    LLM specifier and read by the routing engine. Kept as its own
+    migration so the schema change is auditable in isolation and can
+    be added/removed without touching ``_migrate_add_optional_columns``.
+
+    Idempotent: a ``PRAGMA table_info`` check skips the ALTER on DBs
+    that already have the column (fresh installs via ``SCHEMA_SQL``
+    and old DBs we've already migrated). Returns ``True`` when the
+    column was actually added by this call.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "labels" in cols:
+        return False
+    return _add_column_if_missing(
+        conn, "tasks", "labels", "labels TEXT NOT NULL DEFAULT '[]'"
+    )
 
 
 @contextlib.contextmanager
@@ -1440,6 +1474,74 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row) if row else None
+
+
+def get_task_labels(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return the triage labels for ``task_id`` as a list of strings.
+
+    Returns an empty list when the task has no labels (the column
+    default) or when the task does not exist. Malformed rows (column
+    holds non-array JSON, written by some external tool) also return
+    ``[]`` rather than raising; the routing engine should treat
+    "unlabeled" as the safe default.
+    """
+    row = conn.execute(
+        "SELECT labels FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return []
+    raw = row["labels"]
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if isinstance(item, str)]
+
+
+def set_task_labels(
+    conn: sqlite3.Connection, task_id: str, labels: list[str]
+) -> bool:
+    """Replace the triage labels for ``task_id`` with ``labels``.
+
+    ``labels`` must be a list of strings; tuples and other iterables
+    are rejected so a stray ``"foo"`` (a string is iterable!) doesn't
+    silently become ``["f", "o", "o"]``. Each entry is stripped and
+    empty entries are dropped; duplicates are de-duped (order
+    preserved) so the LLM specifier can re-emit a tag set without
+    growing the column.
+
+    Returns ``True`` when a row was updated, ``False`` when no task
+    with ``task_id`` exists. Raises :class:`TypeError` for malformed
+    input.
+    """
+    if not isinstance(labels, list):
+        raise TypeError(
+            f"labels must be a list of strings, got {type(labels).__name__}"
+        )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in labels:
+        if not isinstance(item, str):
+            raise TypeError(
+                "labels must contain only strings, got "
+                f"{type(item).__name__}: {item!r}"
+            )
+        stripped = item.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        cleaned.append(stripped)
+    encoded = json.dumps(cleaned, ensure_ascii=False)
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET labels = ? WHERE id = ?",
+            (encoded, task_id),
+        )
+        return cur.rowcount > 0
 
 
 def list_tasks(

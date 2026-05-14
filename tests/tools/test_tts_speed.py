@@ -8,7 +8,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for key in ("OPENAI_API_KEY", "MINIMAX_API_KEY", "HERMES_SESSION_PLATFORM"):
+    for key in (
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_GROUP_ID",
+        "HERMES_SESSION_PLATFORM",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -110,37 +115,126 @@ class TestOpenaiTtsSpeed:
 
 
 # ---------------------------------------------------------------------------
-# MiniMax TTS (new API: raw audio, no speed/voice_setting)
+# MiniMax TTS (t2a_v2 endpoint: nested voice_setting/audio_setting,
+# JSON response with hex-encoded audio.  Falls back to the legacy
+# text_to_speech endpoint shape when the base_url points at it.)
 # ---------------------------------------------------------------------------
 
-class TestMinimaxTtsSpeed:
-    def _run(self, tts_config, tmp_path, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"Content-Type": "audio/mpeg"}
-        mock_response.content = b"\x00\x01\x02\x03"
 
-        # requests is imported locally inside _generate_minimax_tts
-        with patch("requests.post", return_value=mock_response) as mock_post:
+def _hex_response(payload_audio: bytes = b"\x00\x01\x02\x03"):
+    """Build a mock response shaped like a successful t2a_v2 reply."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"Content-Type": "application/json"}
+    mock_response.json.return_value = {
+        "data": {"audio": payload_audio.hex(), "status": 2},
+        "base_resp": {"status_code": 0, "status_msg": "success"},
+    }
+    return mock_response
+
+
+class TestMinimaxTtsT2aV2:
+    """Default path: base_url contains 't2a_v2'."""
+
+    def _run(self, tts_config, tmp_path, monkeypatch, response=None):
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        resp = response if response is not None else _hex_response()
+        with patch("requests.post", return_value=resp) as mock_post:
             from tools.tts_tool import _generate_minimax_tts
             output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_post, output
 
-    def test_simple_payload(self, tmp_path, monkeypatch):
-        """New API uses flat payload with model, text, voice_id."""
+    def test_nested_payload(self, tmp_path, monkeypatch):
+        """Default endpoint uses nested voice_setting / audio_setting."""
         mock_post, _ = self._run({}, tmp_path, monkeypatch)
         payload = mock_post.call_args[1]["json"]
-        assert "model" in payload
-        assert "text" in payload
+        assert payload["model"] == "speech-02-hd"
+        assert payload["text"] == "Hello"
+        assert "voice_setting" in payload
+        assert payload["voice_setting"]["voice_id"] == "English_expressive_narrator"
+        assert "audio_setting" in payload
+        assert payload["audio_setting"]["format"] == "mp3"
+        # Don't send flat top-level voice_id alongside nested voice_setting.
+        assert "voice_id" not in payload
+
+    def test_decodes_hex_audio(self, tmp_path, monkeypatch):
+        """t2a_v2 hex-encoded audio is decoded and written verbatim."""
+        _, output = self._run({}, tmp_path, monkeypatch)
+        with open(output, "rb") as f:
+            assert f.read() == b"\x00\x01\x02\x03"
+
+    def test_default_url_is_t2a_v2(self, tmp_path, monkeypatch):
+        """Default base URL points at the live t2a_v2 endpoint."""
+        mock_post, _ = self._run({}, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert "t2a_v2" in url
+        assert "api.minimax.io" in url
+
+    def test_group_id_from_config(self, tmp_path, monkeypatch):
+        """group_id from config attaches as ?GroupId=<id>."""
+        mock_post, _ = self._run({"minimax": {"group_id": "G123"}}, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert "GroupId=G123" in url
+
+    def test_group_id_from_env(self, tmp_path, monkeypatch):
+        """MINIMAX_GROUP_ID env var attaches as ?GroupId=<id>."""
+        monkeypatch.setenv("MINIMAX_GROUP_ID", "G456")
+        mock_post, _ = self._run({}, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert "GroupId=G456" in url
+
+    def test_group_id_already_in_url_left_alone(self, tmp_path, monkeypatch):
+        """If user already set GroupId in base_url, don't double-append it."""
+        cfg = {"minimax": {
+            "base_url": "https://api.minimax.io/v1/t2a_v2?GroupId=PRESET",
+            "group_id": "IGNORED",
+        }}
+        mock_post, _ = self._run(cfg, tmp_path, monkeypatch)
+        url = mock_post.call_args[0][0]
+        assert url.count("GroupId=") == 1
+        assert "GroupId=PRESET" in url
+
+    def test_api_error_raises(self, tmp_path, monkeypatch):
+        """Non-zero base_resp.status_code surfaces as RuntimeError."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"Content-Type": "application/json"}
+        resp.json.return_value = {
+            "data": {"audio": "", "status": 1},
+            "base_resp": {"status_code": 2013, "status_msg": "invalid voice"},
+        }
+        with pytest.raises(RuntimeError, match="2013"):
+            self._run({}, tmp_path, monkeypatch, response=resp)
+
+
+class TestMinimaxTtsLegacyTextToSpeech:
+    """Legacy path: caller pins base_url to the old text_to_speech endpoint."""
+
+    LEGACY_URL = "https://api.minimax.chat/v1/text_to_speech"
+
+    def _run(self, tts_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        cfg = dict(tts_config)
+        cfg.setdefault("minimax", {})["base_url"] = self.LEGACY_URL
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "audio/mpeg"}
+        mock_response.content = b"\x00\x01\x02\x03"
+        with patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.tts_tool import _generate_minimax_tts
+            output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), cfg)
+        return mock_post, output
+
+    def test_flat_payload(self, tmp_path, monkeypatch):
+        """Legacy endpoint keeps the flat {model, text, voice_id} shape."""
+        mock_post, _ = self._run({}, tmp_path, monkeypatch)
+        payload = mock_post.call_args[1]["json"]
         assert "voice_id" in payload
         assert "voice_setting" not in payload
         assert "audio_setting" not in payload
-        assert "stream" not in payload
 
     def test_writes_raw_audio(self, tmp_path, monkeypatch):
-        """New API returns raw bytes written directly to file."""
+        """Legacy endpoint returns raw bytes written directly to file."""
         _, output = self._run({}, tmp_path, monkeypatch)
-        assert output == str(tmp_path / "out.mp3")
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"

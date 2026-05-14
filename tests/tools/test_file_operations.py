@@ -552,6 +552,38 @@ class TestPatchReplacePostWriteVerification:
         assert result.success is True
         assert state["content"] == "hi world\n", f"File not actually updated: {state['content']!r}"
 
+    def test_patch_replace_identical_old_new_reports_noop(self, mock_env):
+        """Identical old/new replacement should be a successful no-op, not a fuzzy-match failure."""
+        state = {"content": "hello world\n"}
+        writes = []
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):
+                writes.append(stdin_data)
+                state["content"] = stdin_data or ""
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hello")
+
+        assert result.success is True
+        assert result.noop is True
+        assert result.error is None
+        assert result.diff == ""
+        assert result.files_modified == []
+        assert result.message is not None
+        assert "old_string and new_string are identical" in result.message
+        assert writes == []
+        assert state["content"] == "hello world\n"
+
     def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
         """If the verify-read step itself fails (exit code != 0), return an error."""
         call_count = {"cat": 0}

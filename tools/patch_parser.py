@@ -285,6 +285,14 @@ def _validate_operations(
                 replace_lines = [l.content for l in hunk.lines if l.prefix in {' ', '+'}]
                 replacement = '\n'.join(replace_lines)
 
+                if search_pattern == replacement:
+                    # Pure-context/no-op hunk. Treat as valid without calling
+                    # fuzzy_find_and_replace(), which deliberately reports
+                    # identical old/new strings as a no-op. This keeps V4A
+                    # patch validation from surfacing harmless no-op hunks as
+                    # alarming validation failures.
+                    continue
+
                 new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
                     simulated, search_pattern, replacement, replace_all=False
                 )
@@ -394,8 +402,9 @@ def apply_v4a_operations(operations: List[PatchOperation],
             elif op.operation == OperationType.UPDATE:
                 result = _apply_update(op, file_ops)
                 if result[0]:
-                    files_modified.append(op.file_path)
-                    all_diffs.append(result[1])
+                    if result[1]:
+                        files_modified.append(op.file_path)
+                        all_diffs.append(result[1])
                 else:
                     errors.append(f"Failed to update {op.file_path}: {result[1]}")
 
@@ -423,6 +432,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
                   + "\n".join(f"  • {e}" for e in errors),
         )
 
+    changed = bool(files_modified or files_created or files_deleted)
     return PatchResult(
         success=True,
         diff=combined_diff,
@@ -430,6 +440,11 @@ def apply_v4a_operations(operations: List[PatchOperation],
         files_created=files_created,
         files_deleted=files_deleted,
         lint=lint_results if lint_results else None,
+        noop=not changed,
+        message=(
+            "No files modified: patch contained no effective changes. "
+            "If you expected a change, re-read the file and regenerate the patch."
+        ) if not changed else None,
     )
 
 
@@ -519,6 +534,10 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
             search_pattern = '\n'.join(search_lines)
             replacement = '\n'.join(replace_lines)
 
+            if search_pattern == replacement:
+                # Pure-context/no-op hunk. Nothing to apply.
+                continue
+
             new_content, count, _strategy, error = fuzzy_find_and_replace(
                 new_content, search_pattern, replacement, replace_all=False
             )
@@ -575,6 +594,9 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
             else:
                 new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
     
+    if new_content == current_content:
+        return True, ""
+
     # Write new content
     write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:

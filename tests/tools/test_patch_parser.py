@@ -186,6 +186,42 @@ class TestApplyUpdate:
             '    return result + 1'
         )
 
+    def test_pure_context_update_reports_noop_without_writing(self):
+        """A V4A update hunk with no effective change should be a clear no-op."""
+        patch = """\
+*** Begin Patch
+*** Update File: sample.py
+@@ def run @@
+ def run():
+     return 1
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            written = False
+
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="def run():\n    return 1\n",
+                    error=None,
+                )
+
+            def write_file(self, path, content):
+                self.written = True
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(operations, file_ops)
+
+        assert result.success is True
+        assert result.noop is True
+        assert result.message is not None
+        assert "No files modified" in result.message
+        assert result.files_modified == []
+        assert result.diff == ""
+        assert file_ops.written is False
+
 
 class TestAdditionOnlyHunks:
     """Regression tests for #3081 — addition-only hunks were silently dropped."""

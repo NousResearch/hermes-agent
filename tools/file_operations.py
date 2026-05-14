@@ -146,9 +146,11 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
+    noop: bool = False
+    message: Optional[str] = None
     
     def to_dict(self) -> dict:
-        result = {"success": self.success}
+        result: Dict[str, Any] = {"success": self.success}
         if self.diff:
             result["diff"] = self.diff
         if self.files_modified:
@@ -163,6 +165,10 @@ class PatchResult:
             result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
             result["error"] = self.error
+        if self.noop:
+            result["noop"] = True
+        if self.message:
+            result["message"] = self.message
         return result
 
 
@@ -1014,6 +1020,17 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
+
+        if old_string == new_string:
+            return PatchResult(
+                success=True,
+                noop=True,
+                message=(
+                    "No files modified: old_string and new_string are identical. "
+                    "If you expected a change, re-read the file and provide a "
+                    "replacement that differs from the matched text."
+                ),
+            )
         
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace

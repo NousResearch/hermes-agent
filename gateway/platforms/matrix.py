@@ -227,7 +227,7 @@ def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
     Lazy-installs mautrix via ``tools.lazy_deps.ensure("platform.matrix")``
-    on first call if not present.
+    on first call if not present. Rebinds all module-level type globals on success.
     """
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
     password = os.getenv("MATRIX_PASSWORD", "")
@@ -242,11 +242,27 @@ def check_matrix_requirements() -> bool:
     try:
         import mautrix  # noqa: F401
     except ImportError:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("platform.matrix", prompt=False)
-            import mautrix  # noqa: F401, F811
-        except Exception:
+        def _import():
+            from mautrix.types import (
+                ContentURI, EventID, EventType, PaginationDirection,
+                PresenceState, RoomCreatePreset, RoomID, SyncToken,
+                TrustState, UserID,
+            )
+            return {
+                "ContentURI": ContentURI,
+                "EventID": EventID,
+                "EventType": EventType,
+                "PaginationDirection": PaginationDirection,
+                "PresenceState": PresenceState,
+                "RoomCreatePreset": RoomCreatePreset,
+                "RoomID": RoomID,
+                "SyncToken": SyncToken,
+                "TrustState": TrustState,
+                "UserID": UserID,
+            }
+
+        from tools.lazy_deps import ensure_and_bind
+        if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
             logger.warning(
                 "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
             )

@@ -37,6 +37,7 @@ import logging
 import mimetypes
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -294,7 +295,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         auth_payload = await self._wait_for_handshake(req_id)
         errcode = auth_payload.get("errcode", 0)
-        if errcode not in (0, None):
+        if errcode not in {0, None}:
             errmsg = auth_payload.get("errmsg", "authentication failed")
             raise RuntimeError(f"{errmsg} (errcode={errcode})")
 
@@ -319,7 +320,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if self._payload_req_id(payload) == req_id:
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:
@@ -344,6 +345,7 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -359,7 +361,7 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -997,7 +999,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_error(response: Dict[str, Any]) -> Optional[str]:
         errcode = response.get("errcode", 0)
-        if errcode in (0, None):
+        if errcode in {0, None}:
             return None
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"
@@ -1562,12 +1564,11 @@ def qr_scan_for_bot_info(
     print("  Fetching configuration results...", end="", flush=True)
 
     # ── Step 3: Poll for result ──
-    import time
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
     query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
     poll_count = 0
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
             req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:

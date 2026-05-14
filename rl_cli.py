@@ -82,7 +82,7 @@ def load_hermes_config() -> dict:
     
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding='utf-8') as f:
                 file_config = yaml.safe_load(f) or {}
             
             # Get model from config
@@ -392,7 +392,7 @@ def main(
                 if not user_input:
                     continue
                 
-                if user_input.lower() in ('quit', 'exit', 'q'):
+                if user_input.lower() in {'quit', 'exit', 'q'}:
                     print("\n👋 Goodbye!")
                     break
                 

@@ -330,6 +330,7 @@ class TestPluginHooks:
         assert "post_api_request" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
+        assert "transform_llm_output" in VALID_HOOKS
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
@@ -535,6 +536,95 @@ class TestPreToolCallBlocking:
             ],
         )
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
+
+
+class TestThreadToolWhitelist:
+    """Tests for the thread-local tool whitelist used by background review forks."""
+
+    def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory", "skill_manage"})
+        try:
+            assert get_pre_tool_call_block_message("memory", {}) is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_disallowed_tool_blocked_with_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist(
+            {"memory"}, deny_msg_fmt="denied: {tool_name}"
+        )
+        try:
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg == "denied: terminal"
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_clear_restores_unrestricted_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory"})
+        clear_thread_tool_whitelist()
+        # After clearing, any tool should pass through to plugin hooks (which
+        # return [] here, so result is None).
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_whitelist_is_thread_local(self, monkeypatch):
+        """Setting a whitelist in one thread must NOT leak into another."""
+        import threading
+
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Main thread: install a restrictive whitelist.
+        set_thread_tool_whitelist({"memory"})
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) is not None
+
+            # Worker thread: should NOT inherit main thread's whitelist.
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert result["msg"] is None, (
+                "thread-local whitelist leaked across threads"
+            )
+        finally:
+            clear_thread_tool_whitelist()
 
 
 # ── TestPluginContext ──────────────────────────────────────────────────────
@@ -1231,3 +1321,77 @@ class TestPluginDispatchTool:
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
+
+
+class TestPluginDebugLogging:
+    """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
+
+    def test_debug_handler_not_installed_when_env_var_absent(self, monkeypatch):
+        """Without the env var, no stderr handler is attached."""
+        monkeypatch.delenv("HERMES_PLUGINS_DEBUG", raising=False)
+        from hermes_cli import plugins as plugins_mod
+
+        # Snapshot, then force a re-evaluation.
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is False
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is False
+            # No new stderr handler was attached.
+            assert plugins_mod.logger.handlers == original_handlers
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
+        """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is True
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is True
+            assert plugins_mod.logger.level == logging.DEBUG
+            new_handlers = [
+                h for h in plugins_mod.logger.handlers if h not in original_handlers
+            ]
+            assert len(new_handlers) == 1
+            assert isinstance(new_handlers[0], logging.StreamHandler)
+            assert new_handlers[0].level == logging.DEBUG
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_idempotent(self, monkeypatch):
+        """Calling install twice (without force) does not double-attach."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            count_after_first = len(plugins_mod.logger.handlers)
+            plugins_mod._install_plugin_debug_handler()  # no force
+            count_after_second = len(plugins_mod.logger.handlers)
+            assert count_after_first == count_after_second
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers

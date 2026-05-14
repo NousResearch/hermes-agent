@@ -206,9 +206,12 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        repo_dir = hermes_home / "hermes-agent"
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        repo_dir = Path(__file__).parent.parent.resolve()
         if not (repo_dir / ".git").exists():
-            repo_dir = Path(__file__).parent.parent.resolve()
+            repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
             return None
         behind = _check_via_local_git(repo_dir)
@@ -222,11 +225,16 @@ def check_for_updates() -> Optional[int]:
 
 
 def _resolve_repo_dir() -> Optional[Path]:
-    """Return the active Hermes git checkout, or None if this isn't a git install."""
-    hermes_home = get_hermes_home()
-    repo_dir = hermes_home / "hermes-agent"
+    """Return the active Hermes git checkout, or None if this isn't a git install.
+
+    Prefers the running code's location over the profile-scoped path
+    because ``$HERMES_HOME/hermes-agent/`` may be a stale copy carried
+    over by ``--clone-all``.
+    """
+    repo_dir = Path(__file__).parent.parent.resolve()
     if not (repo_dir / ".git").exists():
-        repo_dir = Path(__file__).parent.parent.resolve()
+        hermes_home = get_hermes_home()
+        repo_dir = hermes_home / "hermes-agent"
     return repo_dir if (repo_dir / ".git").exists() else None
 
 
@@ -573,6 +581,19 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Indicate when the codex_app_server runtime is active so users
+    # understand why tool counts may not match what's actually reachable
+    # (codex builds its own tool list inside the spawned subprocess).
+    try:
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        from hermes_cli.config import load_config as _load_cfg
+        if get_current_runtime(_load_cfg()) == "codex_app_server":
+            right_lines.append(
+                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
+                f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
+            )
+    except Exception:
+        pass
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name

@@ -886,3 +886,240 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
 
     assert "legacy-prune" in pruned_by_name
     assert "no-evidence fallback" in pruned_by_name["legacy-prune"]["source"]
+
+
+# ---------------------------------------------------------------------------
+# _build_rename_summary — surfaces the "where did my skills go?" map to the
+# user-visible curator summary (gateway 💾 line, CLI Rich panel,
+# `hermes curator status`). The full data has always been in REPORT.md on
+# disk; this helper makes it visible without digging.
+# ---------------------------------------------------------------------------
+
+
+def test_rename_summary_empty_when_nothing_archived(curator_env):
+    """No removals = empty string (no log noise on no-op ticks)."""
+    result = curator_env._build_rename_summary(
+        before_names={"alpha", "beta"},
+        after_report=[
+            {"name": "alpha", "state": "active"},
+            {"name": "beta", "state": "active"},
+        ],
+        tool_calls=[],
+        model_final="",
+    )
+    assert result == ""
+
+
+def test_rename_summary_consolidation_shows_target(curator_env):
+    """Consolidated skills render as `name → umbrella` with the actual target."""
+    result = curator_env._build_rename_summary(
+        before_names={"pdf-extraction", "docx-extraction", "document-tools"},
+        after_report=[{"name": "document-tools", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "pdf-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "docx-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    assert "archived 2 skill(s):" in result
+    assert "pdf-extraction → document-tools" in result
+    assert "docx-extraction → document-tools" in result
+    assert "full report: hermes curator status" in result
+
+
+def test_rename_summary_pruned_marked_explicitly(curator_env):
+    """Pruned skills (no umbrella) say `pruned (stale)` so users don't think they were merged."""
+    result = curator_env._build_rename_summary(
+        before_names={"old-flaky-thing", "keeper"},
+        after_report=[{"name": "keeper", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "old-flaky-thing",
+                    "absorbed_into": "",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    assert "old-flaky-thing — pruned (stale)" in result
+    assert "→" not in result.split("old-flaky-thing")[1].splitlines()[0]
+
+
+def test_rename_summary_caps_at_ten_with_more_indicator(curator_env):
+    """Large consolidations don't blow up the log line — cap + `… and N more`."""
+    removed = [f"skill-{i}" for i in range(15)]
+    tool_calls = [
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "delete",
+                "name": name,
+                "absorbed_into": "umbrella",
+            }),
+        }
+        for name in removed
+    ]
+    result = curator_env._build_rename_summary(
+        before_names=set(removed) | {"umbrella"},
+        after_report=[{"name": "umbrella", "state": "active"}],
+        tool_calls=tool_calls,
+        model_final="",
+    )
+    assert "archived 15 skill(s):" in result
+    assert "… and 5 more" in result
+    # Exactly 10 bullets shown
+    bullet_count = sum(1 for ln in result.splitlines() if ln.startswith("  • "))
+    assert bullet_count == 10
+
+
+def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
+    """Consolidated entries come first, pruned entries follow — matches REPORT.md ordering."""
+    result = curator_env._build_rename_summary(
+        before_names={"merge-me", "drop-me", "umbrella"},
+        after_report=[{"name": "umbrella", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "merge-me",
+                    "absorbed_into": "umbrella",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "drop-me",
+                    "absorbed_into": "",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    lines = result.splitlines()
+    merge_idx = next(i for i, ln in enumerate(lines) if "merge-me" in ln)
+    drop_idx = next(i for i, ln in enumerate(lines) if "drop-me" in ln)
+    assert merge_idx < drop_idx, "consolidated should render before pruned"
+    assert "merge-me → umbrella" in lines[merge_idx]
+    assert "drop-me — pruned (stale)" in lines[drop_idx]
+
+
+# ---------------------------------------------------------------------------
+# Pin hint — surfaces `hermes curator pin <umbrella>` in the rename block so
+# users learn the command exists at the moment they care (a consolidation
+# just landed against their library). The hint is gated on having at least
+# one umbrella destination — pruned-only runs skip it.
+# ---------------------------------------------------------------------------
+
+
+def test_rename_summary_pin_hint_appears_when_consolidation_produced_umbrella(curator_env):
+    """When at least one skill was absorbed into an umbrella, hint at pinning it."""
+    result = curator_env._build_rename_summary(
+        before_names={"pdf-extraction", "docx-extraction", "document-tools"},
+        after_report=[{"name": "document-tools", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "pdf-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "docx-extraction",
+                    "absorbed_into": "document-tools",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    assert "hermes curator pin document-tools" in result
+    assert "keep an umbrella stable" in result
+
+
+def test_rename_summary_pin_hint_skipped_for_pruned_only_runs(curator_env):
+    """Pruned-only runs have nothing surviving to pin — hint should not appear."""
+    result = curator_env._build_rename_summary(
+        before_names={"old-flaky-thing", "another-stale", "keeper"},
+        after_report=[{"name": "keeper", "state": "active"}],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "old-flaky-thing",
+                    "absorbed_into": "",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "another-stale",
+                    "absorbed_into": "",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    # Block still renders (skills were archived) but no pin hint.
+    assert "archived 2 skill(s):" in result
+    assert "hermes curator pin" not in result
+    assert "keep an umbrella stable" not in result
+
+
+def test_rename_summary_pin_hint_picks_one_umbrella_when_multiple_absorbed(curator_env):
+    """Multiple umbrellas → hint shows one example (alphabetically first), not a list."""
+    result = curator_env._build_rename_summary(
+        before_names={"a-skill", "b-skill", "umbrella-zeta", "umbrella-alpha"},
+        after_report=[
+            {"name": "umbrella-zeta", "state": "active"},
+            {"name": "umbrella-alpha", "state": "active"},
+        ],
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "a-skill",
+                    "absorbed_into": "umbrella-zeta",
+                }),
+            },
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "delete",
+                    "name": "b-skill",
+                    "absorbed_into": "umbrella-alpha",
+                }),
+            },
+        ],
+        model_final="",
+    )
+    # Sorted picks alphabetically first.
+    assert "hermes curator pin umbrella-alpha" in result
+    # Exactly one hint line, not one per umbrella.
+    pin_lines = [ln for ln in result.splitlines() if "hermes curator pin" in ln]
+    assert len(pin_lines) == 1

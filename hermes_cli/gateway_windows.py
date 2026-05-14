@@ -111,10 +111,6 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=_SCHTASKS_TIMEOUT_S,
-            # CREATE_NO_WINDOW avoids a flashing console window when the CLI
-            # is itself hosted in a TUI. See tools/browser_tool.py for the
-            # same pattern and the windows-subprocess-sigint-storm.md ref.
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
         return (proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired:

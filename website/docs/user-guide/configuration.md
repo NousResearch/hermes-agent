@@ -109,7 +109,7 @@ For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Blaxel, `contain
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
-| **blaxel** | Blaxel cloud sandbox | Full (cloud microVM) | Workspace-scoped sandboxes with standby/resume |
+| **blaxel** | Blaxel cloud sandbox | Full (cloud microVM) | Workspace-scoped sandboxes with volume persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -281,8 +281,8 @@ terminal:
   backend: blaxel
   blaxel_image: "blaxel/base-image:latest"  # Sandbox image
   blaxel_ttl: "24h"                         # Auto-expiration window (e.g. 30m, 24h)
-  container_memory: 5120                    # MB (default 5GB)
-  container_persistent: true                # Leave sandbox alive on cleanup
+  container_memory: 4096                    # MB (Blaxel default)
+  container_persistent: true                # Preserve files on a Blaxel volume
 ```
 
 **Required install:** Install the optional SDK extra:
@@ -299,9 +299,11 @@ BL_WORKSPACE=my-workspace
 BL_REGION=us-pdx-1   # optional, defaults to us-pdx-1
 ```
 
-**Persistence:** When `container_persistent: true`, Hermes creates (or reuses) a Blaxel volume `hermes-{task_id}-data` mounted at `/blaxel/persistent` and sets the agent cwd there. The volume survives sandbox deletion, TTL expiry, and platform churn — only an explicit volume delete removes it. On the next session Hermes reattaches by name; if the underlying sandbox is unresponsive (TERMINATED, evicted, etc.), Hermes deletes it and recreates a fresh one against the same volume. The sandbox itself goes to standby after ~15s idle and resumes in <25ms, so the warm path is also fast.
+**Persistence:** When `container_persistent: true`, Hermes creates (or reuses) a Blaxel volume named from the task id, mounted at `/blaxel/persistent`, and sets the agent cwd there. The volume survives sandbox deletion, TTL expiry, and platform churn; only an explicit volume delete removes it. During cleanup Hermes syncs files back and deletes the sandbox to avoid leaving live cloud resources around. On the next session Hermes creates a fresh sandbox against the same volume.
 
-**Resource limits:** Blaxel allocates CPU and disk per image profile. Only `container_memory` is forwarded to the sandbox. `container_cpu` and `container_disk` are accepted but ignored with a log message.
+If the workspace has no available Blaxel volume quota, persistent startup fails with a clear error. Set `container_persistent: false` for ephemeral sandboxes, or increase the workspace volume quota before enabling persistence.
+
+**Resource limits:** Blaxel allocates CPU and disk per image profile. Only `container_memory` is forwarded to the sandbox; Hermes defaults Blaxel to 4096 MB and lets users raise it if their workspace quota allows more. `container_cpu` and `container_disk` are accepted but ignored with a log message.
 
 **Timeouts:** Blaxel caps a single blocking exec at 60 seconds. For longer Hermes timeouts, the backend automatically falls back to async execution + polling so commands up to `terminal.timeout` work transparently.
 

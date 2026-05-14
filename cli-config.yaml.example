@@ -252,9 +252,11 @@ terminal:
 # OPTION 7: Blaxel cloud execution
 # Commands run in Blaxel cloud sandboxes (workspace-scoped, with volume-backed
 # persistence — files in /blaxel/persistent survive sandbox deletion).
-# Great for: Durable workspaces tied to a Blaxel workspace, fast standby/resume.
+# Great for: Durable workspaces tied to a Blaxel workspace.
 # Requires: pip install 'hermes-agent[blaxel]', BL_API_KEY + BL_WORKSPACE env vars.
 # Optional: BL_REGION (default us-pdx-1).
+# Persistent mode also requires Blaxel volume quota; set container_persistent
+# false for ephemeral sandboxes when volume quota is unavailable.
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "blaxel"
@@ -262,7 +264,7 @@ terminal:
 #   lifetime_seconds: 300
 #   blaxel_image: "blaxel/base-image:latest"   # Sandbox image
 #   blaxel_ttl: "24h"                          # Auto-expire window
-#   container_memory: 5120                     # MB; sized via image profile
+#   container_memory: 4096                     # MB; override if your workspace quota allows more
 #   container_persistent: true                 # Mount Blaxel volume at /blaxel/persistent
 
 #

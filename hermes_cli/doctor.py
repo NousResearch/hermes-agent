@@ -1100,7 +1100,7 @@ def run_doctor(args):
             check_ok("blaxel SDK", "(installed)")
         except ImportError:
             check_fail("blaxel SDK not installed", "(pip install 'hermes-agent[blaxel]')")
-            issues.append("Install the Blaxel optional dependency: pip install 'hermes-agent[blaxel]'")
+            issues.append("Install the Blaxel optional dependency: pip install 'hermes-agent[blaxel]' or blaxel==0.2.52")
 
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":

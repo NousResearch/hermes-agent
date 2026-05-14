@@ -1,6 +1,7 @@
 """Unit tests for the Blaxel cloud sandbox environment backend."""
 
 import threading
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -161,6 +162,31 @@ class TestPersistence:
         assert sandbox_config["labels"] == {"hermes_task_id": "mytask"}
         assert "volumes" in sandbox_config
 
+    def test_resource_names_are_sanitized_and_capped(self, make_env, blaxel_sdk):
+        task_id = "ABC/Some Very Long Task ID With Spaces and Symbols!" + ("x" * 80)
+        env = make_env(persistent=True, task_id=task_id)
+
+        sandbox_config = blaxel_sdk.SyncSandboxInstance.create.call_args[0][0]
+        volume_config = (
+            blaxel_sdk.SyncVolumeInstance.create_if_not_exists.call_args[0][0]
+        )
+        assert sandbox_config["name"].startswith("hermes-")
+        assert len(sandbox_config["name"]) <= 40
+        assert re.fullmatch(r"[a-z0-9-]+", sandbox_config["name"])
+        assert sandbox_config["name"] != f"hermes-{task_id}"
+        assert re.search(r"-[0-9a-f]{8}$", sandbox_config["name"])
+
+        assert volume_config["name"].startswith("hermes-")
+        assert volume_config["name"].endswith("-data")
+        assert len(volume_config["name"]) <= 40
+        assert re.fullmatch(r"[a-z0-9-]+", volume_config["name"])
+        assert re.search(r"-[0-9a-f]{8}-data$", volume_config["name"])
+
+        label_value = sandbox_config["labels"]["hermes_task_id"]
+        assert len(label_value) <= 63
+        assert re.fullmatch(r"[a-z0-9-]+", label_value)
+        assert label_value != task_id
+
     def test_non_persistent_creates_sandbox_without_volume(
         self, make_env, blaxel_sdk,
     ):
@@ -261,19 +287,33 @@ class TestVolume:
         assert "volumes" not in sandbox_config
         assert env._volume_name is None
 
-    def test_volume_creation_failure_falls_back_gracefully(
+    def test_volume_creation_failure_raises_before_sandbox_create(
         self, make_env, blaxel_sdk,
     ):
         blaxel_sdk.SyncVolumeInstance.create_if_not_exists.side_effect = (
             blaxel_sdk.VolumeAPIError("quota exceeded", status_code=403)
         )
-        env = make_env(persistent=True, task_id="mytask")
-        # Sandbox still gets created, just without a volume mount.
-        sandbox_config = blaxel_sdk.SyncSandboxInstance.create.call_args[0][0]
-        assert "volumes" not in sandbox_config
-        assert env._volume_name is None
-        # cwd falls back to home dir, not the volume mount.
-        assert env.cwd == "/root"
+        with pytest.raises(RuntimeError, match="persistent filesystem requested"):
+            make_env(persistent=True, task_id="mytask")
+        blaxel_sdk.SyncSandboxInstance.create.assert_not_called()
+
+    def test_persistent_without_volume_sdk_raises(self, blaxel_sdk, monkeypatch):
+        import sys
+
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+        monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
+        monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+        monkeypatch.setenv("BL_REGION", "us-pdx-1")
+        monkeypatch.delattr(sys.modules["blaxel.core"], "SyncVolumeInstance")
+
+        from tools.environments.blaxel import BlaxelEnvironment
+        with pytest.raises(RuntimeError, match="does not expose volume support"):
+            BlaxelEnvironment(
+                image="blaxel/base-image:latest",
+                persistent_filesystem=True,
+                task_id="mytask",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +322,13 @@ class TestVolume:
 
 
 class TestCleanup:
-    def test_persistent_cleanup_keeps_sandbox(self, make_env):
+    def test_persistent_cleanup_deletes_sandbox_and_preserves_volume(self, make_env):
         env = make_env(persistent=True)
         sb = env._sandbox
+        volume_name = env._volume_name
         env.cleanup()
-        sb.delete.assert_not_called()
+        sb.delete.assert_called_once()
+        assert volume_name is not None
 
     def test_non_persistent_cleanup_deletes_sandbox(self, make_env):
         env = make_env(persistent=False)
@@ -394,6 +436,24 @@ class TestExecuteLong:
         assert result["returncode"] == 0
         assert "hello" in result["output"]
 
+    def test_long_timeout_preserves_nonzero_exit_code(self, make_env, monkeypatch):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(stdout="/root"),
+            _make_exec_response(exit_code=0),
+            _make_exec_response(),
+        ]
+        sb.process.get.return_value = SimpleNamespace(
+            status="completed", exit_code=7, stdout="bad", stderr="", logs="bad",
+        )
+        monkeypatch.setattr("tools.environments.blaxel.time.sleep", lambda _s: None)
+
+        env = make_env(persistent=False, sandbox=sb, timeout=120)
+        result = env.execute("exit 7")
+
+        assert result["returncode"] == 7
+        assert "bad" in result["output"]
+
     def test_long_timeout_kills_on_timeout(self, make_env, monkeypatch):
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
@@ -460,6 +520,40 @@ class TestResourceHandling:
         env = make_env(ttl="1h")
         config = self._last_sandbox_config(blaxel_sdk)
         assert config["ttl"] == "1h"
+
+    def test_lazy_dep_registration(self):
+        from tools.lazy_deps import LAZY_DEPS
+        assert LAZY_DEPS["terminal.blaxel"] == ("blaxel==0.2.52",)
+
+    def test_wait_for_sandbox_ready_raises_on_timeout(
+        self, blaxel_sdk, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+        monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
+        monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+        monkeypatch.setenv("BL_REGION", "us-pdx-1")
+
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = RuntimeError("WORKLOAD_UNAVAILABLE")
+        blaxel_sdk.SyncSandboxInstance.create.return_value = sb
+
+        clock = {"t": 0.0}
+
+        def fake_monotonic():
+            clock["t"] += 100
+            return clock["t"]
+
+        monkeypatch.setattr("tools.environments.blaxel.time.monotonic", fake_monotonic)
+        monkeypatch.setattr("tools.environments.blaxel.time.sleep", lambda _s: None)
+
+        from tools.environments.blaxel import BlaxelEnvironment
+        with pytest.raises(RuntimeError, match="did not become ready"):
+            BlaxelEnvironment(
+                image="blaxel/base-image:latest",
+                persistent_filesystem=False,
+                task_id="timeout",
+            )
 
 
 # ---------------------------------------------------------------------------

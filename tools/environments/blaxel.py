@@ -2,7 +2,7 @@
 
 Uses the Blaxel Python SDK (``blaxel.core.SyncSandboxInstance``) to run
 commands in cloud sandboxes. Supports persistent sandboxes: when enabled,
-a Blaxel volume named ``hermes-{task_id}-data`` is created (or reused)
+a task-scoped Blaxel volume is created (or reused)
 and mounted at ``/blaxel/persistent`` on the sandbox. The volume survives
 sandbox deletion / TTL expiry, so the agent's working files remain
 durable across sessions even if the sandbox itself goes away.
@@ -10,6 +10,8 @@ durable across sessions even if the sandbox itself goes away.
 
 import logging
 import os
+import hashlib
+import re
 import shlex
 import threading
 import time
@@ -41,6 +43,36 @@ _BLAXEL_POLL_INTERVAL_SECONDS = 1.0
 # When ``persistent_filesystem=True``, this directory is durable across
 # sandbox recreation; everything else in the sandbox is ephemeral.
 _BLAXEL_VOLUME_MOUNT_PATH = "/blaxel/persistent"
+_BLAXEL_RESOURCE_MAX_LENGTH = 40
+_BLAXEL_LABEL_MAX_LENGTH = 63
+_BLAXEL_HASH_LENGTH = 8
+
+
+def _safe_blaxel_component(value: str, max_length: int) -> str:
+    """Return a DNS-label-safe, deterministic Blaxel name component."""
+    raw = str(value or "default")
+    slug = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug) or "default"
+    if len(slug) <= max_length:
+        return slug
+
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_BLAXEL_HASH_LENGTH]
+    keep = max(1, max_length - _BLAXEL_HASH_LENGTH - 1)
+    prefix = slug[:keep].rstrip("-") or slug[:keep]
+    return f"{prefix}-{digest}"
+
+
+def _blaxel_resource_name(prefix: str, task_id: str, suffix: str = "") -> str:
+    """Build a Blaxel resource name capped for downstream platform labels."""
+    component_max = _BLAXEL_RESOURCE_MAX_LENGTH - len(prefix) - len(suffix) - 1
+    if component_max < _BLAXEL_HASH_LENGTH + 2:
+        raise ValueError("Blaxel resource prefix/suffix leaves no room for task id")
+    component = _safe_blaxel_component(task_id, component_max)
+    return f"{prefix}-{component}{suffix}"
+
+
+def _blaxel_label_value(task_id: str) -> str:
+    return _safe_blaxel_component(task_id, _BLAXEL_LABEL_MAX_LENGTH)
 
 
 class BlaxelEnvironment(BaseEnvironment):
@@ -59,7 +91,7 @@ class BlaxelEnvironment(BaseEnvironment):
         cwd: str = "/blaxel",
         timeout: int = 60,
         cpu: int = 1,
-        memory: int = 5120,
+        memory: int = 4096,
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
@@ -91,8 +123,9 @@ class BlaxelEnvironment(BaseEnvironment):
         self._sandbox = None
         self._volume_name: str | None = None
 
-        sandbox_name = f"hermes-{task_id}"
+        sandbox_name = _blaxel_resource_name("hermes", task_id)
         self._sandbox_name = sandbox_name
+        task_label = _blaxel_label_value(task_id)
 
         bl_region = os.getenv("BL_REGION", "").strip() or "us-pdx-1"
 
@@ -108,7 +141,7 @@ class BlaxelEnvironment(BaseEnvironment):
             "memory": int(memory),
             "ttl": ttl,
             "region": bl_region,
-            "labels": {"hermes_task_id": task_id},
+            "labels": {"hermes_task_id": task_label},
         }
 
         if cpu and int(cpu) != 1:
@@ -119,8 +152,14 @@ class BlaxelEnvironment(BaseEnvironment):
         # When persistent, ensure a Blaxel volume exists and mount it.
         # Blaxel sandboxes can disappear (TTL, platform churn); only volumes
         # are truly durable, so all real persistence lives there.
-        if self._persistent and SyncVolumeInstance is not None:
-            volume_name = f"hermes-{task_id}-data"
+        if self._persistent:
+            if SyncVolumeInstance is None:
+                raise RuntimeError(
+                    "Blaxel persistent filesystem requested, but the installed "
+                    "blaxel SDK does not expose volume support. Set "
+                    "terminal.container_persistent=false or install a newer SDK."
+                )
+            volume_name = _blaxel_resource_name("hermes", task_id, "-data")
             self._volume_name = volume_name
             volume_size_mb = max(1024, int(memory))
             try:
@@ -128,7 +167,7 @@ class BlaxelEnvironment(BaseEnvironment):
                     "name": volume_name,
                     "size": volume_size_mb,
                     "region": bl_region,
-                    "labels": {"hermes_task_id": task_id},
+                    "labels": {"hermes_task_id": task_label},
                 })
                 logger.info("Blaxel: ensured volume %s (%d MB, region=%s)",
                             volume_name, volume_size_mb, bl_region)
@@ -139,10 +178,16 @@ class BlaxelEnvironment(BaseEnvironment):
                 }]
             except Exception as e:
                 logger.warning(
-                    "Blaxel: could not ensure volume %s (%s) — continuing "
-                    "without persistent volume mount", volume_name, e,
+                    "Blaxel: could not ensure volume %s (%s)",
+                    volume_name, e,
                 )
                 self._volume_name = None
+                raise RuntimeError(
+                    "Blaxel persistent filesystem requested, but volume "
+                    f"{volume_name!r} could not be created or reused: {e}. "
+                    "Set terminal.container_persistent=false to use an "
+                    "ephemeral sandbox."
+                ) from e
 
         self._sandbox = self._create_or_recreate_sandbox(sandbox_config)
         logger.info(
@@ -291,9 +336,10 @@ class BlaxelEnvironment(BaseEnvironment):
                 last_err = e
                 time.sleep(delay)
                 delay = min(delay * 2, 8.0)
-        logger.warning(
-            "Blaxel: sandbox %s did not become ready within %.0fs (last error: %s)",
-            self._sandbox_name, max_wait_seconds, last_err,
+        raise RuntimeError(
+            "Blaxel sandbox "
+            f"{self._sandbox_name} did not become ready within "
+            f"{max_wait_seconds:.0f}s (last error: {last_err})"
         )
 
     def _blaxel_upload(self, host_path: str, remote_path: str) -> None:
@@ -430,7 +476,9 @@ class BlaxelEnvironment(BaseEnvironment):
                 continue
             last_status = getattr(proc_info, "status", None)
             if last_status and str(last_status) not in ("running", "ProcessResponseStatus.RUNNING"):
-                exit_code = getattr(proc_info, "exit_code", None) or 0
+                exit_code = getattr(proc_info, "exit_code", None)
+                if exit_code is None:
+                    exit_code = 0
                 return self._collect_output(proc_info, process_name, exit_code=exit_code)
             time.sleep(_BLAXEL_POLL_INTERVAL_SECONDS)
 
@@ -479,12 +527,13 @@ class BlaxelEnvironment(BaseEnvironment):
 
             try:
                 if self._persistent:
+                    self._sandbox.delete()
                     logger.info(
-                        "Blaxel: leaving sandbox %s alive%s",
+                        "Blaxel: deleted sandbox %s%s",
                         self._sandbox_name,
                         f" (volume {self._volume_name} preserved)"
                         if self._volume_name else
-                        " (platform standby; sandbox may still expire on TTL)",
+                        " (no persistent volume mounted)",
                     )
                 else:
                     self._sandbox.delete()

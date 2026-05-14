@@ -512,9 +512,17 @@ class GatewayStreamConsumer:
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
                     # path below so we don't finalize here for it.
+                    #
+                    # Exception: streaming cards (e.g. Feishu CardKit v2) span
+                    # the entire response — segment breaks just send a mid-
+                    # stream update without cursor; the card keeps accumulating
+                    # text and is only finalized on got_done.
+                    _finalize_segment = (
+                        got_segment_break and not self._uses_streaming_card
+                    )
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=(got_done or got_segment_break),
+                        finalize=(got_done or _finalize_segment),
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -567,22 +575,26 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
-                    # If the segment-break edit failed to deliver the
-                    # accumulated content (flood control that has not yet
-                    # promoted to fallback mode, or fallback mode itself),
-                    # _accumulated still holds pre-boundary text the user
-                    # never saw. Flush that tail as a continuation message
-                    # before the reset below wipes _accumulated — otherwise
-                    # text generated before the tool boundary is silently
-                    # dropped (issue #8124).
-                    if (
+                    # Streaming cards: keep the same card alive across
+                    # segments.  Tool progress messages from the gateway
+                    # appear as separate platform messages between card
+                    # updates.  The card's streaming_md content keeps
+                    # growing with the full accumulated text.
+                    if self._uses_streaming_card and self._message_id:
+                        # Don't reset — _accumulated keeps growing,
+                        # _message_id stays so edits continue hitting
+                        # the same card.
+                        pass
+                    elif (
                         self._accumulated
                         and not current_update_visible
                         and self._message_id
                         and self._message_id != "__no_edit__"
                     ):
                         await self._flush_segment_tail_on_edit_failure()
-                    self._reset_segment_state(preserve_no_edit=True)
+                        self._reset_segment_state(preserve_no_edit=True)
+                    else:
+                        self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 

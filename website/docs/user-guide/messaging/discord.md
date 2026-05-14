@@ -437,6 +437,33 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### `discord.history_backfill`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, the bot recovers missed channel messages on each `@mention`. With `require_mention: true`, the bot only processes messages that tag it directly — everything else in the channel is invisible. History backfill scans backwards through recent channel history when triggered, collecting messages between the bot's last response and the current mention, and includes them as context.
+
+This is most useful for **shared sessions** (`group_sessions_per_user: false`) where multiple users contribute to the same conversation and the bot needs to see what happened between turns.
+
+```yaml
+discord:
+  history_backfill: true
+```
+
+> **Note:** Messages that arrive *while* the bot is processing (between a trigger and its response) are not captured. This is an accepted simplification — the user can re-send or tag again.
+
+#### `discord.history_backfill_limit`
+
+**Type:** integer — **Default:** `50`
+
+Maximum number of messages to scan backwards when recovering channel context. In practice the scan usually stops much earlier — at the bot's own last message in the channel, which is the natural boundary between turns. This limit is a safety cap for cold starts and long gaps where no prior bot message exists in recent history.
+
+```yaml
+discord:
+  history_backfill: true
+  history_backfill_limit: 50
+```
+
 #### `group_sessions_per_user`
 
 **Type:** boolean — **Default:** `true`

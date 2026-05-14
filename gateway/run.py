@@ -9198,8 +9198,12 @@ class GatewayRunner:
                 model_cfg = cfg.setdefault("model", {})
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
-                if result.base_url:
-                    model_cfg["base_url"] = result.base_url
+                model_cfg["api_mode"] = result.api_mode or model_cfg.get("api_mode", "")
+                # Keep config honest: when switching from a custom endpoint back
+                # to OAuth/built-in providers, clear stale base_url instead of
+                # leaving the previous custom URL behind.
+                model_cfg["base_url"] = result.base_url or ""
+
                 from hermes_cli.config import save_config
                 save_config(cfg)
             except Exception as e:

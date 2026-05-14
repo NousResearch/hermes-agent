@@ -619,13 +619,27 @@ def resolve_custom_provider(
             first_valid = (display_name, api_url)
 
         slug = custom_provider_slug(display_name)
-        if requested not in {display_name.lower(), slug}:
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        provider_key_norm = provider_key.lower().replace(" ", "-") if provider_key else ""
+        provider_slug = f"custom:{provider_key_norm}" if provider_key_norm else ""
+        if requested not in {display_name.lower(), slug, provider_key_norm, provider_slug}:
             continue
 
+        # Preserve custom provider wire protocol. Previously every custom provider
+        # resolved as openai_chat here, so /model labels and persisted switches
+        # could drift from the actual runtime api_mode (e.g. codex_responses for
+        # AutoCode/CN proxy).
+        api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip()
+        transport = "openai_chat"
+        if api_mode == "codex_responses":
+            transport = "codex_responses"
+        elif api_mode == "anthropic_messages":
+            transport = "anthropic_messages"
+
         return ProviderDef(
-            id=slug,
+            id=provider_slug or slug,
             name=display_name,
-            transport="openai_chat",
+            transport=transport,
             api_key_env_vars=(),
             base_url=api_url,
             is_aggregator=False,

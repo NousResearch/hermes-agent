@@ -182,6 +182,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="openrouter",
+        custom_providers=[],
     )
 
 
@@ -205,6 +206,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         api_key="sk-test",
         config_context_length=None,
         provider="openrouter",
+        custom_providers=[],
     )
 
 
@@ -258,6 +260,52 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="",
+        custom_providers=[],
+    )
+
+
+def test_feasibility_check_passes_custom_provider_context_overrides():
+    """Compression feasibility must honor custom_providers context_length.
+
+    Otherwise a named custom endpoint can resolve the main model from config
+    as 400K while the same compression model falls through to the generic
+    256K default, causing a false auto-lowered threshold warning.
+    """
+    agent = _make_agent(main_context=400_000, threshold_percent=0.75)
+    agent.model = "gpt-5.5"
+    agent.provider = "custom:openai"
+    agent.base_url = "https://vip.auto-code.net/v1"
+
+    custom_providers = [
+        {
+            "name": "OpenAI",
+            "base_url": "https://vip.auto-code.net/v1",
+            "models": {"gpt-5.5": {"context_length": 400_000}},
+        }
+    ]
+    mock_client = MagicMock()
+    mock_client.base_url = "https://vip.auto-code.net/v1"
+    mock_client.api_key = "sk-custom"
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={"custom_providers": custom_providers}),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=custom_providers),
+        patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.5")),
+        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom:openai", "gpt-5.5", "", "", {})),
+        patch("agent.model_metadata.get_model_context_length", return_value=400_000) as mock_ctx_len,
+    ):
+        messages = []
+        agent._emit_status = lambda msg: messages.append(msg)
+        agent._check_compression_model_feasibility()
+
+    assert messages == []
+    mock_ctx_len.assert_called_once_with(
+        "gpt-5.5",
+        base_url="https://vip.auto-code.net/v1",
+        api_key="sk-custom",
+        config_context_length=None,
+        provider="custom:openai",
+        custom_providers=custom_providers,
     )
 
 

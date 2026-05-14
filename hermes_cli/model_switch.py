@@ -1580,6 +1580,8 @@ def list_authenticated_providers(
                 continue
 
             raw_name = (entry.get("name") or "").strip()
+            raw_provider_key = str(entry.get("provider_key", "") or "").strip()
+            provider_key_slug = f"custom:{raw_provider_key.lower().replace(' ', '-')}" if raw_provider_key else ""
             api_url = (
                 entry.get("base_url", "")
                 or entry.get("url", "")
@@ -1612,14 +1614,15 @@ def list_authenticated_providers(
                 ):
                     # Guard against bare "custom" slug left by a prior
                     # failed switch — always resolve to the canonical
-                    # custom:<name> form.  (GH #17478)
+                    # custom:<name> form. Prefer explicit provider_key when
+                    # present so stable short slugs like custom:cliproxy work.
                     slug = (
                         current_provider
                         if current_provider and current_provider != "custom"
-                        else custom_provider_slug(display_name)
+                        else (provider_key_slug or custom_provider_slug(display_name))
                     )
                 else:
-                    slug = custom_provider_slug(display_name)
+                    slug = provider_key_slug or custom_provider_slug(display_name)
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,

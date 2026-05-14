@@ -3240,6 +3240,13 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            _aux_custom_providers = None
+            try:
+                from hermes_cli.config import load_config, get_compatible_custom_providers
+                _aux_cfg = load_config()
+                _aux_custom_providers = get_compatible_custom_providers(_aux_cfg)
+            except Exception:
+                _aux_custom_providers = None
 
             aux_context = get_model_context_length(
                 aux_model,
@@ -3250,7 +3257,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
-                custom_providers=self._custom_providers,
+                custom_providers=_aux_custom_providers,
             )
 
             # Hard floor: the auxiliary compression model must have at least

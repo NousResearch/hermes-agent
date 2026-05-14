@@ -2851,7 +2851,7 @@ def _normalize_custom_provider_entry(
     _KNOWN_KEYS = {
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "context_length", "rate_limit_delay", "provider_key", "description",
         "request_timeout_seconds", "stale_timeout_seconds",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -2903,7 +2903,7 @@ def _normalize_custom_provider_entry(
         "base_url": base_url,
     }
 
-    provider_key = provider_key.strip()
+    provider_key = (provider_key.strip() or str(entry.get("provider_key", "") or "").strip())
     if provider_key:
         normalized["provider_key"] = provider_key
 
@@ -3103,7 +3103,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay",
+    "context_length", "rate_limit_delay", "provider_key", "description",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

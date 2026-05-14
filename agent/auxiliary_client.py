@@ -303,6 +303,7 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "opencode-go",  # glm-5/5.1 don't support image input; fall back to vision model
 })
 
 # OpenRouter app attribution headers (base — always sent).

@@ -277,6 +277,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
+                if results:
+                    store.touch_facts([r["fact_id"] for r in results])
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "probe":
@@ -285,6 +287,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                if results:
+                    store.touch_facts([r["fact_id"] for r in results])
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "related":
@@ -293,6 +297,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                if results:
+                    store.touch_facts([r["fact_id"] for r in results])
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "reason":
@@ -304,6 +310,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                if results:
+                    store.touch_facts([r["fact_id"] for r in results])
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "contradict":
@@ -311,6 +319,15 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
                 )
+                # Touch all facts involved in contradictions
+                if results:
+                    fact_ids = set()
+                    for pair in results:
+                        for key in ("fact_a", "fact_b"):
+                            if key in pair and "fact_id" in pair[key]:
+                                fact_ids.add(pair[key]["fact_id"])
+                    if fact_ids:
+                        store.touch_facts(list(fact_ids))
                 return json.dumps({"results": results, "count": len(results)})
 
             elif action == "update":

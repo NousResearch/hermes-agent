@@ -55,6 +55,43 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _normalize_toolset_list(value) -> list[str]:
+    """Normalize config-provided toolset names while preserving order."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        return []
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in raw_items:
+        name = str(item).strip()
+        if name and name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
+
+
+def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+    """Resolve toolsets a cron-spawned agent must never receive.
+
+    Cron always withholds tools that would recurse or require interactive
+    user input from unattended jobs. User-level ``agent.disabled_toolsets``
+    must be layered on top so per-job ``enabled_toolsets`` cannot bypass the
+    same policy that applies to ordinary agent runs.
+    """
+    disabled = ["cronjob", "messaging", "clarify"]
+    if isinstance(cfg, dict):
+        agent_cfg = cfg.get("agent", {})
+        if isinstance(agent_cfg, dict):
+            disabled.extend(_normalize_toolset_list(agent_cfg.get("disabled_toolsets")))
+    return _normalize_toolset_list(disabled)
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -1442,7 +1479,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

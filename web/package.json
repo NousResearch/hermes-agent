@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "sync-assets": "node -e \"const fs=require('fs');fs.rmSync('public/fonts',{recursive:true,force:true});fs.rmSync('public/ds-assets',{recursive:true,force:true});fs.cpSync('node_modules/@nous-research/ui/dist/fonts','public/fonts',{recursive:true});fs.cpSync('node_modules/@nous-research/ui/dist/assets','public/ds-assets',{recursive:true});\"",
+    "sync-assets": "node scripts/sync-assets.mjs",
     "predev": "npm run sync-assets",
     "prebuild": "npm run sync-assets",
     "dev": "vite",

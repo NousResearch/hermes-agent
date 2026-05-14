@@ -985,7 +985,11 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        response = _translate_azure_deployment_error(
+            lambda: self._client.messages.create(**anthropic_kwargs),
+            base_url=getattr(self._client, "base_url", None),
+            model=model,
+        )
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -1096,6 +1100,106 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return True
     return False
+
+
+# ── Azure DeploymentNotFound translation ──────────────────────────────────
+#
+# When an Azure Foundry deployment doesn't exist (typo in deployment name,
+# or model not deployed in this resource), the Anthropic / OpenAI SDKs raise
+# a generic 404 wrapping an Azure error body like::
+#
+#     {"error": {"code": "DeploymentNotFound", "message":
+#      "The API deployment for this resource does not exist..."}}
+#
+# Surface this to the user with a clearer, actionable message instead of an
+# opaque ``status_code: 404`` traceback.  Triggered only when the SDK call
+# target is an Azure-hosted endpoint (``*.openai.azure.com``).
+
+_AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS = (
+    "deploymentnotfound",
+    "the api deployment for this resource does not exist",
+)
+
+
+def _is_azure_endpoint(base_url: Any) -> bool:
+    if not base_url:
+        return False
+    try:
+        return base_url_host_matches(str(base_url), "openai.azure.com")
+    except Exception:
+        return False
+
+
+def _extract_azure_error_body(exc: BaseException) -> str:
+    """Best-effort extraction of the Azure error body from an SDK exception."""
+    parts: list[str] = []
+    for attr in ("message", "body"):
+        value = getattr(exc, attr, None)
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            try:
+                parts.append(json.dumps(value))
+            except Exception:
+                parts.append(str(value))
+        else:
+            parts.append(str(value))
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        parts.append(text)
+    parts.append(str(exc))
+    return "\n".join(p for p in parts if p)
+
+
+def _detect_azure_deployment_not_found(exc: BaseException) -> bool:
+    """Return True when ``exc`` looks like an Azure DeploymentNotFound 404."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        # Some SDKs nest the status on .response.status_code
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status not in (None, 400, 404):
+        return False
+    body = _extract_azure_error_body(exc).lower()
+    return any(token in body for token in _AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS)
+
+
+def _log_azure_deployment_not_found(
+    *, base_url: Any, model: Any, exc: BaseException,
+) -> None:
+    """Emit a single WARNING that names the missing deployment + base_url.
+
+    Caller is responsible for re-raising the original exception — this helper
+    only translates the diagnostic surface, it does not swallow the failure.
+    """
+    logger.warning(
+        "Azure Foundry: deployment %r not found at %s — verify the deployment "
+        "name exists in the Azure portal (Foundry → Deployments) or run "
+        "`hermes model` to pick a deployed model. Upstream said: %s",
+        model, base_url, _extract_azure_error_body(exc).strip()[:400],
+    )
+
+
+def _translate_azure_deployment_error(
+    fn,
+    *,
+    base_url: Any,
+    model: Any,
+):
+    """Run ``fn()``; on Azure DeploymentNotFound, log a clear WARNING and
+    re-raise the original exception unchanged.
+
+    Narrow trigger: only fires when ``base_url`` matches ``*.openai.azure.com``
+    and the exception body contains an Azure DeploymentNotFound marker. All
+    other errors pass through untouched.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        if _is_azure_endpoint(base_url) and _detect_azure_deployment_not_found(exc):
+            _log_azure_deployment_not_found(base_url=base_url, model=model, exc=exc)
+        raise
 
 
 def _maybe_wrap_anthropic(

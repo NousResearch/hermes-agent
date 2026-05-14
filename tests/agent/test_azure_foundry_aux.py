@@ -183,5 +183,97 @@ class TestAzureFoundryExplicitOverrides:
 
 
 # ── Bug B: DeploymentNotFound translation ─────────────────────────────────
-# (added in the Bug B commit)
 
+
+class _FakeAzureError(Exception):
+    """Approximation of the anthropic / openai NotFoundError shape."""
+
+    def __init__(self, status_code: int, body: dict):
+        super().__init__(body.get("error", {}).get("message", "error"))
+        self.status_code = status_code
+        self.body = body
+        self.message = body.get("error", {}).get("message", "")
+
+
+class TestAzureDeploymentNotFoundTranslation:
+    def test_404_with_deployment_not_found_logs_warning(self, caplog):
+        from agent.auxiliary_client import _translate_azure_deployment_error
+
+        body = {
+            "error": {
+                "code": "DeploymentNotFound",
+                "message": (
+                    "The API deployment for this resource does not exist. "
+                    "If you created the deployment within the last 5 minutes, "
+                    "please wait a moment and try again."
+                ),
+            }
+        }
+        exc = _FakeAzureError(404, body)
+
+        def boom():
+            raise exc
+
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with pytest.raises(_FakeAzureError):
+            _translate_azure_deployment_error(
+                boom,
+                base_url="https://example.openai.azure.com/anthropic",
+                model="claude-haiku-4-5",
+            )
+
+        assert any(
+            "claude-haiku-4-5" in rec.getMessage()
+            and "example.openai.azure.com" in rec.getMessage()
+            for rec in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_non_azure_endpoint_does_not_trigger(self, caplog):
+        from agent.auxiliary_client import _translate_azure_deployment_error
+
+        exc = _FakeAzureError(404, {"error": {"code": "DeploymentNotFound",
+                                              "message": "DeploymentNotFound"}})
+
+        def boom():
+            raise exc
+
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with pytest.raises(_FakeAzureError):
+            _translate_azure_deployment_error(
+                boom,
+                base_url="https://api.anthropic.com",
+                model="claude-opus-4-7",
+            )
+        # No Azure-translation warning should have fired.
+        assert not any("Azure Foundry: deployment" in r.getMessage()
+                       for r in caplog.records)
+
+    def test_non_404_passes_through(self, caplog):
+        from agent.auxiliary_client import _translate_azure_deployment_error
+
+        exc = _FakeAzureError(500, {"error": {"code": "ServerError",
+                                              "message": "boom"}})
+
+        def boom():
+            raise exc
+
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with pytest.raises(_FakeAzureError):
+            _translate_azure_deployment_error(
+                boom,
+                base_url="https://example.openai.azure.com/anthropic",
+                model="claude-haiku-4-5",
+            )
+        assert not any("Azure Foundry: deployment" in r.getMessage()
+                       for r in caplog.records)
+
+    def test_success_returns_value(self):
+        from agent.auxiliary_client import _translate_azure_deployment_error
+
+        sentinel = object()
+        result = _translate_azure_deployment_error(
+            lambda: sentinel,
+            base_url="https://example.openai.azure.com/anthropic",
+            model="claude-opus-4-7",
+        )
+        assert result is sentinel

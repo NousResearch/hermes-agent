@@ -2039,12 +2039,19 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
+def _run_on_mcp_loop(
+    coro,
+    timeout: float = 30,
+    activity_label: str = "waiting for MCP call",
+    activity_interval: float = 10.0,
+):
     """Schedule a coroutine on the MCP event loop and block until done.
 
     Poll in short intervals so the calling agent thread can honor user
-    interrupts while the MCP work is still running on the background loop.
+    interrupts and emit gateway activity while the MCP work is still running on
+    the background loop.
     """
+    from tools.environments.base import touch_activity_if_due
     from tools.interrupt import is_interrupted
 
     with _lock:
@@ -2053,12 +2060,19 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     start_time = time.monotonic()
+    activity_state = {
+        "start": start_time,
+        "last_touch": start_time - max(0.0, float(activity_interval)),
+        "interval": max(0.0, float(activity_interval)),
+    }
     deadline = None if timeout is None else start_time + timeout
 
     while True:
         if is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
+
+        touch_activity_if_due(activity_state, activity_label)
 
         wait_timeout = 0.1
         if deadline is not None:

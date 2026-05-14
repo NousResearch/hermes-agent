@@ -54,7 +54,7 @@ async def test_stop_never_enters_pending_queue_when_busy():
 
 
 @pytest.mark.asyncio
-async def test_worker_request_does_not_fall_through_to_main_when_frontdesk_enabled():
+async def test_worker_request_starts_default_worker_when_frontdesk_enabled():
     from gateway.run import GatewayRunner
 
     runner, _sentinel = _make_runner()
@@ -63,18 +63,23 @@ async def test_worker_request_does_not_fall_through_to_main_when_frontdesk_enabl
     event = _make_event(text="워커 레인에 배당해서 이 회귀를 조사해줘")
     runner.adapters[event.source.platform] = adapter
 
-    with patch.object(GatewayRunner, "_run_agent", autospec=True) as run_agent:
+    with patch.object(GatewayRunner, "_run_agent", autospec=True) as run_agent, patch(
+        "agent.frontdesk_live._run_default_worker_subprocess",
+        return_value="worker done",
+    ):
         result = await GatewayRunner._handle_message(runner, event)
 
     run_agent.assert_not_called()
     assert isinstance(result, str)
-    assert "worker lane unavailable" in result
+    assert "worker started" in result
     runtime = get_orchestration_runtime(runner)
     assert runtime is not None
+    assert "main" in runtime.worker_registry.lane_names()
     tasks = runtime.task_registry.list_tasks()
     assert len(tasks) == 1
-    assert tasks[0].status == STATUS_CANCELLED
-    assert "no worker lane" in " ".join(tasks[0].notes)
+    assert tasks[0].status != STATUS_CANCELLED
+    assert tasks[0].active_worker_id
+    assert "worker started" in " ".join(tasks[0].notes)
 
 
 @pytest.mark.asyncio

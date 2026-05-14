@@ -360,6 +360,7 @@ class OrchestrationRuntime:
             metadata={
                 "frontdesk_fingerprint": decision.fingerprint,
                 "source_surface": source_surface,
+                "session_key": session_key,
             },
         )
         handle = self.worker_registry.start(spec)

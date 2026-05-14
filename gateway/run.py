@@ -8688,6 +8688,28 @@ class GatewayRunner:
                 return running_agent.steer(payload)
             return False
 
+        adapter = self.adapters.get(event.source.platform)
+        loop = asyncio.get_running_loop()
+
+        def _notify_worker_done(payload: str) -> None:
+            if adapter is None:
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=payload,
+                        metadata=self._thread_metadata_for_source(
+                            event.source,
+                            getattr(event, "message_id", None),
+                        ),
+                    ),
+                    loop,
+                )
+                fut.result(timeout=30)
+            except Exception:
+                logger.debug("Failed to send frontdesk worker completion", exc_info=True)
+
         from agent.frontdesk_live import handle_frontdesk_live_input
 
         result = handle_frontdesk_live_input(
@@ -8698,6 +8720,7 @@ class GatewayRunner:
             main_in_flight=main_in_flight,
             steer_callback=_steer_active if main_in_flight else None,
             cancel_callback=_cancel_active if main_in_flight else None,
+            notify_callback=_notify_worker_done,
         )
         if result is None:
             return None

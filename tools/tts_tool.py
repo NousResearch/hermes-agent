@@ -9,6 +9,7 @@ Built-in TTS providers:
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- Xiaomi MiMo V2.5 TTS: Preset voices, voice design/clone, style tags, needs MIMO_API_KEY or XIAOMI_API_KEY
 - xAI TTS: Grok voices, needs XAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
@@ -172,6 +173,20 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_MIMO_TTS_MODEL = "mimo-v2.5-tts"
+DEFAULT_MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
+DEFAULT_MIMO_TTS_VOICE = "冰糖"
+MIMO_TTS_PRESET_VOICES = frozenset({
+    "mimo_default",
+    "冰糖",
+    "茉莉",
+    "苏打",
+    "白桦",
+    "Mia",
+    "Chloe",
+    "Milo",
+    "Dean",
+})
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -197,6 +212,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "mimo": 2500,         # MiMo V2.5 TTS docs recommend splitting beyond 2500 chars
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -344,6 +360,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "mimo",
     "neutts",
     "kittentts",
     "piper",
@@ -953,6 +970,212 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         f.write(response.content)
 
     return output_path
+
+
+# ===========================================================================
+# Provider: Xiaomi MiMo V2.5 TTS
+# ===========================================================================
+def _mimo_env(*names: str) -> str:
+    """Return the first non-empty environment/config value for *names*."""
+    for name in names:
+        value = (get_env_value(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_mimo_api_key() -> str:
+    api_key = _mimo_env("MIMO_API_KEY", "XIAOMI_API_KEY", "VOICE_TOOLS_OPENAI_KEY")
+    if not api_key:
+        raise ValueError(
+            "MIMO_API_KEY or XIAOMI_API_KEY not set. Get one at https://platform.xiaomimimo.com"
+        )
+    return api_key
+
+
+def _resolve_mimo_base_url(mimo_config: Dict[str, Any]) -> str:
+    base_url = str(
+        mimo_config.get("base_url")
+        or _mimo_env("MIMO_TTS_BASE_URL", "XIAOMI_BASE_URL")
+        or DEFAULT_MIMO_TTS_BASE_URL
+    ).strip().rstrip("/")
+    # Accept either the API root or a full chat-completions-ish base, but the
+    # OpenAI SDK expects the /v1 root.
+    if base_url.endswith("/chat/completions"):
+        base_url = base_url[: -len("/chat/completions")].rstrip("/")
+    return base_url
+
+
+def _guess_mimo_mode(model: str, mimo_config: Dict[str, Any]) -> str:
+    mode = str(mimo_config.get("mode") or "").strip().lower().replace("_", "-")
+    if mode in {"preset", "tts", "builtin", "built-in"}:
+        return "preset"
+    if mode in {"voicedesign", "voice-design", "design"}:
+        return "voicedesign"
+    if mode in {"voiceclone", "voice-clone", "clone"}:
+        return "voiceclone"
+    if model.endswith("-voicedesign"):
+        return "voicedesign"
+    if model.endswith("-voiceclone"):
+        return "voiceclone"
+    return "preset"
+
+
+def _mimo_voice_profile(mimo_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve optional tts.mimo.voices.<name> profile overrides."""
+    voice_name = str(
+        mimo_config.get("voice_profile")
+        or mimo_config.get("profile")
+        or mimo_config.get("voice")
+        or ""
+    ).strip()
+    voices = mimo_config.get("voices")
+    if voice_name and isinstance(voices, dict):
+        profile = voices.get(voice_name)
+        if isinstance(profile, dict):
+            return profile
+    return {}
+
+
+def _mimo_context(mimo_config: Dict[str, Any], profile: Dict[str, Any]) -> str:
+    return str(
+        mimo_config.get("context")
+        or mimo_config.get("style")
+        or profile.get("context")
+        or profile.get("style")
+        or ""
+    ).strip()
+
+
+def _encode_mimo_voice_file(path_str: str) -> str:
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"MiMo voice clone sample not found: {path}")
+    suffix = path.suffix.lower()
+    mime_map = {".mp3": "audio/mpeg", ".wav": "audio/wav"}
+    mime = mime_map.get(suffix)
+    if not mime:
+        raise ValueError("MiMo voiceclone voice_file must be mp3 or wav")
+    data = path.read_bytes()
+    if len(data) > 10 * 1024 * 1024:
+        raise ValueError("MiMo voiceclone voice_file is too large (max 10 MB)")
+    return f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"
+
+
+def _mimo_audio_format_for_output(output_path: str, mimo_config: Dict[str, Any]) -> tuple[str, str, bool]:
+    """Return (api_format, actual_output_path, caller_wants_ogg)."""
+    requested = str(mimo_config.get("format") or "").strip().lower()
+    suffix = Path(output_path).suffix.lower()
+    want_ogg = suffix == ".ogg"
+    if want_ogg:
+        # MiMo does not support opus directly. Generate a regular file first,
+        # then let Hermes/ffmpeg convert it to OGG Opus.
+        api_format = "mp3" if requested not in {"wav", "pcm", "pcm16"} else "wav"
+        actual = str(Path(output_path).with_suffix(f".{api_format}"))
+        return api_format, actual, True
+    if suffix in {".wav", ".mp3", ".pcm", ".pcm16"}:
+        return suffix[1:], output_path, False
+    if requested in {"wav", "mp3", "pcm", "pcm16"}:
+        actual = str(Path(output_path).with_suffix(f".{requested}"))
+        return requested, actual, False
+    return "mp3", str(Path(output_path).with_suffix(".mp3")), False
+
+
+def _extract_mimo_audio_data(message: Any) -> str:
+    audio = getattr(message, "audio", None)
+    if not audio:
+        raise RuntimeError("MiMo TTS response did not contain audio data")
+    if isinstance(audio, dict):
+        data = audio.get("data")
+    else:
+        data = getattr(audio, "data", None)
+    if not data:
+        raise RuntimeError("MiMo TTS response audio.data is empty")
+    return data
+
+
+def _generate_mimo_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech with Xiaomi MiMo V2.5 TTS series.
+
+    Official API shape: OpenAI-compatible chat.completions with an ``audio``
+    parameter. ``role=user`` carries optional style/director instructions;
+    ``role=assistant`` carries the text to synthesize.
+    """
+    mimo_config = tts_config.get("mimo", {}) if isinstance(tts_config.get("mimo"), dict) else {}
+    profile = _mimo_voice_profile(mimo_config)
+
+    api_key = _resolve_mimo_api_key()
+    base_url = _resolve_mimo_base_url(mimo_config)
+    model = str(
+        mimo_config.get("model")
+        or profile.get("model")
+        or DEFAULT_MIMO_TTS_MODEL
+    ).strip()
+    mode = _guess_mimo_mode(model, mimo_config)
+    context = _mimo_context(mimo_config, profile)
+    audio_format, actual_output, want_ogg = _mimo_audio_format_for_output(output_path, mimo_config)
+
+    messages = []
+    if context:
+        messages.append({"role": "user", "content": context})
+    elif mode == "voicedesign":
+        raise ValueError("MiMo voicedesign requires tts.mimo.context or tts.mimo.style")
+    messages.append({"role": "assistant", "content": text})
+
+    audio: Dict[str, Any] = {"format": audio_format}
+    if mode == "preset":
+        voice = str(mimo_config.get("voice") or profile.get("voice") or DEFAULT_MIMO_TTS_VOICE).strip()
+        if not voice:
+            voice = DEFAULT_MIMO_TTS_VOICE
+        if voice not in MIMO_TTS_PRESET_VOICES:
+            logger.warning("MiMo preset voice %r is not in the documented preset list", voice)
+        audio["voice"] = voice
+    elif mode == "voiceclone":
+        voice_file = str(
+            mimo_config.get("voice_file")
+            or mimo_config.get("voice_sample")
+            or profile.get("voice_file")
+            or profile.get("voice_sample")
+            or ""
+        ).strip()
+        if not voice_file:
+            raise ValueError("MiMo voiceclone requires tts.mimo.voice_file")
+        audio["voice"] = _encode_mimo_voice_file(voice_file)
+    elif mode == "voicedesign":
+        # No audio.voice for voicedesign: the user/context message describes it.
+        pass
+    else:
+        raise ValueError(f"Unsupported MiMo TTS mode: {mode}")
+
+    OpenAIClient = _import_openai_client()
+    client = OpenAIClient(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers={"api-key": api_key},
+    )
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            audio=audio,
+            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+        )
+        message = completion.choices[0].message
+        audio_data = _extract_mimo_audio_data(message)
+        Path(actual_output).parent.mkdir(parents=True, exist_ok=True)
+        with open(actual_output, "wb") as f:
+            f.write(base64.b64decode(audio_data))
+
+        if want_ogg:
+            ogg_path = _convert_to_opus(actual_output)
+            if ogg_path:
+                return ogg_path
+            logger.warning("MiMo TTS: ffmpeg opus conversion failed; returning %s", actual_output)
+        return actual_output
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 # ===========================================================================
@@ -1705,6 +1928,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
 
+        elif provider == "mimo":
+            try:
+                _import_openai_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "MiMo provider selected but 'openai' package not installed.",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Xiaomi MiMo TTS...")
+            file_str = _generate_mimo_tts(text, file_str, tts_config)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -1790,7 +2024,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
+        elif provider in {"edge", "neutts", "minimax", "xai", "mimo", "kittentts", "piper"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1870,6 +2104,8 @@ def check_tts_requirements() -> bool:
     if get_env_value("XAI_API_KEY"):
         return True
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        return True
+    if _mimo_env("MIMO_API_KEY", "XIAOMI_API_KEY", "VOICE_TOOLS_OPENAI_KEY"):
         return True
     try:
         _import_mistral_client()

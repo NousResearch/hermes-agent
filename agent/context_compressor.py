@@ -1185,6 +1185,26 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx += 1
         return idx
 
+    def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
+        """Total count of head messages to protect.
+
+        ``protect_first_n`` is defined as *additional* messages protected
+        beyond the system prompt.  The system prompt (if present at index 0)
+        is always implicitly protected — it's load-bearing context that
+        must never be summarised away.  This keeps semantics stable across
+        call paths where the system prompt may or may not be included in
+        the ``messages`` list (e.g. the gateway ``/compress`` handler
+        strips it before calling compress()).
+
+        Examples:
+          protect_first_n=0 → system prompt only (or nothing if no system msg)
+          protect_first_n=3 → system + first 3 non-system messages
+        """
+        head = 0
+        if messages and messages[0].get("role") == "system":
+            head = 1
+        return head + self.protect_first_n
+
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
@@ -1343,7 +1363,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         skip the LLM call when the transcript is still entirely inside
         the protected head/tail.
         """
-        compress_start = self._align_boundary_forward(messages, self.protect_first_n)
+        compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         return compress_start < compress_end
 
@@ -1379,7 +1399,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_model = None
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -1399,7 +1419,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
+        compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count

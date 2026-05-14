@@ -66,6 +66,7 @@ declare module '@hermes/ink' {
     readonly exitOnCtrlC?: boolean
     readonly patchConsole?: boolean
     readonly onFrame?: (event: FrameEvent) => void
+    readonly onHyperlinkClick?: (url: string) => void
   }
 
   export type Instance = {

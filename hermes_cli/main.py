@@ -3079,6 +3079,21 @@ def _model_flow_custom(config):
             else:
                 print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
+    # Prompt for API compatibility mode explicitly so codex-compatible custom
+    # providers don't silently fall back to chat_completions.
+    current_model_cfg = config.get("model")
+    current_api_mode = ""
+    if isinstance(current_model_cfg, dict):
+        current_api_mode = str(current_model_cfg.get("api_mode") or "").strip()
+    api_mode = _prompt_custom_api_mode_selection(
+        effective_url,
+        current_api_mode=current_api_mode,
+    )
+    if api_mode:
+        print(f"  API mode: {api_mode}")
+    else:
+        print("  API mode: auto-detect")
+
     # Select model — use probe results when available, fall back to manual input
     model_name = ""
     detected_models = probe.get("models") or []
@@ -3142,7 +3157,10 @@ def _model_flow_custom(config):
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
-        model.pop("api_mode", None)  # let runtime auto-detect from URL
+        if api_mode:
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -3165,7 +3183,10 @@ def _model_flow_custom(config):
         _caller_model["base_url"] = effective_url
         if effective_key:
             _caller_model["api_key"] = effective_key
-        _caller_model.pop("api_mode", None)
+        if api_mode:
+            _caller_model["api_mode"] = api_mode
+        else:
+            _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
@@ -3176,7 +3197,78 @@ def _model_flow_custom(config):
         model_name or "",
         context_length=context_length,
         name=display_name,
+        api_mode=api_mode,
     )
+
+
+def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
+    """Prompt for a custom provider API mode.
+
+    Returns an explicit mode string, or None to keep auto-detect behavior.
+    """
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+    detected_mode = _detect_api_mode_for_url(base_url)
+    normalized_current = str(current_api_mode or "").strip().lower()
+    default_mode = normalized_current or detected_mode or ""
+
+    mode_options = [
+        (
+            "",
+            "Auto-detect",
+            "Use Hermes URL heuristics; best for standard OpenAI-compatible endpoints.",
+        ),
+        (
+            "chat_completions",
+            "Chat Completions",
+            "Use /chat/completions for standard OpenAI-compatible servers.",
+        ),
+        (
+            "codex_responses",
+            "Responses / Codex",
+            "Use /responses for Codex-compatible tool-calling backends.",
+        ),
+        (
+            "anthropic_messages",
+            "Anthropic Messages",
+            "Use /v1/messages for Anthropic-compatible endpoints.",
+        ),
+    ]
+
+    print()
+    print("Select API compatibility mode:")
+    for idx, (value, label, description) in enumerate(mode_options, 1):
+        markers = []
+        if value == detected_mode:
+            markers.append("detected")
+        if value == default_mode:
+            markers.append("current")
+        suffix = f" [{' / '.join(markers)}]" if markers else ""
+        print(f"  {idx}. {label}{suffix}")
+        print(f"     {description}")
+
+    try:
+        raw = input(
+            "Choice [1-4, Enter to keep current/detected]: "
+        ).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        raise
+
+    if not raw:
+        return default_mode or None
+
+    if raw in {"1", "auto", "detect", "auto-detect"}:
+        return None
+    if raw in {"2", "chat", "chat_completions", "completions"}:
+        return "chat_completions"
+    if raw in {"3", "responses", "codex", "codex_responses"}:
+        return "codex_responses"
+    if raw in {"4", "anthropic", "anthropic_messages", "messages"}:
+        return "anthropic_messages"
+
+    print(f"Invalid API mode choice: {raw}. Falling back to auto-detect.")
+    return None
 
 
 def _auto_provider_name(base_url: str) -> str:
@@ -3214,12 +3306,12 @@ def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None
+    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
-    model name and context_length but doesn't add a duplicate entry.
+    model name, context_length, and api_mode but doesn't add a duplicate entry.
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
@@ -3245,6 +3337,13 @@ def _save_custom_provider(
                 models_cfg[model] = {"context_length": context_length}
                 entry["models"] = models_cfg
                 changed = True
+            if api_mode:
+                if entry.get("api_mode") != api_mode:
+                    entry["api_mode"] = api_mode
+                    changed = True
+            elif "api_mode" in entry:
+                entry.pop("api_mode", None)
+                changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
@@ -3259,6 +3358,8 @@ def _save_custom_provider(
         entry["api_key"] = api_key
     if model:
         entry["model"] = model
+    if api_mode:
+        entry["api_mode"] = api_mode
     if model and context_length:
         entry["models"] = {model: {"context_length": context_length}}
 
@@ -3712,7 +3813,7 @@ def _model_flow_named_custom(config, provider_info):
                 save_config(cfg)
     else:
         # Save model name to the custom_providers entry for next time
-        _save_custom_provider(base_url, config_api_key, model_name)
+        _save_custom_provider(base_url, config_api_key, model_name, api_mode=api_mode)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
@@ -4869,6 +4970,37 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         )
         if model_list:
             print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
+    elif provider_id == "novita":
+        from hermes_cli.models import fetch_api_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        if live_models:
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+        else:
+            mdev_models: list = []
+            try:
+                from agent.models_dev import list_agentic_models
+
+                mdev_models = list_agentic_models(provider_id)
+            except Exception:
+                pass
+            if mdev_models:
+                seen = {m.lower() for m in mdev_models}
+                model_list = list(mdev_models)
+                for m in curated:
+                    if m.lower() not in seen:
+                        model_list.append(m)
+                        seen.add(m.lower())
+                print(f"  Found {len(model_list)} model(s) from models.dev registry")
+            else:
+                model_list = curated
+                if model_list:
+                    print(
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                    )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -9168,7 +9300,7 @@ def _build_provider_choices() -> list[str]:
             "auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot",
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
-            "stepfun", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee",
+            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
         ]
 
@@ -9188,10 +9320,10 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "mcp", "memory", "model",
-        "pairing", "plugins", "profile", "sessions", "setup", "skills",
-        "slack", "status", "tools", "uninstall", "update", "version",
-        "webhook", "whatsapp", "chat",
+        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
+        "model", "pairing", "plugins", "profile", "sessions", "setup",
+        "skills", "slack", "status", "tools", "uninstall", "update",
+        "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.

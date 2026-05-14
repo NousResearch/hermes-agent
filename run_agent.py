@@ -2122,7 +2122,7 @@ class AIAgent:
         # is a legitimate (and common) configuration for long-running
         # rolling-compaction sessions.
         compression_protect_first = max(
-            0, int(_compression_cfg.get("protect_first_n", 2))
+            0, int(_compression_cfg.get("protect_first_n", 3))
         )
 
         # Read optional explicit context_length override for the auxiliary

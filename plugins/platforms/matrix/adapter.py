@@ -120,7 +120,8 @@ from plugins.platforms.matrix.room_admin import administer_matrix_pin, administe
 from plugins.platforms.matrix.image_packs import matrix_image_packs
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    SendResult, resolve_channel_prompt, resolve_channel_skills, resolve_proxy_url,
+    proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import (
@@ -2499,7 +2500,10 @@ class MatrixAdapter(MatrixMediaMixin, MatrixFeedbackMixin, MatrixIntakeMixin, Ma
             reply_to_is_own_message=reply.is_own_message,
             reply_to_author_authorized=reply.author_authorized,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name,
+            auto_skill=resolve_channel_skills(self.config.extra, room_id),
+            channel_prompt=resolve_channel_prompt(self.config.extra, room_id),
+            **extra)
         if reply.media_path and reply.event_id and reply.media_content_id:
             event._quoted_media_dependencies = (
                 QuotedMediaDependency(

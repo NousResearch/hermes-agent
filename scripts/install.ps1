@@ -980,7 +980,24 @@ function Set-PathVariable {
     
     # Update current session
     $env:Path = "$hermesBin;$env:Path"
-    
+
+    # Work around a uv bug on Windows where the generated hermes.exe launcher
+    # embeds the Python path with a leading double-quote, producing the error:
+    #   No Python at '"C:\...\python.exe'
+    # A .bat file in the same directory takes CMD/PowerShell precedence over
+    # the .exe, so writing hermes.bat here is a transparent, non-destructive fix.
+    if (-not $NoVenv) {
+        $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+        $batPath   = "$InstallDir\venv\Scripts\hermes.bat"
+        $batContent = "@echo off`r`n`"$pythonExe`" -c `"from hermes_cli.main import main; main()`" %*`r`n"
+        try {
+            [System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
+            Write-Success "Created hermes.bat launcher (uv exe workaround)"
+        } catch {
+            Write-Warn "Could not create hermes.bat: $_"
+        }
+    }
+
     Write-Success "hermes command ready"
 }
 

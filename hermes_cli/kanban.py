@@ -1393,6 +1393,11 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     the dashboard uses, so CLI output matches what the UI shows.
     """
     from hermes_cli import kanban_diagnostics as kd
+    from hermes_cli.config import load_config
+
+    diag_config = kd.config_from_kanban_config(
+        (load_config().get("kanban") or {})
+    )
 
     with kb.connect() as conn:
         # Either one-task mode or fleet mode.
@@ -1406,6 +1411,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    config=diag_config,
                 )
             }
         else:
@@ -1433,7 +1439,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
-                    dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []))
+                    dl = kd.compute_task_diagnostics(
+                        r,
+                        ev_by.get(tid, []),
+                        run_by.get(tid, []),
+                        config=diag_config,
+                    )
                     if dl:
                         diags_by_task[tid] = dl
 

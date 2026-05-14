@@ -177,8 +177,66 @@ def test_repeated_failures_escalates_to_critical():
 
 
 def test_repeated_failures_below_threshold_silent():
-    task = _task(consecutive_failures=2)
+    task = _task(consecutive_failures=1)
     assert kd.compute_task_diagnostics(task, [], []) == []
+
+
+def test_repeated_failures_default_matches_dispatcher_failure_limit():
+    """Default dispatcher auto-blocks at 2 failures, so diagnostics must
+    also surface at 2 instead of waiting for the stale threshold of 3.
+    """
+    task = _task(status="blocked", consecutive_failures=2,
+                 last_failure_error="elapsed 600s > limit 300s")
+    runs = [_run(outcome="timed_out", run_id=1)]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    d = repeated[0]
+    assert d.data["failure_threshold"] == 2
+    assert d.data["failure_limit"] == 2
+    assert "default 5" not in d.detail
+    assert "configured for 2" in d.detail
+
+
+def test_repeated_failures_derives_threshold_from_kanban_failure_limit():
+    task = _task(status="ready", consecutive_failures=2,
+                 last_failure_error="Profile 'debugger' does not exist")
+    runs = [_run(outcome="spawn_failed", run_id=1)]
+    assert kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 4}
+    ) == []
+
+    task = _task(status="blocked", consecutive_failures=4,
+                 last_failure_error="Profile 'debugger' does not exist")
+    diags = kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 4}
+    )
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["failure_threshold"] == 4
+    assert repeated[0].data["failure_limit"] == 4
+
+
+def test_repeated_failures_explicit_threshold_overrides_failure_limit():
+    task = _task(status="ready", consecutive_failures=3,
+                 last_failure_error="Profile 'debugger' does not exist")
+    runs = [_run(outcome="spawn_failed", run_id=1)]
+    diags = kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 5, "failure_threshold": 3}
+    )
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["failure_threshold"] == 3
+    assert repeated[0].data["failure_limit"] == 5
+
+
+def test_config_from_kanban_config_preserves_explicit_diagnostics_threshold():
+    cfg = kd.config_from_kanban_config({
+        "failure_limit": 5,
+        "diagnostics": {"failure_threshold": 3},
+    })
+    assert cfg["failure_threshold"] == 3
+    assert cfg["failure_limit"] == 5
 
 
 def test_repeated_crashes_counts_trailing_streak_only():

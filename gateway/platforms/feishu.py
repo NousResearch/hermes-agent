@@ -1470,6 +1470,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
+        # Event that the drainer waits on instead of polling with time.sleep.
+        # Set once (and only once) when self._loop is assigned so that any
+        # thread blocked in _drain_pending_inbound_events wakes immediately.
+        self._loop_ready_event = threading.Event()
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
@@ -1687,6 +1691,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return False
 
             self._loop = asyncio.get_running_loop()
+            self._loop_ready_event.set()  # unblock any waiting drainer threads
             await self._connect_with_retry()
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
@@ -2347,70 +2352,31 @@ class FeishuAdapter(BasePlatformAdapter):
     def _drain_pending_inbound_events(self) -> None:
         """Replay queued inbound events once the adapter loop is ready.
 
-        Runs in a dedicated daemon thread. Polls ``_running`` and
-        ``_loop_accepts_callbacks`` until events can be dispatched or the
-        adapter shuts down. A single drainer handles the entire queue;
-        concurrent ``_on_message_event`` calls just append.
+        Runs in a dedicated daemon thread. Waits on ``_loop_ready_event``
+        (set when ``self._loop`` is assigned) instead of polling with
+        ``time.sleep``, then dispatches queued events via
+        ``asyncio.run_coroutine_threadsafe``.  A single drainer handles the
+        entire queue; concurrent ``_on_message_event`` calls just append.
         """
-        poll_interval = 0.25
         max_wait_seconds = 120.0  # safety cap: drop queue after 2 minutes
-        waited = 0.0
         try:
-            while True:
-                if not getattr(self, "_running", True):
-                    # Adapter shutting down — drop queued events rather than
-                    # holding them against a closed loop.
-                    with self._pending_inbound_lock:
-                        dropped = len(self._pending_inbound_events)
-                        self._pending_inbound_events.clear()
-                    if dropped:
-                        logger.warning(
-                            "[Feishu] Dropped %d queued inbound event(s) during shutdown",
-                            dropped,
-                        )
-                    return
-                loop = self._loop
-                if self._loop_accepts_callbacks(loop):
-                    with self._pending_inbound_lock:
-                        batch = self._pending_inbound_events[:]
-                        self._pending_inbound_events.clear()
-                    if not batch:
-                        # Queue emptied between check and grab; done.
-                        with self._pending_inbound_lock:
-                            if not self._pending_inbound_events:
-                                return
-                        continue
-                    dispatched = 0
-                    requeue: List[Any] = []
-                    for event in batch:
-                        try:
-                            fut = asyncio.run_coroutine_threadsafe(
-                                self._handle_message_event_data(event),
-                                loop,
-                            )
-                            fut.add_done_callback(self._log_background_failure)
-                            dispatched += 1
-                        except RuntimeError:
-                            # Loop closed between check and submit — requeue
-                            # and poll again.
-                            requeue.append(event)
-                    if requeue:
-                        with self._pending_inbound_lock:
-                            self._pending_inbound_events[:0] = requeue
-                    if dispatched:
-                        logger.info(
-                            "[Feishu] Replayed %d queued inbound event(s)",
-                            dispatched,
-                        )
-                    if not requeue:
-                        # Successfully drained; check if more arrived while
-                        # we were dispatching and exit if not.
-                        with self._pending_inbound_lock:
-                            if not self._pending_inbound_events:
-                                return
-                    # More events queued or requeue pending — loop again.
-                    continue
-                if waited >= max_wait_seconds:
+            if not getattr(self, "_running", True):
+                # Adapter shutting down — drop queued events rather than
+                # holding them against a closed loop.
+                with self._pending_inbound_lock:
+                    dropped = len(self._pending_inbound_events)
+                    self._pending_inbound_events.clear()
+                if dropped:
+                    logger.warning(
+                        "[Feishu] Dropped %d queued inbound event(s) during shutdown",
+                        dropped,
+                    )
+                return
+
+            loop = self._loop
+            if not self._loop_accepts_callbacks(loop):
+                # Block efficiently until the loop becomes ready or timeout.
+                if not self._loop_ready_event.wait(timeout=max_wait_seconds):
                     with self._pending_inbound_lock:
                         dropped = len(self._pending_inbound_events)
                         self._pending_inbound_events.clear()
@@ -2421,8 +2387,70 @@ class FeishuAdapter(BasePlatformAdapter):
                         dropped,
                     )
                     return
-                time.sleep(poll_interval)
-                waited += poll_interval
+                loop = self._loop
+
+            while True:
+                if not getattr(self, "_running", True):
+                    with self._pending_inbound_lock:
+                        dropped = len(self._pending_inbound_events)
+                        self._pending_inbound_events.clear()
+                    if dropped:
+                        logger.warning(
+                            "[Feishu] Dropped %d queued inbound event(s) during shutdown",
+                            dropped,
+                        )
+                    return
+                loop = self._loop
+                if not self._loop_accepts_callbacks(loop):
+                    # Loop closed after being ready (e.g. mid-reconnect); give
+                    # up rather than re-waiting with a fresh timeout.
+                    with self._pending_inbound_lock:
+                        dropped = len(self._pending_inbound_events)
+                        self._pending_inbound_events.clear()
+                    if dropped:
+                        logger.warning(
+                            "[Feishu] Loop closed during drain; dropped %d queued inbound event(s)",
+                            dropped,
+                        )
+                    return
+                with self._pending_inbound_lock:
+                    batch = self._pending_inbound_events[:]
+                    self._pending_inbound_events.clear()
+                if not batch:
+                    # Queue emptied between check and grab; done.
+                    with self._pending_inbound_lock:
+                        if not self._pending_inbound_events:
+                            return
+                    continue
+                dispatched = 0
+                requeue: List[Any] = []
+                for event in batch:
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            self._handle_message_event_data(event),
+                            loop,
+                        )
+                        fut.add_done_callback(self._log_background_failure)
+                        dispatched += 1
+                    except RuntimeError:
+                        # Loop closed between check and submit — requeue
+                        # and poll again.
+                        requeue.append(event)
+                if requeue:
+                    with self._pending_inbound_lock:
+                        self._pending_inbound_events[:0] = requeue
+                if dispatched:
+                    logger.info(
+                        "[Feishu] Replayed %d queued inbound event(s)",
+                        dispatched,
+                    )
+                if not requeue:
+                    # Successfully drained; check if more arrived while
+                    # we were dispatching and exit if not.
+                    with self._pending_inbound_lock:
+                        if not self._pending_inbound_events:
+                            return
+                # More events queued or requeue pending — loop again.
         finally:
             with self._pending_inbound_lock:
                 self._pending_drain_scheduled = False

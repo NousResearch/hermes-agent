@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -599,9 +599,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             if "_loop_manager" not in current:
                 try:
                     from hermes_cli.loop import LoopManager
-                    key = current.get("session_key") or sid
+                    lk = current.get("session_key") or sid
                     current["_loop_manager"] = LoopManager(
-                        session_id=key,
+                        session_id=lk,
                         dispatch=_make_tui_dispatch(current, sid),
                     )
                 except Exception:
@@ -628,68 +628,26 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
-def _ensure_loop_ticker(session: dict, sid: str) -> None:
-    """Start a per-session daemon ticker that fires active loop prompts.
+def _make_tui_dispatch(session: dict, sid: str) -> Callable[[str], bool]:
+    """Return a dispatch callback that injects loop prompts via _run_prompt_submit.
 
-    The slash_worker only persists loop state to SessionDB; this
-    long-lived gateway process is responsible for ticking.  The
-    ticker re-reads ``load_loop(session_key)`` every second, so it
-    automatically adapts to pause/resume/clear/re-set without
-    needing explicit coordination with the slash_worker.
-
-    Idempotent — subsequent calls are no-ops once the ticker is
-    running for this session.
+    The callback returns True if the prompt was submitted, False if the
+    session is busy and the ticker should retry next tick.
     """
-    if session.get("_loop_ticker_running"):
-        return
-    session["_loop_ticker_running"] = True
-
-    def _tick() -> None:
-        while session.get("_loop_ticker_running"):
-            time.sleep(1)
-            try:
-                from hermes_cli.loop import load_loop, save_loop
-
-                # Read session_key fresh each tick — compression can rotate it
-                sk = session.get("session_key") or sid
-                if not sk:
-                    continue
-
-                state = load_loop(sk)
-                if state is None or state.status != "active":
-                    continue
-
-                now = time.time()
-                if (
-                    state.last_fired_at > 0
-                    and (now - state.last_fired_at) < state.interval_seconds
-                ):
-                    continue  # not time yet
-
-                # Fire — same pattern as goal continuation
-                with session["history_lock"]:
-                    if session.get("running"):
-                        continue  # busy, retry next tick
-                    session["running"] = True
-
-                state.last_fired_at = now
-                state.turns_completed += 1
-                save_loop(sk, state)
-
-                try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(None, sid, session, state.prompt)
-                except Exception:
-                    with session["history_lock"]:
-                        session["running"] = False
-            except Exception:
-                pass  # swallow transient errors, keep ticking
-
-    threading.Thread(
-        target=_tick,
-        daemon=True,
-        name=f"loop-ticker-{sid[:8]}",
-    ).start()
+    def _dispatch(prompt: str) -> bool:
+        with session["history_lock"]:
+            if session.get("running"):
+                return False
+            session["running"] = True
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(None, sid, session, prompt)
+            return True
+        except Exception:
+            with session["history_lock"]:
+                session["running"] = False
+            return False
+    return _dispatch
 
 
 def _sess_nowait(params, rid):
@@ -5956,6 +5914,83 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
+        )
+
+    if name == "loop":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.loop import LoopManager, _parse_interval
+        except Exception as exc:
+            return _err(rid, 5030, f"loop unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        # Use the session's existing loop manager (with TUI dispatch)
+        # or create one if it doesn't exist yet.
+        mgr = session.get("_loop_manager")
+        if mgr is None or getattr(mgr, "session_id", None) != sid_key:
+            mgr = LoopManager(
+                session_id=sid_key,
+                dispatch=_make_tui_dispatch(session, params.get("session_id", "")),
+            )
+            session["_loop_manager"] = mgr
+
+        lower = arg.strip().lower()
+        if not arg.strip() or lower == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            out = "No loop set." if state is None else f"⏸ Loop paused: {state.prompt}"
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return _ok(rid, {"type": "exec", "output": "No loop to resume."})
+            return _ok(rid, {"type": "exec", "output": f"▶ Loop resumed: {state.prompt}"})
+        if lower in {"clear", "stop", "done"}:
+            had = mgr.is_active() or (mgr.state is not None)
+            mgr.clear()
+            return _ok(
+                rid,
+                {"type": "exec",
+                 "output": "✓ Loop cleared." if had else "No active loop."},
+            )
+
+        # Parse optional interval prefix: "5m <prompt>" or "every 5m <prompt>"
+        interval_seconds = 300  # default 5 minutes
+        prompt = arg
+        tokens = arg.split(None, 2)
+        if len(tokens) >= 2 and tokens[0].lower() == "every":
+            parsed = _parse_interval(tokens[1])
+            if parsed is not None:
+                interval_seconds = parsed
+                prompt = tokens[2] if len(tokens) > 2 else ""
+        else:
+            parsed = _parse_interval(tokens[0])
+            if parsed is not None and len(tokens) > 1:
+                interval_seconds = parsed
+                prompt = " ".join(tokens[1:])
+
+        if not prompt.strip():
+            return _err(rid, 4004, "usage: /loop [interval] <prompt>  e.g. /loop 5m check deployment")
+
+        try:
+            state = mgr.set(prompt, interval_seconds=interval_seconds)
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid loop: {exc}")
+
+        notice = (
+            f"⊙ Loop set: every {state.interval_seconds}s → {state.prompt}\n"
+            "Controls: /loop status · /loop pause · /loop resume · /loop clear"
+        )
+        # Send the loop prompt as kickoff. The daemon ticker handles
+        # subsequent ticks.
+        return _ok(
+            rid,
+            {"type": "send", "notice": notice, "message": state.prompt},
         )
 
     if name in {"snapshot", "snap"}:

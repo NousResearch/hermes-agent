@@ -193,6 +193,70 @@ class TestProviderModelNormalization:
         assert agent.model == "anthropic/claude-sonnet-4.6"
 
 
+class TestOllamaNumCtxAutodetect:
+    def test_explicit_chat_completions_skips_local_ollama_probe(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.query_ollama_num_ctx") as probe,
+        ):
+            agent = AIAgent(
+                model="gpt-4o-mini",
+                provider="custom",
+                base_url="http://localhost:4000/v1",
+                api_mode="chat_completions",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        probe.assert_not_called()
+        assert agent._ollama_num_ctx is None
+
+    def test_auto_chat_completions_still_probes_local_ollama_num_ctx(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.query_ollama_num_ctx", return_value=32768) as probe,
+        ):
+            agent = AIAgent(
+                model="llama3.2",
+                provider="custom",
+                base_url="http://localhost:11434/v1",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        probe.assert_called_once_with("llama3.2", "http://localhost:11434/v1", api_key="test-key-1234567890")
+        assert agent._ollama_num_ctx == 32768
+
+    def test_explicit_chat_completions_still_probes_for_ollama_provider(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.query_ollama_num_ctx", return_value=65536) as probe,
+        ):
+            agent = AIAgent(
+                model="llama3.2",
+                provider="ollama",
+                base_url="http://localhost:11434/v1",
+                api_mode="chat_completions",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        probe.assert_called_once_with("llama3.2", "http://localhost:11434/v1", api_key="test-key-1234567890")
+        assert agent._ollama_num_ctx == 65536
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

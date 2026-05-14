@@ -1271,7 +1271,14 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+        self._api_mode_was_explicit = api_mode in {
+            "chat_completions",
+            "codex_responses",
+            "anthropic_messages",
+            "bedrock_converse",
+            "codex_app_server",
+        }
+        if self._api_mode_was_explicit:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -2428,7 +2435,14 @@ class AIAgent:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+        should_probe_ollama_num_ctx = (
+            self._ollama_num_ctx is None
+            and self.base_url
+            and is_local_endpoint(self.base_url)
+            and self.api_mode == "chat_completions"
+            and (not self._api_mode_was_explicit or self.provider == "ollama")
+        )
+        if should_probe_ollama_num_ctx:
             try:
                 _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "")
                 if _detected and _detected > 0:

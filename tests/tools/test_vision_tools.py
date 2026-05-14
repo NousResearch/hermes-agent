@@ -13,7 +13,9 @@ from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
     _determine_mime_type,
+    _detect_image_mime_type,
     _image_to_base64_data_url,
+    _maybe_convert_gif_to_png,
     _resize_image_for_vision,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
@@ -887,6 +889,72 @@ class TestResizeImageForVision:
                 result = _resize_image_for_vision(path, max_base64_bytes=100)
                 # Should return the original (oversized) data url
                 assert len(result) > 100
+
+
+# ---------------------------------------------------------------------------
+# _maybe_convert_gif_to_png — GIF auto-convert (#25433)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeConvertGifToPng:
+    """Tests for the GIF -> PNG auto-conversion helper.
+
+    Most vision providers (GLM-4.6V error 1210; local models) reject GIFs.
+    The helper produces a first-frame PNG sibling so the existing pipeline
+    can still analyze the visual content.
+    """
+
+    def test_gif_converted_to_png(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (4, 4), (200, 100, 50))
+        gif_path = tmp_path / "anim.gif"
+        img.save(gif_path, "GIF")
+
+        result = _maybe_convert_gif_to_png(gif_path)
+        assert result is not None
+        assert result.exists()
+        assert result.suffix == ".png"
+        assert _detect_image_mime_type(result) == "image/png"
+
+    def test_animated_gif_takes_first_frame(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        red = Image.new("RGB", (4, 4), (255, 0, 0))
+        green = Image.new("RGB", (4, 4), (0, 255, 0))
+        gif_path = tmp_path / "two_frames.gif"
+        red.save(gif_path, "GIF", save_all=True, append_images=[green], loop=0)
+
+        result = _maybe_convert_gif_to_png(gif_path)
+        assert result is not None
+        with Image.open(result) as out:
+            r, g, b, *_ = out.convert("RGB").getpixel((0, 0))
+        # First frame should win — the (255, 0, 0) red, not (0, 255, 0) green.
+        assert (r, g, b) == (255, 0, 0)
+
+    def test_no_pillow_returns_none(self, tmp_path):
+        """Without Pillow, the helper should bail out cleanly so the caller
+        can keep going with the original GIF (provider may still error, but
+        we don't crash the tool call)."""
+        gif_path = tmp_path / "anim.gif"
+        gif_path.write_bytes(b"GIF89a" + b"\x00" * 100)
+        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+            assert _maybe_convert_gif_to_png(gif_path) is None
+
+    def test_corrupt_gif_returns_none(self, tmp_path):
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        gif_path = tmp_path / "corrupt.gif"
+        # Valid GIF magic but garbage after — Pillow may open it but fail
+        # on decode, or refuse outright. Either way we want None, not a raise.
+        gif_path.write_bytes(b"GIF89a\xff\xff\xff\xff garbage")
+        assert _maybe_convert_gif_to_png(gif_path) is None
 
 
 # ---------------------------------------------------------------------------

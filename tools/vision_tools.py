@@ -151,6 +151,42 @@ def _is_retryable_download_error(error: Exception) -> bool:
     return True
 
 
+def _maybe_convert_gif_to_png(image_path: Path) -> Optional[Path]:
+    """Convert a GIF to a single-frame PNG sibling alongside the source.
+
+    Most vision providers (GLM-4.6V returns error 1210; several local models
+    silently reject GIF) cannot accept ``image/gif`` payloads. Pillow is
+    already a soft dependency for auto-resize, so reusing it to extract the
+    first frame keeps GIFs analyzable without bringing in ffmpeg.
+
+    Returns the path to the new PNG on success, ``None`` if Pillow is
+    missing or conversion failed — caller falls back to the original file.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.info(
+            "GIF detected but Pillow not installed — sending as-is "
+            "(may be rejected by vision provider)"
+        )
+        return None
+
+    png_path = image_path.with_suffix(".png")
+    try:
+        with Image.open(image_path) as img:
+            # ``seek(0)`` is implicit on open; ``convert("RGBA")`` flattens
+            # palette + transparency into a clean truecolor frame so PNG
+            # save is deterministic regardless of GIF's source mode.
+            frame = img.convert("RGBA")
+            frame.save(png_path, "PNG")
+    except Exception as exc:
+        logger.warning("GIF -> PNG conversion failed: %s", exc)
+        return None
+
+    logger.info("Auto-converted GIF -> PNG (first frame): %s", png_path.name)
+    return png_path
+
+
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
     """
     Download an image from a URL to a local destination (async) with retry logic.
@@ -663,6 +699,16 @@ async def _vision_analyze_native(
                 success=False,
             )
 
+        if detected_mime_type == "image/gif":
+            converted = _maybe_convert_gif_to_png(temp_image_path)
+            if converted is not None:
+                if should_cleanup:
+                    temp_image_path.unlink(missing_ok=True)
+                temp_image_path = converted
+                should_cleanup = True
+                detected_mime_type = "image/png"
+                image_size_bytes = temp_image_path.stat().st_size
+
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
         )
@@ -813,7 +859,17 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-        
+
+        if detected_mime_type == "image/gif":
+            converted = _maybe_convert_gif_to_png(temp_image_path)
+            if converted is not None:
+                if should_cleanup:
+                    temp_image_path.unlink(missing_ok=True)
+                temp_image_path = converted
+                should_cleanup = True
+                detected_mime_type = "image/png"
+                image_size_bytes = temp_image_path.stat().st_size
+
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")

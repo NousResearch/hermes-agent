@@ -10341,6 +10341,9 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
+        self._emit_status(
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+        )
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:

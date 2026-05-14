@@ -125,6 +125,63 @@ kanban_complete(
 
 If a `kanban_create` call fails (exception, tool_error), the card was NOT created — do not include a phantom id for it. Retry the create, or omit the id and mention the failure in your summary. The prose-scan pass also catches `t_<hex>` references in your free-form summary that don't resolve; these don't block the completion but show up as advisory warnings on the task in the dashboard.
 
+## Claiming non-Kanban artifacts (cron jobs, etc.) — issue #25288
+
+If your task's definition of done is "X exists" and X is a non-Kanban side-effect (a cron job, a deployed service, a sent email, a created file…), declare X in `created_artifacts` so the kernel can verify your claim. Today the only verifier wired in is `kind="cron"` (which calls `cron.jobs.get_job(id)`), but list any kind that ships an id and the audit log will record it; future kinds can be added without changing your code.
+
+```python
+# GOOD — capture the cron job_id from the create call's return,
+# pass it as a structured artifact so the kernel verifies it.
+res = json.loads(cronjob(
+    action="create",
+    prompt="check h13b health every 30 minutes and notify if degraded",
+    schedule="every 30m",
+    idempotency_key=os.environ["HERMES_KANBAN_TASK"],  # see below
+))
+assert res["success"], res
+
+kanban_complete(
+    summary=f"Created cron {res['job_id']} ({res['name']}) to monitor h13b every 30m.",
+    created_artifacts=[{"kind": "cron", "id": res["job_id"]}],
+)
+```
+
+```python
+# BAD — claiming a cron exists without verifying. This is the exact
+# failure mode reported in issue #25288: agent prose claimed the cron
+# was created, kernel happily marked the task done, no cron actually
+# existed.
+kanban_complete(
+    summary="Created cron job to monitor h13b every 30 minutes.",
+    # missing created_artifacts → no kernel verification → silent failure
+)
+```
+
+If the kernel's verifier rejects an entry, you'll get a `tool_error` naming the phantom `kind=...`/`id=...` plus the verifier's reason; **the task stays in-flight (no state change)**, so the right responses are:
+
+1. **Actually create the missing artifact and retry** with the real id.
+2. **Drop the bogus entry** if you decided the artifact wasn't needed after all.
+3. **`kanban_block`** with the underlying error if you cannot create it (missing credentials, broken upstream, etc.).
+
+Do NOT mark the task done while the artifact is missing — that's the #25288 failure mode and the kernel will block it anyway. Bare strings are accepted as a shortcut (`created_artifacts=["abc123def456"]` → interpreted as `kind="cron"`), but the explicit dict form is clearer at the call site and forward-compatible with future kinds.
+
+## Idempotent creation — `idempotency_key`
+
+Cron job names are auto-derived from the prompt; ids are random. If you have to retry a `cronjob(action="create", …)` call (the user re-asked across sessions, your previous attempt errored ambiguously), each retry produces a **new duplicate job** unless you pass `idempotency_key`. The Kanban task id is a great natural key for this — it's deterministic and unique per task:
+
+```python
+cronjob(
+    action="create",
+    prompt="check h13b every 30 min...",
+    schedule="every 30m",
+    idempotency_key=os.environ["HERMES_KANBAN_TASK"],
+)
+# response includes "reused": true on the second call instead of
+# producing a duplicate; "job_id" is identical to the first call's.
+```
+
+Read `response["reused"]` so your `summary` to the user honestly says "reused existing cron …" instead of "created cron …" on a retry.
+
 ## Block reasons that get answered fast
 
 Bad: `"stuck"` — the human has no context.
@@ -163,6 +220,7 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
+- Claim an artifact (cron, card, deployed service) exists in your `summary` without an id you can put in `created_artifacts` / `created_cards`. The kernel verifies these and rejects invented ids — see issue #25288.
 
 ## Pitfalls
 

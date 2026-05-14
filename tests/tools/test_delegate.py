@@ -158,8 +158,16 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
+        # delegation/clarify/memory remain blocked by default; code_execution
+        # is now allowed (it pairs naturally with `terminal`, which subagents
+        # already inherit — blocking only `code_execution` was asymmetric).
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
-        self.assertEqual(sorted(result), ["file", "terminal"])
+        self.assertEqual(sorted(result), ["code_execution", "file", "terminal"])
+
+    def test_code_execution_no_longer_blocked(self):
+        """Regression: code_execution must survive the default block strip."""
+        result = _strip_blocked_tools(["code_execution"])
+        self.assertEqual(result, ["code_execution"])
 
     def test_preserves_allowed_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])
@@ -1058,8 +1066,9 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "memory", "send_message"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
+        self.assertNotIn("execute_code", DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
         from tools.delegate_tool import (

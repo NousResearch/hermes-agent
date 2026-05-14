@@ -45,6 +45,7 @@ import logging
 import os
 import threading
 import time
+from ipaddress import ip_address
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -105,6 +106,46 @@ from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+
+
+def _is_loopback_base_url(base_url: Optional[str]) -> bool:
+    """Return True for local OpenAI-compatible endpoints.
+
+    Windows and macOS system proxies can be picked up by httpx even for
+    localhost unless a caller supplies an explicit direct http client.
+    """
+    candidate = str(base_url or "").strip()
+    if not candidate or candidate.startswith("acp://"):
+        return False
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").strip().lower()
+    if host == "localhost":
+        return True
+    if not host:
+        return False
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _openai_http_client_kwargs(
+    base_url: Optional[str],
+    *,
+    async_mode: bool = False,
+) -> Dict[str, Any]:
+    """Bypass system proxies for localhost OpenAI-compatible endpoints."""
+    if not _is_loopback_base_url(base_url):
+        return {}
+    import httpx
+
+    client_cls = httpx.AsyncClient if async_mode else httpx.Client
+    return {"http_client": client_cls(trust_env=False)}
+
+
+def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -1356,7 +1397,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
                     pass
-            _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+            _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
@@ -1391,7 +1432,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
                 pass
-        _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+        _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
 
@@ -1410,15 +1451,21 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+        return _create_openai_client(
+            api_key=or_key,
+            base_url=base_url,
+            default_headers=build_or_headers(),
+        ), _OPENROUTER_MODEL
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), _OPENROUTER_MODEL
+    return _create_openai_client(
+        api_key=or_key,
+        base_url=OPENROUTER_BASE_URL,
+        default_headers=build_or_headers(),
+    ), _OPENROUTER_MODEL
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -1492,7 +1539,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         api_key = _nous_api_key(nous or {})
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
-        OpenAI(
+        _create_openai_client(
             api_key=api_key,
             base_url=base_url,
         ),
@@ -1699,7 +1746,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+        real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
@@ -1713,14 +1760,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
-            return OpenAI(api_key=custom_key, base_url=_clean_base, **_extra), model
+            return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
         return (
             AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set
     # api_mode explicitly (e.g. kimi.com/coding reached via custom config).
-    _fallback_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+    _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
     _fallback_client = _maybe_wrap_anthropic(
         _fallback_client, model, custom_key, custom_base, custom_mode,
     )
@@ -1760,7 +1807,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = OpenAI(
+    real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
@@ -2637,6 +2684,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    async_kwargs = {
+        **_openai_http_client_kwargs(sync_base_url, async_mode=True),
+        **async_kwargs,
+    }
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -2818,7 +2869,7 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model, provider)
-            raw_client = OpenAI(
+            raw_client = _create_openai_client(
                 api_key=codex_token,
                 base_url=_CODEX_AUX_BASE_URL,
                 default_headers=_codex_cloudflare_headers(codex_token),
@@ -2874,7 +2925,7 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
-            client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
+            client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
@@ -2961,7 +3012,7 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -2970,7 +3021,7 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -3074,8 +3125,11 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
-        client = OpenAI(api_key=api_key, base_url=base_url,
-                        **({"default_headers": headers} if headers else {}))
+        client = _create_openai_client(
+            api_key=api_key,
+            base_url=base_url,
+            **({"default_headers": headers} if headers else {}),
+        )
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
         # API — they are not accessible via /chat/completions.  Wrap the
@@ -3550,7 +3604,7 @@ def _refresh_nous_auxiliary_client(
         return None, model
 
     fresh_key, fresh_base_url = runtime
-    sync_client = OpenAI(api_key=fresh_key, base_url=fresh_base_url)
+    sync_client = _create_openai_client(api_key=fresh_key, base_url=fresh_base_url)
     final_model = model
 
     current_loop = None

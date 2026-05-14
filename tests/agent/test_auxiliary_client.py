@@ -60,6 +60,50 @@ def codex_auth_dir(tmp_path, monkeypatch):
     return codex_dir
 
 
+class TestLocalEndpointProxyBypass:
+    def test_sync_openai_client_bypasses_system_proxy_for_loopback_base_url(self):
+        import agent.auxiliary_client as aux
+
+        fake_http_client = MagicMock(name="direct-httpx-client")
+        with patch("httpx.Client", return_value=fake_http_client) as httpx_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            aux._create_openai_client(
+                api_key="test-key",
+                base_url="http://127.0.0.1:11434/v1",
+            )
+
+        httpx_client.assert_called_once_with(trust_env=False)
+        assert mock_openai.call_args.kwargs["http_client"] is fake_http_client
+
+    def test_remote_openai_client_keeps_sdk_default_proxy_handling(self):
+        import agent.auxiliary_client as aux
+
+        with patch("httpx.Client") as httpx_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            aux._create_openai_client(
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+            )
+
+        httpx_client.assert_not_called()
+        assert "http_client" not in mock_openai.call_args.kwargs
+
+    def test_async_openai_client_bypasses_system_proxy_for_loopback_base_url(self):
+        import agent.auxiliary_client as aux
+
+        fake_http_client = MagicMock(name="direct-async-httpx-client")
+        sync_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="http://localhost:11434/v1",
+        )
+        with patch("httpx.AsyncClient", return_value=fake_http_client) as httpx_client, \
+             patch("openai.AsyncOpenAI") as mock_async_openai:
+            aux._to_async_client(sync_client, "llama3")
+
+        httpx_client.assert_called_once_with(trust_env=False)
+        assert mock_async_openai.call_args.kwargs["http_client"] is fake_http_client
+
+
 class TestAuxiliaryMaxTokensParam:
     def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \

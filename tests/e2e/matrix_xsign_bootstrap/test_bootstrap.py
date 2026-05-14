@@ -213,16 +213,35 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
                 own_xsign = None
                 logger.warning("Matrix: cross-signing key lookup failed: %s", exc)
             if own_xsign is None:
-                try:
-                    new_recovery_key = await olm.generate_recovery_key()
-                    captured_recovery_key = new_recovery_key
+                output_file = os.getenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "").strip()
+                if not output_file:
                     logger.warning(
-                        "Matrix: bootstrapped cross-signing for %s. "
-                        "SAVE THIS RECOVERY KEY: %s",
-                        client.mxid, new_recovery_key,
+                        "Matrix: cross-signing keys are missing, but automatic "
+                        "bootstrap is skipped because MATRIX_RECOVERY_KEY_OUTPUT_FILE "
+                        "is not configured."
                     )
-                except Exception as exc:
-                    logger.warning("Matrix: cross-signing bootstrap failed: %s", exc)
+                elif Path(output_file).exists():
+                    logger.warning(
+                        "Matrix: cross-signing keys are missing, but automatic "
+                        "bootstrap is skipped because MATRIX_RECOVERY_KEY_OUTPUT_FILE "
+                        "already exists and will not be overwritten."
+                    )
+                else:
+                    try:
+                        new_recovery_key = await olm.generate_recovery_key()
+                        captured_recovery_key = new_recovery_key
+                        fd = os.open(Path(output_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                            fh.write(new_recovery_key)
+                            fh.write("\n")
+                        logger.warning(
+                            "Matrix: bootstrapped cross-signing for %s. "
+                            "A new recovery key was written to the configured "
+                            "output file and is not logged.",
+                            client.mxid,
+                        )
+                    except Exception as exc:
+                        logger.warning("Matrix: cross-signing bootstrap failed: %s", exc)
 
         # --- /end patched block ---
         # Clean teardown — without this the asyncio loop never exits.
@@ -267,7 +286,12 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_bootstrap_publishes_unpadded_keys(self):
         """Fresh bot → bootstrap fires, keys published unpadded, device signed."""
-        log_lines, rec_key = await self._connect_with_bootstrap(self.creds, self.tmp)
+        output_path = self.tmp / "recovery-key.txt"
+        os.environ["MATRIX_RECOVERY_KEY_OUTPUT_FILE"] = str(output_path)
+        try:
+            log_lines, rec_key = await self._connect_with_bootstrap(self.creds, self.tmp)
+        finally:
+            os.environ.pop("MATRIX_RECOVERY_KEY_OUTPUT_FILE", None)
         # 1. Bootstrap must have produced a recovery key
         self.assertIsNotNone(rec_key, "expected recovery key from bootstrap")
         self.assertTrue(any("bootstrapped cross-signing" in l for l in log_lines),
@@ -295,10 +319,17 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
     async def test_second_startup_skips_bootstrap(self):
         """Second startup with same crypto store → no second recovery key."""
         # First connect bootstraps.
-        _, rec1 = await self._connect_with_bootstrap(self.creds, self.tmp)
+        output_path = self.tmp / "recovery-key.txt"
+        os.environ["MATRIX_RECOVERY_KEY_OUTPUT_FILE"] = str(output_path)
+        try:
+            _, rec1 = await self._connect_with_bootstrap(self.creds, self.tmp)
+            output_path.unlink()
+            # Second connect on same crypto store should NOT re-bootstrap even
+            # though the output path is usable again.
+            log2, rec2 = await self._connect_with_bootstrap(self.creds, self.tmp)
+        finally:
+            os.environ.pop("MATRIX_RECOVERY_KEY_OUTPUT_FILE", None)
         self.assertIsNotNone(rec1, "first connect should have bootstrapped")
-        # Second connect on same crypto store should NOT re-bootstrap.
-        log2, rec2 = await self._connect_with_bootstrap(self.creds, self.tmp)
         self.assertIsNone(rec2, f"second connect re-bootstrapped! logs: {log2}")
         self.assertFalse(any("bootstrapped cross-signing" in l for l in log2),
                          f"second connect re-bootstrapped! logs: {log2}")
@@ -306,7 +337,12 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_key_path_takes_precedence(self):
         """If MATRIX_RECOVERY_KEY is set, no fresh bootstrap happens."""
         # First, bootstrap to get a real recovery key.
-        _, rec_key = await self._connect_with_bootstrap(self.creds, self.tmp)
+        output_path = self.tmp / "recovery-key.txt"
+        os.environ["MATRIX_RECOVERY_KEY_OUTPUT_FILE"] = str(output_path)
+        try:
+            _, rec_key = await self._connect_with_bootstrap(self.creds, self.tmp)
+        finally:
+            os.environ.pop("MATRIX_RECOVERY_KEY_OUTPUT_FILE", None)
         self.assertIsNotNone(rec_key)
         # Fresh store directory + recovery key set in env: must take the
         # verify_with_recovery_key path, NOT bootstrap a new identity.

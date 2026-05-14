@@ -8488,6 +8488,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 launch_detached_profile_gateway_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
+                _wait_for_gateway_exit,
             )
             import signal as _signal
 
@@ -8906,6 +8907,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         os.kill(pid, _signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         pass
+                # Wait for the old process to fully exit before the watcher
+                # spawns the new gateway.  Telegram holds the previous
+                # getUpdates long-poll session open on its servers for up to
+                # ~30s after the client disconnects.  If the new gateway
+                # connects before that window expires it receives a 409
+                # Conflict, which _handle_polling_conflict() recovers from
+                # via back-off retries — but a brief wait here reduces the
+                # chance of hitting that path at all, especially on fast
+                # machines where the watcher loop restarts in < 1s.
+                # We wait up to 5s for the process to exit (the OS-level
+                # close, not the Telegram server-side expiry), then let the
+                # watcher take over.  The Telegram adapter's retry logic
+                # handles any remaining 409s if the server session is still
+                # live when the new gateway polls.
+                _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
                 relaunched_profiles.append(proc.profile)
 

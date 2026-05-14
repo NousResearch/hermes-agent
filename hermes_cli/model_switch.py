@@ -13,9 +13,11 @@ This module ties together the foundation layers:
 - ``hermes_cli.providers``        -- canonical provider identity + overlays
 - ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-Provider switching uses the ``--provider`` flag exclusively.
-No colon-based ``provider:model`` syntax — colons are reserved for
-OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
+Provider switching supports the ``--provider`` flag plus inline provider
+qualification with ``provider:model`` and, when the current provider is not an
+aggregator, ``provider/model``. Aggregator slugs such as
+``anthropic/claude-sonnet-4.5:extended`` remain model ids on the current
+aggregator.
 """
 
 from __future__ import annotations
@@ -608,6 +610,116 @@ def resolve_display_context_length(
     return None
 
 
+_AGGREGATOR_VENDOR_NAMESPACES = {
+    # Common OpenRouter / aggregator vendor namespaces.  When the current
+    # provider is an aggregator, ``vendor:model`` is legacy shorthand for
+    # ``vendor/model`` and must not be stolen by inline provider parsing.
+    "anthropic",
+    "cohere",
+    "deepseek",
+    "google",
+    "meta-llama",
+    "mistral",
+    "mistralai",
+    "moonshotai",
+    "nousresearch",
+    "nvidia",
+    "openai",
+    "perplexity",
+    "qwen",
+    "x-ai",
+    "z-ai",
+    "zai-org",
+}
+
+
+def _user_provider_lists_model(raw_model: str, current_provider: str, user_providers: dict | None) -> bool:
+    """Return True if current user-provider config explicitly lists ``raw_model``.
+
+    Private endpoints often expose vendor-qualified model ids such as
+    ``moonshotai/Kimi-K2.6-ACED``. Those are model ids on the current private
+    provider, not inline provider switches.
+    """
+    if not user_providers or not current_provider:
+        return False
+    cfg = user_providers.get(current_provider)
+    if not isinstance(cfg, dict):
+        return False
+    cfg_models = cfg.get("models", {})
+    if isinstance(cfg_models, dict):
+        return raw_model in cfg_models
+    if isinstance(cfg_models, list):
+        if raw_model in cfg_models:
+            return True
+        return any(
+            isinstance(entry, dict) and entry.get("name") == raw_model
+            for entry in cfg_models
+        )
+    return False
+
+
+def _inline_provider_matches_exact_id(raw_provider: str, provider_id: str) -> bool:
+    """Return True when ``raw_provider`` is an explicit provider id, not an alias.
+
+    ``resolve_provider_full('openai')`` intentionally maps to OpenRouter for
+    historical vendor-shorthand behavior. Inline provider syntax should not let
+    that alias steal aggregator slugs like ``openai/gpt-5.5``.  Require the
+    resolved provider id to match the raw left-hand side exactly.
+    """
+    left = (raw_provider or "").strip().lower()
+    return bool(left and provider_id and left == provider_id.strip().lower())
+
+
+def _parse_inline_provider_model(
+    raw_input: str,
+    current_provider: str,
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+) -> Optional[tuple[str, str]]:
+    """Parse ``provider:model`` or ``provider/model`` when unambiguous.
+
+    Colon is the strongest signal because OpenRouter-style variant tags appear
+    only after a slash (``vendor/model:free``), so ``provider:model`` can be
+    treated as a provider switch when the left-hand side is an exact provider
+    id. On aggregators, common vendor namespaces keep legacy ``vendor:model``
+    behavior. Slash is ambiguous with aggregator ``vendor/model`` slugs, so
+    slash shorthand is accepted only when the current provider is not an
+    aggregator.
+    """
+    raw = (raw_input or "").strip()
+    if not raw or "://" in raw:
+        return None
+    if _user_provider_lists_model(raw, current_provider, user_providers):
+        return None
+
+    # provider:model. Skip already-slash-qualified slugs with variant tags,
+    # e.g. anthropic/claude-sonnet-4.5:extended.
+    colon_pos = raw.find(":")
+    if colon_pos > 0 and "/" not in raw[:colon_pos]:
+        left = raw[:colon_pos].strip()
+        right = raw[colon_pos + 1 :].strip()
+        if left and right:
+            if is_aggregator(current_provider) and left.lower() in _AGGREGATOR_VENDOR_NAMESPACES:
+                return None
+            pdef = resolve_provider_full(left, user_providers, custom_providers)
+            if pdef is not None and _inline_provider_matches_exact_id(left, pdef.id):
+                return pdef.id, right
+
+    # provider/model. On aggregators, slash already means vendor/model and must
+    # remain a model id. Off aggregators, slash can be accepted as a friendly
+    # provider switch shorthand.
+    slash_pos = raw.find("/")
+    if slash_pos > 0 and not is_aggregator(current_provider):
+        left = raw[:slash_pos].strip()
+        right = raw[slash_pos + 1 :].strip()
+        if left and right:
+            pdef = resolve_provider_full(left, user_providers, custom_providers)
+            if pdef is not None and _inline_provider_matches_exact_id(left, pdef.id):
+                return pdef.id, right
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -672,19 +784,31 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
 
+    inline_provider = None
+    if not explicit_provider:
+        inline_provider = _parse_inline_provider_model(
+            raw_input,
+            current_provider,
+            user_providers,
+            custom_providers,
+        )
+        if inline_provider is not None:
+            target_provider, new_model = inline_provider
+
     # =================================================================
-    # PATH A: Explicit --provider given
+    # PATH A: Explicit --provider given OR inline provider qualification
     # =================================================================
-    if explicit_provider:
+    if explicit_provider or inline_provider is not None:
         # Resolve the provider
+        provider_to_resolve = explicit_provider or target_provider
         pdef = resolve_provider_full(
-            explicit_provider,
+            provider_to_resolve,
             user_providers,
             custom_providers,
         )
         if pdef is None:
             _switch_err = (
-                f"Unknown provider '{explicit_provider}'. "
+                f"Unknown provider '{provider_to_resolve}'. "
                 f"Check 'hermes model' for available providers, or define it "
                 f"in config.yaml under 'providers:'."
             )
@@ -721,7 +845,7 @@ def switch_model(
                         is_global=is_global,
                         error_message=(
                             f"No model detected on {pdef.name} ({pdef.base_url}). "
-                            f"Specify the model explicitly: /model <model-name> --provider {explicit_provider}"
+                            f"Specify the model explicitly: /model <model-name> --provider {provider_to_resolve}"
                         ),
                     )
             else:
@@ -732,7 +856,7 @@ def switch_model(
                     is_global=is_global,
                     error_message=(
                         f"Provider '{pdef.name}' has no base URL configured. "
-                        f"Specify a model: /model <model-name> --provider {explicit_provider}"
+                        f"Specify a model: /model <model-name> --provider {provider_to_resolve}"
                     ),
                 )
 

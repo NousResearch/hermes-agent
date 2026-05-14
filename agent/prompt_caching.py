@@ -18,6 +18,7 @@ Two layouts:
 Pure functions -- no class state, no AIAgent dependency.
 """
 
+import copy
 from typing import Any, Dict, List, Optional
 
 
@@ -55,26 +56,6 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
-def _copy_message_for_cache_marking(message: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy the message dict and mutable content containers before marking.
-
-    Strings and nested payloads stay shared. We only copy the outer message
-    dict, any top-level content list/dict wrapper, and content-part dicts,
-    because cache marking only mutates those containers by replacing content or
-    attaching a top-level ``cache_control`` key.
-    """
-    copied = message.copy()
-    content = copied.get("content")
-    tools = copied.get("tools")
-    if isinstance(content, list):
-        copied["content"] = [part.copy() if isinstance(part, dict) else part for part in content]
-    elif isinstance(content, dict):
-        copied["content"] = content.copy()
-    if isinstance(tools, list):
-        copied["tools"] = [tool.copy() if isinstance(tool, dict) else tool for tool in tools]
-    return copied
-
-
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
@@ -86,16 +67,12 @@ def apply_anthropic_cache_control(
     messages, all at the same TTL.
 
     Returns:
-        Copy of messages with cache_control breakpoints injected without
-        deep-copying immutable payload strings.
+        Shallow copy of messages with cache_control breakpoints injected.
     """
     if not api_messages:
         return []
 
-    messages = [
-        _copy_message_for_cache_marking(msg) if isinstance(msg, dict) else msg
-        for msg in api_messages
-    ]
+    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
 
     marker = _build_marker(cache_ttl)
 
@@ -177,16 +154,12 @@ def apply_anthropic_cache_control_long_lived(
     not isolated, so the prefix invalidates per-session).
 
     Returns:
-        Copy of messages with cache_control breakpoints injected without
-        deep-copying immutable payload strings.
+        Shallow copy of messages with cache_control breakpoints injected.
     """
     if not api_messages:
         return []
 
-    messages = [
-        _copy_message_for_cache_marking(msg) if isinstance(msg, dict) else msg
-        for msg in api_messages
-    ]
+    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
 
     long_marker = _build_marker(long_lived_ttl)
     rolling_marker = _build_marker(rolling_ttl)

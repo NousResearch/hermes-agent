@@ -189,7 +189,7 @@ class TestEphemeralMaxOutputTokens:
         agent = self._make_agent()
         agent._ephemeral_max_output_tokens = 5_000
 
-        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        kwargs = agent._use_long_lived_prefix_cache = False; agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] == 5_000
 
     def test_ephemeral_override_is_consumed_after_one_call(self):
@@ -197,7 +197,7 @@ class TestEphemeralMaxOutputTokens:
         agent = self._make_agent()
         agent._ephemeral_max_output_tokens = 5_000
 
-        agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        agent._use_long_lived_prefix_cache = False; agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert agent._ephemeral_max_output_tokens is None
 
     def test_subsequent_call_uses_self_max_tokens(self):
@@ -206,9 +206,9 @@ class TestEphemeralMaxOutputTokens:
         agent._ephemeral_max_output_tokens = 5_000
         agent.max_tokens = None  # will resolve to native ceiling (128K for Opus 4.6)
 
-        agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        agent._use_long_lived_prefix_cache = False; agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         # Second call — ephemeral is gone
-        kwargs2 = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        kwargs2 = agent._use_long_lived_prefix_cache = False; agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs2["max_tokens"] == 128_000  # Opus 4.6 native ceiling
 
     def test_no_ephemeral_uses_self_max_tokens_directly(self):
@@ -216,7 +216,7 @@ class TestEphemeralMaxOutputTokens:
         agent = self._make_agent()
         agent.max_tokens = 8_192
 
-        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        kwargs = agent._use_long_lived_prefix_cache = False; agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] == 8_192
 
 

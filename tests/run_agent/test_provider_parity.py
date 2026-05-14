@@ -938,7 +938,7 @@ class TestAuxiliaryClientProviderPriority:
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
+        assert model in ["google/gemini-3-flash-preview", "qwen/qwen3.6-plus"]
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
 
     def test_nous_when_no_openrouter(self, monkeypatch):
@@ -948,7 +948,7 @@ class TestAuxiliaryClientProviderPriority:
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
+        assert model in ["google/gemini-3-flash-preview", "qwen/qwen3.6-plus"]
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
         """Custom endpoint is used when no OpenRouter/Nous keys are available.

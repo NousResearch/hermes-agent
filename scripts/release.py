@@ -1014,6 +1014,9 @@ AUTHOR_MAP = {
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
     "anton.kuenzi@gmail.com": "ZeterMordio",  # PR #11754 salvage (zsh completion compdef + _arguments syntax)
     "23yntong@stu.edu.cn": "iuyup",  # PR #6155 salvage (shell=True hardening)
+    "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",  # PR #20750 salvage (CJK/emoji panel width, #20621)
+    "antonka@vk.com": "jimmyjonezz",  # PR #20646 salvage (Termux TUI build, #20645)
+    "android@termux": "jimmyjonezz",  # PR #20646 salvage (Termux TUI build, #20645)
 }
 
 

@@ -2949,7 +2949,14 @@ class BasePlatformAdapter(ABC):
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
+            # Merge text follow-ups so simultaneous queued user messages
+            # don't clobber each other.  Falls back to overwrite for non-text.
+            if event.message_type == MessageType.TEXT:
+                merge_pending_message_event(
+                    self._pending_messages, session_key, event, merge_text=True
+                )
+            else:
+                self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes

@@ -1252,6 +1252,26 @@ class GatewayRunner:
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        # Per-session message IDs that need to be cleaned at the start of
+        # the next turn for that session.  Used by ``cleanup_progress`` to
+        # delete the "⚠️ Gateway shutting down" notice across the gateway
+        # restart boundary — the cleanup path normally fires on final
+        # response delivery, which doesn't happen for an interrupted run.
+        # Loaded from disk on init so notices survive the restart and get
+        # removed when the user sends their next message.
+        self._cross_restart_cleanup_path = _hermes_home / ".cross_restart_cleanup.json"
+        self._cross_restart_cleanup: Dict[str, List[Dict[str, Any]]] = {}
+        try:
+            if self._cross_restart_cleanup_path.exists():
+                import json as _json
+                self._cross_restart_cleanup = _json.loads(
+                    self._cross_restart_cleanup_path.read_text(encoding="utf-8")
+                ) or {}
+                if not isinstance(self._cross_restart_cleanup, dict):
+                    self._cross_restart_cleanup = {}
+        except Exception as _e:
+            logger.debug("Failed to load cross-restart cleanup file: %s", _e)
+            self._cross_restart_cleanup = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -2493,7 +2513,9 @@ class GatewayRunner:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
-        merge_pending_message_event(adapter._pending_messages, session_key, event)
+        merge_pending_message_event(
+            adapter._pending_messages, session_key, event, merge_text=True
+        )
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -2575,8 +2597,14 @@ class GatewayRunner:
         # current run finishes (or is interrupted).  Skip this for a
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
+        # ``merge_text=True`` matches the rapid-follow-up path in
+        # _handle_message (5620/5640) so two text messages queued during
+        # the same busy turn append instead of the later one clobbering
+        # the earlier — preserves user intent in queue mode.
         if not steered:
-            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            merge_pending_message_event(
+                adapter._pending_messages, session_key, event, merge_text=True
+            )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -2817,6 +2845,21 @@ class GatewayRunner:
                     )
                     continue
 
+                # Register the notice for cleanup_progress on the next turn.
+                # The agent was interrupted, so the normal end-of-turn cleanup
+                # didn't fire — persist the id and drain it when the user
+                # comes back and starts a fresh turn for this session.
+                try:
+                    _mid = getattr(result, "message_id", None) if result is not None else None
+                    if _mid:
+                        self._cross_restart_cleanup.setdefault(session_key, []).append({
+                            "chat_id": str(chat_id),
+                            "message_id": str(_mid),
+                            "platform": platform_str,
+                        })
+                except Exception as _reg_err:
+                    logger.debug("shutdown-notice cleanup registration failed: %s", _reg_err)
+
                 notified.add(dedup_key)
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
@@ -2878,6 +2921,18 @@ class GatewayRunner:
                     home.chat_id,
                     e,
                 )
+
+        # Persist the cross-restart cleanup ledger so notice IDs survive the
+        # gateway-restart boundary.  Drained on next inbound message for the
+        # session — see _handle_message_with_agent.
+        try:
+            import json as _json
+            self._cross_restart_cleanup_path.write_text(
+                _json.dumps(self._cross_restart_cleanup),
+                encoding="utf-8",
+            )
+        except Exception as _wp:
+            logger.debug("Failed to persist cross-restart cleanup file: %s", _wp)
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -12689,10 +12744,22 @@ class GatewayRunner:
         bytes_sent = 0
         last_stream_time = loop.time()
         buffer = ""
+        # Stream the running update log into a single rolling bubble that we
+        # edit in place, instead of sending a new message per flush. When the
+        # bubble fills up (~3500 chars) we close it off and start a fresh one
+        # for the overflow. Adapters without real edit support fall back to
+        # the original chunk-and-send behavior.
+        _MAX_CHUNK = 3500
+        _active_msg_id: Optional[str] = None
+        _active_msg_text = ""
+        _can_edit_stream = (
+            hasattr(adapter, "edit_message")
+            and type(adapter).edit_message is not BasePlatformAdapter.edit_message
+        )
 
         async def _flush_buffer() -> None:
             """Send buffered output to the user."""
-            nonlocal buffer, last_stream_time
+            nonlocal buffer, last_stream_time, _active_msg_id, _active_msg_text
             if not buffer.strip():
                 buffer = ""
                 return
@@ -12702,14 +12769,71 @@ class GatewayRunner:
             last_stream_time = loop.time()
             if not clean:
                 return
-            # Split into chunks if too long
-            max_chunk = 3500
-            chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
-            for chunk in chunks:
-                try:
-                    await adapter.send(chat_id, f"```\n{chunk}\n```", metadata=metadata)
-                except Exception as e:
-                    logger.debug("Update stream send failed: %s", e)
+
+            if not _can_edit_stream:
+                # Adapter can't edit messages — fall back to one bubble per flush.
+                for i in range(0, len(clean), _MAX_CHUNK):
+                    try:
+                        await adapter.send(
+                            chat_id,
+                            f"```\n{clean[i:i + _MAX_CHUNK]}\n```",
+                            metadata=metadata,
+                        )
+                    except Exception as e:
+                        logger.debug("Update stream send failed: %s", e)
+                return
+
+            remaining = clean
+            while remaining:
+                if _active_msg_id is None:
+                    chunk = remaining[:_MAX_CHUNK]
+                    remaining = remaining[_MAX_CHUNK:]
+                    try:
+                        res = await adapter.send(
+                            chat_id, f"```\n{chunk}\n```", metadata=metadata,
+                        )
+                        if (getattr(res, "success", False)
+                                and getattr(res, "message_id", None)):
+                            _active_msg_id = str(res.message_id)
+                            _active_msg_text = chunk
+                        else:
+                            return  # send failed; drop the rest of this flush
+                    except Exception as e:
+                        logger.debug("Update stream send failed: %s", e)
+                        return
+                else:
+                    available = _MAX_CHUNK - len(_active_msg_text)
+                    if available <= 0:
+                        # Current bubble is full — start a fresh one for overflow.
+                        _active_msg_id = None
+                        _active_msg_text = ""
+                        continue
+                    chunk = remaining[:available]
+                    remaining = remaining[available:]
+                    new_text = _active_msg_text + chunk
+                    try:
+                        # ``finalize=True`` so the adapter applies Markdown
+                        # formatting and the triple-backtick code block
+                        # renders monospace instead of literal backticks.
+                        res = await adapter.edit_message(
+                            chat_id=chat_id,
+                            message_id=_active_msg_id,
+                            content=f"```\n{new_text}\n```",
+                            finalize=True,
+                        )
+                        if getattr(res, "success", False):
+                            _active_msg_text = new_text
+                        else:
+                            # Edit failed (msg deleted, flood control, etc.) —
+                            # close this bubble and retry the chunk in a new one.
+                            _active_msg_id = None
+                            _active_msg_text = ""
+                            remaining = chunk + remaining
+                    except Exception as e:
+                        logger.debug("Update stream edit failed: %s", e)
+                        _active_msg_id = None
+                        _active_msg_text = ""
+                        remaining = chunk + remaining
 
         while loop.time() < deadline:
             # Check for completion
@@ -14418,6 +14542,29 @@ class GatewayRunner:
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        # Drain any cross-restart shutdown notices for this session so they
+        # get cleaned with this turn's other temporary bubbles.  No-op when
+        # cleanup_progress is disabled or the session has no pending IDs.
+        if _cleanup_progress and session_key:
+            try:
+                _persisted = self._cross_restart_cleanup.pop(session_key, [])
+                for _entry in _persisted:
+                    _mid = _entry.get("message_id") if isinstance(_entry, dict) else None
+                    if _mid:
+                        _cleanup_msg_ids.append(str(_mid))
+                if _persisted:
+                    # Persist the trimmed ledger so the same id isn't
+                    # re-deleted in a later turn.
+                    try:
+                        import json as _json
+                        self._cross_restart_cleanup_path.write_text(
+                            _json.dumps(self._cross_restart_cleanup),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+            except Exception as _pe:
+                logger.debug("cross-restart cleanup drain failed: %s", _pe)
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -14509,15 +14656,29 @@ class GatewayRunner:
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
+            #
+            # Wrap the tool descriptor in inline-code backticks under
+            # ``cleanup_progress`` so the system-process portion renders in
+            # monospace on platforms that honour Markdown — visually marks
+            # tool activity as distinct from the model's natural reply.
+            # Backticks inside *preview* would close the inline-code span;
+            # swap them for single quotes first so the bubble stays valid.
             if preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                if _cleanup_progress:
+                    _safe_preview = preview.replace("`", "'")
+                    msg = f"{emoji} `{tool_name}: \"{_safe_preview}\"`"
+                else:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = (
+                    f"{emoji} `{tool_name}...`" if _cleanup_progress
+                    else f"{emoji} {tool_name}..."
+                )
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -14626,6 +14787,16 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+                        #
+                        # Skip the reset when ``cleanup_progress`` is on: every
+                        # progress / commentary / status line will be deleted
+                        # at end-of-turn anyway, so out-of-order linearization
+                        # is invisible to the user.  Keeping a single growing
+                        # bubble is the cleaner UX in this mode — one chat
+                        # entry that updates in place instead of N stranded
+                        # bubbles between content streams.
+                        if _cleanup_progress:
+                            continue
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
@@ -14975,6 +15146,22 @@ class GatewayRunner:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                        # cleanup_progress + single-bubble: route commentary
+                        # into the tool-progress queue so commentary lands in
+                        # the same bubble that gets deleted at end of turn.
+                        # The italics + 💭 prefix keeps commentary visually
+                        # distinct from tool lines while sharing the bubble.
+                        if _cleanup_progress and progress_queue is not None:
+                            def _commentary_to_queue(_text: str) -> None:
+                                progress_queue.put(f"💭 _{_text}_")
+                            _stream_consumer.set_commentary_redirect(_commentary_to_queue)
+                        # Also coalesce model reply text across tool boundaries
+                        # so the chat ends with one growing text bubble instead
+                        # of N stranded segments. The transient out-of-order
+                        # appearance during the run is invisible by end-of-turn
+                        # since cleanup_progress deletes tool/commentary bubbles.
+                        if _cleanup_progress:
+                            _stream_consumer.set_coalesce_segments(True)
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -15318,6 +15505,19 @@ class GatewayRunner:
                             _loop_for_step,
                         ).result(timeout=15)
                         if _approval_result.success:
+                            # Register the approval bubble (the prompt + the
+                            # subsequent edit-in-place "✅ Approved …" ack) for
+                            # cleanup_progress deletion so the chat doesn't
+                            # accumulate "Approved permanently by …" lines
+                            # after every dangerous-command ask.  The message
+                            # is edited in place when resolved, so a single
+                            # message_id covers both states.
+                            try:
+                                _ap_mid = getattr(_approval_result, "message_id", None)
+                                if _cleanup_progress and _ap_mid:
+                                    _cleanup_msg_ids.append(str(_ap_mid))
+                            except Exception:
+                                pass
                             return
                         logger.warning(
                             "Button-based approval failed (send returned error), falling back to text: %s",
@@ -15752,6 +15952,7 @@ class GatewayRunner:
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
+        _notify_msg_id_holder: list[Optional[str]] = [None]
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -15776,18 +15977,49 @@ class GatewayRunner:
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                # Wrap the status text in inline-code backticks so it renders
+                # in monospace on platforms that honour Markdown — visually
+                # marks the heartbeat as a system status line, distinct from
+                # the model's natural reply. Mirrors the cleanup_progress
+                # tool-progress formatting convention. Backticks inside the
+                # detail would close the span, so swap them for single quotes.
+                _safe_detail = _status_detail.replace("`", "'")
+                _text = (
+                    f"⏳ `Still working... ({_elapsed_mins} min elapsed"
+                    f"{_safe_detail})`"
+                )
+                # Edit the existing bubble in place so progress updates collapse
+                # into one message instead of spamming the chat. Fall back to
+                # sending a new message if edit fails (message deleted, adapter
+                # missing edit_message, etc.). ``finalize=True`` makes the
+                # adapter apply Markdown formatting on the edited content
+                # (the default edit path sends plain text).
+                _existing_id = _notify_msg_id_holder[0]
+                if _existing_id and hasattr(_notify_adapter, "edit_message"):
+                    try:
+                        _edit_res = await _notify_adapter.edit_message(
+                            source.chat_id,
+                            _existing_id,
+                            _text,
+                            finalize=True,
+                        )
+                        if getattr(_edit_res, "success", False):
+                            continue
+                    except Exception as _ee:
+                        logger.debug("Long-running edit error, falling back to send: %s", _ee)
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _text,
                         metadata=_status_thread_metadata,
                     )
                     if (
-                        _cleanup_progress
-                        and getattr(_notify_res, "success", False)
+                        getattr(_notify_res, "success", False)
                         and getattr(_notify_res, "message_id", None)
                     ):
-                        _cleanup_msg_ids.append(str(_notify_res.message_id))
+                        _notify_msg_id_holder[0] = str(_notify_res.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(str(_notify_res.message_id))
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -16272,6 +16504,17 @@ class GatewayRunner:
                     _previewed,
                 )
                 response["already_sent"] = True
+
+        # Pull in commentary bubble IDs from the stream consumer so they get
+        # deleted alongside tool progress / "Still working..." / status calls.
+        # Without this, mid-tool-loop commentary like "DuckDuckGo blocked,
+        # trying Wikipedia." persists past cleanup_progress and clutters the
+        # chat after the final response lands.
+        if _cleanup_progress and _sc is not None:
+            try:
+                _cleanup_msg_ids.extend(_sc.commentary_message_ids)
+            except Exception as _ce:
+                logger.debug("commentary id capture failed: %s", _ce)
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

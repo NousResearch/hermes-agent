@@ -1690,6 +1690,66 @@ class TestOnNewMessageCallback:
         assert consumer.already_sent is True
 
 
+class TestCommentaryRedirectAndCleanup:
+    """commentary_message_ids + set_commentary_redirect surface area."""
+
+    @pytest.mark.asyncio
+    async def test_commentary_message_ids_capture_send(self):
+        """When commentary is sent normally, its id is recorded for cleanup."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="cm_1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig())
+        ok = await consumer._send_commentary("looking up the docs")
+
+        assert ok is True
+        assert consumer.commentary_message_ids == ["cm_1"]
+        # Defensive copy: mutation by callers doesn't affect internal state.
+        consumer.commentary_message_ids.append("hijack")
+        assert consumer.commentary_message_ids == ["cm_1"]
+
+    @pytest.mark.asyncio
+    async def test_commentary_redirect_skips_adapter_send(self):
+        """When a redirect is set, the adapter is not called."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()  # would record any call
+
+        consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig())
+        captured: list = []
+        consumer.set_commentary_redirect(captured.append)
+
+        ok = await consumer._send_commentary("looking up the docs")
+
+        assert ok is True
+        assert captured == ["looking up the docs"]
+        adapter.send.assert_not_called()
+        # Redirect path doesn't populate the cleanup list — there's no
+        # adapter message to delete.
+        assert consumer.commentary_message_ids == []
+
+    @pytest.mark.asyncio
+    async def test_commentary_redirect_exception_falls_back_to_send(self):
+        """If the redirect raises, we fall back to a normal adapter.send."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="cm_2"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig())
+
+        def boom(_text: str) -> None:
+            raise RuntimeError("redirect crashed")
+
+        consumer.set_commentary_redirect(boom)
+
+        ok = await consumer._send_commentary("looking up the docs")
+
+        assert ok is True
+        adapter.send.assert_awaited_once()
+        # Fallback send populates the cleanup list as usual.
+        assert consumer.commentary_message_ids == ["cm_2"]
+
+
 class TestUtf16OverflowDetection:
     """Regression coverage for #11170 — Telegram counts message length in
     UTF-16 code units, not Python codepoints. A response with supplementary

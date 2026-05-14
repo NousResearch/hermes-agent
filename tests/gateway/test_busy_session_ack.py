@@ -552,3 +552,46 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_appends_text_messages(self, tmp_path, monkeypatch):
+        """Two queued text messages must append, not overwrite each other.
+
+        Regression: ``_handle_active_session_busy_message`` previously called
+        ``merge_pending_message_event`` without ``merge_text=True``, so the
+        second message in queue mode silently clobbered the first — losing
+        user intent.  See run.py site near the "Store the message so it's
+        processed as the next turn" comment.
+        """
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        first = _make_event(text="search the web")
+        # Reuse the first event's source so both events route to the same
+        # adapter slot (the runner.adapters dict is keyed on source.platform,
+        # which is a MagicMock instance — different MagicMock per _make_event
+        # would land in separate adapter slots).
+        second = MessageEvent(
+            text="and tell me about KOOMPI OS",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(first.source)
+
+        runner.adapters[first.source.platform] = adapter
+        runner._running_agents[sk] = MagicMock()
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        pending = adapter._pending_messages.get(sk)
+        assert pending is not None, "queued event should exist"
+        assert "search the web" in pending.text
+        assert "and tell me about KOOMPI OS" in pending.text

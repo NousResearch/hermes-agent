@@ -365,3 +365,102 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_includes_cross_restart_persisted_ids(monkeypatch, tmp_path):
+    """Cross-restart shutdown notice ids drain into the next turn's cleanup.
+
+    When a turn is interrupted by gateway shutdown, the in-memory
+    cleanup_msg_ids never makes it to the cleanup callback.  The notice id
+    is persisted to ~/.hermes/.cross_restart_cleanup.json on shutdown and
+    must be drained at the start of the next turn so cleanup_progress
+    deletes the now-stale notice.
+    """
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    # Pre-seed a persisted shutdown notice id, mimicking the state after
+    # _notify_active_sessions_of_shutdown has run.
+    runner._cross_restart_cleanup_path = tmp_path / ".cross_restart_cleanup.json"
+    runner._cross_restart_cleanup = {
+        session_key: [
+            {"chat_id": "-1001", "message_id": "9999", "platform": "telegram"}
+        ]
+    }
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    cb = adapter.pop_post_delivery_callback(session_key)
+    assert callable(cb)
+    cb()
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if any(d["message_id"] == "9999" for d in adapter.deleted):
+            break
+
+    # The persisted shutdown-notice id was deleted alongside the
+    # in-turn tool-progress bubble.
+    deleted_ids = [d["message_id"] for d in adapter.deleted]
+    assert "9999" in deleted_ids, f"persisted notice not cleaned: deleted={deleted_ids}"
+    # The in-memory ledger was popped so the same id isn't re-deleted next turn.
+    assert session_key not in runner._cross_restart_cleanup
+
+
+@pytest.mark.asyncio
+async def test_progress_lines_use_inline_code_when_cleanup_on(monkeypatch, tmp_path):
+    """With cleanup_progress on, tool-progress lines wrap the descriptor in
+    backticks so the system-process portion renders in monospace.
+
+    Off → plain text, preserves legacy formatting.
+    """
+    # Cleanup on → expect backticks
+    adapter_on = CleanupCaptureAdapter()
+    runner_on = _make_runner(adapter_on)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    await runner_on._run_agent(
+        message="hi", context_prompt="", history=[], source=src,
+        session_id="sess-1", session_key="agent:main:telegram:group:-1001",
+    )
+
+    on_payload = "\n".join(
+        s["content"] for s in adapter_on.sent if isinstance(s["content"], str)
+    ) + "\n".join(
+        e["content"] for e in adapter_on.edits if isinstance(e["content"], str)
+    )
+    assert "`terminal:" in on_payload, f"expected backtick-wrapped tool line, got:\n{on_payload}"
+
+    # Cleanup off → expect plain text (no backticks around descriptor)
+    adapter_off = CleanupCaptureAdapter()
+    runner_off = _make_runner(adapter_off)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    await runner_off._run_agent(
+        message="hi", context_prompt="", history=[], source=src,
+        session_id="sess-1", session_key="agent:main:telegram:group:-1001",
+    )
+
+    off_payload = "\n".join(
+        s["content"] for s in adapter_off.sent if isinstance(s["content"], str)
+    ) + "\n".join(
+        e["content"] for e in adapter_off.edits if isinstance(e["content"], str)
+    )
+    assert "terminal: \"pwd\"" in off_payload
+    assert "`terminal:" not in off_payload

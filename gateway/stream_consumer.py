@@ -21,7 +21,7 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, List, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
@@ -142,6 +142,27 @@ class GatewayStreamConsumer:
         # openclaw/openclaw#72038.
         self._message_created_ts: Optional[float] = None
         self._already_sent = False
+        # Message IDs of interim assistant commentary bubbles sent during
+        # this stream.  Exposed via :pyattr:`commentary_message_ids` so the
+        # gateway can include them in ``cleanup_progress`` deletion at end
+        # of turn.  Without this, mid-tool-loop commentary like
+        # "DuckDuckGo blocked, trying Wikipedia." leaks past cleanup.
+        self._commentary_msg_ids: List[str] = []
+        # Optional sink for commentary text.  When set by the gateway (in
+        # ``cleanup_progress`` mode), ``_send_commentary`` calls this with
+        # the cleaned text instead of sending a separate platform message,
+        # so commentary lands inside the same single tool-progress bubble.
+        # Falls back to the normal adapter.send path on exception or when
+        # unset.
+        self._commentary_redirect: Optional[Callable[[str], None]] = None
+        # When True, segment breaks (tool boundaries) DO NOT close the
+        # current message — text keeps editing the same bubble across the
+        # whole turn. The gateway sets this under ``cleanup_progress`` so
+        # the model's reply lands in one growing bubble instead of N
+        # separate bubbles between tool calls. Tool/commentary bubbles
+        # still appear below it during the run, but cleanup_progress
+        # deletes them at end-of-turn, leaving just the text bubble.
+        self._coalesce_segments: bool = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
@@ -187,8 +208,51 @@ class GatewayStreamConsumer:
         """True when the stream consumer delivered the final assistant reply."""
         return self._final_response_sent
 
+    @property
+    def commentary_message_ids(self) -> List[str]:
+        """IDs of interim commentary messages sent during this stream.
+
+        Consumed by the gateway's ``cleanup_progress`` path so commentary
+        bubbles are deleted alongside tool progress when the final response
+        lands.  Returns a copy so callers can mutate freely.
+        """
+        return list(self._commentary_msg_ids)
+
+    def set_commentary_redirect(self, redirect: Optional[Callable[[str], None]]) -> None:
+        """Route commentary text to *redirect* instead of a separate send.
+
+        When set, ``_send_commentary`` invokes the callback with the cleaned
+        commentary text and skips the platform send entirely.  Used by the
+        gateway in single-bubble mode (``cleanup_progress``) so commentary
+        appends into the tool-progress bubble rather than spawning its own.
+        """
+        self._commentary_redirect = redirect
+
+    def set_coalesce_segments(self, enabled: bool) -> None:
+        """Toggle single-bubble mode for the model's reply text.
+
+        When enabled, ``on_segment_break`` becomes a no-op: tool boundaries
+        no longer finalize the current bubble, so all model text across
+        the turn keeps editing one message. Used by the gateway under
+        ``cleanup_progress`` mode where tool/commentary bubbles get
+        deleted at end-of-turn anyway.
+        """
+        self._coalesce_segments = bool(enabled)
+
     def on_segment_break(self) -> None:
-        """Finalize the current stream segment and start a fresh message."""
+        """Finalize the current stream segment and start a fresh message.
+
+        No-op under :pymeth:`set_coalesce_segments` — but in that mode we
+        push a blank-line separator into the stream so consecutive text
+        segments don't run together visually inside the shared bubble.
+        """
+        if self._coalesce_segments:
+            # Insert a paragraph break so text emitted before/after a tool
+            # call has visible separation when it lands in the same bubble.
+            # Goes through _filter_and_accumulate like any other delta.
+            if self._accumulated and not self._accumulated.endswith("\n\n"):
+                self._queue.put("\n\n")
+            return
         self._queue.put(_NEW_SEGMENT)
 
     def on_commentary(self, text: str) -> None:
@@ -956,6 +1020,18 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return False
+        # Single-bubble redirect: when ``cleanup_progress`` is on the gateway
+        # routes commentary into the tool-progress queue so all ephemeral
+        # chatter shares one bubble.  Returns True without a platform send.
+        # Exceptions in the redirect fall through to the normal send path.
+        if self._commentary_redirect is not None:
+            try:
+                self._commentary_redirect(text.strip())
+                return True
+            except Exception as exc:
+                logger.debug(
+                    "commentary redirect failed, falling back to send: %s", exc,
+                )
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -972,6 +1048,8 @@ class GatewayStreamConsumer:
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.
                 self._notify_new_message()
+                if result.message_id:
+                    self._commentary_msg_ids.append(str(result.message_id))
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)

@@ -64,6 +64,18 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# --- _load_gateway_config TTL cache ---------------------------------------
+# Defense-in-depth backstop: repeated callers within the same 60-second
+# window pay only a time.monotonic() comparison rather than hitting the
+# filesystem.  The existing mtime-based fast-path (via read_raw_config)
+# remains the primary mechanism; this TTL cache is a second layer that
+# protects the hot message-handler path against any code that bypasses the
+# shared mtime cache (e.g. tests with monkeypatched _hermes_home).
+_CONFIG_TTL_SECONDS: float = 60.0
+_config_cache_value: Optional[dict] = None
+_config_cache_expires_at: float = 0.0
+_config_cache_lock = threading.Lock()
+
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
@@ -947,27 +959,63 @@ def _load_gateway_config() -> dict:
     Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
     still see their fixture) and shares the mtime-keyed raw-yaml cache
     from ``hermes_cli.config.read_raw_config`` when the paths match.
-    """
-    config_path = _hermes_home / 'config.yaml'
-    try:
-        from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path: if _hermes_home agrees with the canonical config
-        # location, reuse the shared cache. Otherwise fall through to a
-        # direct read (keeps test fixtures with a monkeypatched
-        # _hermes_home working).
-        if config_path == get_config_path():
-            return read_raw_config()
-    except Exception:
-        pass
 
-    try:
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-    except Exception:
-        logger.debug("Could not load gateway config from %s", config_path)
-    return {}
+    A module-level TTL cache (60 s) acts as a defense-in-depth backstop:
+    repeated callers within the same window pay only a ``time.monotonic()``
+    comparison.  The existing mtime-based fast-path inside
+    ``read_raw_config`` remains the primary mechanism.
+    """
+    global _config_cache_value, _config_cache_expires_at
+    now = time.monotonic()
+    # Fast TTL check — no lock needed for the read; worst case two threads
+    # both miss and one overwrites with the same value.
+    if _config_cache_value is not None and now < _config_cache_expires_at:
+        return _config_cache_value
+
+    with _config_cache_lock:
+        # Re-check under lock to avoid redundant loads when multiple threads
+        # race through the TTL expiry at the same instant.
+        now = time.monotonic()
+        if _config_cache_value is not None and now < _config_cache_expires_at:
+            return _config_cache_value
+
+        config_path = _hermes_home / 'config.yaml'
+        cfg: dict = {}
+        try:
+            from hermes_cli.config import get_config_path, read_raw_config
+            # Fast path: if _hermes_home agrees with the canonical config
+            # location, reuse the shared cache. Otherwise fall through to a
+            # direct read (keeps test fixtures with a monkeypatched
+            # _hermes_home working).
+            if config_path == get_config_path():
+                cfg = read_raw_config()
+        except Exception:
+            pass
+
+        if not cfg:
+            try:
+                if config_path.exists():
+                    import yaml
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        cfg = yaml.safe_load(f) or {}
+            except Exception:
+                logger.debug("Could not load gateway config from %s", config_path)
+
+        _config_cache_value = cfg
+        _config_cache_expires_at = now + _CONFIG_TTL_SECONDS
+        return cfg
+
+
+def _invalidate_gateway_config_cache() -> None:
+    """Reset the module-level TTL cache for ``_load_gateway_config``.
+
+    Intended for test use (and any runtime path that writes config.yaml
+    and needs the next call to re-read it immediately, e.g. /model save).
+    """
+    global _config_cache_value, _config_cache_expires_at
+    with _config_cache_lock:
+        _config_cache_value = None
+        _config_cache_expires_at = 0.0
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -5663,6 +5711,12 @@ class GatewayRunner:
         """
         source = event.source
 
+        # Hoist config load once per inbound message — passed down to helpers
+        # that previously each called _load_gateway_config() independently.
+        # The TTL cache makes repeat calls cheap, but hoisting avoids even the
+        # monotonic-clock overhead on the hot path.
+        _hm_gateway_config: dict = _load_gateway_config()
+
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
@@ -6725,6 +6779,7 @@ class GatewayRunner:
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        gateway_config: Optional[dict] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -6889,7 +6944,7 @@ class GatewayRunner:
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
                 try:
-                    _msg_cfg = _load_gateway_config()
+                    _msg_cfg = gateway_config if gateway_config is not None else _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
@@ -7039,11 +7094,10 @@ class GatewayRunner:
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
-        # Read privacy.redact_pii from config (re-read per message)
+        # Read privacy.redact_pii from config (use hoisted config from handler entry)
         _redact_pii = False
         try:
-            _pcfg = _load_gateway_config()
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+            _redact_pii = bool((_hm_gateway_config.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass
 
@@ -7192,7 +7246,7 @@ class GatewayRunner:
             _hyg_api_key = None
             _hyg_data = {}
             try:
-                _hyg_data = _load_gateway_config()
+                _hyg_data = _hm_gateway_config  # use hoisted config from handler entry
                 if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
@@ -7525,6 +7579,7 @@ class GatewayRunner:
             event=event,
             source=source,
             history=history,
+            gateway_config=_hm_gateway_config,
         )
         if message_text is None:
             return
@@ -7642,7 +7697,7 @@ class GatewayRunner:
             try:
                 from gateway.display_config import resolve_display_setting as _rds
                 _show_reasoning_effective = _rds(
-                    _load_gateway_config(),
+                    _hm_gateway_config,  # use hoisted config from handler entry
                     _platform_config_key(source.platform),
                     "show_reasoning",
                     getattr(self, "_show_reasoning", False),
@@ -7669,7 +7724,7 @@ class GatewayRunner:
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
+                    user_config=_hm_gateway_config,  # use hoisted config from handler entry
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,

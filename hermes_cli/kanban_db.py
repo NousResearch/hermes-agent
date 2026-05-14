@@ -3897,7 +3897,8 @@ def _resolve_hermes_argv() -> list[str]:
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
-        return [str(Path(hermes_bin).resolve())]
+        hermes_path = hermes_bin if os.path.isabs(hermes_bin) else os.path.abspath(hermes_bin)
+        return [hermes_path]
     # Fall back through the running interpreter, but do not use ``-m`` from
     # the task workspace: Python prepends cwd to module search paths. ``-P``
     # avoids that implicit cwd entry and the bootstrap adds only the trusted

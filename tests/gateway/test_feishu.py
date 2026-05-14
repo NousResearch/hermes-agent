@@ -109,6 +109,82 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Sprint recap\n- Alice: Please review PR-128\n- Bob: Ship it",
         )
 
+    def test_normalize_merge_forward_recognises_forward_messages_key(self):
+        """#25620: Feishu webhook also uses `forward_messages` (not in the
+        legacy 5-key list)."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps(
+                {
+                    "forward_messages": [
+                        {"sender_name": "Carol", "text": "Standup at 10"},
+                        {"sender_name": "Dan", "text": "ack"},
+                    ]
+                }
+            ),
+        )
+        self.assertEqual(
+            normalized.text_content,
+            "- Carol: Standup at 10\n- Dan: ack",
+        )
+        self.assertEqual(normalized.metadata["entry_count"], 2)
+
+    def test_normalize_merge_forward_walks_nested_payload(self):
+        """#25620: forwarded items may sit under a nested wrapper like
+        ``data.merge_forward_content.messages``."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps(
+                {
+                    "data": {
+                        "merge_forward_content": {
+                            "messages": [
+                                {"sender_name": "Eve", "text": "Found it"},
+                            ]
+                        }
+                    }
+                }
+            ),
+        )
+        self.assertEqual(normalized.text_content, "- Eve: Found it")
+
+    def test_normalize_merge_forward_descriptive_fallback_with_count(self):
+        """#25620: when items are present but unparseable, fallback shows
+        the count instead of the static `[Merged forward message]`."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps(
+                {
+                    "forward_messages": [
+                        {"opaque": "unknown shape 1"},
+                        {"opaque": "unknown shape 2"},
+                        {"opaque": "unknown shape 3"},
+                    ]
+                }
+            ),
+        )
+        self.assertIn("3 messages", normalized.text_content)
+        self.assertIn("parsing incomplete", normalized.text_content)
+        self.assertEqual(normalized.metadata["raw_list_count"], 3)
+
+    def test_normalize_merge_forward_keeps_static_fallback_when_empty(self):
+        """No nested list found at all -> keep the static placeholder so
+        downstream behaviour is unchanged for truly opaque payloads."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps({"opaque": "no list anywhere"}),
+        )
+        self.assertEqual(normalized.text_content, "[Merged forward message]")
+        self.assertEqual(normalized.metadata["raw_list_count"], 0)
+
     def test_normalize_share_chat_exposes_summary_and_metadata(self):
         from gateway.platforms.feishu import normalize_feishu_message
 

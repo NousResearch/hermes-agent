@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -889,16 +889,29 @@ def _normalize_merge_forward_message(payload: Dict[str, Any]) -> FeishuNormalize
         _find_first_text(payload, keys=("title", "summary", "preview", "description")),
     )
     entries = _collect_forward_entries(payload)
+    found_list_count = _count_forward_list_items(payload)
     lines: List[str] = []
     if title:
         lines.append(title)
     lines.extend(entries[:8])
-    text_content = "\n".join(lines).strip() or FALLBACK_FORWARD_TEXT
+    text_content = "\n".join(lines).strip()
+    if not text_content:
+        if found_list_count > 0:
+            text_content = (
+                f"[Merged forward: {found_list_count} messages "
+                "— parsing incomplete]"
+            )
+        else:
+            text_content = FALLBACK_FORWARD_TEXT
     return FeishuNormalizedMessage(
         raw_type="merge_forward",
         text_content=text_content,
         relation_kind="merge_forward",
-        metadata={"entry_count": len(entries), "title": title},
+        metadata={
+            "entry_count": len(entries),
+            "title": title,
+            "raw_list_count": found_list_count,
+        },
     )
 
 
@@ -963,12 +976,62 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
 # ---------------------------------------------------------------------------
 
 
+_FORWARD_LIST_KEYS: Tuple[str, ...] = (
+    "messages",
+    "items",
+    "message_list",
+    "records",
+    "content",
+    "forward_messages",
+    "msg_list",
+    "msgs",
+    "thread_messages",
+    "chat_records",
+    "history",
+    "merge_forward_content",
+    "merge_forward",
+)
+
+
+def _walk_forward_lists(node: Any, out: List[Any], depth: int = 0) -> None:
+    """Walk nested dicts/lists collecting any list child whose key matches
+    a known forward-message container name. The merge_forward payload
+    shape varies between Feishu API versions and bot transports; the
+    fixed top-level key set in older code missed several real shapes
+    (#25620). Bounded to depth 4 to stay cheap on large card payloads.
+    """
+    if depth > 4:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, list) and key.lower() in _FORWARD_LIST_KEYS:
+                out.extend(value)
+            elif isinstance(value, (dict, list)):
+                _walk_forward_lists(value, out, depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, (dict, list)):
+                _walk_forward_lists(item, out, depth + 1)
+
+
+def _count_forward_list_items(payload: Dict[str, Any]) -> int:
+    """Count items in any nested forward-list container so the fallback
+    text can surface ``[Merged forward: N messages — parsing
+    incomplete]`` instead of a static placeholder (#25620)."""
+    collected: List[Any] = []
+    _walk_forward_lists(payload, collected)
+    return len(collected)
+
+
 def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
     candidates: List[Any] = []
-    for key in ("messages", "items", "message_list", "records", "content"):
+    for key in _FORWARD_LIST_KEYS:
         value = payload.get(key)
         if isinstance(value, list):
             candidates.extend(value)
+    if not candidates:
+        # Top-level keys missed; walk nested containers (#25620).
+        _walk_forward_lists(payload, candidates)
     entries: List[str] = []
     for item in candidates:
         if not isinstance(item, dict):

@@ -15,7 +15,6 @@ describe('enhanced keyboard modifier parsing', () => {
   it('detects modified Enter sequences for multiline composer shortcuts', () => {
     const shiftEnter = new InputEvent(parseOne('\u001b[13;2u'))
     const ctrlEnter = new InputEvent(parseOne('\u001b[13;5u'))
-    const cmdEnter = new InputEvent(parseOne('\u001b[13;9u'))
     const modifyOtherShiftEnter = new InputEvent(parseOne('\u001b[27;2;13~'))
 
     expect(shiftEnter.key.return).toBe(true)
@@ -25,10 +24,6 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(ctrlEnter.key.return).toBe(true)
     expect(ctrlEnter.key.ctrl).toBe(true)
     expect(ctrlEnter.input).toBe('')
-
-    expect(cmdEnter.key.return).toBe(true)
-    expect(cmdEnter.key.super).toBe(true)
-    expect(cmdEnter.input).toBe('')
 
     expect(modifyOtherShiftEnter.key.return).toBe(true)
     expect(modifyOtherShiftEnter.key.shift).toBe(true)

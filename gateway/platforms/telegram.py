@@ -2534,22 +2534,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 result_text = f"Error switching model: {exc}"
 
             # Edit message to show confirmation, remove buttons
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                # Markdown parse failure — retry as plain text
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(result_text),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=result_text,
+                        parse_mode=None,
                         reply_markup=None,
                     )
                 except Exception:
-                    # Markdown parse failure — retry as plain text
-                    try:
-                        await query.edit_message_text(
-                            text=result_text,
-                            parse_mode=None,
-                            reply_markup=None,
-                        )
-                    except Exception:
-                        pass
+                    pass
             await query.answer(text="Model switched!")
 
             # Clean up state

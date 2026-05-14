@@ -10137,6 +10137,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     result.get("failed") or result.get("partial")
                 ):
                     raw = f"Error: {result.get('error')}"
+                if status == "interrupted" and not raw:
+                    if result.get("api_calls") == 0:
+                        raw = (
+                            "Interrupted before the model call; no assistant "
+                            "response was generated."
+                        )
+                    else:
+                        raw = (
+                            "Interrupted before a final assistant response "
+                            "was generated."
+                        )
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()

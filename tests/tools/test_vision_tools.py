@@ -956,6 +956,27 @@ class TestMaybeConvertGifToPng:
         gif_path.write_bytes(b"GIF89a\xff\xff\xff\xff garbage")
         assert _maybe_convert_gif_to_png(gif_path) is None
 
+    def test_converted_png_lives_outside_source_dir(self, tmp_path):
+        """Regression guard: the converted PNG must not be written next to
+        the source GIF. A user-supplied local GIF could share a directory
+        with an existing PNG of the same stem, and a sibling-overwrite
+        followed by post-processing cleanup would delete the user's file.
+        The helper must place the PNG in the vision temp cache instead.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        Image.new("RGB", (4, 4), (0, 0, 0)).save(tmp_path / "photo.gif", "GIF")
+        # Pre-existing sibling — must survive the conversion untouched.
+        sibling = tmp_path / "photo.png"
+        sibling.write_bytes(b"pre-existing user file")
+
+        result = _maybe_convert_gif_to_png(tmp_path / "photo.gif")
+        assert result is not None
+        assert result.parent != tmp_path
+        assert sibling.read_bytes() == b"pre-existing user file"
+
 
 # ---------------------------------------------------------------------------
 # _is_image_size_error — detect size-related API errors

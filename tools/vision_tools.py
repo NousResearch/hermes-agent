@@ -152,12 +152,16 @@ def _is_retryable_download_error(error: Exception) -> bool:
 
 
 def _maybe_convert_gif_to_png(image_path: Path) -> Optional[Path]:
-    """Convert a GIF to a single-frame PNG sibling alongside the source.
+    """Convert a GIF to a single-frame PNG in the vision temp cache.
 
     Most vision providers (GLM-4.6V returns error 1210; several local models
     silently reject GIF) cannot accept ``image/gif`` payloads. Pillow is
     already a soft dependency for auto-resize, so reusing it to extract the
     first frame keeps GIFs analyzable without bringing in ffmpeg.
+
+    The PNG is written to the vision temp cache with a unique name so the
+    conversion can't overwrite a sibling file in the user's directory when
+    ``image_path`` points at a user-supplied local file.
 
     Returns the path to the new PNG on success, ``None`` if Pillow is
     missing or conversion failed — caller falls back to the original file.
@@ -171,7 +175,9 @@ def _maybe_convert_gif_to_png(image_path: Path) -> Optional[Path]:
         )
         return None
 
-    png_path = image_path.with_suffix(".png")
+    temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    png_path = temp_dir / f"gif_to_png_{uuid.uuid4().hex}.png"
     try:
         with Image.open(image_path) as img:
             # ``seek(0)`` is implicit on open; ``convert("RGBA")`` flattens
@@ -181,10 +187,33 @@ def _maybe_convert_gif_to_png(image_path: Path) -> Optional[Path]:
             frame.save(png_path, "PNG")
     except Exception as exc:
         logger.warning("GIF -> PNG conversion failed: %s", exc)
+        png_path.unlink(missing_ok=True)
         return None
 
-    logger.info("Auto-converted GIF -> PNG (first frame): %s", png_path.name)
+    logger.info("Auto-converted GIF -> PNG (first frame)")
     return png_path
+
+
+def _convert_gif_if_needed(
+    temp_image_path: Path,
+    detected_mime_type: str,
+    image_size_bytes: int,
+    should_cleanup: bool,
+) -> tuple[Path, str, int, bool]:
+    """Apply :func:`_maybe_convert_gif_to_png` and return updated state.
+
+    Encapsulates the unlink-old + reassign + recompute-size pattern shared
+    by both vision entry points so the two paths can't drift on cleanup
+    semantics. No-op for non-GIF input.
+    """
+    if detected_mime_type != "image/gif":
+        return temp_image_path, detected_mime_type, image_size_bytes, should_cleanup
+    converted = _maybe_convert_gif_to_png(temp_image_path)
+    if converted is None:
+        return temp_image_path, detected_mime_type, image_size_bytes, should_cleanup
+    if should_cleanup:
+        temp_image_path.unlink(missing_ok=True)
+    return converted, "image/png", converted.stat().st_size, True
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -699,15 +728,11 @@ async def _vision_analyze_native(
                 success=False,
             )
 
-        if detected_mime_type == "image/gif":
-            converted = _maybe_convert_gif_to_png(temp_image_path)
-            if converted is not None:
-                if should_cleanup:
-                    temp_image_path.unlink(missing_ok=True)
-                temp_image_path = converted
-                should_cleanup = True
-                detected_mime_type = "image/png"
-                image_size_bytes = temp_image_path.stat().st_size
+        temp_image_path, detected_mime_type, image_size_bytes, should_cleanup = (
+            _convert_gif_if_needed(
+                temp_image_path, detected_mime_type, image_size_bytes, should_cleanup,
+            )
+        )
 
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
@@ -860,15 +885,11 @@ async def vision_analyze_tool(
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
 
-        if detected_mime_type == "image/gif":
-            converted = _maybe_convert_gif_to_png(temp_image_path)
-            if converted is not None:
-                if should_cleanup:
-                    temp_image_path.unlink(missing_ok=True)
-                temp_image_path = converted
-                should_cleanup = True
-                detected_mime_type = "image/png"
-                image_size_bytes = temp_image_path.stat().st_size
+        temp_image_path, detected_mime_type, image_size_bytes, should_cleanup = (
+            _convert_gif_if_needed(
+                temp_image_path, detected_mime_type, image_size_bytes, should_cleanup,
+            )
+        )
 
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.

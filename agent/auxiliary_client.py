@@ -78,16 +78,52 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
+def _is_loopback_url(url: str) -> bool:
+    """Return True if *url* points to a loopback / local endpoint.
+
+    Used to decide whether to bypass the system proxy for auxiliary LLM
+    calls — a Windows system-level HTTP proxy (e.g. corporate proxy) must
+    not be applied to localhost requests (issue #25319).
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return True
+        import socket as _socket
+        try:
+            addr = _socket.getaddrinfo(host, None)
+            return any(a[4][0] in ("127.0.0.1", "::1", "0.0.0.0") for a in addr)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 class _OpenAIProxy:
     """Module-level proxy that looks like the ``openai.OpenAI`` class.
 
     Forwards ``OpenAI(...)`` calls and ``isinstance(x, OpenAI)`` checks to the
     real SDK class, importing the SDK lazily on first use.
+
+    When the base_url points to a loopback / local endpoint, the proxy
+    automatically injects an ``httpx.Client`` with ``trust_env=False`` so
+    that a Windows system-level HTTP proxy is not picked up for local
+    requests (issue #25319).
     """
 
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        if 'http_client' not in kwargs:
+            base_url = kwargs.get('base_url', '')
+            if _is_loopback_url(base_url):
+                try:
+                    import httpx as _httpx
+                    kwargs['http_client'] = _httpx.Client(trust_env=False)
+                except Exception:
+                    pass
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):

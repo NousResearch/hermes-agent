@@ -1206,5 +1206,68 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestEmailAccountEnvVar(unittest.TestCase):
+    """Verify EMAIL_ACCOUNT is used for IMAP/SMTP login while EMAIL_ADDRESS is used for display."""
+
+    def _make_adapter(self, env_overrides: dict):
+        """Create an EmailAdapter with custom env vars."""
+        from gateway.config import PlatformConfig
+        defaults = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        defaults.update(env_overrides)
+        with patch.dict(os.environ, defaults):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_account_defaults_to_address(self):
+        """When EMAIL_ACCOUNT is not set, self._account should equal self._address."""
+        adapter = self._make_adapter({})
+        self.assertEqual(adapter._account, adapter._address)
+
+    def test_account_separate_from_address(self):
+        """When EMAIL_ACCOUNT is set, self._account should be the account and self._address the display address."""
+        adapter = self._make_adapter({"EMAIL_ACCOUNT": "login@other.com"})
+        self.assertEqual(adapter._account, "login@other.com")
+        self.assertEqual(adapter._address, "hermes@test.com")
+        self.assertNotEqual(adapter._account, adapter._address)
+
+    def test_account_used_for_imap_login(self):
+        """IMAP login should use self._account instead of self._address."""
+        adapter = self._make_adapter({"EMAIL_ACCOUNT": "login@other.com"})
+        mock_imap = MagicMock()
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            with patch("gateway.platforms.email._send_imap_id"):
+                adapter._fetch_new_messages()
+        # Verify login was called with the account, not the address
+        login_calls = [c for c in mock_imap.login.call_args_list]
+        self.assertTrue(login_calls)
+        self.assertEqual(login_calls[0][0][0], "login@other.com")
+        self.assertNotEqual(login_calls[0][0][0], "hermes@test.com")
+
+    def test_address_used_for_from_header(self):
+        """msg['From'] should use self._address for the display address."""
+        adapter = self._make_adapter({"EMAIL_ACCOUNT": "login@other.com"})
+        with patch("smtplib.SMTP") as mock_smtp:
+            adapter._send_email("user@test.com", "Hello")
+        # Verify From header uses display address
+        call_msg = mock_smtp.return_value.send_message.call_args[0][0]
+        self.assertEqual(call_msg["From"], "hermes@test.com")
+
+    def test_address_domain_in_message_id(self):
+        """Message-ID domain should come from EMAIL_ADDRESS, not EMAIL_ACCOUNT."""
+        adapter = self._make_adapter({"EMAIL_ACCOUNT": "login@other.com"})
+        with patch("smtplib.SMTP") as mock_smtp:
+            adapter._send_email("user@test.com", "Hello")
+        call_msg = mock_smtp.return_value.send_message.call_args[0][0]
+        msg_id = call_msg["Message-ID"]
+        self.assertIn("@test.com", msg_id)
+        self.assertNotIn("@other.com", msg_id)
+
+
 if __name__ == "__main__":
     unittest.main()

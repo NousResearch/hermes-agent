@@ -1373,6 +1373,7 @@ async def _send_email(extra, chat_id, message):
     from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+    account = os.getenv("EMAIL_ACCOUNT", "") or address
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
     try:
@@ -1392,7 +1393,7 @@ async def _send_email(extra, chat_id, message):
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
+        server.login(account, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

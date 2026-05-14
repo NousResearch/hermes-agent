@@ -748,6 +748,71 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     assert res.reclaimed == 1
 
 
+def test_dispatch_skips_singleton_duplicates(
+    kanban_home, all_assignees_spawnable
+):
+    """When two tasks with identical skills are in ready, only one spawns.
+
+    This prevents the race condition where the dispatcher spawns multiple
+    singleton agents (groomer, sentinel, etc.) simultaneously before any
+    of them can transition to ``running`` — the runtime singleton check
+    in the skill can't prevent duplicates when both check together.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        # Create two tasks with identical skills and assignee
+        a = kb.create_task(
+            conn, title="groomer-a", assignee="groomer",
+            skills=["sdlc-groomer", "kanban-worker"],
+        )
+        b = kb.create_task(
+            conn, title="groomer-b", assignee="groomer",
+            skills=["sdlc-groomer", "kanban-worker"],
+        )
+        # First dispatch spawns a, which transitions to running
+        res1 = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert a in [tid for tid, _, _ in res1.spawned]
+        assert b in res1.skipped_singleton
+        assert len(spawns) == 1
+
+        # Simulate a completing, then dispatch again — b should now spawn
+        kb.complete_task(conn, a)
+        res2 = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert b in [tid for tid, _, _ in res2.spawned]
+        assert len(spawns) == 2
+
+
+def test_dispatch_allows_different_skills_concurrently(
+    kanban_home, all_assignees_spawnable
+):
+    """Tasks with different skills should still run concurrently.
+
+    ``agentneo-sdlc`` workers and ``sdlc-groomer`` singleton tasks
+    have different skill sets — they should not block each other.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        groomer = kb.create_task(
+            conn, title="groomer", assignee="groomer",
+            skills=["sdlc-groomer", "kanban-worker"],
+        )
+        worker = kb.create_task(
+            conn, title="worker", assignee="worker",
+            skills=["agentneo-sdlc"],
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert len(res.spawned) == 2
+        assert len(spawns) == 2
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

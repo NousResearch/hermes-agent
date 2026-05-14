@@ -4693,7 +4693,8 @@ class GatewayRunner:
                         # happened, so an idle gateway stays silent.
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d "
+                            "skipped_singleton=%d",
                             slug,
                             len(res.spawned),
                             res.reclaimed,
@@ -4701,6 +4702,7 @@ class GatewayRunner:
                             len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            len(res.skipped_singleton) if hasattr(res, "skipped_singleton") else 0,
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)

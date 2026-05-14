@@ -2913,6 +2913,11 @@ class DispatchResult:
     available) from "correctly idle" (nothing spawnable in the queue)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
+    skipped_singleton: list[str] = field(default_factory=list)
+    """Ready task ids skipped because another task with identical skills
+    is already ``running``. Prevents simultaneous spawn of singleton agents
+    (e.g. groomer, sentinel) that check for duplicates at runtime —
+    by the time they run, the dispatcher has already spawned both."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
@@ -3800,6 +3805,23 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
+        # Singleton guard: before claiming a task, check if another task
+        # with identical skills is already running. This prevents the
+        # dispatcher from spawning multiple singleton agents (groomer,
+        # sentinel, etc.) in the same tick — the runtime singleton check
+        # in the skill can't prevent duplicates when both tasks check
+        # simultaneously and neither sees the other as running yet.
+        task_skills = conn.execute(
+            "SELECT skills FROM tasks WHERE id = ?", (row["id"],)
+        ).fetchone()
+        if task_skills and task_skills["skills"]:
+            conflict = conn.execute(
+                "SELECT 1 FROM tasks WHERE status = 'running' AND id != ? AND skills = ? LIMIT 1",
+                (row["id"], task_skills["skills"]),
+            ).fetchone()
+            if conflict:
+                result.skipped_singleton.append(row["id"])
+                continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue

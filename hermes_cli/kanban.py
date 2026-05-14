@@ -1698,6 +1698,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_singleton": res.skipped_singleton,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1721,6 +1722,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
+        )
+    if res.skipped_singleton:
+        print(
+            f"Skipped (singleton — task with same skills already running): "
+            f"{', '.join(res.skipped_singleton)}"
         )
     return 0
 

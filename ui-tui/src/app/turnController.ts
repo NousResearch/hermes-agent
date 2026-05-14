@@ -111,6 +111,7 @@ const clear = (t: Timer): null => {
 
 class TurnController {
   bufRef = ''
+  eventSeq = 0
   interrupted = false
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
@@ -541,7 +542,13 @@ class TurnController {
     })
   }
 
+  resetForSubmit() {
+    this.bufRef = ''
+    this.interrupted = false
+  }
+
   recordError() {
+    this.eventSeq += 1
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -555,6 +562,7 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+    this.eventSeq += 1
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -656,6 +664,8 @@ class TurnController {
     if (this.interrupted || !text) {
       return
     }
+
+    this.eventSeq += 1
 
     this.pruneTransient()
     this.endReasoningPhase()
@@ -936,6 +946,7 @@ class TurnController {
   }
 
   startMessage() {
+    this.eventSeq += 1
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

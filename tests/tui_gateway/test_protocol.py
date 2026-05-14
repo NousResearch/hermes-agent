@@ -71,6 +71,32 @@ def test_err_envelope(server):
     }
 
 
+def test_safe_cwd_tolerates_deleted_process_cwd(server, monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(server.os, "getcwd", MagicMock(side_effect=OSError("gone")))
+
+    assert server._safe_cwd() == str(tmp_path)
+
+
+def test_prompt_submit_dispatch_failure_clears_running(server, monkeypatch):
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+    session = {
+        "attached_images": [],
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+    }
+
+    server._run_prompt_submit("r1", "sid1", session, "hello")
+
+    assert session["running"] is False
+    assert emitted
+    assert emitted[-1][0] == "error"
+    assert "prompt dispatch failed" in emitted[-1][2]["message"]
+
+
 # ── write_json ───────────────────────────────────────────────────────
 
 

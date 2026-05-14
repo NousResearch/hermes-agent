@@ -1098,7 +1098,7 @@ def _emergency_cleanup_all_sessions():
                     len(_active_sessions))
         try:
             cleanup_all_browsers()
-        except Exception as e:
+        except BaseException as e:
             logger.error("Emergency cleanup error: %s", e)
         finally:
             with _cleanup_lock:
@@ -1111,7 +1111,7 @@ def _emergency_cleanup_all_sessions():
     # daemons owned by other live hermes processes.
     try:
         _reap_orphaned_browser_sessions()
-    except Exception as e:
+    except BaseException as e:
         logger.debug("Orphan reap on exit failed: %s", e)
 
 

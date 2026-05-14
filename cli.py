@@ -702,16 +702,16 @@ def _run_cleanup():
 
     try:
         _cleanup_all_terminals()
-    except Exception:
+    except BaseException:
         pass
     try:
         _cleanup_all_browsers()
-    except Exception:
+    except BaseException:
         pass
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
+    except BaseException:
         pass
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
@@ -719,14 +719,14 @@ def _run_cleanup():
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
-    except Exception:
+    except BaseException:
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
-    except Exception:
+    except BaseException:
         pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
@@ -741,7 +741,7 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
+    except BaseException:
         pass
 
 

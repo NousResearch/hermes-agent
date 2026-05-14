@@ -3317,14 +3317,25 @@ def shutdown_mcp_servers():
         try:
             future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
             future.result(timeout=15)
-        except Exception as exc:
-            logger.debug("Error during MCP shutdown: %s", exc)
+        except (Exception, KeyboardInterrupt) as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                logger.debug("MCP shutdown interrupted by keyboard.")
+            else:
+                logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
 
 
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
-    """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
+    """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans."""
+    try:
+        _kill_orphaned_mcp_children_impl(include_active)
+    except (Exception, KeyboardInterrupt):
+        pass  # Best-effort cleanup — never let an interrupt escape
+
+
+def _kill_orphaned_mcp_children_impl(include_active: bool = False) -> None:
+    """Real implementation — may raise KeyboardInterrupt or Exception.
 
     Orphans are PIDs that survived their session context exit (SDK teardown
     did not terminate the process — common on Linux when stdio children escape

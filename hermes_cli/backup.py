@@ -20,6 +20,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
@@ -500,6 +501,28 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
+def _quick_snapshot_label_slug(label: Optional[str]) -> Optional[str]:
+    """Return a filesystem-safe label component for quick snapshot IDs."""
+    if label is None:
+        return None
+    text = str(label).strip()
+    if not text:
+        return None
+    return quote(text, safe="-._")
+
+
+def _resolve_quick_snapshot_dir(root: Path, snap_id: str) -> Path:
+    """Resolve a snapshot directory and ensure it stays below ``root``."""
+    root.mkdir(parents=True, exist_ok=True)
+    root_resolved = root.resolve()
+    snap_dir = (root / snap_id).resolve()
+    try:
+        snap_dir.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"Unsafe quick snapshot id: {snap_id!r}") from exc
+    return snap_dir
+
+
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
@@ -516,8 +539,11 @@ def create_quick_snapshot(
     root = _quick_snapshot_root(home)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    snap_id = f"{ts}-{label}" if label else ts
-    snap_dir = root / snap_id
+    label_text = str(label).strip() if label is not None else None
+    label_text = label_text or None
+    label_slug = _quick_snapshot_label_slug(label_text)
+    snap_id = f"{ts}-{label_slug}" if label_slug else ts
+    snap_dir = _resolve_quick_snapshot_dir(root, snap_id)
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
@@ -568,7 +594,7 @@ def create_quick_snapshot(
     meta = {
         "id": snap_id,
         "timestamp": ts,
-        "label": label,
+        "label": label_text,
         "file_count": len(manifest),
         "total_size": sum(manifest.values()),
         "files": manifest,

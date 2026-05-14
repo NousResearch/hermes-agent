@@ -1098,6 +1098,28 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(label="before-upgrade", hermes_home=hermes_home)
         assert "before-upgrade" in snap_id
 
+    def test_label_path_components_cannot_escape_snapshot_root(self, hermes_home, tmp_path):
+        from hermes_cli.backup import create_quick_snapshot
+
+        label = "x/../../../leaked"
+        snap_id = create_quick_snapshot(label=label, hermes_home=hermes_home)
+
+        assert snap_id is not None
+        assert "/" not in snap_id
+        assert "\\" not in snap_id
+        assert "%2F" in snap_id
+
+        root = hermes_home / "state-snapshots"
+        snap_dir = root / snap_id
+        assert snap_dir.is_dir()
+        assert (snap_dir / "auth.json").exists()
+        assert not (tmp_path / "leaked").exists()
+
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+            meta = json.load(f)
+        assert meta["id"] == snap_id
+        assert meta["label"] == label
+
     def test_state_db_safely_copied(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)

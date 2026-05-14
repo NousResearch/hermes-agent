@@ -440,7 +440,8 @@ def _convert_to_png(path: Path) -> bool:
 def _is_png_file(path: Path) -> bool:
     """Return True when *path* starts with the PNG file signature."""
     try:
-        return path.read_bytes().startswith(_PNG_SIGNATURE)
+        with path.open("rb") as f:
+            return f.read(len(_PNG_SIGNATURE)) == _PNG_SIGNATURE
     except OSError:
         return False
 

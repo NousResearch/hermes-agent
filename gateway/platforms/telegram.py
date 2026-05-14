@@ -2037,8 +2037,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Edit message to show confirmation, remove buttons
             try:
                 await query.edit_message_text(
-                    text=result_text,
-                    parse_mode=ParseMode.MARKDOWN,
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=None,
                 )
             except Exception:

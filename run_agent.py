@@ -4316,6 +4316,15 @@ class AIAgent:
                     # measured impact (~26% end-to-end cost reduction on
                     # Sonnet 4.5).
                     review_agent._cached_system_prompt = self._cached_system_prompt
+                    # Defensive: pin session_start + session_id to the
+                    # parent's so any code path that re-renders parts of
+                    # the system prompt (compression, plugin hooks) still
+                    # produces byte-identical output. The cached-prompt
+                    # assignment above already short-circuits the normal
+                    # rebuild path, but these pins guarantee parity even
+                    # if a future code path bypasses the cache.
+                    review_agent.session_start = self.session_start
+                    review_agent.session_id = self.session_id
 
                     from model_tools import get_tool_definitions
                     from hermes_cli.plugins import (

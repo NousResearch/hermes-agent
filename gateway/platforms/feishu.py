@@ -394,6 +394,10 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     message_format: str = "post"  # "text" | "post" | "card"
+    # CardKit v2 streaming cards — when True, the adapter creates CardKit v2
+    # streaming cards for typewriter-style rendering instead of editing plain
+    # text messages.  Falls back gracefully when CardKit API is unavailable.
+    streaming_card: bool = True
 
 
 @dataclass
@@ -1373,6 +1377,16 @@ class FeishuAdapter(BasePlatformAdapter):
     # the streaming response completes — needed for CardKit v2 card finalization.
     REQUIRES_EDIT_FINALIZE = True
 
+    @property
+    def streaming_cards_enabled(self) -> bool:
+        """Whether CardKit v2 streaming cards are available and enabled.
+
+        Returns True only when:
+        1. The ``streaming_card`` config setting is enabled (default: True)
+        2. The lark_oapi SDK is available (lark is importable)
+        """
+        return self._streaming_card and FEISHU_AVAILABLE
+
     # =========================================================================
     # Lifecycle — init / settings / connect / disconnect
     # =========================================================================
@@ -1536,6 +1550,9 @@ class FeishuAdapter(BasePlatformAdapter):
             message_format=str(
                 extra.get("message_format") or os.getenv("FEISHU_MESSAGE_FORMAT", "post")
             ).strip().lower(),
+            streaming_card=_to_boolean(
+                extra.get("streaming_card", os.getenv("FEISHU_STREAMING_CARD", "true"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1569,6 +1586,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
         self._message_format = settings.message_format
+        self._streaming_card = settings.streaming_card
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1994,6 +2012,31 @@ class FeishuAdapter(BasePlatformAdapter):
                 logger.warning("[Feishu] CardKit finalize fallback patch also failed: %s", patch_exc)
                 return SendResult(success=False, error=str(patch_exc))
 
+    async def send_streaming_card(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Create and send a CardKit v2 streaming card for typewriter rendering.
+
+        Called by ``GatewayStreamConsumer`` on the first streaming delta when
+        ``adapter.streaming_cards_enabled`` is True.  On failure, returns an
+        unsuccessful SendResult so the consumer falls back to the regular
+        ``send()`` + ``edit_message()`` path.
+
+        This is intentionally separate from ``send()`` so that non-streaming
+        sends (notifications, approvals, media captions, gateway lifecycle
+        messages) never accidentally create streaming cards.
+        """
+        if not self.streaming_cards_enabled:
+            return SendResult(success=False, error="Streaming cards not enabled")
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        formatted = self.format_message(content)
+        return await self._create_streaming_card(chat_id, formatted, reply_to)
+
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
@@ -2023,18 +2066,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return SendResult(success=True)
             self._finalized_card_ids.pop(chat_id, None)
 
-        # Try creating a CardKit v2 streaming card first.
-        # Only attempt when content is a streaming placeholder (short text with
-        # the streaming cursor).  Non-streaming sends (notifications, approvals,
-        # media captions) should go through the regular path.
         formatted = self.format_message(content)
-        _STREAMING_CURSOR = " ▉"
-        if _STREAMING_CURSOR in formatted or len(formatted) < 30:
-            cardkit_result = await self._create_streaming_card(chat_id, formatted, reply_to)
-            if cardkit_result.success:
-                return cardkit_result
-            # CardKit creation failed — fall through to legacy send
-
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 

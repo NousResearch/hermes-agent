@@ -38,7 +38,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
-| [**evm**](/docs/user-guide/skills/optional/blockchain/blockchain-evm) | Query EVM blockchain data across 8 chains — wallet portfolios, ERC-20 tokens, transactions, gas tracker, whale detection, multi-chain scan, ENS resolution, allowance checker, contract inspection, and tx decoder. Supports Ethereum, BNB Chain, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync. Uses public RPCs + CoinGecko. No API key required. |
+| [**evm**](/docs/user-guide/skills/optional/blockchain/blockchain-evm) | Read-only EVM client: wallets, tokens, gas across 8 chains. |
 | [**solana**](/docs/user-guide/skills/optional/blockchain/blockchain-solana) | Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required. |
 
 ## communication

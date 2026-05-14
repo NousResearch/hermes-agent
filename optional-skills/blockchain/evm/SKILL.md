@@ -1,9 +1,10 @@
 ---
 name: evm
-description: Query EVM blockchain data across 8 chains — wallet portfolios, ERC-20 tokens, transactions, gas tracker, whale detection, multi-chain scan, ENS resolution, allowance checker, contract inspection, and tx decoder. Supports Ethereum, BNB Chain, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync. Uses public RPCs + CoinGecko. No API key required.
+description: "Read-only EVM client: wallets, tokens, gas across 8 chains."
 version: 1.0.0
-author: Mibayy
+author: Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [EVM, Ethereum, BNB, BSC, Base, Arbitrum, Polygon, Optimism, Avalanche, zkSync, Blockchain, Crypto, Web3, DeFi, NFT, ENS, Whale, Security]

@@ -1625,6 +1625,39 @@ class TestNormalizeMainRuntimeDefaultHeaders:
         normalized = _normalize_main_runtime(runtime)
         assert "default_headers" not in normalized
 
+    def test_client_cache_key_freezes_default_headers_dict(self):
+        from agent.auxiliary_client import _client_cache_key
+
+        key = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={
+                "provider": "custom",
+                "model": "gpt-4o",
+                "default_headers": {"X-B": "2", "X-A": "1"},
+            },
+        )
+
+        assert hash(key)
+        runtime_key = key[5]
+        assert (("X-A", "1"), ("X-B", "2")) in runtime_key
+
+    def test_client_cache_key_separates_header_variants(self):
+        from agent.auxiliary_client import _client_cache_key
+
+        key_a = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={"provider": "custom", "default_headers": {"X-Test": "a"}},
+        )
+        key_b = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={"provider": "custom", "default_headers": {"X-Test": "b"}},
+        )
+
+        assert key_a != key_b
+
 
 class TestTryAnthropicDefaultHeaders:
     """Verify that _try_anthropic propagates default_headers to build_anthropic_client."""

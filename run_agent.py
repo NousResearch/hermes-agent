@@ -2327,6 +2327,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
+                default_headers=getattr(self, "_default_headers", None),
             )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
@@ -2620,7 +2621,9 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    _DEFAULT_HEADERS_UNSET = object()
+
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', default_headers=_DEFAULT_HEADERS_UNSET):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -2640,18 +2643,8 @@ class AIAgent:
         if not api_mode:
             api_mode = determine_api_mode(new_provider, base_url)
 
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            _switch_runtime = resolve_runtime_provider(
-                requested=new_provider,
-                target_model=new_model,
-                explicit_api_key=api_key or None,
-                explicit_base_url=base_url or None,
-            )
-            if "default_headers" in _switch_runtime:
-                self._default_headers = _switch_runtime.get("default_headers")
-        except Exception:
-            pass
+        if default_headers is not self._DEFAULT_HEADERS_UNSET:
+            self._default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
 
         # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
         # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2668,11 +2661,6 @@ class AIAgent:
 
         old_model = self.model
         old_provider = self.provider
-
-        # Clear the per-config context_length override so the new model's
-        # actual context window is resolved via get_model_context_length()
-        # instead of inheriting the stale value from the previous model.
-        self._config_context_length = None
 
         # ── Swap core runtime fields ──
         self.model = new_model

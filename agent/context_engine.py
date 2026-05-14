@@ -195,6 +195,7 @@ class ContextEngine(ABC):
         base_url: str = "",
         api_key: str = "",
         provider: str = "",
+        **kwargs: Any,
     ) -> None:
         """Called when the user switches models or on fallback activation.
 

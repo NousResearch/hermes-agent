@@ -120,6 +120,17 @@ class TestDefaults:
         assert engine.last_prompt_tokens == 0
         assert engine.compression_count == 0
 
+    def test_update_model_accepts_forward_compatible_kwargs(self):
+        engine = StubEngine()
+        engine.update_model(
+            "model-b",
+            100_000,
+            provider="custom",
+            default_headers={"X-Test": "value"},
+        )
+        assert engine.context_length == 100_000
+        assert engine.threshold_tokens == 75_000
+
     def test_should_compress_preflight_default_false(self):
         engine = StubEngine()
         assert engine.should_compress_preflight([]) is False

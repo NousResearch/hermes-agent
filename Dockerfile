@@ -63,6 +63,17 @@ COPY --chown=hermes:hermes . .
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 
+# Pre-install scripts/whatsapp-bridge/node_modules at build time.
+# The WhatsApp adapter (gateway/platforms/whatsapp.py:_send_whatsapp) otherwise
+# falls back to running `npm install` at first connect.  When the entrypoint
+# remaps the hermes user via HERMES_UID (the documented way to share host-side
+# ownership for the data volume), the bridge directory remains owned by the
+# original UID 10000 and the new hermes user cannot write into it — the
+# runtime install fails with EACCES and the adapter silently never connects.
+RUN cd scripts/whatsapp-bridge && \
+    npm install --prefer-offline --no-audit && \
+    npm cache clean --force
+
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.
 # The venv needs to be traversable too.
@@ -73,7 +84,8 @@ RUN cd web && npm run build && \
 # not chowned here.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules \
+        /opt/hermes/scripts/whatsapp-bridge
 # Start as root so the entrypoint can usermod/groupmod + gosu.
 # If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
 

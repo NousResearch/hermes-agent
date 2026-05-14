@@ -3896,10 +3896,19 @@ def _resolve_hermes_argv() -> list[str]:
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return [hermes_bin]
-    # Fallback to the module form. ``hermes_cli.main`` is the actual
-    # console-script target declared in pyproject.toml, NOT a top-level
-    # ``hermes`` package — there is no ``hermes`` package to import.
-    return [sys.executable, "-m", "hermes_cli.main"]
+    # Fallback: go through the interpreter so the result is independent of $PATH.
+    # This matches gateway/run._resolve_hermes_bin() for the same reason —
+    # detached processes (cron, systemd User= jobs, kanban workers) often
+    # have a stripped PATH even when hermes is installed.
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main"]
+    except Exception:
+        pass
+
+    return None
 
 
 def _default_spawn(

@@ -11519,10 +11519,37 @@ Examples:
         help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
         description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
+    acp_parser.add_argument(
+        "-s",
+        "--skills",
+        action="append",
+        default=None,
+        metavar="SKILL",
+        help="Preload one or more skills into the ACP session (can be passed multiple times)",
+    )
     _add_accept_hooks_flag(acp_parser)
 
     def cmd_acp(args):
         """Launch Hermes Agent as an ACP server."""
+        import os
+
+        skills = getattr(args, "skills", None)
+        if skills:
+            # Mirror the same env-var bridge that TUI mode uses (tui_gateway/server.py).
+            # Flatten nested list-of-lists (action="append" can produce [[a,b], [c]]).
+            seen: set[str] = set()
+            flat: list[str] = []
+            for item in skills:
+                for part in str(item).replace("\n", ",").split(","):
+                    part = part.strip()
+                    if part and part not in seen:
+                        seen.add(part)
+                        flat.append(part)
+            if flat:
+                os.environ["HERMES_ACP_SKILLS"] = ",".join(flat)
+        else:
+            os.environ.pop("HERMES_ACP_SKILLS", None)
+
         try:
             from acp_adapter.entry import main as acp_main
 

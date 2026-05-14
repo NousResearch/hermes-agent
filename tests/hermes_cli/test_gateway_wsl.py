@@ -128,6 +128,7 @@ class TestSupportsSystemdServicesWSL:
         """WSL + working systemd → True."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
         assert gateway.supports_systemd_services() is True
@@ -136,6 +137,7 @@ class TestSupportsSystemdServicesWSL:
         """WSL + no systemd → False."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: False)
         assert gateway.supports_systemd_services() is False
@@ -144,6 +146,7 @@ class TestSupportsSystemdServicesWSL:
         """Native Linux (not WSL) → True without checking systemd."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
         monkeypatch.setattr(gateway, "is_wsl", lambda: False)
         assert gateway.supports_systemd_services() is True
 
@@ -164,6 +167,7 @@ class TestGatewayCommandWSLMessages:
     def test_install_wsl_no_systemd(self, monkeypatch, capsys):
         """hermes gateway install on WSL without systemd shows guidance."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
@@ -187,6 +191,7 @@ class TestGatewayCommandWSLMessages:
     def test_start_wsl_no_systemd(self, monkeypatch, capsys):
         """hermes gateway start on WSL without systemd shows guidance."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
@@ -233,6 +238,7 @@ class TestGatewayCommandWSLMessages:
         """hermes gateway status on WSL with manual process shows WSL note."""
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [12345])
@@ -258,6 +264,7 @@ class TestGatewayCommandWSLMessages:
         """hermes gateway status on WSL with no process shows WSL start advice."""
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])

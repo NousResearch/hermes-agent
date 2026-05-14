@@ -283,6 +283,26 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
     pids.append(pid)
 
 
+def _is_gateway_runtime_command(command: str) -> bool:
+    """Return True when ``command`` looks like a real gateway runtime process.
+
+    Keep this strict: match only actual ``gateway run`` invocations, not broad
+    helper CLI calls like ``hermes gateway status`` or ``hermes gateway install``.
+    """
+    normalized = " ".join((command or "").strip().split()).lower()
+    if not normalized:
+        return False
+    runtime_markers = (
+        "-m hermes_cli.main gateway run",
+        "hermes_cli.main gateway run",
+        "hermes_cli/main.py gateway run",
+        " gateway run --replace",
+        " gateway run",
+        "gateway/run.py",
+    )
+    return any(marker in normalized for marker in runtime_markers)
+
+
 def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> list[int]:
     """Best-effort process-table scan for gateway PIDs.
 
@@ -290,26 +310,19 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
     discover gateways outside the current profile.
     """
-    # Exclude the entire ancestor chain so the CLI process that invoked this
-    # scan (e.g. ``hermes gateway status``) is never mistaken for a running
-    # gateway.  See #13242.
-    exclude_pids = exclude_pids | _get_ancestor_pids()
+    # Exclude the caller's ancestry so helper CLI invocations (for example
+    # ``hermes gateway status``) are not mistaken for a gateway process.
+    # On Windows, tool calls can run as children of the real gateway, so the
+    # full ancestor-chain exclusion would hide the live gateway itself. Keep the
+    # Windows exclusion narrow and rely on strict runtime-command matching.
+    exclude_pids = exclude_pids | ({os.getpid()} if is_windows() else _get_ancestor_pids())
     pids: list[int] = []
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes_cli.main --profile",
-        "hermes_cli.main -p",
-        "hermes_cli/main.py gateway",
-        "hermes_cli/main.py --profile",
-        "hermes_cli/main.py -p",
-        "hermes gateway",
-        "gateway/run.py",
-    ]
     current_home = str(get_hermes_home().resolve())
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
 
     def _matches_current_profile(command: str) -> bool:
+
         if current_profile_name:
             return (
                 f"--profile {current_profile_name}" in command
@@ -385,7 +398,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and (
+                    if _is_gateway_runtime_command(current_cmd) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -409,7 +422,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         try:
                             cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if any(p in cmdline for p in patterns) and (
+                            if _is_gateway_runtime_command(cmdline) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -452,7 +465,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    if any(pattern in command for pattern in patterns) and (
+                    if _is_gateway_runtime_command(command) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
@@ -1004,6 +1017,22 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_scope="launchd",
         )
 
+    if is_windows():
+        try:
+            from hermes_cli import gateway_windows
+
+            task_info = gateway_windows.query_task_status()
+            service_running = (task_info.get("status", "").strip().lower() == "running")
+            return GatewayRuntimeSnapshot(
+                manager="windows scheduled task",
+                service_installed=gateway_windows.is_installed(),
+                service_running=service_running,
+                gateway_pids=gateway_pids,
+                service_scope="scheduled-task",
+            )
+        except Exception:
+            pass
+
     return GatewayRuntimeSnapshot(
         manager="manual process",
         gateway_pids=gateway_pids,
@@ -1364,13 +1393,17 @@ class SystemScopeRequiresRootError(RuntimeError):
 
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if callable(getuid) else 0
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     return Path(xdg) / "bus"
 
 
 def _user_systemd_private_socket_path() -> Path:
     """Return the per-user systemd private socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if callable(getuid) else 0
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     return Path(xdg) / "systemd" / "private"
 
 
@@ -1393,7 +1426,8 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
-    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if callable(getuid) else 0
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
         if Path(runtime_dir).exists():
@@ -2737,7 +2771,9 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if callable(getuid) else 0
+    return f"gui/{uid}"
 
 
 def generate_launchd_plist() -> str:
@@ -2766,7 +2802,7 @@ def generate_launchd_plist() -> str:
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
+        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(os.pathsep) if p])
     )
 
     # Build ProgramArguments array, including --profile when using a named profile

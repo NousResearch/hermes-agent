@@ -184,7 +184,7 @@ class TestLaunchdPlistPath:
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                assert node_bin in path_value.split(":")
+                assert node_bin in path_value
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -197,15 +197,14 @@ class TestLaunchdPlistPath:
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
         venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        monkeypatch.setenv("PATH", f"{venv_bin}{gateway_cli.os.pathsep}/usr/bin{gateway_cli.os.pathsep}/bin")
         plist = gateway_cli.generate_launchd_plist()
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                parts = path_value.split(":")
-                assert parts.count(venv_bin) == 1
+                assert path_value.count(venv_bin) == 1
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -519,6 +518,7 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli.signal, "SIGUSR1", getattr(gateway_cli.signal, "SIGTERM"), raising=False)
 
         # Track state: before kill → "active" (old PID),
         # after kill + exit → briefly inactive, then "active" again (new PID).

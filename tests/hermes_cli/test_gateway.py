@@ -74,7 +74,7 @@ def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, caps
     (project_root / "docker" / "entrypoint.sh").write_text("#!/bin/sh\n")
 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
     monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
 
@@ -96,7 +96,7 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
 
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
     monkeypatch.setenv("HERMES_ALLOW_ROOT_GATEWAY", "1")
 
@@ -384,7 +384,7 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
 
 def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
     monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
 
@@ -398,7 +398,7 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
 
     calls = []
@@ -559,3 +559,68 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+
+
+def test_is_gateway_runtime_command_matches_only_real_gateway_runs():
+    assert gateway._is_gateway_runtime_command(
+        "python -m hermes_cli.main gateway run --replace"
+    )
+    assert gateway._is_gateway_runtime_command(
+        "C:/Hermes/venv/Scripts/python.exe -m hermes_cli.main gateway run --replace"
+    )
+    assert not gateway._is_gateway_runtime_command(
+        "python -m hermes_cli.main gateway status"
+    )
+    assert not gateway._is_gateway_runtime_command(
+        "python -m hermes_cli.main gateway install"
+    )
+
+
+def test_scan_gateway_pids_windows_detects_runtime_processes_without_hiding_gateway_ancestors(monkeypatch):
+    runtime_pid = 20888
+
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: gateway.Path("C:/Hermes"))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda _home: "")
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: None if name == "wmic" else "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    monkeypatch.setattr(gateway.os, "getpid", lambda: 999)
+
+    fake_result = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "CommandLine=python -m hermes_cli.main gateway status\n"
+            "ProcessId=999\n\n"
+            "CommandLine=C:/Hermes/venv/Scripts/python.exe -m hermes_cli.main gateway run --replace\n"
+            f"ProcessId={runtime_pid}\n\n"
+            "CommandLine=C:/Hermes/venv/Scripts/python.exe -m hermes_cli.main gateway install\n"
+            "ProcessId=777\n\n"
+        ),
+        stderr="",
+    )
+    monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: fake_result)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [runtime_pid]
+
+
+def test_get_gateway_runtime_snapshot_windows_uses_scheduled_task_state(monkeypatch):
+    runtime_pid = 20888
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [runtime_pid])
+    monkeypatch.setattr(gateway, "is_termux", lambda: False)
+    monkeypatch.setattr(gateway, "is_linux", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+
+    fake_windows = SimpleNamespace(
+        is_installed=lambda: True,
+        query_task_status=lambda: {"status": "Running"},
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", fake_windows)
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "windows scheduled task"
+    assert snapshot.service_installed is True
+    assert snapshot.service_running is True
+    assert snapshot.gateway_pids == (20888,)
+    assert snapshot.running is True

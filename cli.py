@@ -1525,7 +1525,13 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            # No Windows console available (e.g. background agent subprocess
+            # with TERM=xterm-256color).  Fall back to plain print so the
+            # process doesn't crash.
+            print(text)
         return
 
     try:
@@ -1533,7 +1539,10 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            print(text)
         return
 
     import asyncio as _asyncio
@@ -1549,7 +1558,10 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            print(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a

@@ -35,7 +35,7 @@ from tools.transcription_tools import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_PIPELINE_STATES = {"completed", "failed", "retry_scheduled"}
+TERMINAL_PIPELINE_STATES = {"completed", "failed"}
 ACTIVE_PIPELINE_STATES = {
     "received",
     "resolving_meeting",
@@ -412,17 +412,40 @@ class TeamsMeetingPipeline:
             job = self._persist_job(job, status="completed")
             return job
         except TeamsPipelineRetryableError as exc:
-            job = self._persist_job(
-                job,
-                status="retry_scheduled",
-                error_info={"message": str(exc), "retryable": True},
+            error_class = type(exc).__name__
+            message = str(exc)
+            logger.warning(
+                "Teams pipeline job %s terminally failed with retryable error %s: %s",
+                job.job_id,
+                error_class,
+                message,
             )
-            return job
-        except Exception as exc:
             job = self._persist_job(
                 job,
                 status="failed",
-                error_info={"message": str(exc), "type": type(exc).__name__},
+                error_info={
+                    "failure_kind": "retryable",
+                    "failure_error_class": error_class,
+                    "failure_message": message,
+                    "message": message,
+                    "type": error_class,
+                    "retryable": True,
+                },
+            )
+            return job
+        except Exception as exc:
+            error_class = type(exc).__name__
+            message = str(exc)
+            job = self._persist_job(
+                job,
+                status="failed",
+                error_info={
+                    "failure_kind": "non_retryable",
+                    "failure_error_class": error_class,
+                    "failure_message": message,
+                    "message": message,
+                    "type": error_class,
+                },
             )
             return job
 

@@ -229,6 +229,16 @@ def test_store_notification_receipts_are_idempotent(tmp_path):
     assert reloaded.has_notification_receipt(receipt_key) is True
 
 
+def test_terminal_states_no_longer_include_retry_scheduled():
+    # W3-S5: `retry_scheduled` was a terminal state with no scheduler to consume
+    # it — jobs left in that state were silently lost. Removed so retryable
+    # failures terminal-fail instead.
+    from plugins.teams_pipeline.pipeline import TERMINAL_PIPELINE_STATES
+
+    assert "retry_scheduled" not in TERMINAL_PIPELINE_STATES
+    assert TERMINAL_PIPELINE_STATES == {"completed", "failed"}
+
+
 @pytest.mark.anyio
 class TestTeamsMeetingPipeline:
     async def test_transcript_first_path_persists_state_and_skips_recording(self, tmp_path, monkeypatch):
@@ -383,7 +393,7 @@ class TestTeamsMeetingPipeline:
         assert teams_record is not None
         assert teams_record["message_id"] == "msg-1"
 
-    async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
+    async def test_retryable_error_marks_failed_not_retry_scheduled(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
@@ -407,9 +417,13 @@ class TestTeamsMeetingPipeline:
             }
         )
 
-        assert job.status == "retry_scheduled"
-        assert job.error_info["retryable"] is True
-        assert "Recording unavailable" in job.error_info["message"]
+        # W3-S5: retryable failures are now terminal `failed` (not the orphaned
+        # `retry_scheduled` state) — no scheduler ever consumed retry_scheduled,
+        # so jobs in that state were silently lost.
+        assert job.status == "failed"
+        assert job.error_info["failure_kind"] == "retryable"
+        assert job.error_info["failure_error_class"] == "TeamsPipelineRetryableError"
+        assert "Recording unavailable" in job.error_info["failure_message"]
 
     async def test_duplicate_notification_reuses_completed_job(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module

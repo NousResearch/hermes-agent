@@ -1422,6 +1422,9 @@ copy_config_templates() {
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi
+    # Always ensure restrictive permissions (0600) to protect API keys
+    chmod 0600 "$HERMES_HOME/.env" 2>/dev/null || true
+    log_success "Restricted ~/.hermes/.env to owner-only (0600)"
     configure_browser_env_from_system_browser
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)

@@ -86,6 +86,7 @@ except Exception:
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
+from tools.browser_providers.browserless import BrowserlessProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
@@ -394,6 +395,7 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
+    "browserless": BrowserlessProvider,
     "firecrawl": FirecrawlProvider,
 }
 

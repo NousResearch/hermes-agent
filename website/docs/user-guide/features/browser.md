@@ -11,6 +11,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 - **Browserbase cloud mode** via [Browserbase](https://browserbase.com) for managed cloud browsers and anti-bot tooling
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
+- **Browserless cloud mode** via [Browserless](https://www.browserless.io) for scalable cloud browser execution
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Local Chrome via CDP** — connect browser tools to your own Chrome instance using `/browser connect`
@@ -24,7 +25,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 
 Key capabilities:
 
-- **Multi-provider cloud execution** — Browserbase, Browser Use, or Firecrawl — no local browser needed
+- **Multi-provider cloud execution** — Browserbase, Browser Use, Browserless, or Firecrawl — no local browser needed
 - **Local Chrome integration** — attach to your running Chrome via CDP for hands-on browsing
 - **Built-in stealth** — random fingerprints, CAPTCHA solving, residential proxies (Browserbase)
 - **Session isolation** — each task gets its own browser session
@@ -59,6 +60,22 @@ BROWSER_USE_API_KEY=***
 ```
 
 Get your API key at [browser-use.com](https://browser-use.com). Browser Use provides a cloud browser via its REST API. If both Browserbase and Browser Use credentials are set, Browserbase takes priority.
+
+### Browserless cloud mode
+
+To use Browserless as your cloud browser provider, add:
+
+```bash
+# Add to ~/.hermes/.env
+BROWSERLESS_API_KEY=***
+```
+
+Get your API key at [browserless.io](https://www.browserless.io/). Browserless provides a cloud browser via its REST API. If you use a self-hosted instance, you can override the URL:
+
+```bash
+# Optional self-hosted URL
+BROWSERLESS_API_URL=http://your-browserless-instance:3000
+```
 
 ### Firecrawl cloud mode
 

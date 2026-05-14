@@ -1351,6 +1351,8 @@ You can switch between providers at any time with `hermes model` — no restart 
 |---------|----------|--------------|
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
+| Browser automation | [Browser Use](https://browser-use.com/) | `BROWSER_USE_API_KEY` |
+| Browser automation | [Browserless](https://www.browserless.io/) | `BROWSERLESS_API_KEY`, `BROWSERLESS_API_URL` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
@@ -1383,6 +1385,25 @@ By default, Hermes uses the [Firecrawl cloud API](https://firecrawl.dev/) for we
    ```
 
 You can also set both `FIRECRAWL_API_KEY` and `FIRECRAWL_API_URL` if your self-hosted instance has authentication enabled.
+
+### Self-Hosting Browserless
+
+By default, Hermes uses the [Browserless cloud API](https://www.browserless.io/) for browser automation. If you prefer to run Browserless locally, you can point Hermes at a self-hosted instance instead. See Browserless's [GitHub repository](https://github.com/browserless/browserless) for complete setup instructions.
+
+**What you get:** No API key required, no per-minute costs, full data sovereignty, and the ability to run on your own hardware.
+
+**Setup:**
+
+1. Start the Browserless Docker container:
+   ```bash
+   docker run -p 3000:3000 ghcr.io/browserless/chromium
+   ```
+
+2. Point Hermes at your instance:
+   ```bash
+   hermes config set BROWSERLESS_API_URL http://localhost:3000
+   ```
+   If you have a token configured on your self-hosted instance, you can also set `BROWSERLESS_API_KEY`.
 
 ## OpenRouter Provider Routing
 

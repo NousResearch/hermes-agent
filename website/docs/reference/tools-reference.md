@@ -31,7 +31,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset (CDP-gated tools)
 
-These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, a Browser Use session, a Browserless session, or Camofox.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

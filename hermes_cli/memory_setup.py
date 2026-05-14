@@ -379,6 +379,12 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
             new_lines.append(f"{key}={val}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------

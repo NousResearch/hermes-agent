@@ -9318,6 +9318,31 @@ class AIAgent:
 
                         if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
+
+                            # Validate tool_calls JSON when finish_reason is "length":
+                            # the model hit its output token limit mid-generation,
+                            # which can truncate tool call arguments mid-JSON.
+                            # Retry without adding broken JSON to context.
+                            if assistant_message.tool_calls:
+                                _incomplete_tools = []
+                                for _tc in assistant_message.tool_calls:
+                                    _args = _tc.function.arguments or ""
+                                    if not _args.strip():
+                                        continue
+                                    try:
+                                        json.loads(_args)
+                                    except json.JSONDecodeError as _e:
+                                        _incomplete_tools.append((_tc.function.name, str(_e)))
+                                if _incomplete_tools:
+                                    _tool_name, _err = _incomplete_tools[0]
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️ Tool call '{_tool_name}' truncated "
+                                        f"({_err}). Retrying without broken JSON...",
+                                        force=True,
+                                    )
+                                    time.sleep(0.2)
+                                    continue
+
                             if not assistant_message.tool_calls:
                                 length_continue_retries += 1
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)

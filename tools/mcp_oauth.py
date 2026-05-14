@@ -271,6 +271,34 @@ class HermesTokenStorage:
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = tokens.model_dump(mode="json", exclude_none=True)
+
+        # Per RFC 6749 §10.4, when a client uses ``grant_type=refresh_token``,
+        # the authorization server MAY rotate the refresh token (return a new
+        # one) OR keep the existing one (return no refresh_token field in the
+        # response). Both are spec-compliant.
+        #
+        # Bug: when the server's refresh response omits the refresh_token,
+        # ``model_dump(exclude_none=True)`` above drops the field from
+        # ``payload``, and the unconditional ``_write_json`` below overwrites
+        # the stored file with no refresh_token. The original refresh_token
+        # is lost. On the NEXT access-token expiry, the SDK has no
+        # refresh_token to use and falls back to a full ``authorization_code``
+        # browser flow — i.e. the user sees the OAuth dance again roughly
+        # one TTL after their last successful auth, every time.
+        #
+        # Fix: if the refresh response didn't include a refresh_token,
+        # preserve the existing one from on-disk storage. Standard
+        # well-behaved OAuth client behavior.
+        if "refresh_token" not in payload:
+            existing = _read_json(self._tokens_path())
+            if existing and existing.get("refresh_token"):
+                payload["refresh_token"] = existing["refresh_token"]
+                logger.debug(
+                    "OAuth refresh response for %s omitted refresh_token; "
+                    "preserving existing one from disk",
+                    self._server_name,
+                )
+
         # Persist an absolute ``expires_at`` so a process restart can
         # reconstruct the correct remaining TTL. Without this the MCP SDK's
         # ``_initialize`` reloads a relative ``expires_in`` which has no

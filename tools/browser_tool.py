@@ -749,6 +749,28 @@ def _run_chrome_fallback_command(
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
 
+    # Inject --no-sandbox when needed (issue #15765, #23496).
+    # Uses AGENT_BROWSER_ARGS which is the env var actually read by agent-browser.
+    if "AGENT_BROWSER_ARGS" not in browser_env:
+        _needs_sandbox_bypass = False
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            _needs_sandbox_bypass = True
+            logger.debug("browser fallback: running as root — injecting --no-sandbox")
+        else:
+            _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+            try:
+                with open(_userns_restrict, encoding="utf-8") as _f:
+                    if _f.read().strip() == "1":
+                        _needs_sandbox_bypass = True
+                        logger.debug(
+                            "browser fallback: AppArmor userns restrictions detected — "
+                            "injecting --no-sandbox"
+                        )
+            except OSError:
+                pass
+        if _needs_sandbox_bypass:
+            browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox --disable-dev-shm-usage"
+
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         full = base_args + [cmd] + cmd_args
         # Use temp-file stdout/stderr pattern (same as _run_browser_command)
@@ -1868,12 +1890,14 @@ def _run_browser_command(
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
 
-        # Inject --no-sandbox when needed (issue #15765):
+        # Inject --no-sandbox when needed (issue #15765, #23496):
         # - Running as root: Chromium always refuses to start without it
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
+        # Uses AGENT_BROWSER_ARGS which is the env var actually read by agent-browser
+        # (not AGENT_BROWSER_CHROME_FLAGS which was never consulted — issue #23496).
+        if "AGENT_BROWSER_ARGS" not in browser_env:
             _needs_sandbox_bypass = False
             if hasattr(os, "geteuid") and os.geteuid() == 0:
                 _needs_sandbox_bypass = True
@@ -1892,7 +1916,7 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
+                browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox --disable-dev-shm-usage"
                 )
 

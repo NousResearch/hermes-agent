@@ -64,6 +64,9 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Firecrawl local output/cache
+.firecrawl/
+
 # Nix
 .direnv/
 .nix-stamps/

@@ -1988,7 +1988,8 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in {402, 429, None}:
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
-                                           "payment required")):
+                                           "payment required", "quota exceeded",
+                                           "exceeded your current quota")):
             return True
     return False
 
@@ -2059,6 +2060,38 @@ def _is_connection_error(exc: Exception) -> bool:
         "unexpected eof",
         "remoteprotocolerror",
         "localprotocolerror",
+    )):
+        return True
+    return False
+
+
+def _is_server_error(exc: Exception) -> bool:
+    """Detect server-side errors (5xx) that should trigger provider fallback.
+
+    Returns True for HTTP 5xx status codes (500, 502, 503, etc.) which
+    indicate the provider is reachable but temporarily broken.  Unlike
+    connection errors and rate limits, 5xx errors are provider-side
+    failures that justify falling back to a secondary vision provider
+    without waiting for a retry that will likely fail again.
+
+    Also catches Gemini-style 503 wrapped as status_code=503 in OpenAI
+    SDK errors, and httpx status errors with a 5xx response code.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None and isinstance(status, int) and 500 <= status < 600:
+        return True
+    # httpx raises httpx.HTTPStatusError with .response.status_code
+    response = getattr(exc, "response", None)
+    if response is not None:
+        resp_status = getattr(response, "status_code", None)
+        if resp_status is not None and isinstance(resp_status, int) and 500 <= resp_status < 600:
+            return True
+    err_lower = str(exc).lower()
+    if any(kw in err_lower for kw in (
+        "500", "502", "503", "504",
+        "service unavailable", "internal server error",
+        "bad gateway", "gateway timeout",
+        "temporarily unavailable",
     )):
         return True
     return False
@@ -3900,6 +3933,46 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _resolve_vision_fallback_client(
+    task: str,
+    async_mode: bool = False,
+) -> Tuple[Optional[Any], Optional[str], Optional[str]]:
+    """Try the configured vision fallback chain (fallback_provider → local_fallback_provider).
+
+    Returns (client, model, provider_label) on first successful resolution,
+    or (None, None, None) when no fallback is configured or none are available.
+    """
+    task_config = _get_auxiliary_task_config(task)
+    if not task_config:
+        return None, None, None
+
+    # Try fallback_provider first
+    fb_provider = str(task_config.get("fallback_provider", "")).strip() or None
+    fb_model = str(task_config.get("fallback_model", "")).strip() or None
+    if fb_provider:
+        try:
+            client, model = resolve_provider_client(fb_provider, fb_model, async_mode=async_mode)
+            if client is not None:
+                logger.info("Vision fallback: using %s (%s)", fb_provider, model or fb_model)
+                return client, model or fb_model, fb_provider
+        except Exception as e:
+            logger.debug("Vision fallback %s failed: %s", fb_provider, e)
+
+    # Try local_fallback_provider
+    local_provider = str(task_config.get("local_fallback_provider", "")).strip() or None
+    local_model = str(task_config.get("local_fallback_model", "")).strip() or None
+    if local_provider:
+        try:
+            client, model = resolve_provider_client(local_provider, local_model, async_mode=async_mode)
+            if client is not None:
+                logger.info("Vision local fallback: using %s (%s)", local_provider, model or local_model)
+                return client, model or local_model, local_provider
+        except Exception as e:
+            logger.debug("Vision local fallback %s failed: %s", local_provider, e)
+
+    return None, None, None
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -4359,33 +4432,38 @@ def call_llm(
                     effective_extra_body=effective_extra_body,
                 )
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
-        #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
-        #
-        # ── Rate-limit fallback (#13579) ─────────────────────────────
-        # When the provider returns a 429 rate-limit (not billing), fall
-        # back to an alternative provider instead of exhausting retries
-        # against the same rate-limited endpoint.
+        # Vision-specific fallback chain (fallback_provider → local_fallback_provider)
+        # Triggered when:
+        #   a) Client couldn't be created (client is None)
+        #   b) Client was created but API call failed (first_err is not None and
+        #      the generic should_fallback gate below would block explicit providers)
+        if task == "vision" and (client is None or first_err is not None):
+            fallback_client, fallback_model, fallback_label = _resolve_vision_fallback_client(task)
+            if fallback_client is not None:
+                logger.info("Vision fallback chain: using %s (%s)", fallback_label, fallback_model)
+                fb_kwargs = _build_call_kwargs(
+                    fallback_label, fallback_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=effective_extra_body)
+                return _validate_llm_response(
+                    fallback_client.chat.completions.create(**fb_kwargs), task)
+
+        # ── Payment / credit exhaustion / connection / rate-limit / server-error fallback ──
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
+        # Exception: server errors (5xx) also trigger fallback for explicit
+        # providers since the endpoint is unreachable regardless of config.
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        is_server_err = _is_server_error(first_err)
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4395,6 +4473,8 @@ def call_llm(
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider
                 )
+            elif _is_server_error(first_err):
+                reason = f"server error ({first_err})"
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
@@ -4707,19 +4787,36 @@ async def async_call_llm(
                     effective_extra_body=effective_extra_body,
                 )
 
-        # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        # Vision-specific fallback chain (fallback_provider → local_fallback_provider)
+        if task == "vision" and (client is None or first_err is not None):
+            fallback_client, fallback_model, fallback_label = _resolve_vision_fallback_client(task, async_mode=True)
+            if fallback_client is not None:
+                logger.info("Vision fallback chain: using %s (%s)", fallback_label, fallback_model)
+                fb_kwargs = _build_call_kwargs(
+                    fallback_label, fallback_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=effective_extra_body)
+                return _validate_llm_response(
+                    await fallback_client.chat.completions.create(**fb_kwargs), task)
+
+        # ── Payment / connection / rate-limit / server-error fallback ──
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        is_server_err = _is_server_error(first_err)
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider
                 )
+            elif _is_server_error(first_err):
+                reason = f"server error ({first_err})"
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:

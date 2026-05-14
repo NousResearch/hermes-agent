@@ -8304,7 +8304,6 @@ class HermesCLI:
             state = mgr.resume(
                 pending_input=self._pending_input,
                 is_idle=lambda: not getattr(self, "_agent_running", False),
-                on_message=lambda msg: _cprint(f"  {msg}"),
             )
             if state is None:
                 _cprint(f"  {_DIM}No loop to resume.{_RST}")
@@ -8353,17 +8352,12 @@ class HermesCLI:
                 interval_seconds=interval_seconds,
                 pending_input=self._pending_input,
                 is_idle=lambda: not getattr(self, "_agent_running", False),
-                on_message=lambda msg: _cprint(f"  {msg}"),
             )
         except ValueError as exc:
             _cprint(f"  Invalid loop: {exc}")
             return
 
-        _cprint(f"  ⊙ Loop set ({state.interval_seconds}s interval, scheduler running): {state.prompt}")
-        _cprint(
-            f"  {_DIM}The prompt will fire every {state.interval_seconds}s when idle. "
-            f"Use /loop status, /loop pause, /loop resume, /loop clear.{_RST}"
-        )
+        _cprint(f"  ⊙ Loop set: every {state.interval_seconds}s → {state.prompt}")
         # Kick off immediately so the user doesn't have to send a separate message
         try:
             self._pending_input.put(state.prompt)

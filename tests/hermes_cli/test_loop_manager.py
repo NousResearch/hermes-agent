@@ -41,6 +41,16 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 class TestParseInterval:
+    def test_seconds(self):
+        from hermes_cli.loop import _parse_interval
+
+        assert _parse_interval("10s") == 10
+        assert _parse_interval("30s") == 30
+        assert _parse_interval("1sec") == 1
+        assert _parse_interval("5 seconds") == 5
+        assert _parse_interval("30") == 30  # bare number
+        assert _parse_interval("0") == 0
+
     def test_minutes(self):
         from hermes_cli.loop import _parse_interval
 
@@ -68,7 +78,6 @@ class TestParseInterval:
         assert _parse_interval("") is None
         assert _parse_interval("abc") is None
         assert _parse_interval("5x") is None
-        assert _parse_interval("5") is None
 
 
 # ──────────────────────────────────────────────────────────────────────

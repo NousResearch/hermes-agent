@@ -74,7 +74,7 @@ class TestLoopCommandCLI:
         assert "No active loop" in captured.out
 
     def test_set_prompt(self, capsys, hermes_home):
-        """/loop <prompt> creates a loop and kicks off immediately."""
+        """/loop <prompt> creates a loop and kicks off immediately with [Loop check] prefix."""
         from cli import HermesCLI
         cli = _make_cli()
         cli.session_id = "test-sid-2"
@@ -84,8 +84,8 @@ class TestLoopCommandCLI:
         captured = capsys.readouterr()
         assert "Loop set" in captured.out
         assert "check deployment" in captured.out
-        assert "300s interval" in captured.out  # default
-        cli._pending_input.put.assert_called_once_with("check deployment")
+        assert "300s" in captured.out
+        cli._pending_input.put.assert_called_once_with("[Loop check] check deployment")
 
     def test_set_with_interval(self, capsys, hermes_home):
         """/loop 5m check deployment parses interval prefix."""
@@ -97,9 +97,9 @@ class TestLoopCommandCLI:
 
         captured = capsys.readouterr()
         assert "Loop set" in captured.out
-        assert "300s interval" in captured.out
+        assert "300s" in captured.out
         assert "check deployment" in captured.out
-        cli._pending_input.put.assert_called_once_with("check deployment")
+        cli._pending_input.put.assert_called_once_with("[Loop check] check deployment")
 
     def test_set_every_syntax(self, capsys, hermes_home):
         """/loop every 30m summarize news parses 'every' prefix."""
@@ -111,7 +111,7 @@ class TestLoopCommandCLI:
 
         captured = capsys.readouterr()
         assert "Loop set" in captured.out
-        assert "1800s interval" in captured.out
+        assert "1800s" in captured.out
         assert "summarize news" in captured.out
 
     def test_set_empty_prompt_error(self, capsys, hermes_home):

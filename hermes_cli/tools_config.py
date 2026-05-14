@@ -60,6 +60,7 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -82,7 +83,11 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+#
+# Video gen is off by default — it's a niche, paid, slow feature. Users
+# who want it opt in via `hermes tools` → Video Generation, which walks
+# them through provider + model selection.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "video_gen"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -240,6 +245,15 @@ TOOL_CATEGORIES = {
         "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
+        # Per-provider rows are injected at runtime from
+        # plugins.web.<vendor>.provider via _plugin_web_search_providers()
+        # in _visible_providers(). Only non-provider UX setup-flow rows
+        # for the firecrawl backend are listed here:
+        #   - "Nous Subscription" — managed Firecrawl billed via Nous
+        #     subscription (requires_nous_auth + override_env_vars).
+        #   - "Firecrawl Self-Hosted" — points firecrawl at a private
+        #     Docker instance via FIRECRAWL_API_URL only.
+        # See PR #25182 for the migration rationale.
         "providers": [
             {
                 "name": "Nous Subscription",
@@ -252,42 +266,6 @@ TOOL_CATEGORIES = {
                 "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
             },
             {
-                "name": "Firecrawl Cloud",
-                "badge": "★ recommended",
-                "tag": "Full-featured search, extract, and crawl",
-                "web_backend": "firecrawl",
-                "env_vars": [
-                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
-                ],
-            },
-            {
-                "name": "Exa",
-                "badge": "paid",
-                "tag": "Neural search with semantic understanding",
-                "web_backend": "exa",
-                "env_vars": [
-                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
-                ],
-            },
-            {
-                "name": "Parallel",
-                "badge": "paid",
-                "tag": "AI-powered search and extract",
-                "web_backend": "parallel",
-                "env_vars": [
-                    {"key": "PARALLEL_API_KEY", "prompt": "Parallel API key", "url": "https://parallel.ai"},
-                ],
-            },
-            {
-                "name": "Tavily",
-                "badge": "free tier",
-                "tag": "Search, extract, and crawl — 1000 free searches/mo",
-                "web_backend": "tavily",
-                "env_vars": [
-                    {"key": "TAVILY_API_KEY", "prompt": "Tavily API key", "url": "https://app.tavily.com/home"},
-                ],
-            },
-            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
@@ -295,32 +273,6 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
-            },
-            {
-                "name": "SearXNG",
-                "badge": "free · self-hosted · search only",
-                "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",
-                "web_backend": "searxng",
-                "env_vars": [
-                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
-                ],
-            },
-            {
-                "name": "Brave Search (Free Tier)",
-                "badge": "free tier · search only",
-                "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
-                "web_backend": "brave-free",
-                "env_vars": [
-                    {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search subscription token", "url": "https://brave.com/search/api/"},
-                ],
-            },
-            {
-                "name": "DuckDuckGo (ddgs)",
-                "badge": "free · no key · search only",
-                "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
-                "web_backend": "ddgs",
-                "env_vars": [],
-                "post_setup": "ddgs",
             },
         ],
     },
@@ -348,6 +300,15 @@ TOOL_CATEGORIES = {
                 "imagegen_backend": "fal",
             },
         ],
+    },
+    "video_gen": {
+        "name": "Video Generation",
+        "icon": "🎬",
+        # Providers list is intentionally empty — every video gen backend
+        # is a plugin, surfaced by ``_plugin_video_gen_providers()`` and
+        # injected by ``_visible_providers``. Mirrors the design we'll
+        # converge image_gen toward.
+        "providers": [],
     },
     "browser": {
         "name": "Browser Automation",
@@ -1525,6 +1486,101 @@ def _plugin_image_gen_providers() -> list[dict]:
     return rows
 
 
+def _plugin_video_gen_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered video gen providers.
+
+    Mirrors ``_plugin_image_gen_providers`` exactly — every video backend
+    is a plugin, so this function is the *only* source of provider rows
+    for the Video Generation category. The hardcoded ``TOOL_CATEGORIES``
+    entry for ``video_gen`` keeps an empty providers list.
+    """
+    try:
+        from agent.video_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        rows.append(
+            {
+                "name": schema.get("name", provider.display_name),
+                "badge": schema.get("badge", ""),
+                "tag": schema.get("tag", ""),
+                "env_vars": schema.get("env_vars", []),
+                "video_gen_plugin_name": provider.name,
+            }
+        )
+    return rows
+
+
+# Mirror of _plugin_image_gen_providers for web search backends. Surfaces
+# every plugin-registered web provider so it appears in the
+# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
+# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# PR #25182 — this helper is the sole source of truth for the category's
+# provider rows. The hardcoded entries that used to drive the category
+# were deleted in the same PR; only the two non-provider UX rows
+# ("Nous Subscription" managed-gateway entry, "Firecrawl Self-Hosted")
+# remain in TOOL_CATEGORIES because they describe alternative *setup
+# flows* for the firecrawl backend rather than distinct providers.
+def _plugin_web_search_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered web search providers.
+
+    Each returned dict is a regular ``TOOL_CATEGORIES`` provider row. It
+    populates both ``web_backend`` (legacy field consumed by setup +
+    selection helpers) and ``web_search_plugin_name`` (informational
+    marker) so the picker behaves identically whether a provider is
+    hardcoded or plugin-registered.
+
+    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
+    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    source of provider rows for the Web Search & Extract category.
+    """
+    try:
+        from agent.web_search_registry import list_providers as _list_web_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = _list_web_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "web_backend": name,
+            "web_search_plugin_name": name,
+        }
+        # Optional pass-through fields the schema can opt into.
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1540,6 +1596,19 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # later) so the picker lists them alongside FAL / Nous Subscription.
     if cat.get("name") == "Image Generation":
         visible.extend(_plugin_image_gen_providers())
+
+    # Inject plugin-registered video_gen backends. Unlike image_gen,
+    # video_gen has NO hardcoded providers — every backend is a plugin.
+    if cat.get("name") == "Video Generation":
+        visible.extend(_plugin_video_gen_providers())
+
+    # Inject plugin-registered web search backends. After PR #25182, this
+    # is the SOLE source of provider rows for the Web Search & Extract
+    # category — the per-provider hardcoded entries were deleted. The two
+    # remaining hardcoded rows ("Nous Subscription", "Firecrawl
+    # Self-Hosted") are non-provider UX setup-flow rows for firecrawl.
+    if cat.get("name") == "Web Search & Extract":
+        visible.extend(_plugin_web_search_providers())
 
     return visible
 
@@ -1606,6 +1675,23 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
             return False
         try:
             from agent.image_gen_registry import list_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            for provider in list_providers():
+                try:
+                    if provider.is_available():
+                        return False
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return True
+    if ts_key == "video_gen":
+        # Satisfied when any plugin-registered video gen provider reports
+        # available — no in-tree fallback (every backend is a plugin).
+        try:
+            from agent.video_gen_registry import list_providers
             from hermes_cli.plugins import _ensure_plugins_discovered
 
             _ensure_plugins_discovered()
@@ -1952,6 +2038,106 @@ def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
     _configure_imagegen_model_for_plugin(plugin_name, config)
 
 
+# ─── Video Generation Model Pickers ───────────────────────────────────────────
+
+
+def _plugin_video_gen_catalog(plugin_name: str):
+    """Return ``(catalog_dict, default_model_id)`` for a video gen plugin.
+
+    Mirrors :func:`_plugin_image_gen_catalog`. Returns ``({}, None)`` when
+    the plugin isn't registered or has no models.
+    """
+    try:
+        from agent.video_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(plugin_name)
+    except Exception:
+        return {}, None
+    if provider is None:
+        return {}, None
+    try:
+        models = provider.list_models() or []
+        default = provider.default_model()
+    except Exception:
+        return {}, None
+    catalog = {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}
+    return catalog, default
+
+
+def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None:
+    """Prompt for a video gen model from a plugin's catalog.
+
+    Mirrors :func:`_configure_imagegen_model_for_plugin`. Writes the
+    selection to ``video_gen.model``.
+    """
+    catalog, default_model = _plugin_video_gen_catalog(plugin_name)
+    if not catalog:
+        return
+
+    cur_cfg = config.setdefault("video_gen", {})
+    if not isinstance(cur_cfg, dict):
+        cur_cfg = {}
+        config["video_gen"] = cur_cfg
+    current_model = cur_cfg.get("model") or default_model
+    if current_model not in catalog:
+        current_model = default_model
+
+    model_ids = list(catalog.keys())
+    ordered = [current_model] + [m for m in model_ids if m != current_model]
+
+    widths = {
+        "model": max(len(m) for m in model_ids),
+        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+    }
+
+    print()
+    header = (
+        f"  {'Model':<{widths['model']}}  "
+        f"{'Speed':<{widths['speed']}}  "
+        f"{'Strengths':<{widths['strengths']}}  "
+        f"Price"
+    )
+    print(color(header, Colors.CYAN))
+
+    rows = []
+    for mid in ordered:
+        meta = catalog[mid]
+        row = (
+            f"  {mid:<{widths['model']}}  "
+            f"{meta.get('speed', ''):<{widths['speed']}}  "
+            f"{meta.get('strengths', ''):<{widths['strengths']}}  "
+            f"{meta.get('price', '')}"
+        )
+        if mid == current_model:
+            row += "  ← currently in use"
+        rows.append(row)
+
+    idx = _prompt_choice(
+        f"  Choose {plugin_name} model:",
+        rows,
+        default=0,
+    )
+
+    chosen = ordered[idx]
+    cur_cfg["model"] = chosen
+    _print_success(f"  Model set to: {chosen}")
+
+
+def _select_plugin_video_gen_provider(plugin_name: str, config: dict) -> None:
+    """Persist a plugin-backed video generation provider selection."""
+    vid_cfg = config.setdefault("video_gen", {})
+    if not isinstance(vid_cfg, dict):
+        vid_cfg = {}
+        config["video_gen"] = vid_cfg
+    vid_cfg["provider"] = plugin_name
+    vid_cfg["use_gateway"] = False
+    _print_success(f"  video_gen.provider set to: {plugin_name}")
+    _configure_videogen_model_for_plugin(plugin_name, config)
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -2014,6 +2200,12 @@ def _configure_provider(provider: dict, config: dict):
         if plugin_name:
             _select_plugin_image_gen_provider(plugin_name, config)
             return
+        # Plugin-registered video_gen provider — same flow, different
+        # registry.
+        video_plugin = provider.get("video_gen_plugin_name")
+        if video_plugin:
+            _select_plugin_video_gen_provider(video_plugin, config)
+            return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
         if backend:
@@ -2061,6 +2253,10 @@ def _configure_provider(provider: dict, config: dict):
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
             _select_plugin_image_gen_provider(plugin_name, config)
+            return
+        video_plugin = provider.get("video_gen_plugin_name")
+        if video_plugin:
+            _select_plugin_video_gen_provider(video_plugin, config)
             return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
@@ -2286,6 +2482,11 @@ def _reconfigure_provider(provider: dict, config: dict):
         if plugin_name:
             _select_plugin_image_gen_provider(plugin_name, config)
             return
+        # Plugin-registered video_gen provider — same flow, different registry.
+        video_plugin = provider.get("video_gen_plugin_name")
+        if video_plugin:
+            _select_plugin_video_gen_provider(video_plugin, config)
+            return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
         if backend:
@@ -2316,6 +2517,12 @@ def _reconfigure_provider(provider: dict, config: dict):
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
         _select_plugin_image_gen_provider(plugin_name, config)
+        return
+
+    # Plugin-registered video_gen provider — same flow, different registry.
+    video_plugin = provider.get("video_gen_plugin_name")
+    if video_plugin:
+        _select_plugin_video_gen_provider(video_plugin, config)
         return
 
     backend = provider.get("imagegen_backend")

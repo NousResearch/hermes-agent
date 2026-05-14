@@ -176,6 +176,28 @@ class QQAdapter(BasePlatformAdapter):
                 fut.set_exception(RuntimeError(reason))
         self._pending_responses.clear()
 
+    def _mark_transport_disconnected(self) -> None:
+        """Mark QQ WS down without stopping the reconnect loop.
+
+        BasePlatformAdapter uses _running for both process lifecycle and
+        connection status. QQBot needs to keep the listener task alive across
+        transient transport drops so it can continue reconnect attempts after a
+        short-lived gateway or network failure.
+        """
+        if self.has_fatal_error:
+            return
+        self._write_runtime_status_safe(
+            "disconnected",
+            platform_state="disconnected",
+            error_code=None,
+            error_message=None,
+        )
+
+    @property
+    def is_connected(self) -> bool:
+        """Return True only when the QQ WebSocket transport is usable."""
+        return bool(self._running and self._ws and not self._ws.closed)
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.QQBOT)
 
@@ -509,7 +531,7 @@ class QQAdapter(BasePlatformAdapter):
                 else:
                     quick_disconnect_count = 0
 
-                self._mark_disconnected()
+                self._mark_transport_disconnected()
                 self._fail_pending("Connection closed")
 
                 # Stop reconnecting for fatal codes
@@ -531,6 +553,7 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        self._mark_disconnected()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -584,17 +607,19 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        self._mark_disconnected()
                         return
 
             except Exception as exc:
                 if not self._running:
                     return
                 logger.warning("[%s] WebSocket error: %s", self._log_tag, exc)
-                self._mark_disconnected()
+                self._mark_transport_disconnected()
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                    self._mark_disconnected()
                     return
 
                 if await self._reconnect(backoff_idx):

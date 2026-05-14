@@ -364,6 +364,18 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Number of non-system messages to protect at the head of the transcript, in
+  # ADDITION to the system prompt (which is always implicitly protected).
+  # Head messages are NEVER summarized — they survive every compression
+  # indefinitely. This gives stable early context for short/medium sessions,
+  # but in long-running sessions that rely on rolling compaction the pinned
+  # opening turns may not match how you want the session framed over time.
+  # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
+  # and recent tail) — the cleanest configuration for long-running sessions.
+  # Default 3 preserves the system prompt plus the first three non-system
+  # head messages, matching the pre-feature behaviour.
+  protect_first_n: 3
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

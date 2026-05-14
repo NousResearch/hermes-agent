@@ -59,7 +59,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -248,12 +248,69 @@ def _pkg_name_from_spec(spec: str) -> str:
     return m.group(1) if m else spec
 
 
-def _is_satisfied(spec: str) -> bool:
-    """Best-effort check: is ``spec`` already satisfied in the current env?
+def _specifier_from_spec(spec: str) -> str:
+    """Extract just the version-specifier portion of a pip spec.
 
-    We don't enforce the version range — if the package is importable
-    we assume the user knows what they're doing. This matches how the
-    lazy-import sites already behave.
+    ``"honcho-ai==2.0.1"`` → ``"==2.0.1"``
+    ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
+    ``"package"`` → ``""`` (no version constraint)
+    """
+    # Strip the package name + optional [extras] block.
+    m = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
+    if not m:
+        return ""
+    return spec[m.end():]
+
+
+def _is_satisfied(spec: str) -> bool:
+    """Is ``spec`` already satisfied in the current env?
+
+    Checks both presence AND version. If the package is installed at a
+    version outside the spec's range, returns False so the caller will
+    upgrade/downgrade to the pinned version. This is what makes
+    ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
+    installed backends instead of silently leaving stale versions in place.
+
+    If ``packaging`` is unavailable for any reason (it's a transitive of
+    pip so this should never happen), we fall back to a presence-only check
+    so we err on the side of "don't churn".
+    """
+    pkg = _pkg_name_from_spec(spec)
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:
+        return False
+    try:
+        installed = version(pkg)
+    except PackageNotFoundError:
+        return False
+    except Exception:
+        return False
+
+    spec_tail = _specifier_from_spec(spec)
+    if not spec_tail:
+        # Bare ``"package"`` — no version constraint, presence is enough.
+        return True
+
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # packaging unavailable — fall back to "installed counts as satisfied".
+        return True
+
+    try:
+        return Version(installed) in SpecifierSet(spec_tail)
+    except (InvalidSpecifier, InvalidVersion, Exception):
+        # Malformed spec or installed version we can't parse — don't churn.
+        return True
+
+
+def _is_present(spec: str) -> bool:
+    """Cheap presence-only check (package name installed at any version).
+
+    Used by :func:`active_features` to detect backends the user has
+    previously activated, regardless of whether the version pin moved.
     """
     pkg = _pkg_name_from_spec(spec)
     try:
@@ -440,3 +497,107 @@ def feature_install_command(feature: str) -> Optional[str]:
         return None
     specs = LAZY_DEPS[feature]
     return "uv pip install " + " ".join(repr(s) for s in specs)
+
+
+def active_features() -> list[str]:
+    """Return the list of features the user has ever lazy-installed.
+
+    A feature counts as "active" if at least one of its declared packages
+    is currently installed in the venv (presence check, ignoring version).
+    Features the user has never enabled stay quiet.
+
+    Used by ``hermes update`` to figure out which lazy backends need a
+    refresh pass when pins move in :data:`LAZY_DEPS`.
+    """
+    active = []
+    for feature, specs in LAZY_DEPS.items():
+        if any(_is_present(s) for s in specs):
+            active.append(feature)
+    return active
+
+
+def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
+    """Re-run ``ensure`` for every feature the user has previously activated.
+
+    Returns a ``{feature: status}`` map where status is one of:
+        ``"current"``  — pins already satisfied, no install run
+        ``"refreshed"`` — pins were stale, reinstall succeeded
+        ``"failed: <reason>"`` — install attempt failed; caller decides
+                                  whether to surface it (we don't raise)
+        ``"skipped: <reason>"`` — gated off (config flag, user decline)
+
+    Intended for ``hermes update``. Never raises; lazy-install failures
+    here must not block the rest of the update flow.
+    """
+    results: dict[str, str] = {}
+    for feature in active_features():
+        missing = feature_missing(feature)
+        if not missing:
+            results[feature] = "current"
+            continue
+        try:
+            ensure(feature, prompt=prompt)
+            results[feature] = "refreshed"
+        except FeatureUnavailable as e:
+            # Distinguish "user opted out" from "install failed" so the
+            # update command can render the right message.
+            if "lazy installs disabled" in str(e) or "declined" in str(e):
+                results[feature] = f"skipped: {e.reason}"
+            else:
+                results[feature] = f"failed: {e.reason}"
+        except Exception as e:
+            results[feature] = f"failed: {e}"
+    return results
+
+
+def ensure_and_bind(
+    feature: str,
+    importer: Callable[[], dict[str, Any]],
+    target_globals: dict,
+    *,
+    prompt: bool = False,
+) -> bool:
+    """Ensure a feature is installed, then rebind names into the caller's globals.
+
+    Combines :func:`ensure` with a post-install import step that rebinds
+    module-level names.  This eliminates the error-prone pattern of manually
+    listing every global that needs updating after lazy-install.
+
+    ``importer`` is a zero-arg callable that returns a dict of
+    ``{name: value}`` for all symbols the caller needs rebound.  It is called
+    only after :func:`ensure` succeeds (or if the packages are already
+    installed).
+
+    Returns True on success, False if deps couldn't be installed or imported.
+
+    Example usage in a platform adapter::
+
+        def check_slack_requirements() -> bool:
+            if SLACK_AVAILABLE:
+                return True
+            def _import():
+                from slack_bolt.async_app import AsyncApp
+                from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+                from slack_sdk.web.async_client import AsyncWebClient
+                import aiohttp
+                return {
+                    "AsyncApp": AsyncApp,
+                    "AsyncSocketModeHandler": AsyncSocketModeHandler,
+                    "AsyncWebClient": AsyncWebClient,
+                    "aiohttp": aiohttp,
+                    "SLACK_AVAILABLE": True,
+                }
+            return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
+    """
+    try:
+        ensure(feature, prompt=prompt)
+    except (FeatureUnavailable, Exception):
+        return False
+
+    try:
+        bindings = importer()
+    except ImportError:
+        return False
+
+    target_globals.update(bindings)
+    return True

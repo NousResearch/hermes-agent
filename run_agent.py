@@ -1271,7 +1271,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -2115,6 +2115,15 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        # protect_first_n is the number of non-system messages to protect at
+        # the head, in addition to the system prompt (which is always
+        # implicitly protected by the compressor).  Floor at 0 — a value of
+        # 0 means "preserve only the system prompt + summary + tail", which
+        # is a legitimate (and common) configuration for long-running
+        # rolling-compaction sessions.
+        compression_protect_first = max(
+            0, int(_compression_cfg.get("protect_first_n", 3))
+        )
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -2194,6 +2203,10 @@ class AIAgent:
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
+
+        # Store for reuse by _check_compression_model_feasibility (auxiliary
+        # compression model context-length detection needs the same list).
+        self._custom_providers = _custom_providers
 
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
@@ -2315,7 +2328,7 @@ class AIAgent:
             self.context_compressor = ContextCompressor(
                 model=self.model,
                 threshold_percent=compression_threshold,
-                protect_first_n=3,
+                protect_first_n=compression_protect_first,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=None,
@@ -3237,6 +3250,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                custom_providers=self._custom_providers,
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -4267,18 +4281,28 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
+                    _parent_api_mode = _parent_runtime.get("api_mode") or None
+                    # The review fork needs to call agent-loop tools (memory,
+                    # skill_manage). Those tools require Hermes' own dispatch,
+                    # which the codex_app_server runtime bypasses entirely
+                    # (it runs the turn inside codex's subprocess). So when
+                    # the parent is on codex_app_server, downgrade the review
+                    # fork to codex_responses — same auth/credentials, but
+                    # talks to the OpenAI Responses API directly so Hermes
+                    # owns the loop and the agent-loop tools dispatch.
+                    if _parent_api_mode == "codex_app_server":
+                        _parent_api_mode = "codex_responses"
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
-                        api_mode=_parent_runtime.get("api_mode") or None,
+                        api_mode=_parent_api_mode,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
-                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -4295,11 +4319,73 @@ class AIAgent:
                     # _vprint and leak past the stdout redirect (they go via
                     # _print_fn/status_callback, which bypass sys.stdout).
                     review_agent.suppress_status_output = True
+                    # Inherit the parent's cached system prompt verbatim so
+                    # the review fork's outbound HTTP request hits the same
+                    # Anthropic/OpenRouter prefix cache the parent warmed.
+                    # Without this, the fork rebuilds the system prompt from
+                    # scratch (fresh _hermes_now() timestamp, fresh
+                    # session_id, narrower toolset → different skills_prompt)
+                    # and the byte-exact prefix-cache key misses. See
+                    # issue #25322 and PR #17276 for the full analysis +
+                    # measured impact (~26% end-to-end cost reduction on
+                    # Sonnet 4.5).
+                    review_agent._cached_system_prompt = self._cached_system_prompt
+                    # Defensive: pin session_start + session_id to the
+                    # parent's so any code path that re-renders parts of
+                    # the system prompt (compression, plugin hooks) still
+                    # produces byte-identical output. The cached-prompt
+                    # assignment above already short-circuits the normal
+                    # rebuild path, but these pins guarantee parity even
+                    # if a future code path bypasses the cache.
+                    review_agent.session_start = self.session_start
+                    review_agent.session_id = self.session_id
 
-                    review_agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=messages_snapshot,
+                    from model_tools import get_tool_definitions
+                    from hermes_cli.plugins import (
+                        set_thread_tool_whitelist,
+                        clear_thread_tool_whitelist,
                     )
+
+                    review_whitelist = {
+                        t["function"]["name"]
+                        for t in get_tool_definitions(
+                            enabled_toolsets=["memory", "skills"],
+                            quiet_mode=True,
+                        )
+                    }
+                    set_thread_tool_whitelist(
+                        review_whitelist,
+                        deny_msg_fmt=(
+                            "Background review denied non-whitelisted tool: "
+                            "{tool_name}. Only memory/skill tools are allowed."
+                        ),
+                    )
+                    try:
+                        review_agent.run_conversation(
+                            user_message=(
+                                prompt
+                                + "\n\nYou can only call memory and skill "
+                                "management tools. Other tools will be denied "
+                                "at runtime — do not attempt them."
+                            ),
+                            conversation_history=messages_snapshot,
+                        )
+                    finally:
+                        clear_thread_tool_whitelist()
+
+                    # Tear down memory providers while stdout is still
+                    # redirected so background thread teardown (Honcho flush,
+                    # Hindsight sync, etc.) stays silent.  The finally block
+                    # below is a safety net for the exception path.
+                    try:
+                        review_agent.shutdown_memory_provider()
+                    except Exception:
+                        pass
+                    try:
+                        review_agent.close()
+                    except Exception:
+                        pass
+                    review_agent = None
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages
@@ -4330,21 +4416,24 @@ class AIAgent:
                 logger.warning("Background memory/skill review failed: %s", e)
                 self._emit_auxiliary_failure("background review", e)
             finally:
-                # Background review agents can initialize memory providers
-                # (for example Hindsight) that own their own network clients.
-                # Explicitly stop those providers before closing the agent so
-                # their aiohttp sessions do not leak until GC/process exit.
-                # Then close all remaining resources (httpx client,
-                # subprocesses, etc.) so GC doesn't try to clean them up on a
-                # dead asyncio event loop (which produces "Event loop is
-                # closed" errors).
+                # Safety-net cleanup for the exception path.  Normal
+                # completion already shut down inside redirect_stdout above.
+                # Re-open devnull here so any teardown output (Honcho flush,
+                # Hindsight sync, background thread joins) stays silent even
+                # on the exception path where redirect_stdout already exited.
                 if review_agent is not None:
                     try:
-                        review_agent.shutdown_memory_provider()
-                    except Exception:
-                        pass
-                    try:
-                        review_agent.close()
+                        with open(os.devnull, "w", encoding="utf-8") as _fn, \
+                             contextlib.redirect_stdout(_fn), \
+                             contextlib.redirect_stderr(_fn):
+                            try:
+                                review_agent.shutdown_memory_provider()
+                            except Exception:
+                                pass
+                            try:
+                                review_agent.close()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Clear the approval callback on this bg-review thread so a
@@ -9235,6 +9324,46 @@ class AIAgent:
             )
         return transformed
 
+    def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
+        """Return the tool message content that is safe for the active model.
+
+        Multimodal tool results normally unwrap to OpenAI-style content parts so
+        vision-capable models can inspect screenshots.  Text-only providers must
+        not receive those image parts, because a rejected tool result becomes
+        part of the canonical history and can make the next user turn fail before
+        the agent has a chance to recover.
+        """
+        if not _is_multimodal_tool_result(result):
+            return result
+
+        content = result.get("content") or []
+        if not self._content_has_image_parts(content):
+            return content
+
+        if self._model_supports_vision():
+            return content
+
+        summary = _multimodal_text_summary(result)
+        if tool_name == "computer_use":
+            return json.dumps({
+                "error": (
+                    "computer_use returned screenshot/image content, but the active "
+                    "model/provider does not support image input. Switch to a "
+                    "vision-capable model for desktop computer use, or use browser "
+                    "tools for browser tasks."
+                ),
+                "text_summary": summary,
+            })
+
+        logger.warning(
+            "Tool %s returned image content for non-vision model %s/%s; "
+            "falling back to text summary",
+            tool_name,
+            self.provider,
+            self.model,
+        )
+        return summary
+
     def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
         """Re-encode all native image parts at a smaller size to recover from
         image-too-large errors (Anthropic 5 MB, unknown other providers).
@@ -9982,11 +10111,12 @@ class AIAgent:
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_mimo_tool_reasoning()
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -10016,6 +10146,22 @@ class AIAgent:
             provider == "deepseek"
             or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+    def _needs_mimo_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode.
+
+        MiMo thinking mode requires ``reasoning_content`` on every assistant
+        tool-call message when replaying history; omitting it causes HTTP 400.
+        Refs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/passing-back-reasoning_content
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "xiaomi"
+            or "mimo" in model
+            or base_url_host_matches(self.base_url, "api.xiaomimimo.com")
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
@@ -10256,6 +10402,9 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
+        )
+        self._emit_status(
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
         )
 
         # Notify external memory provider before compression discards context
@@ -10987,14 +11136,10 @@ class AIAgent:
             # rather than a raw Python dict.  The Anthropic adapter already
             # accepts content lists; vision-capable OpenAI-compatible servers
             # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers that reject images are handled by the adaptive
-            # _vision_supported recovery in the API retry loop.
+            # Text-only servers get a string-safe fallback here so a rejected
+            # image tool result never poisons canonical session history.
             # String results pass through unchanged.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            _tool_content = self._tool_result_content_for_active_model(name, function_result)
             tool_msg = {
                 "role": "tool",
                 "name": name,
@@ -11409,11 +11554,7 @@ class AIAgent:
 
             # Unwrap _multimodal dicts to an OpenAI-style content list
             # (see parallel path for rationale). String results pass through.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            _tool_content = self._tool_result_content_for_active_model(function_name, function_result)
             tool_msg = {
                 "role": "tool",
                 "name": function_name,
@@ -12114,6 +12255,20 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
+
+        # Optional opt-in runtime: if api_mode == codex_app_server, hand the
+        # turn to the codex app-server subprocess (terminal/file ops/patching
+        # all run inside Codex). Default Hermes path is bypassed entirely.
+        # See agent/transports/codex_app_server_session.py for the adapter
+        # and references/codex-app-server-runtime.md for the rationale.
+        if self.api_mode == "codex_app_server":
+            return self._run_codex_app_server_turn(
+                user_message=user_message,
+                original_user_message=original_user_message,
+                messages=messages,
+                effective_task_id=effective_task_id,
+                should_review_memory=_should_review_memory,
+            )
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -13412,6 +13567,11 @@ class AIAgent:
                         # we don't false-trip on other URL validation
                         # errors. (issue #23570)
                         "image_url'. expected",
+                        # DeepSeek's OpenAI-compatible API reports text-only
+                        # request-body variants as:
+                        # "unknown variant `image_url`, expected `text`".
+                        "unknown variant `image_url`, expected `text`",
+                        "unknown variant image_url, expected text",
                     )
                     _err_lower = _err_body.lower()
                     _looks_like_image_rejection = any(
@@ -15553,6 +15713,153 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
+
+    def _run_codex_app_server_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Codex app-server runtime path. Hands the entire turn to a `codex
+        app-server` subprocess and projects its events back into Hermes'
+        messages list so memory/skill review keep working.
+
+        Called from run_conversation() when self.api_mode == "codex_app_server".
+        Returns the same dict shape as the chat_completions path.
+        """
+        from agent.transports.codex_app_server_session import CodexAppServerSession
+
+        # Lazy session: one CodexAppServerSession per AIAgent instance.
+        # Spawned on first turn, reused across turns, closed at AIAgent
+        # shutdown (see _cleanup hook).
+        if not hasattr(self, "_codex_session") or self._codex_session is None:
+            cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            # Approval callback: defer to Hermes' standard prompt flow if a
+            # CLI thread has installed one. Gateway / cron contexts get the
+            # codex-side fail-closed default.
+            try:
+                from tools.terminal_tool import _get_approval_callback
+                approval_callback = _get_approval_callback()
+            except Exception:
+                approval_callback = None
+            self._codex_session = CodexAppServerSession(
+                cwd=cwd,
+                approval_callback=approval_callback,
+            )
+
+        # NOTE: the user message is ALREADY appended to messages by the
+        # standard run_conversation() flow (line ~11823) before the early
+        # return reaches us. Do NOT append again — that would duplicate.
+
+        try:
+            turn = self._codex_session.run_turn(user_input=user_message)
+        except Exception as exc:
+            logger.exception("codex app-server turn failed")
+            # Crash → unconditionally drop the session so the next turn
+            # respawns from scratch instead of reusing a dead client.
+            try:
+                self._codex_session.close()
+            except Exception:
+                pass
+            self._codex_session = None
+            return {
+                "final_response": (
+                    f"Codex app-server turn failed: {exc}. "
+                    f"Fall back to default runtime with `/codex-runtime auto`."
+                ),
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "error": str(exc),
+            }
+
+        # If the turn signalled the underlying client is wedged (deadline
+        # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
+        # exited), retire the session so the next turn respawns codex
+        # rather than riding the broken process. Mirrors openclaw beta.8's
+        # "retire timed-out app-server clients" fix.
+        if getattr(turn, "should_retire", False):
+            logger.warning(
+                "codex app-server session retired (turn error: %s)",
+                turn.error,
+            )
+            try:
+                self._codex_session.close()
+            except Exception:
+                pass
+            self._codex_session = None
+
+        # Splice projected messages into the conversation. The projector emits
+        # standard {role, content, tool_calls, tool_call_id} entries, which
+        # is exactly what curator.py / sessions DB expect.
+        if turn.projected_messages:
+            messages.extend(turn.projected_messages)
+
+        # Counter ticks for the self-improvement loop.
+        # _turns_since_memory and _user_turn_count are ALREADY incremented
+        # in the run_conversation() pre-loop block (lines ~11793-11817) so we
+        # do NOT touch them here — that would double-count.
+        # Only _iters_since_skill needs explicit increment, since the
+        # chat_completions loop bumps it per tool iteration (line ~12110)
+        # and that loop is bypassed on this path.
+        self._iters_since_skill = (
+            getattr(self, "_iters_since_skill", 0) + turn.tool_iterations
+        )
+
+        # Now check the skill nudge AFTER iters were incremented — same
+        # pattern the chat_completions path uses (line ~15432).
+        should_review_skills = False
+        if (
+            self._skill_nudge_interval > 0
+            and self._iters_since_skill >= self._skill_nudge_interval
+            and "skill_manage" in self.valid_tool_names
+        ):
+            should_review_skills = True
+            self._iters_since_skill = 0
+
+        # External memory provider sync (mirrors line ~15439). Skipped on
+        # interrupt/error to avoid feeding partial transcripts to memory.
+        if not turn.interrupted and turn.error is None:
+            try:
+                self._sync_external_memory_for_turn(
+                    original_user_message=original_user_message,
+                    final_response=turn.final_text,
+                    interrupted=False,
+                )
+            except Exception:
+                logger.debug("external memory sync raised", exc_info=True)
+
+        # Background review fork — same cadence + signature as the default
+        # path (line ~15449). Only fires when a trigger actually tripped AND
+        # we have a real final response.
+        if (
+            turn.final_text
+            and not turn.interrupted
+            and (should_review_memory or should_review_skills)
+        ):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=should_review_memory,
+                    review_skills=should_review_skills,
+                )
+            except Exception:
+                logger.debug("background review spawn raised", exc_info=True)
+
+        return {
+            "final_response": turn.final_text,
+            "messages": messages,
+            "api_calls": 1,  # one app-server "turn" maps to one logical API call
+            "completed": not turn.interrupted and turn.error is None,
+            "partial": turn.interrupted or turn.error is not None,
+            "error": turn.error,
+            "codex_thread_id": turn.thread_id,
+            "codex_turn_id": turn.turn_id,
+        }
 
 
 def main(

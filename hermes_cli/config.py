@@ -731,6 +731,12 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "protect_first_n": 3,         # non-system head messages always preserved
+                                      # verbatim, in ADDITION to the system prompt
+                                      # (which is always implicitly protected). Set to
+                                      # 0 for long-running rolling-compaction sessions
+                                      # where you want nothing pinned except the
+                                      # system prompt + rolling summary + recent tail.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -971,6 +977,21 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Hide the token/cost analytics surfaces (Analytics page, token bars and
+        # cost figures on the Models page) by default.  The numbers shown there
+        # are a local debug estimate: they only count successful main-agent
+        # responses with a usable ``response.usage``, and silently exclude every
+        # auxiliary call (context compression, title generation, vision,
+        # session search, web extract, smart approval, MCP routing, plugin LLM
+        # access) plus provider-side retries, fallback attempts, and any call
+        # whose usage block didn't come back.  Cache writes are also missing
+        # from the API response.  On models with heavy auxiliary traffic
+        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
+        # the provider bill, which is worse than hiding the numbers entirely
+        # because they look precise enough to compare against the provider.
+        # Set this to True to re-enable the surfaces with the understanding
+        # that the numbers are a local lower-bound estimate, not billing.
+        "show_token_analytics": False,
     },
 
     # Privacy settings
@@ -1229,6 +1250,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
@@ -2107,10 +2129,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "FAL_KEY": {
-        "description": "FAL API key for image generation",
+        "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "video_generate"],
         "password": True,
         "category": "tool",
     },
@@ -4319,10 +4341,34 @@ def load_env() -> Dict[str, str]:
     concatenated KEY=VALUE pairs on a single line) are handled
     gracefully instead of producing mangled values such as duplicated
     bot tokens.  See #8908.
+
+    The parsed dict is memoised keyed on the .env file mtime, because
+    ``get_env_value()`` is called dozens-to-hundreds of times per
+    interactive menu render (`hermes tools`, `hermes setup`, status
+    panels). Sanitisation is O(lines × known-keys), so re-parsing the
+    same file on every call was burning ~300ms of CPU per `hermes tools`
+    menu paint on top of the OAuth-refresh slowness. The mtime check
+    invalidates the cache when the user edits .env mid-process.
     """
+    global _env_cache
     env_path = get_env_path()
-    env_vars = {}
-    
+
+    try:
+        mtime = env_path.stat().st_mtime
+        size = env_path.stat().st_size
+        cache_key = (str(env_path), mtime, size)
+    except FileNotFoundError:
+        cache_key = (str(env_path), None, None)
+    except Exception:
+        cache_key = None
+
+    if cache_key is not None and _env_cache is not None:
+        cached_key, cached_vars = _env_cache
+        if cached_key == cache_key:
+            return dict(cached_vars)
+
+    env_vars: Dict[str, str] = {}
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
@@ -4338,8 +4384,31 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
+    if cache_key is not None:
+        _env_cache = (cache_key, dict(env_vars))
+
     return env_vars
+
+
+# Module-level memo for load_env(), keyed on (path, mtime, size).
+# Editing .env bumps mtime → next load_env() rebuilds. invalidate_env_cache()
+# is the explicit knob for writers that update .env via this module
+# (set_env_value, save_env, etc.) without relying on filesystem mtime
+# resolution.
+_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+
+
+def invalidate_env_cache() -> None:
+    """Clear the load_env() process-level memo.
+
+    Writers that mutate .env (set_env_value, save_env, etc.) call this
+    to guarantee the next load_env() sees their change even on
+    filesystems with coarse mtime resolution. Reads invalidate naturally
+    via the mtime/size check.
+    """
+    global _env_cache
+    _env_cache = None
 
 
 def _sanitize_env_lines(lines: list) -> list:
@@ -4444,6 +4513,7 @@ def sanitize_env_file() -> int:
             pass
         raise
     _secure_file(env_path)
+    invalidate_env_cache()
     return fixes
 
 
@@ -4555,6 +4625,7 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
+    invalidate_env_cache()
 
 
 def remove_env_value(key: str) -> bool:
@@ -4610,6 +4681,7 @@ def remove_env_value(key: str) -> bool:
         _secure_file(env_path)
 
     os.environ.pop(key, None)
+    invalidate_env_cache()
     return found
 
 
@@ -4796,6 +4868,7 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})
         _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")

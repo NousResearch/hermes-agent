@@ -781,6 +781,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if plat == Platform.DISCORD and "free_response_guilds" in platform_cfg:
+                    bridged["free_response_guilds"] = platform_cfg["free_response_guilds"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -857,6 +859,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                frg = discord_cfg.get("free_response_guilds")
+                if frg is not None and not os.getenv("DISCORD_FREE_RESPONSE_GUILDS"):
+                    if isinstance(frg, list):
+                        frg = ",".join(str(v) for v in frg)
+                    os.environ["DISCORD_FREE_RESPONSE_GUILDS"] = str(frg)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):

@@ -800,10 +800,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                             _parent_id = str(message.channel.parent_id)
                         _free_channels = adapter_self._discord_free_response_channels()
+                        _free_guilds = adapter_self._discord_free_response_guilds()
+                        _guild_id = None
+                        if getattr(message, "guild", None):
+                            _guild_id = str(message.guild.id)
                         _channel_ids = {_channel_id}
                         if _parent_id:
                             _channel_ids.add(_parent_id)
-                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                        if (
+                            "*" not in _free_channels
+                            and not (_channel_ids & _free_channels)
+                            and "*" not in _free_guilds
+                            and (_guild_id is None or _guild_id not in _free_guilds)
+                        ):
                             return
 
                 await self._handle_message(message)
@@ -3577,6 +3586,29 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_free_response_guilds(self) -> set:
+        """Return Discord guild IDs where no bot mention is required."""
+        raw = self.config.extra.get("free_response_guilds")
+        if raw is None:
+            raw = os.getenv("DISCORD_FREE_RESPONSE_GUILDS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _message_guild_id(self, message: DiscordMessage) -> str | None:
+        """Return the guild ID for a Discord message, if it came from a guild."""
+        guild = getattr(message, "guild", None)
+        if guild is not None:
+            return str(guild.id)
+        channel = getattr(message, "channel", None)
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            return str(guild.id)
+        return None
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -4148,6 +4180,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.free_response_guilds: Guild IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
@@ -4193,6 +4226,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             free_channels = self._discord_free_response_channels()
+            free_guilds = self._discord_free_response_guilds()
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
@@ -4205,6 +4239,8 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
+                or self._message_guild_id(message) in free_guilds
+                or "*" in free_guilds
                 or is_voice_linked_channel
             )
 
@@ -4226,7 +4262,13 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if (
+                auto_thread
+                and not skip_thread
+                and not is_free_channel
+                and not is_voice_linked_channel
+                and not is_reply_message
+            ):
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

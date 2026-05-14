@@ -56,18 +56,30 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
         self.topic = None
 
 
 class FakeForumChannel:
-    def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "support-forum",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
         self.type = 15
         self.topic = None
 
@@ -78,7 +90,7 @@ class FakeThread:
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=100, name=guild_name)
         self.topic = None
 
 
@@ -106,6 +118,7 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
+        guild=getattr(channel, "guild", None),
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
@@ -238,6 +251,48 @@ def test_discord_free_response_channels_int_list(adapter, monkeypatch):
     adapter.config.extra["free_response_channels"] = [1491973769726791812, 99999]
 
     assert adapter._discord_free_response_channels() == {"1491973769726791812", "99999"}
+
+
+def test_discord_free_response_guilds_bare_int(adapter, monkeypatch):
+    # YAML `discord.free_response_guilds: 1476256146980606197` is loaded as an int.
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_GUILDS", raising=False)
+    adapter.config.extra["free_response_guilds"] = 1476256146980606197
+
+    assert adapter._discord_free_response_guilds() == {"1476256146980606197"}
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_guild_overrides_mention_requirement(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "100")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789, guild_id=100),
+        content="allowed by guild without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed by guild without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_guild_keeps_other_guilds_mention_gated(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "100")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789, guild_id=200),
+        content="ignored in other guild without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

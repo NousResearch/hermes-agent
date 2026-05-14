@@ -216,7 +216,7 @@ class _SafeWriter:
     __slots__ = ("_inner",)
 
     def __init__(self, inner):
-        object.__setattr__(self, "_inner", inner)
+        self._inner = inner
 
     def write(self, data):
         try:

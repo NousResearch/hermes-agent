@@ -150,6 +150,33 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     return str(version) if version else None
 
 
+def _check_hindsight_api_reachable(api_url: str, api_key: str | None = None,
+                                   timeout: float = 2.0) -> bool:
+    """Return True when a configured Hindsight HTTP API responds successfully."""
+    import urllib.error
+    import urllib.request
+
+    if not api_url:
+        return False
+    base = api_url.rstrip("/")
+    for path in ("/health", "/version"):
+        req = urllib.request.Request(base + path)
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                status = getattr(resp, "status", 200)
+            if 200 <= int(status) < 300:
+                return True
+        except urllib.error.HTTPError:
+            continue
+        except Exception as exc:
+            logger.debug("Hindsight API reachability probe failed for %s%s: %s",
+                         base, path, exc)
+            continue
+    return False
+
+
 def _check_api_supports_update_mode_append(api_url: str,
                                            api_key: str | None = None) -> bool:
     """Cached capability check for ``update_mode='append'`` on *api_url*.
@@ -597,7 +624,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 available, _ = _check_local_runtime()
                 return available
             if mode == "local_external":
-                return True
+                api_url = cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", "")
+                api_key = (
+                    cfg.get("apiKey")
+                    or cfg.get("api_key")
+                    or os.environ.get("HINDSIGHT_API_KEY", "")
+                    or None
+                )
+                return _check_hindsight_api_reachable(str(api_url), api_key)
             has_key = bool(
                 cfg.get("apiKey")
                 or cfg.get("api_key")

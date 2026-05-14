@@ -407,6 +407,22 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+        mock_agent.shutdown_memory_provider.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_shuts_down_memory_provider_on_failure(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.side_effect = RuntimeError("boom")
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            with pytest.raises(RuntimeError, match="boom"):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="session-123",
+                )
+
+        mock_agent.shutdown_memory_provider.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

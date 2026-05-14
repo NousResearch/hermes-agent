@@ -190,6 +190,7 @@ _FEISHU_DOC_UPLOAD_TYPES = {
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
+_FEISHU_WS_READY_TIMEOUT_SECONDS = float(os.getenv("FEISHU_WS_READY_TIMEOUT", "25"))
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
@@ -1290,6 +1291,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
+    original_ws_connect = getattr(ws_client, "_connect", None)
 
     def _apply_runtime_ws_overrides() -> None:
         try:
@@ -1300,12 +1302,13 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    async def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+        """Preserve websockets.connect's context-manager return type."""
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return await original_connect(*args, **kwargs)
+        return original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1314,9 +1317,21 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
+    async def _connect_with_ready_signal(*args: Any, **kwargs: Any) -> Any:
+        if original_ws_connect is None:
+            raise RuntimeError("Feishu websocket client has no _connect coroutine")
+        result = await original_ws_connect(*args, **kwargs)
+        try:
+            adapter._mark_websocket_ready()
+        except Exception:
+            logger.debug("[Feishu] Failed to mark websocket ready", exc_info=True)
+        return result
+
     ws_client_module.websockets.connect = _connect_with_overrides
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
+    if original_ws_connect is not None:
+        setattr(ws_client, "_connect", _connect_with_ready_signal)
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
@@ -1326,6 +1341,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
+        if original_ws_connect is not None:
+            setattr(ws_client, "_connect", original_ws_connect)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()
@@ -1410,6 +1427,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._connect_time: Optional[float] = None  # set in connect(); used to skip stale restart replays
+        self._ws_ready_event = threading.Event()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1623,6 +1642,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
+            self._connect_time = time.time()
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
@@ -1639,10 +1659,40 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
+        self._ws_ready_event.clear()
+
+        # Send a WebSocket CLOSE frame before tearing down the SDK loop. Without
+        # this, Feishu may keep routing messages to the stale connection until
+        # its server-side timeout expires. See upstream issue #10202.
+        ws_client = self._ws_client
+        ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
 
-        ws_thread_loop = self._ws_thread_loop
+        if (
+            ws_client is not None
+            and ws_thread_loop is not None
+            and not ws_thread_loop.is_closed()
+            and hasattr(ws_client, "_disconnect")
+        ):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    ws_client._disconnect(), ws_thread_loop
+                )
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+                logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Feishu] CLOSE frame not acknowledged within 5s; Feishu "
+                    "may briefly route messages to the stale connection"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[Feishu] Could not send WebSocket CLOSE frame: %s",
+                    exc,
+                    exc_info=True,
+                )
+
         if ws_thread_loop is not None and not ws_thread_loop.is_closed():
             logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
 
@@ -1677,6 +1727,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
+
+    def _mark_websocket_ready(self) -> None:
+        self._ws_ready_event.set()
 
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
@@ -2365,6 +2418,20 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message or not sender or not getattr(sender, "sender_id", None):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
+
+        create_time_raw = getattr(message, "create_time", None)
+        if create_time_raw is not None and self._connect_time is not None:
+            try:
+                create_ts = int(str(create_time_raw)) / 1000.0
+                if create_ts < self._connect_time:
+                    logger.info(
+                        "[Feishu] Dropping stale pre-connect message %s (created %.1fs before connect)",
+                        getattr(message, "message_id", "?"),
+                        self._connect_time - create_ts,
+                    )
+                    return
+            except (TypeError, ValueError):
+                pass
 
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):
@@ -4394,16 +4461,39 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_client = FeishuWSClient(
             app_id=self._app_id,
             app_secret=self._app_secret,
-            log_level=lark.LogLevel.INFO,
+            log_level=lark.LogLevel.WARNING,
             event_handler=self._event_handler,
             domain=domain,
         )
+        self._ws_ready_event.clear()
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,
             self._ws_client,
             self,
         )
+        await self._wait_for_websocket_ready()
+
+    async def _wait_for_websocket_ready(self, timeout: float = _FEISHU_WS_READY_TIMEOUT_SECONDS) -> None:
+        if self._ws_ready_event.is_set():
+            return
+        deadline = time.monotonic() + timeout
+        while not self._ws_ready_event.is_set():
+            ws_future = self._ws_future
+            if ws_future is not None and ws_future.done():
+                try:
+                    exc = ws_future.exception()
+                except Exception as err:
+                    exc = err
+                if exc is not None:
+                    raise RuntimeError("Feishu websocket client exited before connecting") from exc
+                raise RuntimeError("Feishu websocket client exited before connecting")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Feishu websocket did not establish within {timeout:.1f}s"
+                )
+            await asyncio.sleep(min(0.1, remaining))
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

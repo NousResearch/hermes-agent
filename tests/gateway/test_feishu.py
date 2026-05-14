@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
+from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
@@ -229,6 +229,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
             class _Loop:
                 def run_in_executor(self, *_args, **_kwargs):
+                    adapter._mark_websocket_ready()
                     return future
 
                 def is_closed(self):
@@ -249,6 +250,95 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             metadata={"platform": "feishu"},
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
+
+    def test_disconnect_sends_websocket_close_frame(self):
+        """disconnect() must call the WSS client's _disconnect coroutine."""
+        import threading
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        ws_thread_loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(ws_thread_loop)
+            ready.set()
+            ws_thread_loop.run_forever()
+
+        thread = threading.Thread(target=_run_loop, daemon=True)
+        thread.start()
+        ready.wait()
+
+        close_called = threading.Event()
+
+        async def _fake_disconnect() -> None:
+            close_called.set()
+
+        adapter._ws_client = SimpleNamespace(_disconnect=_fake_disconnect, _auto_reconnect=True)
+        adapter._ws_thread_loop = ws_thread_loop
+        adapter._ws_future = None
+
+        try:
+            asyncio.run(adapter.disconnect())
+        finally:
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.call_soon_threadsafe(ws_thread_loop.stop)
+            thread.join(timeout=2.0)
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.close()
+
+        self.assertTrue(close_called.is_set())
+        self.assertIsNone(adapter._ws_client)
+
+    def test_disconnect_tolerates_missing_internal_disconnect(self):
+        """Future lark_oapi clients without _disconnect should still shut down."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._ws_client = SimpleNamespace(_auto_reconnect=True)
+        adapter._ws_thread_loop = None
+        adapter._ws_future = None
+
+        asyncio.run(adapter.disconnect())
+
+        self.assertIsNone(adapter._ws_client)
+
+    def test_wait_for_websocket_ready_times_out(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        with self.assertRaises(TimeoutError):
+            asyncio.run(adapter._wait_for_websocket_ready(timeout=0.01))
+
+    def test_connect_websocket_waits_for_sdk_ready_signal(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        async def _run() -> tuple[AsyncMock, Any]:
+            adapter._loop = asyncio.get_running_loop()
+            with (
+                patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
+                patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(WARNING="WARNING"))),
+                patch("gateway.platforms.feishu.FeishuWSClient", return_value=SimpleNamespace()) as ws_client_cls,
+                patch("gateway.platforms.feishu._run_official_feishu_ws_client", lambda *_args: None),
+                patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+                patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+                patch.object(adapter, "_build_event_handler", return_value=object()),
+                patch.object(adapter, "_wait_for_websocket_ready", new=AsyncMock()) as wait_ready,
+            ):
+                await adapter._connect_websocket()
+                return wait_ready, ws_client_cls
+
+        wait_ready, ws_client_cls = asyncio.run(_run())
+
+        wait_ready.assert_awaited_once()
+        self.assertEqual(ws_client_cls.call_args.kwargs["log_level"], "WARNING")
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -313,6 +403,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     self.calls += 1
                     if self.calls == 1:
                         raise OSError("temporary websocket failure")
+                    adapter._mark_websocket_ready()
                     return future
 
                 def is_closed(self):
@@ -4823,3 +4914,78 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+    def test_stale_pre_connect_message_is_dropped(self):
+        """Messages created before adapter connect() are skipped on restart."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000010.0
+
+        message = SimpleNamespace(
+            message_id="om_stale",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"old message"}',
+            create_time="1700000000000",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(adapter._handle_message_event_data(data))
+
+        proc.assert_not_called()
+
+    def test_fresh_post_connect_message_is_accepted(self):
+        """Messages created after adapter connect() are processed normally."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000000.0
+
+        message = SimpleNamespace(
+            message_id="om_fresh",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"new message"}',
+            create_time="1700000060000",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(adapter._handle_message_event_data(data))
+
+        proc.assert_called_once()
+        self.assertEqual(proc.call_args.kwargs["message_id"], "om_fresh")
+
+    def test_message_without_create_time_is_accepted(self):
+        """Events without create_time remain compatible with older SDKs."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000000.0
+
+        message = SimpleNamespace(
+            message_id="om_no_ts",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"no timestamp"}',
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(adapter._handle_message_event_data(data))
+
+        proc.assert_called_once()

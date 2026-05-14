@@ -2705,6 +2705,7 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
+            agent = None
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -2714,26 +2715,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
             )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            # Include the effective session ID in the result so callers
-            # (e.g. X-Hermes-Session-Id header) can track compression-
-            # triggered session rotations. (#16938)
-            _eff_sid = getattr(agent, "session_id", session_id)
-            if isinstance(_eff_sid, str) and _eff_sid:
-                result["session_id"] = _eff_sid
-            return result, usage
+            try:
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                return result, usage
+            finally:
+                if agent is not None:
+                    try:
+                        agent.shutdown_memory_provider()
+                    except Exception:
+                        logger.debug("[api_server] memory shutdown failed", exc_info=True)
 
         return await loop.run_in_executor(None, _run)
 
@@ -2920,6 +2928,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         async def _run_and_close():
+            agent = None
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
@@ -3080,6 +3089,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     q.put_nowait(None)
                 except Exception:
                     pass
+                if agent is not None:
+                    try:
+                        agent.shutdown_memory_provider()
+                    except Exception:
+                        logger.debug("[api_server] run %s memory shutdown failed", run_id, exc_info=True)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)

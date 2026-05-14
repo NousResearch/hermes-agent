@@ -1421,6 +1421,46 @@ class TestAvailability:
 
         assert p.is_available()
 
+    def test_local_external_available_when_api_reachable(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_external",
+            "api_url": "http://127.0.0.1:9177",
+        }))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_hindsight_api_reachable",
+            lambda api_url, api_key=None: api_url == "http://127.0.0.1:9177",
+        )
+
+        p = HindsightMemoryProvider()
+
+        assert p.is_available()
+
+    def test_local_external_unavailable_when_api_unreachable(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_external",
+            "api_url": "http://127.0.0.1:9177",
+        }))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_hindsight_api_reachable",
+            lambda api_url, api_key=None: False,
+        )
+
+        p = HindsightMemoryProvider()
+
+        assert not p.is_available()
+
     def test_local_mode_unavailable_when_runtime_import_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home",
@@ -1548,4 +1588,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

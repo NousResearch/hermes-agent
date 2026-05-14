@@ -145,8 +145,16 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
+        # delegation/clarify/memory remain blocked by default; code_execution
+        # is now allowed (it pairs naturally with `terminal`, which subagents
+        # already inherit — blocking only `code_execution` was asymmetric).
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
-        self.assertEqual(sorted(result), ["file", "terminal"])
+        self.assertEqual(sorted(result), ["code_execution", "file", "terminal"])
+
+    def test_code_execution_no_longer_blocked(self):
+        """Regression: code_execution must survive the default block strip."""
+        result = _strip_blocked_tools(["code_execution"])
+        self.assertEqual(result, ["code_execution"])
 
     def test_preserves_allowed_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])

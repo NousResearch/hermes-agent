@@ -670,12 +670,23 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove toolsets that are blocked from default subagent inheritance.
+
+    Applied only when toolsets are *inherited* from the parent or fall back
+    to DEFAULT_TOOLSETS — *explicit* caller requests at the
+    ``delegate_task()`` call site bypass this strip (see the explicit-
+    request branch around line ~945).  Rationale: silent deletion of
+    explicitly requested toolsets is a footgun; user intent wins.
+
+    ``code_execution`` is intentionally NOT in this set: subagents already
+    receive ``terminal`` (a strictly larger capability), so blocking
+    ``execute_code`` is asymmetric and prevents legitimate use cases like
+    "compute SHA256 + sum of primes" from working at all.
+    """
     blocked_toolset_names = {
         "delegation",
         "clarify",
         "memory",
-        "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
@@ -952,7 +963,9 @@ def _build_child_agent(
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
-        child_toolsets = _strip_blocked_tools(child_toolsets)
+        # Explicit caller requests bypass the default block list (memory,
+        # clarify, delegation): user intent wins over implicit safety
+        # defaults.  See _strip_blocked_tools() docstring for rationale.
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
     elif parent_toolsets:

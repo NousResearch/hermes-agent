@@ -1947,7 +1947,9 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            # Use assistant metadata before falling back to the message ts so
+            # Slack AI Assistant threads keep the visible thread as the session.
+            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts") or ts
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
@@ -1959,7 +1961,13 @@ class SlackAdapter(BasePlatformAdapter):
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
-        event_thread_ts = event.get("thread_ts")
+        # Slack's AI Assistant events can carry the thread timestamp only in
+        # ``assistant_thread.thread_ts`` (cached in ``assistant_meta``), while
+        # the plain message event may omit top-level ``thread_ts``.  Use the
+        # resolved thread id here too; otherwise Assistant follow-ups look like
+        # top-level messages, skip thread-context hydration, and start with an
+        # empty session even though the visible Slack thread has prior turns.
+        event_thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
         if not is_dm and bot_uid:

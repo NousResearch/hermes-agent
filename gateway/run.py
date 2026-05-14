@@ -10355,6 +10355,10 @@ class GatewayRunner:
 
         event_message_id = self._reply_anchor_for_event(event)
 
+        # Forward image/audio attachments so the background agent can see them.
+        media_urls = list(event.media_urls) if event.media_urls else []
+        media_types = list(event.media_types) if event.media_types else []
+
         # Fire-and-forget the background task
         _task = asyncio.create_task(
             self._run_background_task(
@@ -10362,6 +10366,8 @@ class GatewayRunner:
                 source,
                 task_id,
                 event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
             )
         )
         self._background_tasks.add(_task)
@@ -10376,9 +10382,14 @@ class GatewayRunner:
         source: "SessionSource",
         task_id: str,
         event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
+
+        media_urls = media_urls or []
+        media_types = media_types or []
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -10415,6 +10426,23 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # Enrich the prompt with image descriptions so the background
+            # agent can see user-attached images (same as the main flow).
+            enriched_prompt = prompt
+            if media_urls:
+                image_paths = []
+                for i, path in enumerate(media_urls):
+                    mtype = media_types[i] if i < len(media_types) else ""
+                    if mtype.startswith("image/"):
+                        image_paths.append(path)
+                if image_paths:
+                    try:
+                        enriched_prompt = await self._enrich_message_with_vision(
+                            prompt, image_paths,
+                        )
+                    except Exception as e:
+                        logger.warning("Background task vision enrichment failed: %s", e)
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -10446,7 +10474,7 @@ class GatewayRunner:
                 )
                 try:
                     return agent.run_conversation(
-                        user_message=prompt,
+                        user_message=enriched_prompt,
                         task_id=task_id,
                     )
                 finally:

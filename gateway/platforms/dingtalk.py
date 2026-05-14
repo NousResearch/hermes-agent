@@ -639,11 +639,72 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Resolve media download codes to URLs so vision tools can use them
         await self._resolve_media_codes(message)
 
-        # Extract text content
+        # Handle file messages: download content and extract as text
+        msg_type_raw = getattr(message, "message_type", "") or ""
+        if msg_type_raw == "file":
+            extensions = getattr(message, "extensions", {}) or {}
+            content = extensions.get("content") or {}
+            if isinstance(content, dict):
+                download_url = content.get("downloadCode") or content.get("download_code")
+                file_name = content.get("fileName", "unknown")
+                if download_url and download_url.startswith("http"):
+                    try:
+                        logger.info(
+                            "[%s] Downloading file: %s from URL...",
+                            self.name, file_name,
+                        )
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(download_url) as resp:
+                                file_bytes = await resp.read()
+                                # Try to decode as text for common file types
+                                text_exts = ('.md', '.txt', '.csv', '.json', '.yaml', '.yml', '.py', '.js', '.ts', '.html', '.xml', '.log')
+                                if any(file_name.lower().endswith(ext) for ext in text_exts):
+                                    try:
+                                        file_text = file_bytes.decode('utf-8')
+                                        # Inject file content as message text
+                                        injected_text = f"[File: {file_name}]\n\n{file_text}"
+                                        # Store in extensions so _extract_text can find it
+                                        extensions['_downloaded_file_content'] = injected_text
+                                        logger.info(
+                                            "[%s] File downloaded and decoded: %s (%d chars)",
+                                            self.name, file_name, len(file_text),
+                                        )
+                                    except UnicodeDecodeError:
+                                        logger.info(
+                                            "[%s] File %s is not UTF-8 text, skipping decode",
+                                            self.name, file_name,
+                                        )
+                                else:
+                                    logger.info(
+                                        "[%s] File %s is not a text type, media_urls will be set",
+                                        self.name, file_name,
+                                    )
+                    except Exception as e:
+                        logger.error(
+                            "[%s] Failed to download file %s: %s",
+                            self.name, file_name, e,
+                        )
+
+        # Extract text content (includes downloaded file content if applicable)
         text = self._extract_text(message)
+
+        # If no text but we have a downloaded file, use it
+        if not text:
+            extensions = getattr(message, "extensions", {}) or {}
+            text = extensions.get('_downloaded_file_content', '')
 
         # Determine message type and build media list
         msg_type, media_urls, media_types = self._extract_media(message)
+
+        logger.info(
+            "[%s] Message processed: text_len=%d, msg_type=%s, media_count=%d, media_urls=%s",
+            self.name,
+            len(text) if text else 0,
+            msg_type.name if hasattr(msg_type, 'name') else msg_type,
+            len(media_urls),
+            [u[:30] + "..." if u and len(u) > 30 else u for u in media_urls],
+        )
 
         if not text and not media_urls:
             logger.debug("[%s] Empty message, skipping", self.name)
@@ -742,6 +803,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
 
+        # DEBUG: Log ALL message attributes for file troubleshooting
+        msg_attrs = {}
+        for attr in dir(message):
+            if not attr.startswith('_') and not callable(getattr(message, attr)):
+                val = getattr(message, attr, None)
+                if val is not None:
+                    msg_attrs[attr] = str(val)[:100] if not isinstance(val, (dict, list)) else f"<{type(val).__name__} len={len(val)}>"
+        logger.info(
+            "[%s] _extract_media: message_type=%s, attrs=%s",
+            self.name,
+            getattr(message, "message_type", ""),
+            msg_attrs,
+        )
+
         # Check for image/picture
         image_content = getattr(message, "image_content", None)
         if image_content:
@@ -750,6 +825,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 media_urls.append(download_code)
                 media_types.append("image")
                 msg_type = MessageType.PHOTO
+                logger.info("[%s] Found image download_code: %s", self.name, download_code)
 
         # Check for rich text with mixed content
         rich_text = getattr(message, "rich_text_content", None) or getattr(
@@ -757,16 +833,31 @@ class DingTalkAdapter(BasePlatformAdapter):
         )
         if rich_text:
             rich_list = getattr(rich_text, "rich_text_list", None) or rich_text
+            logger.info(
+                "[%s] rich_text_list found: %d items",
+                self.name,
+                len(rich_list) if isinstance(rich_list, list) else 0,
+            )
             if isinstance(rich_list, list):
-                for item in rich_list:
+                for idx, item in enumerate(rich_list):
                     if isinstance(item, dict):
                         dl_code = (
                             item.get("downloadCode") or item.get("download_code") or ""
                         )
                         item_type = item.get("type", "")
+                        item_text = item.get("text") or item.get("content") or ""
+                        logger.info(
+                            "[%s] rich_text[%d]: type=%s, download_code=%s, text=%s",
+                            self.name, idx, item_type, dl_code[:30] if dl_code else "(none)",
+                            item_text[:50] if item_text else "(none)",
+                        )
                         if dl_code:
                             mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
                             media_urls.append(dl_code)
+                            logger.info(
+                                "[%s] Found media: type=%s -> mapped=%s, code=%s",
+                                self.name, item_type, mapped, dl_code[:30],
+                            )
                             if mapped == "image":
                                 media_types.append("image")
                                 if msg_type == MessageType.TEXT:
@@ -793,6 +884,22 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if any("image" in t for t in media_types)
                 else MessageType.TEXT
             )
+        elif msg_type_str == "file" and not media_urls:
+            # Handle file messages with downloadCode in extensions
+            extensions = getattr(message, "extensions", {}) or {}
+            if isinstance(extensions, dict):
+                content = extensions.get("content", {})
+                if isinstance(content, dict):
+                    dl_code = content.get("downloadCode") or content.get("download_code")
+                    file_name = content.get("fileName") or content.get("file_name", "")
+                    if dl_code:
+                        media_urls.append(dl_code)
+                        media_types.append("application/octet-stream")
+                        msg_type = MessageType.DOCUMENT
+                        logger.info(
+                            "[%s] Found file in extensions: name=%s, code=%s",
+                            self.name, file_name, dl_code[:30],
+                        )
 
         return msg_type, media_urls, media_types
 
@@ -1285,19 +1392,50 @@ class DingTalkAdapter(BasePlatformAdapter):
         img_content = getattr(message, "image_content", None)
         if img_content and getattr(img_content, "download_code", None):
             codes_to_resolve.append((img_content, "download_code"))
+            logger.info(
+                "[%s] Found image download_code to resolve: %s...",
+                self.name, img_content.download_code[:30],
+            )
 
         # 2. Rich text list
         rich_text = getattr(message, "rich_text_content", None)
         if rich_text:
             rich_list = getattr(rich_text, "rich_text_list", []) or []
-            for item in rich_list:
+            logger.info(
+                "[%s] _resolve_media_codes: rich_text_list has %d items",
+                self.name, len(rich_list),
+            )
+            for idx, item in enumerate(rich_list):
                 if isinstance(item, dict):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
-                        if item.get(key):
+                        val = item.get(key)
+                        if val:
                             codes_to_resolve.append((item, key))
+                            logger.info(
+                                "[%s] Found code to resolve: rich_text[%d].%s = %s...",
+                                self.name, idx, key, val[:30],
+                            )
+
+        # 3. File messages in extensions
+        extensions = getattr(message, "extensions", None)
+        if extensions and isinstance(extensions, dict):
+            content = extensions.get("content", {})
+            if isinstance(content, dict):
+                dl_code = content.get("downloadCode") or content.get("download_code")
+                if dl_code:
+                    codes_to_resolve.append((content, "downloadCode"))
+                    logger.info(
+                        "[%s] Found file downloadCode in extensions to resolve: %s...",
+                        self.name, dl_code[:30],
+                    )
 
         if not codes_to_resolve:
+            logger.info("[%s] _resolve_media_codes: no codes to resolve", self.name)
             return
+
+        logger.info(
+            "[%s] Resolving %d download codes", self.name, len(codes_to_resolve),
+        )
 
         # Resolve all codes in parallel
         tasks = []
@@ -1321,6 +1459,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return
         try:
+            logger.info(
+                "[%s] Fetching download URL for code: %s...",
+                self.name, code[:30],
+            )
             request = dingtalk_robot_models.RobotMessageFileDownloadRequest(
                 download_code=code,
                 robot_code=robot_code,
@@ -1336,18 +1478,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             if body:
                 url = getattr(body, "download_url", None)
                 if url:
+                    logger.info(
+                        "[%s] Successfully resolved download URL: %s...",
+                        self.name, url[:50],
+                    )
                     if hasattr(obj, key):
                         setattr(obj, key, url)
                     elif isinstance(obj, dict):
                         obj[key] = url
+                else:
+                    logger.warning(
+                        "[%s] Download response missing download_url for code %s...",
+                        self.name, code[:30],
+                    )
             else:
                 logger.warning(
-                    "[%s] Failed to download media: empty response for code %s",
-                    self.name,
-                    code,
+                    "[%s] Failed to download media: empty response for code %s...",
+                    self.name, code[:30],
                 )
         except Exception as e:
-            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            logger.error("[%s] Error resolving media code %s...: %s", self.name, code[:30], e)
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:
@@ -1411,6 +1561,19 @@ class _IncomingHandler(
             data = message.data
             if isinstance(data, str):
                 data = json.loads(data)
+
+            # DEBUG: Log raw payload for file messages
+            if isinstance(data, dict) and data.get("msgtype") == "file":
+                import copy
+                safe_data = copy.deepcopy(data)
+                # Redact sensitive fields
+                for k in ("sessionWebhook", "session_webhook"):
+                    if k in safe_data:
+                        safe_data[k] = "***REDACTED***"
+                logger.info(
+                    "[%s] RAW FILE PAYMENT: %s",
+                    self._adapter.name, json.dumps(safe_data, ensure_ascii=False),
+                )
 
             # Parse dict into ChatbotMessage using SDK's from_dict
             chatbot_msg = ChatbotMessage.from_dict(data)

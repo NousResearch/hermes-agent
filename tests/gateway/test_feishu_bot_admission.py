@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -456,7 +457,14 @@ def test_admit_per_group_require_mention_overrides_global():
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
 
-    if importlib.util.find_spec("lark_oapi") is None:
+    loaded_lark = sys.modules.get("lark_oapi")
+    if loaded_lark is not None and getattr(loaded_lark, "__spec__", None) is None:
+        pytest.skip("lark_oapi optional dependency is mocked")
+    try:
+        lark_available = importlib.util.find_spec("lark_oapi") is not None
+    except (ImportError, ValueError):
+        lark_available = False
+    if not lark_available:
         pytest.skip("lark_oapi optional dependency is not installed")
 
     from gateway.platforms.feishu import FeishuAdapter

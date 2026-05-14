@@ -896,6 +896,17 @@ class TestMatrixMarkdownToHtml:
         assert "<code" in result
         assert "print" in result
 
+    def test_matrix_markdown_preserves_details_summary(self):
+        from gateway.platforms.matrix import _sanitize_matrix_html
+
+        result = _sanitize_matrix_html(
+            "<details><summary>Tool activity</summary><pre><code>terminal</code></pre></details>"
+        )
+        assert "<details>" in result
+        assert "<summary>" in result
+        assert "Tool activity" in result
+        assert "terminal" in result
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction

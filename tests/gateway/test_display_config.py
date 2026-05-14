@@ -194,11 +194,11 @@ class TestPlatformDefaults:
         for plat in ("mattermost", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
 
-    def test_matrix_defaults_to_quiet_progress_and_streaming(self):
-        """Matrix defaults to final-answer-only to avoid edit/read-marker churn."""
+    def test_matrix_defaults_to_tool_progress_without_streaming(self):
+        """Matrix defaults to tool activity, but not response/thinking streaming."""
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "matrix", "tool_progress") == "off"
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
         assert resolve_display_setting({}, "matrix", "streaming") is False
 
     def test_matrix_default_tool_preview_length_is_room_friendly(self):

@@ -450,25 +450,28 @@ Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authori
 
 ### Matrix Progress and Streaming
 
-Matrix defaults to final-answer-only output even when global gateway progress or
-streaming is enabled. This avoids Matrix client read-marker jumps caused by
-edited `m.replace` progress messages and partially streamed replies.
+Matrix defaults to live tool activity without response/thinking streaming. Tool
+activity is sent as one Matrix formatted message using a `<details>` / `<summary>`
+block where the client supports it, with a plain-text fallback in the event body.
+Reasoning/thinking text is hidden by default.
 
-To opt into live Matrix progress for a client/room where edits behave well, set
-explicit Matrix platform overrides:
+To tune Matrix progress:
 
 ```yaml
 display:
   platforms:
     matrix:
       tool_progress: new      # off | new | all | verbose
-      streaming: true         # progressive response edits
-      interim_assistant_messages: true
+      tool_preview_length: 160
+      show_reasoning: false   # true only if you want raw thinking panes
+      streaming: false        # true enables progressive response edits
+      interim_assistant_messages: false
 ```
 
-Without these Matrix-specific overrides, global `display.tool_progress`,
-`display.interim_assistant_messages`, and `streaming.enabled` do not make Matrix
-emit live progress or partial responses.
+Global `display.tool_progress` applies to Matrix unless overridden here.
+Global `display.interim_assistant_messages` and `streaming.enabled` do not make
+Matrix emit thinking/interim text or partial responses unless the Matrix-specific
+override is set.
 
 ### Media Limits
 

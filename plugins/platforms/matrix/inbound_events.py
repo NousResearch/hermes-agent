@@ -245,6 +245,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
         from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         retained_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
@@ -289,7 +290,10 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             reply_to_is_own_message=reply.is_own_message,
             reply_to_author_authorized=reply.author_authorized,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, timestamp=timestamp, **extra)
+            user_id=sender, user_name=display_name, timestamp=timestamp,
+            auto_skill=resolve_channel_skills(self.config.extra, room_id),
+            channel_prompt=resolve_channel_prompt(self.config.extra, room_id),
+            **extra)
         if reply.media_path and reply.event_id and reply.media_content_id:
             event._quoted_media_dependencies = (
                 QuotedMediaDependency(

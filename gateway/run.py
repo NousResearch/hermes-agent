@@ -15040,7 +15040,10 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
-            agent.clarify_callback = _clarify_callback_sync
+            # Clarify callback is assigned below after the per-turn bridge is
+            # defined. Assigning it here makes Python treat the later nested
+            # definition as a local and raises UnboundLocalError before the
+            # definition executes.
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}

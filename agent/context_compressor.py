@@ -790,7 +790,13 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: str = None,
+        *,
+        _reduced_retry: bool = False,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -817,7 +823,36 @@ class ContextCompressor(ContextEngine):
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
-        content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        if _reduced_retry:
+            summary_budget = max(1000, min(2500, summary_budget // 2))
+            # Temporarily shrink serialization limits for this retry. Keep
+            # enough head/tail detail to preserve file paths, errors, and the
+            # active task, but avoid replaying a huge prompt to a backend that
+            # just dropped a chunked response.
+            old_limits = (
+                self._CONTENT_MAX,
+                self._CONTENT_HEAD,
+                self._CONTENT_TAIL,
+                self._TOOL_ARGS_MAX,
+                self._TOOL_ARGS_HEAD,
+            )
+            try:
+                self._CONTENT_MAX = 1800
+                self._CONTENT_HEAD = 1200
+                self._CONTENT_TAIL = 400
+                self._TOOL_ARGS_MAX = 500
+                self._TOOL_ARGS_HEAD = 400
+                content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+            finally:
+                (
+                    self._CONTENT_MAX,
+                    self._CONTENT_HEAD,
+                    self._CONTENT_TAIL,
+                    self._TOOL_ARGS_MAX,
+                    self._TOOL_ARGS_HEAD,
+                ) = old_limits
+        else:
+            content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Keep the wording deliberately plain: Azure/OpenAI-compatible content
@@ -1052,6 +1087,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             ):
                 self._fallback_to_main_for_compression(e, "failed")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+            if not _reduced_retry and (_is_timeout or _is_streaming_closed):
+                logging.warning(
+                    "Context summary transport failed (%s). Retrying once with "
+                    "a reduced summary prompt before entering cooldown.",
+                    e,
+                )
+                self._summary_failure_cooldown_until = 0.0
+                return self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=focus_topic,
+                    _reduced_retry=True,
+                )
 
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and

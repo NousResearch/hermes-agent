@@ -265,6 +265,36 @@ class TestSummaryFailureCooldown:
         assert second is None
         assert mock_call.call_count == 1
 
+    def test_incomplete_chunked_read_retries_once_with_reduced_prompt(self):
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary after reduced retry"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        big_payload = "important file path /tmp/example.py\n" + ("x" * 12000)
+        messages = [
+            {"role": "user", "content": big_payload},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        err = Exception(
+            "peer closed connection without sending complete message body "
+            "(incomplete chunked read)"
+        )
+        with patch("agent.context_compressor.call_llm", side_effect=[err, mock_ok]) as mock_call:
+            result = c._generate_summary(messages)
+
+        assert mock_call.call_count == 2
+        first_prompt = mock_call.call_args_list[0].kwargs["messages"][0]["content"]
+        second_prompt = mock_call.call_args_list[1].kwargs["messages"][0]["content"]
+        assert len(second_prompt) < len(first_prompt)
+        assert mock_call.call_args_list[1].kwargs["max_tokens"] < mock_call.call_args_list[0].kwargs["max_tokens"]
+        assert result is not None
+        assert "summary after reduced retry" in result
+        assert c._last_summary_error is None
+
 
 class TestSummaryFallbackToMainModel:
     """When ``summary_model`` differs from the main model and the summary LLM

@@ -1649,6 +1649,8 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            requested_thread_id = self._message_thread_id_for_send(thread_id)
+            used_thread_fallback = False
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1666,6 +1668,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
+                retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 reply_to_source = reply_to or (
                     str(metadata_reply_to)
@@ -1686,6 +1689,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=reply_to_id,
                     reply_to_mode=self._reply_to_mode,
                 )
+                if used_thread_fallback and thread_kwargs.get("message_thread_id") is not None:
+                    thread_kwargs = dict(thread_kwargs)
+                    thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
@@ -1726,6 +1732,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                if not retried_thread_not_found:
+                                    retried_thread_not_found = True
+                                    logger.warning(
+                                        "[%s] Thread %s not found, retrying once with message_thread_id",
+                                        self.name, effective_thread_id,
+                                    )
+                                    await asyncio.sleep(1)
+                                    continue
                                 # Thread doesn't exist — retry without
                                 # message_thread_id so the message still
                                 # reaches the chat.
@@ -1733,6 +1747,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
                                 )
+                                used_thread_fallback = True
                                 effective_thread_id = None
                                 thread_kwargs = {"message_thread_id": None}
                                 continue
@@ -1809,7 +1824,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                raw_response={
+                    "message_ids": message_ids,
+                    "requested_thread_id": requested_thread_id,
+                    "thread_fallback": used_thread_fallback,
+                },
             )
             
         except Exception as e:

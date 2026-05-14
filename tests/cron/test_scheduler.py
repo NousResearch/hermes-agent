@@ -2396,6 +2396,65 @@ class TestDeliverResultTimeoutCancelsFuture:
         assert result is None, f"expected successful delivery, got error: {result!r}"
         standalone_send.assert_awaited_once()
 
+    def test_live_adapter_thread_fallback_records_delivery_error(self):
+        """A cron target with an explicit topic must not be marked clean if
+        Telegram falls back to the base chat after "thread not found".
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(
+            success=True,
+            message_id="42",
+            raw_response={
+                "requested_thread_id": 7072,
+                "thread_fallback": True,
+            },
+        )
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "thread-fallback-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result == (
+            "configured thread_id 7072 for telegram:226252250 was not found; "
+            "delivered without thread_id"
+        )
+        adapter.send.assert_called_once_with(
+            "226252250",
+            "Hello world",
+            metadata={"thread_id": "7072"},
+        )
+
 
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's

@@ -372,7 +372,7 @@ async def test_send_typing_falls_back_without_thread_on_bad_request():
 
 @pytest.mark.asyncio
 async def test_send_retries_without_thread_on_thread_not_found():
-    """When message_thread_id causes 'thread not found', retry without it."""
+    """When message_thread_id keeps failing, retry once then fall back."""
     adapter = _make_adapter()
 
     call_log = []
@@ -394,10 +394,43 @@ async def test_send_retries_without_thread_on_thread_not_found():
 
     assert result.success is True
     assert result.message_id == "42"
-    # First call has thread_id, second call retries without
+    assert result.raw_response["requested_thread_id"] == 99999
+    assert result.raw_response["thread_fallback"] is True
+    # First two calls keep the configured thread, then final fallback drops it.
+    assert len(call_log) == 3
+    assert call_log[0]["message_thread_id"] == 99999
+    assert call_log[1]["message_thread_id"] == 99999
+    assert call_log[2]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_retries_transient_thread_not_found_before_fallback():
+    """A one-off Telegram thread-not-found response should still land in the topic."""
+    adapter = _make_adapter()
+
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=43)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+        metadata={"thread_id": "99999"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "43"
+    assert result.raw_response["requested_thread_id"] == 99999
+    assert result.raw_response["thread_fallback"] is False
     assert len(call_log) == 2
     assert call_log[0]["message_thread_id"] == 99999
-    assert call_log[1]["message_thread_id"] is None
+    assert call_log[1]["message_thread_id"] == 99999
 
 
 @pytest.mark.asyncio
@@ -1079,6 +1112,7 @@ async def test_send_without_thread_id_unaffected():
     )
 
     assert result.success is True
+    assert result.raw_response["thread_fallback"] is False
     assert len(call_log) == 1
     assert call_log[0]["message_thread_id"] is None
 

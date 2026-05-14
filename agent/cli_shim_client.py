@@ -37,6 +37,23 @@ from agent.copilot_acp_client import (
 CLI_SHIM_BASE_URL = "cli://shim"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
+# Concurrency caps — prevent the 27-agent fleet from OOM-killing the host
+# by spawning 27 simultaneous claude/codex subprocesses (~500MB each).
+# Override via env vars for tuning without code change.
+_GLOBAL_MAX = int(os.environ.get("HERMES_CLI_SHIM_GLOBAL_MAX", "6"))
+_PER_CLI_MAX = {
+    "claude": int(os.environ.get("HERMES_CLI_SHIM_CLAUDE_MAX", "3")),
+    "codex":  int(os.environ.get("HERMES_CLI_SHIM_CODEX_MAX",  "4")),
+    "gemini": int(os.environ.get("HERMES_CLI_SHIM_GEMINI_MAX", "3")),
+}
+_GLOBAL_SEMAPHORE = threading.BoundedSemaphore(_GLOBAL_MAX)
+_PER_CLI_SEMAPHORES: dict[str, threading.BoundedSemaphore] = {
+    cli: threading.BoundedSemaphore(cap) for cli, cap in _PER_CLI_MAX.items()
+}
+_SEMAPHORE_ACQUIRE_TIMEOUT = float(
+    os.environ.get("HERMES_CLI_SHIM_QUEUE_TIMEOUT", "120")
+)
+
 
 # Per-model dispatch table.
 # Each entry: (command_resolver, args_template, supports_acp)
@@ -57,10 +74,14 @@ def _dispatch_for_model(model: str) -> dict[str, Any]:
             "label": "claude-opus-cli",
         }
     if m in ("codex-gpt5-cli", "codex-cli", "codex"):
+        # ChatGPT subscription accounts don't accept `--model gpt-5` —
+        # codex picks the right model from the OAuth'd account itself.
+        # We use --output-last-message to get clean output instead of the
+        # interactive scaffold; the temp-file path is filled in at call time.
         return {
-            "mode": "print",
+            "mode": "codex_exec",
             "command": "codex",
-            "args": ["exec", "--model", "gpt-5"],
+            "args": ["exec", "--skip-git-repo-check"],
             "label": "codex-gpt5-cli",
         }
     if m in ("gemini-cli", "gemini-acp", "gemini"):
@@ -90,6 +111,55 @@ def _resolve_timeout(timeout: Any) -> float:
     ]
     numeric = [float(v) for v in candidates if isinstance(v, (int, float))]
     return max(numeric) if numeric else _DEFAULT_TIMEOUT_SECONDS
+
+
+class _ConcurrencyGate:
+    """Acquire both global + per-CLI semaphores or raise quickly.
+
+    Prevents the 27-agent fleet from spawning 27 simultaneous CLI subprocesses
+    and OOM-killing the host. If we can't acquire within the queue timeout,
+    we raise so the agent fails fast and tries the next provider in the chain.
+    """
+
+    def __init__(self, cli_name: str) -> None:
+        self._cli_name = cli_name
+        self._per_cli = _PER_CLI_SEMAPHORES.get(cli_name)
+        self._holding_global = False
+        self._holding_per_cli = False
+
+    def __enter__(self) -> "_ConcurrencyGate":
+        if not _GLOBAL_SEMAPHORE.acquire(timeout=_SEMAPHORE_ACQUIRE_TIMEOUT):
+            raise RuntimeError(
+                f"cli-shim global concurrency cap reached "
+                f"({_GLOBAL_MAX}); queue timeout {_SEMAPHORE_ACQUIRE_TIMEOUT}s "
+                f"exceeded waiting for slot."
+            )
+        self._holding_global = True
+        if self._per_cli is not None:
+            if not self._per_cli.acquire(timeout=_SEMAPHORE_ACQUIRE_TIMEOUT):
+                _GLOBAL_SEMAPHORE.release()
+                self._holding_global = False
+                raise RuntimeError(
+                    f"cli-shim per-CLI cap reached for '{self._cli_name}' "
+                    f"({_PER_CLI_MAX.get(self._cli_name)}); queue timeout "
+                    f"{_SEMAPHORE_ACQUIRE_TIMEOUT}s exceeded."
+                )
+            self._holding_per_cli = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._holding_per_cli and self._per_cli is not None:
+            try:
+                self._per_cli.release()
+            except ValueError:
+                pass
+            self._holding_per_cli = False
+        if self._holding_global:
+            try:
+                _GLOBAL_SEMAPHORE.release()
+            except ValueError:
+                pass
+            self._holding_global = False
 
 
 class _CliShimChatCompletions:
@@ -177,26 +247,36 @@ class CliShimClient:
         if dispatch["mode"] == "acp":
             # Delegate to the ACP subprocess loop — reuse the copilot ACP
             # client's protocol, just pointed at the gemini binary.
-            acp_client = CopilotACPClient(
-                api_key="cli-shim-gemini",
-                base_url="acp://gemini",
-                command=self._command_override or dispatch["command"],
-                args=self._args_override or dispatch["args"],
-                acp_cwd=self._cwd,
-            )
-            try:
-                response_text, reasoning_text = acp_client._run_prompt(
-                    prompt_text, timeout_seconds=timeout_seconds
+            with _ConcurrencyGate(dispatch["command"]):
+                acp_client = CopilotACPClient(
+                    api_key="cli-shim-gemini",
+                    base_url="acp://gemini",
+                    command=self._command_override or dispatch["command"],
+                    args=self._args_override or dispatch["args"],
+                    acp_cwd=self._cwd,
                 )
-            finally:
-                acp_client.close()
+                try:
+                    response_text, reasoning_text = acp_client._run_prompt(
+                        prompt_text, timeout_seconds=timeout_seconds
+                    )
+                finally:
+                    acp_client.close()
+        elif dispatch["mode"] == "codex_exec":
+            with _ConcurrencyGate(dispatch["command"]):
+                response_text, reasoning_text = self._run_codex_exec(
+                    prompt_text,
+                    command=self._command_override or dispatch["command"],
+                    args=self._args_override or dispatch["args"],
+                    timeout_seconds=timeout_seconds,
+                )
         else:
-            response_text, reasoning_text = self._run_print(
-                prompt_text,
-                command=self._command_override or dispatch["command"],
-                args=self._args_override or dispatch["args"],
-                timeout_seconds=timeout_seconds,
-            )
+            with _ConcurrencyGate(dispatch["command"]):
+                response_text, reasoning_text = self._run_print(
+                    prompt_text,
+                    command=self._command_override or dispatch["command"],
+                    args=self._args_override or dispatch["args"],
+                    timeout_seconds=timeout_seconds,
+                )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
@@ -274,3 +354,103 @@ class CliShimClient:
             )
 
         return (stdout or "").strip(), ""
+
+    def _run_codex_exec(
+        self,
+        prompt_text: str,
+        *,
+        command: str,
+        args: list[str],
+        timeout_seconds: float,
+    ) -> tuple[str, str]:
+        """codex exec with --output-last-message <tmpfile> for clean output.
+
+        Codex CLI's stdout in `exec` mode is a noisy scaffold ('user\\n...\\ncodex\\n...').
+        Using --output-last-message writes ONLY the final assistant message to
+        a tempfile, which we then read back.
+        """
+        import tempfile
+
+        resolved = shutil.which(command) or command
+        with tempfile.NamedTemporaryFile(
+            mode="r", suffix=".txt", delete=False, prefix="codex-cli-shim-"
+        ) as tmp:
+            tmp_path = tmp.name
+
+        full_args = list(args) + ["--output-last-message", tmp_path]
+
+        try:
+            proc = subprocess.Popen(
+                [resolved] + full_args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=self._cwd,
+                env=_build_subprocess_env(),
+            )
+        except FileNotFoundError as exc:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Could not start CLI '{command}'. Install it or check PATH."
+            ) from exc
+
+        with self._active_process_lock:
+            self._active_process = proc
+        self.is_closed = False
+
+        try:
+            try:
+                stdout, stderr = proc.communicate(
+                    input=prompt_text, timeout=timeout_seconds
+                )
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"CLI '{command}' timed out after {timeout_seconds}s"
+                ) from exc
+            finally:
+                with self._active_process_lock:
+                    self._active_process = None
+
+            if proc.returncode != 0:
+                tail = (stderr or "").strip()[-800:]
+                raise RuntimeError(
+                    f"CLI '{command}' exited {proc.returncode}: {tail}"
+                )
+
+            # Read the clean last-message output
+            try:
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    response_text = f.read().strip()
+            except FileNotFoundError:
+                # Codex didn't write the file (no assistant turn happened);
+                # fall back to scrubbing stdout.
+                response_text = self._scrub_codex_stdout(stdout or "")
+
+            return response_text, ""
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _scrub_codex_stdout(raw: str) -> str:
+        """Last-resort fallback: extract the assistant turn from noisy codex stdout."""
+        lines = raw.splitlines()
+        # codex output format: "...\ncodex\n<message>\ntokens used\n<n>"
+        try:
+            idx = lines.index("codex")
+            tail = lines[idx + 1 :]
+            if "tokens used" in tail:
+                tail = tail[: tail.index("tokens used")]
+            return "\n".join(tail).strip()
+        except ValueError:
+            return raw.strip()

@@ -8225,30 +8225,42 @@ class AIAgent:
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
-            # Default to native layout when the restored snapshot predates the
-            # native-vs-proxy split (older sessions saved before this PR).
             self._use_native_cache_layout = rt.get(
                 "use_native_cache_layout",
                 self.api_mode == "anthropic_messages" and self.provider == "anthropic",
             )
 
-            # ── Rebuild client for the primary provider ──
-            if self.api_mode == "anthropic_messages":
-                from agent.anthropic_adapter import build_anthropic_client
-                self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
-                self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
-                    timeout=get_provider_request_timeout(self.provider, self.model),
-                )
-                self._is_anthropic_oauth = rt["is_anthropic_oauth"]
-                self.client = None
+            # ── Consult credential pool for current best entry ──
+            # The snapshot may hold a stale key if the pool rotated during
+            # the previous turn (e.g. after 401/429/402).  Override with
+            # the pool's current selection when available.
+            pool = self._credential_pool
+            pool_entry = None
+            if pool is not None:
+                try:
+                    pool_entry = pool.current() or pool.select()
+                except Exception:
+                    pool_entry = None
+            if pool_entry is not None:
+                self._swap_credential(pool_entry)
             else:
-                self.client = self._create_openai_client(
-                    dict(rt["client_kwargs"]),
-                    reason="restore_primary",
-                    shared=True,
-                )
+                # ── Rebuild client for the primary provider ──
+                if self.api_mode == "anthropic_messages":
+                    from agent.anthropic_adapter import build_anthropic_client
+                    self._anthropic_api_key = rt["anthropic_api_key"]
+                    self._anthropic_base_url = rt["anthropic_base_url"]
+                    self._anthropic_client = build_anthropic_client(
+                        rt["anthropic_api_key"], rt["anthropic_base_url"],
+                        timeout=get_provider_request_timeout(self.provider, self.model),
+                    )
+                    self._is_anthropic_oauth = rt["is_anthropic_oauth"]
+                    self.client = None
+                else:
+                    self.client = self._create_openai_client(
+                        dict(rt["client_kwargs"]),
+                        reason="restore_primary",
+                        shared=True,
+                    )
 
             # ── Restore context engine state ──
             cc = self.context_compressor
@@ -8332,22 +8344,35 @@ class AIAgent:
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
 
-            if self.api_mode == "anthropic_messages":
-                from agent.anthropic_adapter import build_anthropic_client
-                self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
-                self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
-                    timeout=get_provider_request_timeout(self.provider, self.model),
-                )
-                self._is_anthropic_oauth = rt["is_anthropic_oauth"]
-                self.client = None
+            # Consult credential pool for current best entry, same as
+            # _restore_primary_runtime — the snapshot key may be stale
+            # after pool rotation in a previous turn.
+            pool = self._credential_pool
+            pool_entry = None
+            if pool is not None:
+                try:
+                    pool_entry = pool.current() or pool.select()
+                except Exception:
+                    pool_entry = None
+            if pool_entry is not None:
+                self._swap_credential(pool_entry)
             else:
-                self.client = self._create_openai_client(
-                    dict(rt["client_kwargs"]),
-                    reason="primary_recovery",
-                    shared=True,
-                )
+                if self.api_mode == "anthropic_messages":
+                    from agent.anthropic_adapter import build_anthropic_client
+                    self._anthropic_api_key = rt["anthropic_api_key"]
+                    self._anthropic_base_url = rt["anthropic_base_url"]
+                    self._anthropic_client = build_anthropic_client(
+                        rt["anthropic_api_key"], rt["anthropic_base_url"],
+                        timeout=get_provider_request_timeout(self.provider, self.model),
+                    )
+                    self._is_anthropic_oauth = rt["is_anthropic_oauth"]
+                    self.client = None
+                else:
+                    self.client = self._create_openai_client(
+                        dict(rt["client_kwargs"]),
+                        reason="primary_recovery",
+                        shared=True,
+                    )
 
             wait_time = min(3 + retry_count, 8)
             self._vprint(

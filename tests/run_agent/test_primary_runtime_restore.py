@@ -528,3 +528,112 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Credential pool bypass fix (issue #25205)
+# =============================================================================
+
+class TestCredentialPoolBypass:
+    """Verify _restore_primary_runtime consults the credential pool instead
+    of blindly restoring a stale snapshot key."""
+
+    def test_restore_uses_pool_current_entry(self):
+        """When the pool has a current entry, restore uses it (not snapshot)."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent._fallback_activated is True
+
+        pool_entry = SimpleNamespace(
+            runtime_api_key="fresh-pool-key-12345678",
+            access_token="fresh-pool-key-12345678",
+            runtime_base_url="https://api.openai.com/v1",
+            base_url="https://api.openai.com/v1",
+        )
+        mock_pool = MagicMock()
+        mock_pool.current.return_value = pool_entry
+        mock_pool.select.return_value = pool_entry
+        agent._credential_pool = mock_pool
+
+        snapshot_key = agent._primary_runtime["api_key"]
+
+        with patch.object(agent, "_swap_credential") as mock_swap:
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._fallback_activated is False
+        mock_swap.assert_called_once_with(pool_entry)
+        assert agent.api_key != snapshot_key or mock_swap.called
+
+    def test_restore_falls_back_to_snapshot_when_no_pool(self):
+        """Without a credential pool, restore uses the snapshot as before."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent._credential_pool = None
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent._fallback_activated is True
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.api_key == agent._primary_runtime["api_key"]
+
+    def test_restore_handles_pool_exception_gracefully(self):
+        """If pool.select() raises, restore falls back to snapshot."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        mock_pool = MagicMock()
+        mock_pool.current.side_effect = RuntimeError("pool corrupted")
+        mock_pool.select.side_effect = RuntimeError("pool corrupted")
+        agent._credential_pool = mock_pool
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.api_key == agent._primary_runtime["api_key"]
+
+    def test_restore_prefers_current_over_select(self):
+        """pool.current() is tried first; select() is the fallback."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        current_entry = SimpleNamespace(
+            runtime_api_key="current-key",
+            access_token="current-key",
+            runtime_base_url="https://api.openai.com/v1",
+            base_url="https://api.openai.com/v1",
+        )
+        mock_pool = MagicMock()
+        mock_pool.current.return_value = current_entry
+        mock_pool.select.return_value = None
+        agent._credential_pool = mock_pool
+
+        with patch.object(agent, "_swap_credential") as mock_swap:
+            agent._restore_primary_runtime()
+
+        mock_swap.assert_called_once_with(current_entry)
+        mock_pool.select.assert_not_called()

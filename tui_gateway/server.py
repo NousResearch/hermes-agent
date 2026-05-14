@@ -594,6 +594,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+            # Start loop ticker if a persisted loop exists for this session
+            try:
+                _ensure_loop_ticker(current, sid)
+            except Exception:
+                pass
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -614,6 +619,70 @@ def _start_agent_build(sid: str, session: dict) -> None:
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
+
+
+def _ensure_loop_ticker(session: dict, sid: str) -> None:
+    """Start a per-session daemon ticker that fires active loop prompts.
+
+    The slash_worker only persists loop state to SessionDB; this
+    long-lived gateway process is responsible for ticking.  The
+    ticker re-reads ``load_loop(session_key)`` every second, so it
+    automatically adapts to pause/resume/clear/re-set without
+    needing explicit coordination with the slash_worker.
+
+    Idempotent — subsequent calls are no-ops once the ticker is
+    running for this session.
+    """
+    if session.get("_loop_ticker_running"):
+        return
+    session["_loop_ticker_running"] = True
+
+    def _tick() -> None:
+        while session.get("_loop_ticker_running"):
+            time.sleep(1)
+            try:
+                from hermes_cli.loop import load_loop, save_loop
+
+                # Read session_key fresh each tick — compression can rotate it
+                sk = session.get("session_key") or sid
+                if not sk:
+                    continue
+
+                state = load_loop(sk)
+                if state is None or state.status != "active":
+                    continue
+
+                now = time.time()
+                if (
+                    state.last_fired_at > 0
+                    and (now - state.last_fired_at) < state.interval_seconds
+                ):
+                    continue  # not time yet
+
+                # Fire — same pattern as goal continuation
+                with session["history_lock"]:
+                    if session.get("running"):
+                        continue  # busy, retry next tick
+                    session["running"] = True
+
+                state.last_fired_at = now
+                state.turns_completed += 1
+                save_loop(sk, state)
+
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(None, sid, session, state.prompt)
+                except Exception:
+                    with session["history_lock"]:
+                        session["running"] = False
+            except Exception:
+                pass  # swallow transient errors, keep ticking
+
+    threading.Thread(
+        target=_tick,
+        daemon=True,
+        name=f"loop-ticker-{sid[:8]}",
+    ).start()
 
 
 def _sess_nowait(params, rid):
@@ -3608,6 +3677,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+
+        # Re-ensure loop ticker after each turn (idempotent).
+        # Covers the case where the session was just created,
+        # compression rotated the key, or the ticker was
+        # previously a no-op because no loop existed yet.
+        try:
+            _ensure_loop_ticker(session, sid)
+        except Exception:
+            pass
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

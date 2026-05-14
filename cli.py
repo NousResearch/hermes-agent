@@ -7993,10 +7993,17 @@ class HermesCLI:
             return
 
         if lower == "resume":
-            state = mgr.resume(
-                pending_input=self._pending_input,
-                is_idle=lambda: not getattr(self, "_agent_running", False),
+            _is_slash_worker_resume = (
+                "HERMES_SLASH_WORKER" in os.environ
+                or "HERMES_SESSION_KEY" in os.environ
             )
+            if _is_slash_worker_resume:
+                state = mgr.resume()
+            else:
+                state = mgr.resume(
+                    pending_input=self._pending_input,
+                    is_idle=lambda: not getattr(self, "_agent_running", False),
+                )
             if state is None:
                 _cprint(f"  {_DIM}No loop to resume.{_RST}")
             else:
@@ -8038,23 +8045,38 @@ class HermesCLI:
             _cprint("  Subcommands: status, pause, resume, clear")
             return
 
+        # Detect slash_worker mode: we're in a non-interactive subprocess
+        # that has no process_loop thread, so the scheduler thread + kickoff
+        # queue would be orphaned.  Just persist state — the TUI gateway's
+        # _maybe_start_loop_ticker handles the ticking.
+        _is_slash_worker = (
+            "HERMES_SLASH_WORKER" in os.environ
+            or "HERMES_SESSION_KEY" in os.environ
+        )
+
         try:
-            state = mgr.set(
-                prompt,
-                interval_seconds=interval_seconds,
-                pending_input=self._pending_input,
-                is_idle=lambda: not getattr(self, "_agent_running", False),
-            )
+            if _is_slash_worker:
+                state = mgr.set(prompt, interval_seconds=interval_seconds)
+            else:
+                state = mgr.set(
+                    prompt,
+                    interval_seconds=interval_seconds,
+                    pending_input=self._pending_input,
+                    is_idle=lambda: not getattr(self, "_agent_running", False),
+                )
         except ValueError as exc:
             _cprint(f"  Invalid loop: {exc}")
             return
 
         _cprint(f"  ⊙ Loop set: every {state.interval_seconds}s → {state.prompt}")
-        # Kick off immediately so the user doesn't have to send a separate message
-        try:
-            self._pending_input.put(state.prompt)
-        except Exception:
-            pass
+
+        # Kick off immediately in plain CLI mode (slash_worker gets its
+        # kickoff from the TUI gateway's _maybe_start_loop_ticker instead).
+        if not _is_slash_worker:
+            try:
+                self._pending_input.put(state.prompt)
+            except Exception:
+                pass
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

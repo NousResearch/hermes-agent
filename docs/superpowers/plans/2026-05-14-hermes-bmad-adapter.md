@@ -2096,13 +2096,85 @@ Do not enable BMAD prompt-index exposure until cache keys include active project
 
 ## Execution handoff
 
-Plan complete. Recommended execution path:
+### PR1 implementation checkpoint — 2026-05-14
 
-1. Create an isolated Hermes worktree.
-2. Copy this plan into `docs/superpowers/plans/2026-05-14-hermes-bmad-adapter.md` in that worktree.
-3. Implement Phase 0, Tasks 1–7, and Task 8 (config gates) before any user-visible integration.
-4. Implement Phase 2 / Task 10 (`skills_list` + `skill_view`) only after gates pass.
-5. Treat Phase 3 / Task 9 slash commands as optional for PR1 and execute only after project-aware slash-cache tests pass.
-6. Do not execute Future Task P1 / prompt builder in PR1; keep `bmad.expose_in_skill_index: false`.
+Status: **PR1 implemented and merged into `main`** in `/home/ere/.hermes/hermes-agent`.
 
-Preferred mode: **Subagent-Driven**, one fresh subagent per task with review between tasks, because this touches prompt caching, skills, tools, and docs.
+Merged commit:
+
+```text
+4a75ad4b4 feat: add project-scoped BMAD adapter
+```
+
+Implemented PR1 scope:
+
+- Phase 0 reality check against real BMAD layout in `/home/ere/projects/analytics`.
+- Phase 1 read-only adapter package under `agent/bmad/`:
+  - discovery and git-root boundary behavior;
+  - manifest-aware project/module/skill discovery;
+  - TOML config resolver and merge semantics;
+  - skill loader and strict frontmatter handling;
+  - safe linked-resource handling with traversal/symlink escape rejection;
+  - high-level project index and config gates.
+- Phase 2 explicit tools surface:
+  - `tools/skills_tool.py` lists active project BMAD skills as `bmad:<skill-name>` only when cwd is inside a BMAD project;
+  - `skill_view("bmad:...")` resolves project-local BMAD skill content/resources and prepends a semi-trusted project-scope banner.
+- Config defaults in `hermes_cli/config.py` with safe gating, including `bmad.expose_in_skill_index: false`.
+- User docs for BMAD adapter, config reference, and CLI reference.
+
+Explicitly **not** implemented in PR1:
+
+- Phase 3 `/bmad-*` slash commands via `agent/skill_commands.py`.
+- Phase 4 prompt-builder/system skill-index exposure via `agent/prompt_builder.py`.
+- BMAD Kanban mapping, npm installer integration, persistent BMAD party mode, or global BMAD prompt injection.
+
+Validation already run after merge:
+
+```text
+python -m pytest tests/agent/bmad tests/tools/test_bmad_skills_tool.py tests/tools/test_skills_tool.py tests/tools/test_skill_view_path_check.py -q -o 'addopts='
+# 114 passed, 1 skipped
+
+python -m pytest tests/website/test_generate_skill_docs.py -q -o 'addopts='
+# 7 passed
+
+python -m pytest tests/agent/test_prompt_builder.py tests/tools/test_skills_tool.py tests/tools/test_skill_view_path_check.py tests/tools/test_bmad_skills_tool.py tests/agent/bmad -q -o 'addopts='
+# 236 passed, 1 skipped
+```
+
+Post-restart smoke check:
+
+```text
+/home/ere/projects/analytics:
+  skills_list success: true
+  BMAD skills count: 68
+  has bmad:bmad-quick-dev: true
+  skill_view(bmad:bmad-quick-dev): true
+
+/tmp:
+  BMAD skills count: 0
+```
+
+Gateway restart checkpoint:
+
+- `hermes-gateway.service` active after restart.
+- `hermes-gateway-ana.service` active after restart.
+- `hermes-gateway-coder.service` active after restart.
+
+A new agent can resume from this plan by first re-syncing the live repository state:
+
+```bash
+cd /home/ere/.hermes/hermes-agent
+git status --short
+git log --oneline -5
+python -m pytest tests/agent/bmad tests/tools/test_bmad_skills_tool.py tests/tools/test_skills_tool.py tests/tools/test_skill_view_path_check.py -q -o 'addopts='
+```
+
+Recommended next work, in order:
+
+1. If working on PR1 follow-up bugs, stay within `agent/bmad/**`, `tools/skills_tool.py`, docs, and the BMAD tests unless a failing test proves another integration point is necessary.
+2. For Phase 3 slash commands, create a new isolated worktree and implement only after designing project-aware slash-command cache keys. Declare a lock before touching `agent/skill_commands.py`.
+3. For Phase 4 prompt index exposure, do not touch `agent/prompt_builder.py` until file-level BMAD fingerprinting and cache-key invalidation are designed and tested.
+4. Keep `bmad.expose_in_skill_index: false` unless Phase 4 is fully implemented and validated.
+5. Treat project-local `_bmad/` content as semi-trusted project instruction, never global policy.
+
+Preferred mode remains **Subagent-Driven**, one fresh subagent per phase/task with review between tasks, because this touches prompt caching, skills, tools, and docs.

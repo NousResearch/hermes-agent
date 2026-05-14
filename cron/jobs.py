@@ -37,13 +37,53 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+DEFAULT_HERMES_DIR = HERMES_DIR
+DEFAULT_CRON_DIR = CRON_DIR
+DEFAULT_JOBS_FILE = JOBS_FILE
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
+DEFAULT_OUTPUT_DIR = OUTPUT_DIR
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _resolve_runtime_paths() -> tuple[Path, Path, Path]:
+    """Resolve cron directories at runtime.
+
+    Keep paths aligned with the current HERMES_HOME while still honoring
+    test-only explicit monkeypatches of CRON_DIR/JOBS_FILE/OUTPUT_DIR.
+    """
+    # Derive from current HERMES_HOME unless the module attribute has been
+    # explicitly overridden.
+    resolved_home = get_hermes_home().resolve()
+    cron_dir = Path(CRON_DIR)
+    if CRON_DIR == DEFAULT_CRON_DIR:
+        cron_dir = resolved_home / "cron"
+
+    jobs_file = Path(JOBS_FILE)
+    if JOBS_FILE == DEFAULT_JOBS_FILE:
+        jobs_file = cron_dir / "jobs.json"
+
+    output_dir = Path(OUTPUT_DIR)
+    if OUTPUT_DIR == DEFAULT_OUTPUT_DIR:
+        output_dir = cron_dir / "output"
+
+    return cron_dir, jobs_file, output_dir
+
+
+def _get_cron_dir() -> Path:
+    return _resolve_runtime_paths()[0]
+
+
+def _get_jobs_file() -> Path:
+    return _resolve_runtime_paths()[1]
+
+
+def _get_output_dir() -> Path:
+    return _resolve_runtime_paths()[2]
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -150,10 +190,12 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    cron_dir = _get_cron_dir()
+    output_dir = _get_output_dir()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(output_dir)
 
 
 # =============================================================================
@@ -401,17 +443,18 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    jobs_file = _get_jobs_file()
+    if not jobs_file.exists():
         return []
     
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
@@ -430,14 +473,15 @@ def load_jobs() -> List[Dict[str, Any]]:
 def save_jobs(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    jobs_file = _get_jobs_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jobs_file)
+        _secure_file(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -758,7 +802,7 @@ def remove_job(job_id: str) -> bool:
     if len(jobs) < original_len:
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir = _get_output_dir() / job_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -971,8 +1015,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
+    output_dir = _get_output_dir()
+
     ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir = output_dir / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     

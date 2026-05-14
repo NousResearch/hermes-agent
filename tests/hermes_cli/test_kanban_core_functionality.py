@@ -679,6 +679,33 @@ def test_worker_log_rotation_keeps_one_generation(kanban_home, tmp_path):
     assert (log_dir / "t_aaaa.log.1").exists()
 
 
+def test_worker_log_rotation_keeps_configured_generations(kanban_home):
+    log_dir = kanban_home / "kanban" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    target = log_dir / "t_multi.log"
+    target.write_text("current")
+    (log_dir / "t_multi.log.1").write_text("one")
+    (log_dir / "t_multi.log.2").write_text("two")
+
+    kb._rotate_worker_log(target, max_bytes=1, backup_count=3)
+
+    assert not target.exists()
+    assert (log_dir / "t_multi.log.1").read_text() == "current"
+    assert (log_dir / "t_multi.log.2").read_text() == "one"
+    assert (log_dir / "t_multi.log.3").read_text() == "two"
+
+
+def test_worker_log_rotation_config_defaults_and_overrides():
+    assert kb.worker_log_rotation_config({}) == (
+        kb.DEFAULT_LOG_ROTATE_BYTES,
+        kb.DEFAULT_LOG_BACKUP_COUNT,
+    )
+    assert kb.worker_log_rotation_config({
+        "worker_log_rotate_bytes": 10,
+        "worker_log_backup_count": 4,
+    }) == (10, 4)
+
+
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)

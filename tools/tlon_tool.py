@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from agent.redact import redact_sensitive_text
 from gateway.platforms.tlon import (
@@ -213,6 +213,16 @@ class TlonToolError(Exception):
     """User-facing Tlon tool failure."""
 
 
+class TlonHttpError(TlonToolError):
+    """HTTP failure from a Tlon scry/poke/thread endpoint."""
+
+    def __init__(self, message: str, *, status: int, app: str = "", path: str = ""):
+        super().__init__(message)
+        self.status = status
+        self.app = app
+        self.path = path
+
+
 class TlonHttpClient:
     def __init__(self, *, ship_url: str, ship_name: str, ship_code: str):
         self.ship_url = ship_url.rstrip("/")
@@ -280,7 +290,12 @@ class TlonHttpClient:
         ) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                raise TlonToolError(f"Scry {app}{path} failed: HTTP {resp.status} - {text[:300]}")
+                raise TlonHttpError(
+                    f"Scry {app}{path} failed: HTTP {resp.status} - {text[:300]}",
+                    status=resp.status,
+                    app=app,
+                    path=path,
+                )
             return await resp.json()
 
     async def poke(self, app: str, mark: str, json_data: Any, *, timeout: int = 30) -> Dict[str, Any]:
@@ -432,8 +447,44 @@ class TlonGroups:
             )
             return _ok(action, groups=groups)
         if action == "group_info":
-            group_id = _required(args, "group_id")
-            return _ok(action, group_id=group_id, group=await self.client.scry("groups", f"/v2/ui/groups/{group_id}"))
+            raw_group_ref = str(args.get("group_id") or "")
+            channel_id = _normalize_channel_ref(str(args.get("channel_id") or ""))
+            if not channel_id:
+                channel_id = (
+                    _query_value_from_url(raw_group_ref, "channelId")
+                    or _query_value_from_url(raw_group_ref, "channel_id")
+                )
+            group_id = _normalize_group_ref(raw_group_ref)
+            if _is_group_channel(group_id) and not channel_id:
+                channel_id = group_id
+                group_id = ""
+            if not group_id and not channel_id:
+                raise TlonToolError("group_info requires group_id or channel_id")
+            if channel_id:
+                resolved = await self.resolve_group_id(channel_id=channel_id, group_id=group_id)
+                if resolved:
+                    group_id, group = resolved
+                    return _ok(
+                        action,
+                        group_id=group_id,
+                        channel_id=channel_id,
+                        group=group,
+                        resolved_from="channel_id",
+                    )
+            try:
+                return _ok(
+                    action,
+                    group_id=group_id,
+                    group=await self.client.scry("groups", f"/v2/ui/groups/{group_id}"),
+                )
+            except TlonHttpError as exc:
+                if exc.status != 404:
+                    raise
+                return await self._group_not_found_result(
+                    action,
+                    requested_group_id=group_id,
+                    channel_id=channel_id,
+                )
         if action in {"group_create", "group_create_owned"}:
             owner = _normalize_ship(str(args.get("ship") or args.get("owner") or os.getenv("TLON_OWNER_SHIP", "")))
             members = _ships(args)
@@ -651,6 +702,54 @@ class TlonGroups:
             {"group": {"flag": group_id, "a-group": group_action}},
         )
 
+    async def resolve_group_id(
+        self,
+        *,
+        channel_id: str = "",
+        group_id: str = "",
+    ) -> Optional[tuple[str, Dict[str, Any]]]:
+        groups = await _groups_index(self.client)
+        if not groups:
+            return None
+        match = _find_group_in_groups(groups, channel_id or group_id)
+        if match:
+            return match
+        if group_id:
+            return _find_group_in_groups(groups, group_id)
+        return None
+
+    async def _group_not_found_result(
+        self,
+        action: str,
+        *,
+        requested_group_id: str,
+        channel_id: str = "",
+    ) -> Dict[str, Any]:
+        groups = await _groups_index(self.client)
+        match = _find_group_in_groups(groups, channel_id or requested_group_id)
+        if match:
+            group_id, group = match
+            return _ok(
+                action,
+                group_id=group_id,
+                requested_group_id=requested_group_id,
+                channel_id=channel_id or None,
+                group=group,
+                resolved_from="groups_index",
+            )
+
+        return _ok(
+            action,
+            found=False,
+            requested_group_id=requested_group_id,
+            channel_id=channel_id or None,
+            candidates=_candidate_groups(groups, requested_group_id, channel_id),
+            hint=(
+                "Group not found. Use one of the returned candidate group_id values, "
+                "or pass the channel_id so the tool can resolve its parent group."
+            ),
+        )
+
 
 class TlonChannels:
     def __init__(self, client: TlonHttpClient):
@@ -669,11 +768,36 @@ class TlonChannels:
                 return _ok(action, mode=mode, channels=_filter_init_channels(init, mode))
             raise TlonToolError("channels_list mode must be all, groups, dms, or group_dms")
         if action == "channel_info":
-            channel_id = _required(args, "channel_id")
-            group_id = args.get("group_id")
+            channel_id = _normalize_channel_ref(_required(args, "channel_id"))
+            group_id = _normalize_group_ref(str(args.get("group_id") or ""))
             if group_id:
-                group = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
-                return _ok(action, channel_id=channel_id, group_id=group_id, channel=_find_channel(group, channel_id), group=group)
+                try:
+                    group = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
+                    return _ok(action, channel_id=channel_id, group_id=group_id, channel=_find_channel(group, channel_id), group=group)
+                except TlonHttpError as exc:
+                    if exc.status != 404:
+                        raise
+                    groups = await _groups_index(self.client)
+                    match = _find_group_in_groups(groups, channel_id)
+                    if match:
+                        resolved_group_id, group = match
+                        return _ok(
+                            action,
+                            channel_id=channel_id,
+                            group_id=resolved_group_id,
+                            requested_group_id=group_id,
+                            channel=_find_channel(group, channel_id),
+                            group=group,
+                            resolved_from="channel_id",
+                        )
+                    return _ok(
+                        action,
+                        found=False,
+                        channel_id=channel_id,
+                        requested_group_id=group_id,
+                        candidates=_candidate_groups(groups, group_id, channel_id),
+                        hint="Group not found for channel. Use one of the candidate group_id values.",
+                    )
             groups = await self.client.scry("groups", "/v2/groups")
             return _ok(action, channel_id=channel_id, match=_find_channel_in_groups(groups, channel_id))
         if action == "channel_create":
@@ -1530,6 +1654,52 @@ async def _best_effort_scry_or_default(client: TlonHttpClient, candidates: List[
         return default
 
 
+async def _groups_index(client: TlonHttpClient) -> Any:
+    return await _best_effort_scry_or_default(
+        client,
+        [
+            ("groups", "/v2/groups"),
+            ("groups-ui", "/v7/init"),
+            ("groups-ui", "/v8/init"),
+        ],
+        {},
+    )
+
+
+def _normalize_group_ref(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    from_url = _query_value_from_url(raw, "groupId") or _query_value_from_url(raw, "group_id")
+    if from_url:
+        return from_url
+    for prefix in ("group/", "groups/"):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+    return unquote(raw).strip()
+
+
+def _normalize_channel_ref(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    from_url = _query_value_from_url(raw, "channelId") or _query_value_from_url(raw, "channel_id")
+    if from_url:
+        return from_url
+    return unquote(raw).strip()
+
+
+def _query_value_from_url(value: str, key: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.scheme and not parsed.query:
+        return ""
+    query = parse_qs(parsed.query)
+    vals = query.get(key)
+    if vals:
+        return unquote(vals[0]).strip()
+    return ""
+
+
 def _filter_init_channels(init: Any, mode: str) -> List[Any]:
     channels = init.get("channels", []) if isinstance(init, dict) else []
     if not isinstance(channels, list):
@@ -1542,7 +1712,14 @@ def _find_channel(group: Any, channel_id: str) -> Optional[Dict[str, Any]]:
     channels = group.get("channels") if isinstance(group, dict) else None
     if isinstance(channels, list):
         for channel in channels:
-            if isinstance(channel, dict) and channel.get("id") == channel_id:
+            if not isinstance(channel, dict):
+                continue
+            candidate_id = (
+                channel.get("id")
+                or channel.get("channelId")
+                or channel.get("nest")
+            )
+            if candidate_id == channel_id:
                 return channel
     if isinstance(channels, dict):
         data = channels.get(channel_id)
@@ -1551,17 +1728,108 @@ def _find_channel(group: Any, channel_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _find_channel_in_groups(groups: Any, channel_id: str) -> Optional[Dict[str, Any]]:
-    iterable = groups.values() if isinstance(groups, dict) else groups
-    if not isinstance(iterable, Iterable):
+def _iter_group_items(groups: Any) -> Iterable[tuple[str, Dict[str, Any]]]:
+    if isinstance(groups, dict) and isinstance(groups.get("groups"), dict):
+        groups = groups["groups"]
+    if isinstance(groups, dict):
+        for raw_group_id, group in groups.items():
+            if not isinstance(group, dict):
+                continue
+            group_id = str(group.get("id") or group.get("flag") or raw_group_id)
+            yield group_id, group
+        return
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_id = group.get("id") or group.get("flag")
+            if group_id:
+                yield str(group_id), group
+
+
+def _find_group_in_groups(groups: Any, ref: str) -> Optional[tuple[str, Dict[str, Any]]]:
+    wanted = str(ref or "").strip()
+    if not wanted:
         return None
-    for group in iterable:
-        if not isinstance(group, dict):
-            continue
+
+    if _is_group_channel(wanted):
+        for group_id, group in _iter_group_items(groups):
+            if _find_channel(group, wanted):
+                return group_id, group
+        return None
+
+    for group_id, group in _iter_group_items(groups):
+        if group_id == wanted:
+            return group_id, group
+
+    matches: List[tuple[str, Dict[str, Any]]] = []
+    for group_id, group in _iter_group_items(groups):
+        slug = group_id.split("/", 1)[-1]
+        title = _group_title(group)
+        if wanted == slug or (title and wanted.lower() == title.lower()):
+            matches.append((group_id, group))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _find_channel_in_groups(groups: Any, channel_id: str) -> Optional[Dict[str, Any]]:
+    for group_id, group in _iter_group_items(groups):
         channel = _find_channel(group, channel_id)
         if channel:
-            return {"group_id": group.get("id") or group.get("flag"), "group": group, "channel": channel}
+            return {"group_id": group_id, "group": group, "channel": channel}
     return None
+
+
+def _candidate_groups(groups: Any, requested_group_id: str = "", channel_id: str = "") -> List[Dict[str, Any]]:
+    requested_host = ""
+    if "/" in requested_group_id:
+        requested_host = requested_group_id.split("/", 1)[0]
+
+    candidates: List[Dict[str, Any]] = []
+    for group_id, group in _iter_group_items(groups):
+        channels = _group_channel_ids(group)
+        if channel_id and channel_id not in channels:
+            # Keep host matches as useful context even when the specific
+            # channel was not present in the local groups index.
+            if requested_host and not group_id.startswith(f"{requested_host}/"):
+                continue
+        elif requested_host and not group_id.startswith(f"{requested_host}/"):
+            continue
+
+        item: Dict[str, Any] = {
+            "group_id": group_id,
+            "title": _group_title(group),
+        }
+        if channels:
+            item["channels"] = channels[:10]
+        candidates.append(item)
+        if len(candidates) >= 10:
+            break
+    return candidates
+
+
+def _group_title(group: Dict[str, Any]) -> str:
+    meta = group.get("meta") if isinstance(group, dict) else None
+    if isinstance(meta, dict) and isinstance(meta.get("title"), str):
+        return meta["title"]
+    title = group.get("title") if isinstance(group, dict) else ""
+    return title if isinstance(title, str) else ""
+
+
+def _group_channel_ids(group: Dict[str, Any]) -> List[str]:
+    channels = group.get("channels") if isinstance(group, dict) else None
+    out: List[str] = []
+    if isinstance(channels, dict):
+        out.extend(str(key) for key in channels.keys())
+    elif isinstance(channels, list):
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = channel.get("id") or channel.get("channelId") or channel.get("nest")
+            if channel_id:
+                out.append(str(channel_id))
+    return out
 
 
 def _find_channel_section(group: Any, channel_id: str) -> str:

@@ -1763,6 +1763,11 @@ class TlonAdapter(BasePlatformAdapter):
             user_id=approval.requesting_ship,
             user_name=approval.requesting_ship,
             thread_id=str(raw.get("thread_id")) if raw.get("thread_id") else None,
+            parent_chat_id=(
+                str(raw.get("parent_chat_id"))
+                if raw.get("parent_chat_id")
+                else None
+            ),
         )
         event_obj = MessageEvent(
             text=str(raw.get("text") or ""),
@@ -1959,6 +1964,15 @@ class TlonAdapter(BasePlatformAdapter):
                 return
 
             # Check user authorization
+            group_id = self._channel_to_group.get(nest)
+            if not group_id and self._sse:
+                try:
+                    await self._discover_channels()
+                    group_id = self._channel_to_group.get(nest)
+                except Exception as exc:
+                    logger.debug("[tlon] Group lookup refresh failed for %s: %s", nest, exc)
+            group_name = self._group_names.get(group_id or "")
+
             if not self._is_channel_allowed(sender, nest):
                 logger.info("[tlon] Unauthorized user %s in %s", sender, nest)
                 if self.owner_ship:
@@ -1972,6 +1986,7 @@ class TlonAdapter(BasePlatformAdapter):
                             "chat_id": nest,
                             "chat_name": (_parse_channel_nest(nest) or {}).get("name", nest),
                             "chat_type": "group",
+                            "parent_chat_id": group_id,
                             "text": self._strip_bot_mention(text) if mentioned else text,
                             "message_id": str(effective_id),
                             "reply_to_message_id": str(parent_id) if parent_id else None,
@@ -1991,13 +2006,16 @@ class TlonAdapter(BasePlatformAdapter):
 
             # Build message event
             parsed = _parse_channel_nest(nest)
+            channel_name = parsed["name"] if parsed else nest
+            chat_name = f"{group_name} / {channel_name}" if group_name else channel_name
             source = self.build_source(
                 chat_id=nest,
-                chat_name=parsed["name"] if parsed else nest,
+                chat_name=chat_name,
                 chat_type="group",
                 user_id=sender,
                 user_name=sender,
                 thread_id=str(parent_id) if parent_id else None,
+                parent_chat_id=group_id,
             )
 
             event_obj = MessageEvent(

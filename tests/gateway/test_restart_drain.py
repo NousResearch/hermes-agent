@@ -14,6 +14,16 @@ from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
+def make_tlon_status_runner(owner_ship="~malmur-halmex"):
+    runner, adapter = make_restart_runner()
+    adapter.owner_ship = owner_ship
+    runner.config.platforms = {
+        gateway_run.Platform.TLON: gateway_run.PlatformConfig(enabled=True),
+    }
+    runner.adapters = {gateway_run.Platform.TLON: adapter}
+    return runner, adapter
+
+
 @pytest.mark.asyncio
 async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
@@ -318,3 +328,55 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
 
     assert adapter.send.await_count == 1
     assert adapter.send.await_args.args[0] == "!room123:example.org"
+
+
+@pytest.mark.asyncio
+async def test_tlon_shutdown_notification_routes_group_session_to_owner_dm():
+    """Tlon lifecycle status must go to the owner DM, never the group channel."""
+    runner, adapter = make_tlon_status_runner()
+    source = make_restart_source(
+        chat_id="chat/~ramlud-bintun/v1fsl36d",
+        chat_type="group",
+    )
+    source.platform = gateway_run.Platform.TLON
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-tlon",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+    }
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    chat_id, content, metadata = adapter.sent_calls[0]
+    assert chat_id == "~malmur-halmex"
+    assert "Gateway shutting down" in content
+    assert metadata is None
+
+
+@pytest.mark.asyncio
+async def test_tlon_shutdown_notification_skips_without_owner_ship(monkeypatch):
+    monkeypatch.delenv("TLON_OWNER_SHIP", raising=False)
+    runner, adapter = make_tlon_status_runner(owner_ship="")
+    source = make_restart_source(
+        chat_id="chat/~ramlud-bintun/v1fsl36d",
+        chat_type="group",
+    )
+    source.platform = gateway_run.Platform.TLON
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: MagicMock(origin=source),
+    }
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent_calls == []

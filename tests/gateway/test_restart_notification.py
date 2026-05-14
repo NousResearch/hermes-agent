@@ -17,6 +17,16 @@ from tests.gateway.restart_test_helpers import (
 )
 
 
+def make_tlon_status_runner(owner_ship="~malmur-halmex"):
+    runner, adapter = make_restart_runner()
+    adapter.owner_ship = owner_ship
+    runner.config.platforms = {
+        Platform.TLON: gateway_run.PlatformConfig(enabled=True),
+    }
+    runner.adapters = {Platform.TLON: adapter}
+    return runner, adapter
+
+
 # ── restart marker helpers ───────────────────────────────────────────────
 
 
@@ -386,6 +396,48 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
     call_args = adapter.send.call_args
     assert call_args[1]["metadata"] == {"thread_id": "topic_7"}
     assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_tlon_restart_notification_routes_group_to_owner_dm(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "tlon",
+        "chat_id": "chat/~ramlud-bintun/v1fsl36d",
+        "thread_id": "170.141",
+    }))
+
+    runner, adapter = make_tlon_status_runner()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("tlon", "~malmur-halmex", None)
+    chat_id, content, metadata = adapter.sent_calls[0]
+    assert chat_id == "~malmur-halmex"
+    assert "restarted" in content.lower()
+    assert metadata is None
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_tlon_home_startup_notification_routes_home_group_to_owner_dm():
+    runner, adapter = make_tlon_status_runner()
+    runner.config.platforms[Platform.TLON].home_channel = HomeChannel(
+        platform=Platform.TLON,
+        chat_id="chat/~ramlud-bintun/v1fsl36d",
+        name="Hermes Group",
+        thread_id="170.141",
+    )
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("tlon", "~malmur-halmex", None)}
+    chat_id, content, metadata = adapter.sent_calls[0]
+    assert chat_id == "~malmur-halmex"
+    assert "Gateway online" in content
+    assert metadata is None
 
 
 @pytest.mark.asyncio

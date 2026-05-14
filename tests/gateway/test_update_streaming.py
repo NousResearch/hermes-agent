@@ -438,6 +438,40 @@ class TestWatchUpdateProgress:
         assert "failed" in all_sent.lower()
 
     @pytest.mark.asyncio
+    async def test_tlon_streaming_update_routes_to_owner_dm(self, tmp_path):
+        """Tlon update stream/final status must not post in the source group."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "tlon",
+            "chat_id": "chat/~ramlud-bintun/v1fsl36d",
+            "thread_id": "170.141",
+            "user_id": "~malmur-halmex",
+            "session_key": "agent:main:tlon:group:chat/~ramlud-bintun/v1fsl36d:170.141",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.owner_ship = "~malmur-halmex"
+        runner.adapters = {Platform.TLON: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        assert mock_adapter.send.call_count >= 1
+        sent_targets = [call.args[0] for call in mock_adapter.send.call_args_list]
+        assert set(sent_targets) == {"~malmur-halmex"}
+        assert all(call.kwargs.get("metadata") is None for call in mock_adapter.send.call_args_list)
+
+    @pytest.mark.asyncio
     async def test_falls_back_when_adapter_unavailable(self, tmp_path):
         """Falls back to legacy notification when adapter can't be resolved."""
         runner = _make_runner()

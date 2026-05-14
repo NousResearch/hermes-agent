@@ -166,8 +166,11 @@ def test_approval_formatting_lists_pending_request():
 @pytest.mark.asyncio
 async def test_channel_event_routes_top_level_mentions(monkeypatch):
     monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
     adapter = TlonAdapter(PlatformConfig())
     adapter.monitored_channels = {"chat/~host/test"}
+    adapter._channel_to_group["chat/~host/test"] = "~host/group"
+    adapter._group_names["~host/group"] = "Test Group"
     adapter.handle_message = AsyncMock()
 
     await adapter._handle_channel_event({
@@ -197,6 +200,8 @@ async def test_channel_event_routes_top_level_mentions(monkeypatch):
     assert event.message_id == "170141184507864167403996323545639550976"
     assert event.reply_to_message_id is None
     assert event.source.chat_id == "chat/~host/test"
+    assert event.source.parent_chat_id == "~host/group"
+    assert event.source.chat_name == "Test Group / test"
     assert event.source.user_id == "~zod"
     assert isinstance(event.timestamp, datetime)
 
@@ -204,6 +209,7 @@ async def test_channel_event_routes_top_level_mentions(monkeypatch):
 @pytest.mark.asyncio
 async def test_channel_event_routes_thread_reply_to_parent(monkeypatch):
     monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
     adapter = TlonAdapter(PlatformConfig())
     adapter.monitored_channels = {"chat/~host/test"}
     adapter.handle_message = AsyncMock()
@@ -240,6 +246,50 @@ async def test_channel_event_routes_thread_reply_to_parent(monkeypatch):
     assert event.message_id == "reply-post"
     assert event.reply_to_message_id == "parent-post"
     assert event.source.thread_id == "parent-post"
+
+
+@pytest.mark.asyncio
+async def test_channel_event_refreshes_group_mapping_for_context(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("TLON_AUTO_DISCOVER", "true")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter._sse = AsyncMock()
+    adapter._sse.scry.return_value = {
+        "groups": {
+            "~host/group": {
+                "meta": {"title": "Test Group"},
+                "channels": {"chat/~host/test": {}},
+            }
+        }
+    }
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "post-id",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "post-id"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [
+                                {"inline": [{"ship": "~bot-palnet"}, " hello"]}
+                            ],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.parent_chat_id == "~host/group"
+    assert event.source.chat_name == "Test Group / test"
 
 
 @pytest.mark.asyncio

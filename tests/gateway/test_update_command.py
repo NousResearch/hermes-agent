@@ -487,6 +487,36 @@ class TestSendUpdateNotification:
         assert mock_adapter.send.call_args.kwargs["metadata"] == {"thread_id": "777"}
 
     @pytest.mark.asyncio
+    async def test_tlon_update_notification_routes_group_to_owner_dm(self, tmp_path):
+        """Tlon update status goes to owner DM instead of the source group."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "tlon",
+            "chat_id": "chat/~ramlud-bintun/v1fsl36d",
+            "thread_id": "170.141",
+            "user_id": "~malmur-halmex",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.owner_ship = "~malmur-halmex"
+        mock_adapter.send = AsyncMock()
+        runner.adapters = {Platform.TLON: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        mock_adapter.send.assert_called_once()
+        call_args = mock_adapter.send.call_args
+        assert call_args.args[0] == "~malmur-halmex"
+        assert call_args.kwargs["metadata"] is None
+
+    @pytest.mark.asyncio
     async def test_strips_ansi_codes(self, tmp_path):
         """ANSI escape codes are removed from output."""
         runner = _make_runner()

@@ -2732,6 +2732,33 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _status_notification_target(
+        self,
+        platform: Platform,
+        adapter: BasePlatformAdapter,
+        chat_id: Any,
+        thread_id: Optional[Any] = None,
+    ) -> Optional[tuple[str, Optional[str]]]:
+        """Return the delivery target for gateway lifecycle/status notices.
+
+        Tlon group channels should not receive gateway lifecycle noise.  Route
+        those notices to the configured owner DM instead so the operator still
+        gets shutdown/restart/update visibility without polluting groups.
+        """
+        if platform == Platform.TLON:
+            owner_ship = str(
+                getattr(adapter, "owner_ship", "")
+                or os.getenv("TLON_OWNER_SHIP", "")
+            ).strip()
+            if not owner_ship:
+                logger.info("Skipping Tlon status notification: no owner ship configured")
+                return None
+            if not owner_ship.startswith("~"):
+                owner_ship = f"~{owner_ship}"
+            return owner_ship, None
+
+        return str(chat_id), str(thread_id) if thread_id else None
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
@@ -2782,13 +2809,6 @@ class GatewayRunner:
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
-            # Deduplicate only identical delivery targets. Thread/topic-aware
-            # platforms can share a parent chat while still routing to distinct
-            # destinations via metadata.
-            dedup_key = (platform_str, chat_id, str(thread_id) if thread_id else None)
-            if dedup_key in notified:
-                continue
-
             try:
                 platform = Platform(platform_str)
                 adapter = self.adapters.get(platform)
@@ -2803,16 +2823,28 @@ class GatewayRunner:
                     )
                     continue
 
+                target = self._status_notification_target(platform, adapter, chat_id, thread_id)
+                if target is None:
+                    continue
+                target_chat_id, target_thread_id = target
+
+                # Deduplicate only identical delivery targets. Thread/topic-aware
+                # platforms can share a parent chat while still routing to distinct
+                # destinations via metadata.
+                dedup_key = (platform_str, target_chat_id, target_thread_id)
+                if dedup_key in notified:
+                    continue
+
                 # Include thread_id if present so the message lands in the
                 # correct forum topic / thread.
-                metadata = {"thread_id": thread_id} if thread_id else None
+                metadata = {"thread_id": target_thread_id} if target_thread_id else None
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter.send(target_chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
                         platform_str,
-                        chat_id,
+                        target_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
@@ -2820,7 +2852,7 @@ class GatewayRunner:
                 notified.add(dedup_key)
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
-                    platform_str, chat_id,
+                    platform_str, target_chat_id,
                 )
             except Exception as e:
                 logger.debug(
@@ -2846,21 +2878,26 @@ class GatewayRunner:
                 )
                 continue
 
-            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            target = self._status_notification_target(platform, adapter, home.chat_id, home.thread_id)
+            if target is None:
+                continue
+            target_chat_id, target_thread_id = target
+
+            dedup_key = (platform.value, target_chat_id, target_thread_id)
             if dedup_key in notified:
                 continue
 
             try:
-                metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                metadata = {"thread_id": target_thread_id} if target_thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(target_chat_id, msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(target_chat_id, msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        target_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
@@ -2869,7 +2906,7 @@ class GatewayRunner:
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                 )
             except Exception as e:
                 logger.debug(
@@ -12505,7 +12542,7 @@ class GatewayRunner:
 
         return await loop.run_in_executor(None, _collect_and_upload)
 
-    async def _handle_update_command(self, event: MessageEvent) -> str:
+    async def _handle_update_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /update command — update Hermes Agent to the latest version.
 
         Spawns ``hermes update`` in a detached session (via ``setsid``) so it
@@ -12649,7 +12686,29 @@ class GatewayRunner:
             return t("gateway.update.start_failed", error=e)
 
         self._schedule_update_notification_watch()
-        return t("gateway.update.starting")
+        start_message = t("gateway.update.starting")
+        if event.source.platform == Platform.TLON:
+            adapter = self.adapters.get(Platform.TLON)
+            if not adapter:
+                return None
+            target = self._status_notification_target(
+                Platform.TLON,
+                adapter,
+                event.source.chat_id,
+                event.source.thread_id,
+            )
+            if target is None:
+                return None
+            target_chat_id, target_thread_id = target
+            source_thread_id = str(event.source.thread_id) if event.source.thread_id else None
+            if target_chat_id != str(event.source.chat_id) or target_thread_id != source_thread_id:
+                metadata = {"thread_id": target_thread_id} if target_thread_id else None
+                try:
+                    await adapter.send(target_chat_id, start_message, metadata=metadata)
+                except Exception as exc:
+                    logger.warning("Tlon update start notification failed: %s", exc)
+                return None
+        return start_message
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
@@ -12692,12 +12751,14 @@ class GatewayRunner:
         chat_id = None
         session_key = None
         metadata = None
+        prompt_session_keys: set[str] = set()
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
                     pending = json.loads(path.read_text())
                     platform_str = pending.get("platform")
                     chat_id = pending.get("chat_id")
+                    user_id = pending.get("user_id")
                     session_key = pending.get("session_key")
                     thread_id = pending.get("thread_id")
                     metadata = {"thread_id": thread_id} if thread_id else None
@@ -12707,6 +12768,38 @@ class GatewayRunner:
                         # Fallback session key if not stored (old pending files)
                         if not session_key:
                             session_key = f"{platform_str}:{chat_id}"
+                        prompt_session_keys = {session_key}
+                        if adapter:
+                            target = self._status_notification_target(
+                                platform,
+                                adapter,
+                                chat_id,
+                                thread_id,
+                            )
+                            if target is None:
+                                adapter = None
+                                chat_id = None
+                                break
+                            target_chat_id, target_thread_id = target
+                            source_thread_id = str(thread_id) if thread_id else None
+                            if target_chat_id != str(chat_id) or target_thread_id != source_thread_id:
+                                try:
+                                    target_source = SessionSource(
+                                        platform=platform,
+                                        chat_id=target_chat_id,
+                                        chat_type="dm",
+                                        user_id=str(user_id or target_chat_id),
+                                    )
+                                    prompt_session_keys.add(
+                                        self._session_key_for_source(target_source)
+                                    )
+                                except Exception:
+                                    prompt_session_keys.add(f"{platform_str}:{target_chat_id}")
+                            chat_id = target_chat_id
+                            metadata = (
+                                {"thread_id": target_thread_id}
+                                if target_thread_id else None
+                            )
                     break
                 except Exception:
                     pass
@@ -12787,7 +12880,8 @@ class GatewayRunner:
                           exit_code_path, prompt_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
-                self._update_prompt_pending.pop(session_key, None)
+                for key in prompt_session_keys:
+                    self._update_prompt_pending.pop(key, None)
                 return
 
             # Check for new output
@@ -12809,7 +12903,10 @@ class GatewayRunner:
             # watcher would re-read the same .update_prompt.json every poll
             # cycle and spam the user with duplicate prompt messages.
             if (prompt_path.exists() and session_key
-                    and not self._update_prompt_pending.get(session_key)):
+                    and not any(
+                        self._update_prompt_pending.get(key)
+                        for key in prompt_session_keys
+                    )):
                 try:
                     prompt_data = json.loads(prompt_path.read_text())
                     prompt_text = prompt_data.get("prompt", "")
@@ -12847,7 +12944,8 @@ class GatewayRunner:
                         # next watcher can recover by re-forwarding it from
                         # disk. Duplicate sends in the same process are
                         # still suppressed by _update_prompt_pending.
-                        self._update_prompt_pending[session_key] = True
+                        for key in prompt_session_keys:
+                            self._update_prompt_pending[key] = True
                         # .update_response to continue — it doesn't re-check
                         logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
                 except (json.JSONDecodeError, OSError) as e:
@@ -12872,7 +12970,8 @@ class GatewayRunner:
                       exit_code_path, prompt_path):
                 p.unlink(missing_ok=True)
             (_hermes_home / ".update_response").unlink(missing_ok=True)
-            self._update_prompt_pending.pop(session_key, None)
+            for key in prompt_session_keys:
+                self._update_prompt_pending.pop(key, None)
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
@@ -12929,7 +13028,11 @@ class GatewayRunner:
             adapter = self.adapters.get(platform)
 
             if adapter and chat_id:
-                metadata = {"thread_id": thread_id} if thread_id else None
+                target = self._status_notification_target(platform, adapter, chat_id, thread_id)
+                if target is None:
+                    return True
+                target_chat_id, target_thread_id = target
+                metadata = {"thread_id": target_thread_id} if target_thread_id else None
                 # Strip ANSI escape codes for clean display
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
                 if output:
@@ -12943,11 +13046,11 @@ class GatewayRunner:
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
+                await adapter.send(target_chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,
-                    chat_id,
+                    target_chat_id,
                     exit_code,
                 )
         except Exception as e:
@@ -12993,9 +13096,14 @@ class GatewayRunner:
                 )
                 return None
 
-            metadata = {"thread_id": thread_id} if thread_id else None
+            target = self._status_notification_target(platform, adapter, chat_id, thread_id)
+            if target is None:
+                return None
+            target_chat_id, target_thread_id = target
+
+            metadata = {"thread_id": target_thread_id} if target_thread_id else None
             result = await adapter.send(
-                str(chat_id),
+                target_chat_id,
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
             )
@@ -13007,7 +13115,7 @@ class GatewayRunner:
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
-                    chat_id,
+                    target_chat_id,
                     getattr(result, "error", "send returned success=False"),
                 )
                 return None
@@ -13015,9 +13123,9 @@ class GatewayRunner:
             logger.info(
                 "Sent restart notification to %s:%s",
                 platform_str,
-                chat_id,
+                target_chat_id,
             )
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+            return str(platform_str), target_chat_id, target_thread_id
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
@@ -13052,21 +13160,26 @@ class GatewayRunner:
                 )
                 continue
 
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            status_target = self._status_notification_target(platform, adapter, home.chat_id, home.thread_id)
+            if status_target is None:
+                continue
+            target_chat_id, target_thread_id = status_target
+
+            target = (platform.value, target_chat_id, target_thread_id)
             if target in skipped or target in delivered:
                 continue
 
             try:
-                metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                metadata = {"thread_id": target_thread_id} if target_thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    result = await adapter.send(target_chat_id, message, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), message)
+                    result = await adapter.send(target_chat_id, message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        target_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
@@ -13075,7 +13188,7 @@ class GatewayRunner:
                 logger.info(
                     "Sent home-channel startup notification to %s:%s",
                     platform.value,
-                    home.chat_id,
+                    target_chat_id,
                 )
             except Exception as exc:
                 logger.warning(

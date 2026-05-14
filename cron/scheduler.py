@@ -55,12 +55,47 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _normalize_toolset_names(raw: object) -> list[str]:
+    """Return a stable, non-empty list of toolset names from persisted job data."""
+    if not raw:
+        return []
+    items = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        name = str(item).strip()
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _configured_disabled_toolsets(cfg: dict) -> set[str]:
+    agent_cfg = (cfg or {}).get("agent") if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        return set()
+    return set(_normalize_toolset_names(agent_cfg.get("disabled_toolsets")))
+
+
+def _log_dropped_job_toolsets(job: dict, dropped: list[str]) -> None:
+    if not dropped:
+        return
+    logger.warning(
+        "Cron job '%s' requested toolsets %s but they are denied by cron "
+        "platform config or agent.disabled_toolsets; dropping them.",
+        job.get("name") or job.get("id") or "<unnamed>",
+        dropped,
+    )
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
     Precedence:
-    1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130.
+    1. Per-job ``enabled_toolsets`` narrows the cron platform toolsets, but it
+       cannot re-enable toolsets denied by ``platform_toolsets.cron`` or
+       ``agent.disabled_toolsets``. This keeps job-level scoping useful without
+       creating a confused-deputy bypass for cron-created agents.
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
@@ -72,18 +107,40 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     get cron WITHOUT ``moa`` by default (issue reported by Norbert —
     surprise $4.63 run).
     """
-    per_job = job.get("enabled_toolsets")
-    if per_job:
-        return per_job
+    per_job = _normalize_toolset_names(job.get("enabled_toolsets"))
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        platform_toolsets = sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
+        if per_job:
+            logger.warning(
+                "Cron platform toolset resolution failed; using per-job "
+                "toolsets with agent.disabled_toolsets fallback: %s",
+                exc,
+            )
+            disabled = _configured_disabled_toolsets(cfg or {})
+            filtered = [name for name in per_job if name not in disabled]
+            _log_dropped_job_toolsets(
+                job,
+                [name for name in per_job if name in disabled],
+            )
+            return filtered
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
             exc,
         )
         return None
+
+    if per_job:
+        allowed = set(platform_toolsets)
+        filtered = [name for name in per_job if name in allowed]
+        _log_dropped_job_toolsets(
+            job,
+            [name for name in per_job if name not in allowed],
+        )
+        return filtered
+
+    return platform_toolsets
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.

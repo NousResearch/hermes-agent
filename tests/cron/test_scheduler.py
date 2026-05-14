@@ -7,7 +7,16 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _build_job_prompt,
+    _deliver_result,
+    _resolve_cron_enabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -941,6 +950,63 @@ class TestRunJobSessionPersistence:
             ),
         ]
 
+    def test_resolve_cron_enabled_toolsets_intersects_per_job_with_platform_tools(self):
+        job = {
+            "id": "denylist-job",
+            "name": "denylist test",
+            "enabled_toolsets": ["web", "terminal", "file", "web"],
+        }
+
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"web", "file"},
+        ):
+            result = _resolve_cron_enabled_toolsets(job, {})
+
+        assert result == ["web", "file"]
+
+    def test_resolve_cron_enabled_toolsets_honors_agent_disabled_toolsets(self):
+        job = {
+            "id": "disabled-job",
+            "enabled_toolsets": ["web", "terminal", "file"],
+        }
+        cfg = {"agent": {"disabled_toolsets": ["terminal"]}}
+
+        result = _resolve_cron_enabled_toolsets(job, cfg)
+
+        assert "web" in result
+        assert "file" in result
+        assert "terminal" not in result
+
+    def test_resolve_cron_enabled_toolsets_returns_empty_when_override_fully_denied(self):
+        job = {
+            "id": "fully-denied-job",
+            "enabled_toolsets": ["terminal", "code_execution"],
+        }
+
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"web"},
+        ):
+            result = _resolve_cron_enabled_toolsets(job, {})
+
+        assert result == []
+
+    def test_resolve_cron_enabled_toolsets_fallback_still_honors_disabled_config(self):
+        job = {
+            "id": "fallback-job",
+            "enabled_toolsets": ["terminal", "web"],
+        }
+        cfg = {"agent": {"disabled_toolsets": ["terminal"]}}
+
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=RuntimeError("config unavailable"),
+        ):
+            result = _resolve_cron_enabled_toolsets(job, cfg)
+
+        assert result == ["web"]
+
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
             "id": "toolset-job",
@@ -950,7 +1016,11 @@ class TestRunJobSessionPersistence:
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value={"web", "terminal", "file"},
+             ):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -990,9 +1060,9 @@ class TestRunJobSessionPersistence:
         # run cannot accidentally spin up frontier models.
         assert "moa" not in kwargs["enabled_toolsets"]
 
-    def test_run_job_per_job_toolsets_win_over_platform_config(self, tmp_path):
-        """Per-job enabled_toolsets (via cronjob tool) always take precedence
-        over the platform-level ``hermes tools`` config."""
+    def test_run_job_per_job_toolsets_are_capped_by_platform_config(self, tmp_path):
+        """Per-job enabled_toolsets can narrow cron tools but cannot widen
+        past the platform-level ``hermes tools`` config."""
         job = {
             "id": "override-job",
             "name": "test",
@@ -1000,8 +1070,8 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["terminal"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        # Even if the user has ``hermes tools`` configured to enable web+file
-        # for cron, the per-job override wins.
+        # If the user has ``hermes tools`` configured to enable only web+file
+        # for cron, a per-job request cannot re-enable terminal.
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch(
@@ -1014,7 +1084,7 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["enabled_toolsets"] == ["terminal"]
+        assert kwargs["enabled_toolsets"] == []
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
         """Empty final_response should stay empty for delivery logic (issue #2234).

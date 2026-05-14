@@ -107,6 +107,7 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
 
     def test_topic_is_gateway_command(self):
@@ -250,6 +251,12 @@ class TestTelegramBotCommands:
         assert "background" in names
         assert "queue" in names
         assert "steer" in names
+
+    def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
+        """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "codex_runtime" in names
+        assert "codex-runtime" not in names
 
 
 class TestSlackSubcommandMap:

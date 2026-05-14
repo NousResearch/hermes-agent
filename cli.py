@@ -4570,6 +4570,57 @@ class HermesCLI:
             # logged at DEBUG by the advisory module.
             pass
 
+    def _resolve_display_model(self) -> str:
+        """Resolve the model name for display purposes (e.g. banner, status bar).
+
+        ``self.model`` may still hold a provider slug (e.g. ``kimi-coding``,
+        ``minimax-cn``) when ``show_banner()`` is called before
+        ``_ensure_runtime_credentials()`` has had a chance to resolve the
+        actual model name.  This helper detects that situation and attempts
+        a lightweight lookup so the banner shows a real model name instead
+        of a confusing provider slug.
+
+        Returns the best-effort model string. Never raises.
+        """
+        raw = self.model or ""
+        if not raw:
+            return raw
+        # Quick check: if it contains "/" or "." it is almost certainly
+        # already a model name, not a provider slug.
+        if "/" in raw or "." in raw:
+            return raw
+        try:
+            from hermes_cli.providers import ALIASES, HERMES_OVERLAYS
+            canonical = ALIASES.get(raw, raw)
+            is_provider_slug = canonical in HERMES_OVERLAYS or raw in HERMES_OVERLAYS
+            if not is_provider_slug:
+                return raw
+            # Try custom_providers in config for an explicit model field.
+            _model_config = CLI_CONFIG.get("model", {})
+            _custom_providers = CLI_CONFIG.get("custom_providers", {})
+            if isinstance(_custom_providers, dict):
+                for _cp_id, _cp_val in _custom_providers.items():
+                    if not isinstance(_cp_val, dict):
+                        continue
+                    _cp_model = _cp_val.get("model", "")
+                    if _cp_model and _cp_id in (raw, canonical):
+                        return _cp_model
+            # Fall back to the provider catalog default model.
+            try:
+                from hermes_cli.models import get_default_model_for_provider
+                _default = get_default_model_for_provider(canonical)
+                if not _default:
+                    # The canonical ID (from models.dev) may not match the
+                    # catalog key — try the original slug too.
+                    _default = get_default_model_for_provider(raw)
+                if _default:
+                    return _default
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return raw
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -4592,10 +4643,14 @@ class HermesCLI:
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             
+            # Resolve the display model — self.model may still be a provider slug
+            # before _ensure_runtime_credentials() has run (#25339).
+            display_model = self._resolve_display_model()
+
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
-                model=self.model,
+                model=display_model,
                 cwd=cwd,
                 tools=tools,
                 enabled_toolsets=self.enabled_toolsets,

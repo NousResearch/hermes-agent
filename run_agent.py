@@ -1832,6 +1832,16 @@ class AIAgent:
             else:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
+        
+        # Dead-provider registry — persistent storage of unreachable providers.
+        # Used to skip dead providers during fallback chain traversal rather than
+        # retrying them on every session launch.
+        try:
+            from agent.dead_provider_registry import DeadProviderRegistry
+            self._dead_registry = DeadProviderRegistry()
+        except Exception as exc:
+            self._dead_registry = None
+            logging.debug("Dead-provider registry not available: %s", exc)
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -8627,6 +8637,20 @@ class AIAgent:
             if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
                 self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
+            # All fallbacks exhausted — mark the current provider dead so
+            # subsequent session launches skip it and go straight to the
+            # first healthy fallback, avoiding retry delays.
+            current_prov = (getattr(self, "provider", "") or "").strip()
+            current_mod = (getattr(self, "model", "") or "").strip()
+            _mark_if_registry = getattr(self, "_dead_registry", None)
+            if _mark_if_registry is not None and current_prov:
+                try:
+                    _mark_if_registry.mark_provider_dead(
+                        current_prov, current_mod,
+                        reason="all fallbacks exhausted",
+                    )
+                except Exception as exc:
+                    logging.debug("Failed to mark provider dead: %s", exc)
             return False
 
         fb = self._fallback_chain[self._fallback_index]
@@ -8635,6 +8659,23 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+
+        # Skip dead providers — if a provider was previously marked dead
+        # and its TTL hasn't expired, skip it without attempting connection.
+        # This avoids the retry delay for providers known to be unreachable.
+        if getattr(self, "_dead_registry", None) is not None:
+            try:
+                if self._dead_registry.is_provider_dead(fb_provider, fb_model):
+                    logging.info(
+                        "Fallback skip: %s/%s is dead (marked %s) — skipping",
+                        fb_provider, fb_model,
+                        self._dead_registry.get_dead_entry(fb_provider, fb_model).reason
+                        if self._dead_registry.get_dead_entry(fb_provider, fb_model)
+                        else "unknown",
+                    )
+                    return self._try_activate_fallback()
+            except Exception as exc:
+                logging.debug("Dead-provider check error: %s", exc)
 
         # Skip entries that resolve to the current (provider, model) — falling
         # back to the same backend that just failed loops the failure. Compare

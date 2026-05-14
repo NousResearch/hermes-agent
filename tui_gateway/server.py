@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import queue
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -131,6 +133,14 @@ try:
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
+try:
+    _slash_reap_interval = float(
+        os.environ.get("HERMES_TUI_SLASH_REAP_INTERVAL_S") or "60"
+    )
+except (ValueError, TypeError):
+    _slash_reap_interval = 60.0
+_SLASH_WORKER_REAP_INTERVAL_S = max(5.0, _slash_reap_interval)
+_LAST_SLASH_WORKER_REAP = 0.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -264,6 +274,113 @@ class _SlashWorker:
                 pass
 
 
+def _split_cmd_args(cmd: str) -> list[str]:
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def _is_slash_worker_cmd(cmd: str) -> bool:
+    parts = _split_cmd_args(cmd)
+    return any(
+        part == "-m"
+        and idx + 1 < len(parts)
+        and parts[idx + 1] == "tui_gateway.slash_worker"
+        for idx, part in enumerate(parts)
+    )
+
+
+def _slash_worker_session_key_from_cmd(cmd: str) -> str | None:
+    """Extract --session-key from a parsed slash_worker command line."""
+    parts = _split_cmd_args(cmd)
+    for idx, part in enumerate(parts):
+        if part == "--session-key" and idx + 1 < len(parts):
+            return parts[idx + 1]
+        if part.startswith("--session-key="):
+            return part.split("=", 1)[1]
+    return None
+
+
+def _live_slash_worker_session_keys() -> set[str]:
+    return {
+        str(session.get("session_key") or "")
+        for session in list(_sessions.values())
+        if session.get("session_key")
+    }
+
+
+def _reap_orphan_slash_workers(*, min_age_seconds: float = 300.0) -> int:
+    """Terminate stale slash_worker children no longer owned by a live session.
+
+    The TUI keeps one persistent ``tui_gateway.slash_worker`` subprocess per
+    session for slash-command parity with the classic CLI. Normal close paths
+    hold a ``Popen`` handle and call ``worker.close()``, but fast frontend churn
+    and older gateway builds can leave detached children behind. This reaper is
+    intentionally narrow: it only targets direct children of this gateway
+    process, only commands running ``-m tui_gateway.slash_worker``, and never a
+    session key currently present in ``_sessions``.
+    """
+    try:
+        current_pid = os.getpid()
+        live_keys = _live_slash_worker_session_keys()
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,etimes=,stat=,args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return 0
+    if getattr(result, "returncode", 1) != 0:
+        return 0
+
+    reaped = 0
+    for raw in (result.stdout or "").splitlines():
+        parts = raw.strip().split(None, 4)
+        if len(parts) < 5:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            age = float(parts[2])
+        except (TypeError, ValueError):
+            continue
+        cmd = parts[4]
+        if pid == current_pid or ppid != current_pid:
+            continue
+        if not _is_slash_worker_cmd(cmd):
+            continue
+        session_key = _slash_worker_session_key_from_cmd(cmd)
+        if not session_key or session_key in live_keys:
+            continue
+        if age < max(0.0, float(min_age_seconds)):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            reaped += 1
+            logger.warning(
+                "reaped orphan TUI slash_worker pid=%s session_key=%s age=%.0fs",
+                pid,
+                session_key,
+                age,
+            )
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            logger.debug("could not reap orphan slash_worker pid=%s: %s", pid, exc)
+    return reaped
+
+
+def _maybe_reap_orphan_slash_workers(*, force: bool = False) -> int:
+    global _LAST_SLASH_WORKER_REAP
+    now = time.monotonic()
+    if not force and now - _LAST_SLASH_WORKER_REAP < _SLASH_WORKER_REAP_INTERVAL_S:
+        return 0
+    _LAST_SLASH_WORKER_REAP = now
+    return _reap_orphan_slash_workers(min_age_seconds=0.0 if force else 300.0)
+
+
 def _load_busy_input_mode() -> str:
     display = _load_cfg().get("display")
     if not isinstance(display, dict):
@@ -327,6 +444,7 @@ def _shutdown_sessions() -> None:
                 worker.close()
         except Exception:
             pass
+    _maybe_reap_orphan_slash_workers(force=True)
 
 
 atexit.register(_shutdown_sessions)
@@ -2088,6 +2206,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    _maybe_reap_orphan_slash_workers()
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -2653,6 +2772,7 @@ def _(rid, params: dict) -> dict:
             worker.close()
     except Exception:
         pass
+    _maybe_reap_orphan_slash_workers()
     return _ok(rid, {"closed": True})
 
 

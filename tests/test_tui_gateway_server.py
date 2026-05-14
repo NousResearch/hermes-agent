@@ -3216,6 +3216,97 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     server._sessions.pop(sid, None)
 
 
+def test_reap_orphan_slash_workers_only_kills_detached_direct_children(monkeypatch):
+    """Regression guard: stale slash_worker processes can outlive their TUI
+    session. The reaper must be surgical: direct children only, slash_worker
+    commands only, and never a key still present in _sessions."""
+    current_pid = 4242
+    killed: list[tuple[int, int]] = []
+    ps_output = "\n".join(
+        [
+            # Orphan owned by this gateway: should be reaped.
+            f"100 {current_pid} 3600 S /venv/bin/python -m tui_gateway.slash_worker --session-key orphan --model gpt-5.5",
+            # Live session key: must be kept.
+            f"101 {current_pid} 3600 S /venv/bin/python -m tui_gateway.slash_worker --session-key live --model gpt-5.5",
+            # Not our child: must be kept even if stale-looking.
+            "102 9999 3600 S /venv/bin/python -m tui_gateway.slash_worker --session-key other --model gpt-5.5",
+            # Direct child, but not a slash worker.
+            f"103 {current_pid} 3600 S /venv/bin/python -m something_else --session-key orphan",
+            # Direct child with the slash_worker text elsewhere in argv:
+            # still not a slash worker.
+            (
+                f"105 {current_pid} 3600 S /venv/bin/python -m something_else "
+                "--note tui_gateway.slash_worker --session-key fake"
+            ),
+            # Too young: let the normal close path catch up first.
+            f"104 {current_pid} 10 S /venv/bin/python -m tui_gateway.slash_worker --session-key young --model gpt-5.5",
+        ]
+    )
+
+    monkeypatch.setattr(server.os, "getpid", lambda: current_pid)
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout=ps_output),
+    )
+    monkeypatch.setattr(server.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"sid": {"session_key": "live", "slash_worker": object()}},
+    )
+
+    assert server._reap_orphan_slash_workers(min_age_seconds=300) == 1
+    assert killed == [(100, server.signal.SIGTERM)]
+
+
+def test_session_create_triggers_throttled_orphan_slash_worker_reap(monkeypatch):
+    calls: list[bool] = []
+
+    monkeypatch.setattr(
+        server,
+        "_maybe_reap_orphan_slash_workers",
+        lambda **kw: calls.append(kw.get("force", False)) or 0,
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "x")
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+
+    class _NoStartTimer:
+        daemon = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, "Timer", _NoStartTimer)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    server._sessions.pop(sid, None)
+
+    assert calls == [False]
+
+
+def test_shutdown_sessions_force_reaps_orphan_slash_workers(monkeypatch):
+    calls: list[bool] = []
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(
+        server,
+        "_maybe_reap_orphan_slash_workers",
+        lambda **kw: calls.append(kw.get("force", False)) or 0,
+    )
+
+    server._shutdown_sessions()
+
+    assert calls == [True]
+
+
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     fake_mod = types.ModuleType("hermes_state")
 

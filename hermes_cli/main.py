@@ -6245,14 +6245,38 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         check=True,
     )
-    stash_ref = subprocess.run(
-        git_cmd + ["rev-parse", "--verify", "refs/stash"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    return stash_ref
+    # git stash push can return 0 even when nothing was saved (e.g. phantom
+    # deletions in the index).  Verify a ref was actually created before using it.
+    try:
+        r = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "refs/stash"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        r = None
+    if r is not None and r.returncode == 0:
+        return r.stdout.strip()
+
+    # Fallback: find the newest stash entry (the one we just created) from list.
+    try:
+        stash_list = subprocess.run(
+            git_cmd + ["stash", "list", "--format=%gd %H"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for line in stash_list.stdout.splitlines():
+            selector, _, commit = line.partition(" ")
+            if commit.strip():
+                return commit.strip()
+    except subprocess.CalledProcessError:
+        pass  # stash list failed — nothing to restore anyway.
+
+    # Still nothing — caller handles gracefully (returns None).
+    return None
 
 
 def _resolve_stash_selector(

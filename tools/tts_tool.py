@@ -2237,28 +2237,78 @@ _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
 
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
+_MD_INLINE_CODE_BLOCK = re.compile(r'`[^`\n]*`')        # inline `code` → drop entirely
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
 _MD_URL = re.compile(r'https?://\S+')
 _MD_BOLD = re.compile(r'\*\*(.+?)\*\*')
 _MD_ITALIC = re.compile(r'\*(.+?)\*')
-_MD_INLINE_CODE = re.compile(r'`(.+?)`')
 _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
-_MD_HR = re.compile(r'---+')
+_MD_HR = re.compile(r'-{3,}|={3,}|_{3,}')
+_MD_TABLE_ROW = re.compile(r'^\s*\|.*\|\s*$', flags=re.MULTILINE)
+_MD_BLOCKQUOTE = re.compile(r'^\s*>\s*', flags=re.MULTILINE)
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+
+# Unicode ranges that no TTS engine pronounces meaningfully and which leak
+# into chat output: emoji, pictographs, dingbats, box-drawing, geometric
+# shapes, arrows, math symbols, technical symbols. Stripping these lets
+# the on-screen Telegram message keep its visual richness while the voice
+# reply hears only the prose.
+_TTS_UNREADABLE_RE = re.compile(
+    '['
+    '\U0001F000-\U0001FFFF'   # supplementary multilingual plane: all emoji blocks
+    '☀-➿'            # misc symbols + dingbats + arrows-A
+    '⌀-⏿'            # technical (⌘ ⌚ ⏰ ⏳ …)
+    '␀-⓿'            # control-pictures, enclosed alphanumerics (① ② …)
+    '─-╿'            # box-drawing (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ …)
+    '▀-▟'            # block elements (█ ▌ ▐ ▒ …)
+    '■-◿'            # geometric shapes (◆ ● ■ ▶ ▸ ◇ …)
+    '✀-➿'            # dingbats (✓ ✗ ★ ☆ …)
+    '←-⇿'            # arrows (→ ← ↑ ↓ ↗ ↘ …)
+    '∀-⋿'            # math operators (∞ ∑ ∏ ∂ ∇ ± …)
+    '︀-️'            # variation selectors (text vs emoji presentation)
+    '​-‍'            # zero-width / ZWJ for emoji sequences
+    ']+'
+)
+
+# Lines that are pure separators / dividers — drop entire line, not just the
+# symbols. Otherwise an empty line remains and TTS does an awkward pause.
+_TTS_DIVIDER_LINE_RE = re.compile(
+    r'^[\s─-╿▀-▟■-◿=_\-*]+$',
+    flags=re.MULTILINE,
+)
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown formatting that shouldn't be spoken aloud."""
+    """Remove formatting, code, and unreadable unicode so TTS reads only the prose.
+
+    The *original* text shown to the user (in Telegram, Discord, terminal,
+    etc.) is untouched — this function runs only on the copy passed to the
+    TTS engine. So Markdown/emoji/diagrams stay on screen while the voice
+    reply hears only natural-language sentences.
+    """
+    # Code blocks first — fenced ``` ... ``` and `inline` snippets both
+    # contain identifiers that TTS would mangle ("foo_bar_baz" → "фу бар баз").
     text = _MD_CODE_BLOCK.sub(' ', text)
+    text = _MD_INLINE_CODE_BLOCK.sub(' ', text)
+    # Links / URLs — keep link text, drop href; raw URLs dropped entirely.
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
+    # Markdown emphasis — keep content, drop markers.
     text = _MD_BOLD.sub(r'\1', text)
     text = _MD_ITALIC.sub(r'\1', text)
-    text = _MD_INLINE_CODE.sub(r'\1', text)
+    # Structure markers — drop, keep content.
     text = _MD_HEADER.sub('', text)
     text = _MD_LIST_ITEM.sub('', text)
+    text = _MD_BLOCKQUOTE.sub('', text)
+    # Tables — entire rows dropped (TTS can't read columnar layout aloud).
+    text = _MD_TABLE_ROW.sub('', text)
+    # HRs / divider chars / divider-only lines.
     text = _MD_HR.sub('', text)
+    text = _TTS_DIVIDER_LINE_RE.sub('', text)
+    # Emoji / pictographs / box-drawing / arrows / math — drop.
+    text = _TTS_UNREADABLE_RE.sub('', text)
+    # Tidy whitespace.
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
 

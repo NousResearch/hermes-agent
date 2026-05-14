@@ -955,6 +955,12 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Channel context recovered by history backfill (e.g. messages between
+    # bot turns that were missed due to require_mention).  Kept separate
+    # from ``text`` so the sender-prefix logic in run.py can operate on the
+    # trigger message alone, then prepend this context afterward.
+    channel_context: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

@@ -76,27 +76,26 @@ def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
     Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
-    on first call if not present.
+    on first call if not present. Rebinds all module-level globals on success.
     """
-    global SLACK_AVAILABLE, AsyncApp, AsyncSocketModeHandler, AsyncWebClient
     if SLACK_AVAILABLE:
         return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.slack", prompt=False)
-    except Exception:
-        return False
-    try:
-        from slack_bolt.async_app import AsyncApp as _App
-        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler as _Handler
-        from slack_sdk.web.async_client import AsyncWebClient as _Client
-    except ImportError:
-        return False
-    AsyncApp = _App
-    AsyncSocketModeHandler = _Handler
-    AsyncWebClient = _Client
-    SLACK_AVAILABLE = True
-    return True
+
+    def _import():
+        from slack_bolt.async_app import AsyncApp
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+        from slack_sdk.web.async_client import AsyncWebClient
+        import aiohttp
+        return {
+            "AsyncApp": AsyncApp,
+            "AsyncSocketModeHandler": AsyncSocketModeHandler,
+            "AsyncWebClient": AsyncWebClient,
+            "aiohttp": aiohttp,
+            "SLACK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:

@@ -1346,22 +1346,62 @@ def check_feishu_requirements() -> bool:
     """Check if Feishu/Lark dependencies are available.
 
     Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
-    on first call if not present.
+    on first call if not present. Rebinds all module-level globals on success.
     """
-    global FEISHU_AVAILABLE
     if FEISHU_AVAILABLE:
         return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.feishu", prompt=False)
-    except Exception:
-        return False
-    try:
-        import lark_oapi  # noqa: F401
-    except ImportError:
-        return False
-    FEISHU_AVAILABLE = True
-    return True
+
+    def _import():
+        import lark_oapi as lark
+        from lark_oapi.api.application.v6 import GetApplicationRequest
+        from lark_oapi.api.im.v1 import (
+            CreateFileRequest, CreateFileRequestBody,
+            CreateImageRequest, CreateImageRequestBody,
+            CreateMessageRequest, CreateMessageRequestBody,
+            GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
+            P2ImMessageMessageReadV1,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+            UpdateMessageRequest, UpdateMessageRequestBody,
+        )
+        from lark_oapi.core import AccessTokenType, HttpMethod
+        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+        from lark_oapi.core.model import BaseRequest
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            CallBackCard, P2CardActionTriggerResponse,
+        )
+        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+        from lark_oapi.ws import Client as FeishuWSClient
+        return {
+            "lark": lark,
+            "GetApplicationRequest": GetApplicationRequest,
+            "CreateFileRequest": CreateFileRequest,
+            "CreateFileRequestBody": CreateFileRequestBody,
+            "CreateImageRequest": CreateImageRequest,
+            "CreateImageRequestBody": CreateImageRequestBody,
+            "CreateMessageRequest": CreateMessageRequest,
+            "CreateMessageRequestBody": CreateMessageRequestBody,
+            "GetChatRequest": GetChatRequest,
+            "GetMessageRequest": GetMessageRequest,
+            "GetMessageResourceRequest": GetMessageResourceRequest,
+            "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
+            "ReplyMessageRequest": ReplyMessageRequest,
+            "ReplyMessageRequestBody": ReplyMessageRequestBody,
+            "UpdateMessageRequest": UpdateMessageRequest,
+            "UpdateMessageRequestBody": UpdateMessageRequestBody,
+            "AccessTokenType": AccessTokenType,
+            "HttpMethod": HttpMethod,
+            "FEISHU_DOMAIN": FEISHU_DOMAIN,
+            "LARK_DOMAIN": LARK_DOMAIN,
+            "BaseRequest": BaseRequest,
+            "CallBackCard": CallBackCard,
+            "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
+            "EventDispatcherHandler": EventDispatcherHandler,
+            "FeishuWSClient": FeishuWSClient,
+            "FEISHU_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+    return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
 class FeishuAdapter(BasePlatformAdapter):

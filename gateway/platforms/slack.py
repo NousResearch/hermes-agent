@@ -1799,6 +1799,26 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+
+        # Slack blocks native slash commands inside threads ("/queue is not
+        # supported in threads. Sorry!").  As a workaround, recognise a
+        # leading ``!`` as an alternate command prefix and rewrite it to
+        # ``/`` so the rest of the pipeline (MessageType.COMMAND tagging,
+        # gateway dispatcher) handles it like a normal slash command.  Only
+        # rewrite when the first token resolves to a known gateway command
+        # so casual messages like "!nice work" pass through unchanged.
+        if original_text.startswith("!"):
+            try:
+                from hermes_cli.commands import is_gateway_known_command
+                first_token = original_text[1:].split(maxsplit=1)[0]
+                # Strip "@suffix" the same way get_command() does, so
+                # forms like ``!stop@hermes`` still resolve.
+                cmd_name = first_token.split("@", 1)[0].lower()
+                if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+                    original_text = "/" + original_text[1:]
+            except Exception:  # pragma: no cover - defensive
+                pass
+
         text = original_text
 
         # Extract quoted/forwarded content from Slack blocks.

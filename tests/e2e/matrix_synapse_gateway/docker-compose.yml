@@ -1,0 +1,47 @@
+services:
+  synapse-init:
+    image: matrixdotorg/synapse:latest
+    environment:
+      SYNAPSE_SERVER_NAME: localhost
+      SYNAPSE_REPORT_STATS: "no"
+    volumes:
+      - synapse-data:/data
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -eu
+        if [ ! -f /data/homeserver.yaml ]; then
+          /start.py generate
+        fi
+        if ! grep -q "hermes_synapse_shared_secret" /data/homeserver.yaml; then
+          cat >> /data/homeserver.yaml <<'EOF'
+
+        # hermes_synapse_shared_secret: test-only local integration harness
+        registration_shared_secret: test-shared-secret
+        enable_registration: false
+        enable_registration_without_verification: false
+        enable_room_list_search: false
+        allow_public_rooms_without_auth: false
+        allow_public_rooms_over_federation: false
+        federation_domain_whitelist: []
+        EOF
+        fi
+
+  synapse:
+    image: matrixdotorg/synapse:latest
+    depends_on:
+      synapse-init:
+        condition: service_completed_successfully
+    volumes:
+      - synapse-data:/data
+    ports:
+      - "127.0.0.1:${SYNAPSE_HOST_PORT:-28448}:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8008/_matrix/client/versions', timeout=2).read()\nPY"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+volumes:
+  synapse-data:

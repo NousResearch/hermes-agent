@@ -13753,7 +13753,17 @@ class GatewayRunner:
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                entry = self._agent_cache.pop(session_key, None)
+            # Release clients on a daemon thread, same as _enforce_agent_cache_cap.
+            if entry is not None:
+                agent = entry[0] if isinstance(entry, tuple) and entry else None
+                if agent is not None:
+                    threading.Thread(
+                        target=self._release_evicted_agent_soft,
+                        args=(agent,),
+                        daemon=True,
+                        name=f"agent-cache-cmd-evict-{session_key[:24]}",
+                    ).start()
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -13795,6 +13805,10 @@ class GatewayRunner:
                 self._cleanup_agent_resources(agent)
         except Exception:
             pass
+        # Free conversation history memory — can be tens of MB with tool
+        # outputs (file reads, terminal output, search results).
+        if hasattr(agent, '_session_messages'):
+            agent._session_messages = []
 
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
@@ -13919,6 +13933,22 @@ class GatewayRunner:
                 daemon=True,
                 name=f"agent-cache-idle-{key[:24]}",
             ).start()
+        # Prune stale entries from per-session dicts for keys no longer in
+        # the agent cache.  This prevents unbounded growth over long uptimes.
+        if to_evict:
+            evicted_keys = {key for key, _ in to_evict}
+            with _lock:
+                live_keys = set(_cache.keys())
+            stale_keys = evicted_keys - live_keys
+            for d in (
+                getattr(self, "_session_model_overrides", None),
+                getattr(self, "_session_reasoning_overrides", None),
+                getattr(self, "_pending_approvals", None),
+                getattr(self, "_update_prompt_pending", None),
+            ):
+                if d is not None:
+                    for sk in stale_keys:
+                        d.pop(sk, None)
         return len(to_evict)
 
     # ------------------------------------------------------------------

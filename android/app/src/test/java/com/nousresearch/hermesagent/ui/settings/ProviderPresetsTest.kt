@@ -56,14 +56,14 @@ class ProviderPresetsTest {
     }
 
     @Test
-    fun qwenCloudOpensMobileSafeConsoleBeforeDesktopOnlyFallbacks() {
+    fun qwenCloudOpensMobileSafeDocsBeforeConsoleFallbacks() {
         val first = requireNotNull(ProviderPresets.setupTarget("alibaba", 0))
         val second = requireNotNull(ProviderPresets.setupTarget("alibaba", 1))
         val third = requireNotNull(ProviderPresets.setupTarget("alibaba", 2))
 
-        assertEquals("https://modelstudio.console.alibabacloud.com/?tab=playground", first.url)
-        assertEquals("https://www.alibabacloud.com/help/en/model-studio/get-api-key", second.url)
-        assertEquals("https://docs.qwencloud.com/api-reference/preparation/api-key", third.url)
+        assertEquals("https://docs.qwencloud.com/developer-guides/administration/api-keys", first.url)
+        assertEquals("https://modelstudio.console.alibabacloud.com/?tab=playground", second.url)
+        assertEquals("https://www.alibabacloud.com/help/en/model-studio/get-api-key", third.url)
         assertEquals(6, first.total)
     }
 
@@ -76,9 +76,9 @@ class ProviderPresetsTest {
 
         assertEquals("https://coding-intl.dashscope.aliyuncs.com/v1", preset.baseUrl)
         assertEquals("qwen3.6-plus", preset.modelHint)
-        assertEquals("https://modelstudio.console.alibabacloud.com/?tab=playground", firstTarget.url)
+        assertEquals("https://docs.qwencloud.com/coding-plan/overview", firstTarget.url)
         assertEquals(
-            "https://www.alibabacloud.com/help/en/model-studio/coding-plan",
+            "https://modelstudio.console.alibabacloud.com/?tab=playground",
             secondTarget.url,
         )
         assertEquals(

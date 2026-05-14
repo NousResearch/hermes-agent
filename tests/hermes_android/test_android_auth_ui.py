@@ -90,7 +90,8 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'apiKeyUrl = "https://openrouter.ai/settings/keys"' in presets
     assert 'https://openrouter.ai/keys' in presets
     assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
-    assert 'apiKeyUrl = "https://modelstudio.console.alibabacloud.com/?tab=playground"' in presets
+    assert 'apiKeyUrl = "https://docs.qwencloud.com/developer-guides/administration/api-keys"' in presets
+    assert 'https://modelstudio.console.alibabacloud.com/?tab=playground' in presets
     assert 'https://www.alibabacloud.com/help/en/model-studio/get-api-key' in presets
     assert 'https://home.qwencloud.com/api-keys' in presets
     assert 'https://www.alibabacloud.com/help/en/model-studio/coding-plan' in presets

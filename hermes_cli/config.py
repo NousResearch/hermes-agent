@@ -1088,6 +1088,7 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        "max_history_depth": 0,  # 0 disables the gateway history hard cap
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

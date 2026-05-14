@@ -65,6 +65,36 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _configured_max_history_depth(user_config: dict) -> Optional[int]:
+    try:
+        return _positive_int_or_none(
+            cfg_get(user_config or {}, "context", "max_history_depth")
+        )
+    except Exception:
+        return None
+
+
+def _limit_history_depth(
+    history: List[Dict[str, Any]],
+    max_depth: Optional[int],
+) -> List[Dict[str, Any]]:
+    if not history or not max_depth or len(history) <= max_depth:
+        return history
+
+    start = max(0, len(history) - max_depth)
+    while start > 0 and history[start].get("role") in {"tool", "function"}:
+        start -= 1
+    return history[start:]
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -14311,6 +14341,19 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        user_config = _load_gateway_config()
+        _max_history_depth = _configured_max_history_depth(user_config)
+        _original_history_len = len(history or [])
+        history = _limit_history_depth(history or [], _max_history_depth)
+        if len(history) != _original_history_len:
+            logger.info(
+                "Gateway context: applied context.max_history_depth=%d; "
+                "passing %d of %d history messages",
+                _max_history_depth,
+                len(history),
+                _original_history_len,
+            )
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -14331,8 +14374,7 @@ class GatewayRunner:
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
-        user_config = _load_gateway_config()
+
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools

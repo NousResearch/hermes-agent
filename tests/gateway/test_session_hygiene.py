@@ -51,6 +51,67 @@ def _make_large_history_tokens(target_tokens: int) -> list:
     return _make_history(n_msgs, content_size=content_size)
 
 
+def test_configured_max_history_depth_reads_context_value():
+    gateway_run = importlib.import_module("gateway.run")
+
+    assert (
+        gateway_run._configured_max_history_depth(
+            {"context": {"max_history_depth": "5"}}
+        )
+        == 5
+    )
+
+
+def test_configured_max_history_depth_ignores_invalid_values():
+    gateway_run = importlib.import_module("gateway.run")
+
+    assert gateway_run._configured_max_history_depth({}) is None
+    assert (
+        gateway_run._configured_max_history_depth(
+            {"context": {"max_history_depth": 0}}
+        )
+        is None
+    )
+    assert (
+        gateway_run._configured_max_history_depth(
+            {"context": {"max_history_depth": "nope"}}
+        )
+        is None
+    )
+
+
+def test_limit_history_depth_keeps_recent_messages():
+    gateway_run = importlib.import_module("gateway.run")
+    history = _make_history(12, content_size=10)
+
+    assert gateway_run._limit_history_depth(history, 5) == history[-5:]
+
+
+def test_limit_history_depth_does_not_start_with_tool_result():
+    gateway_run = importlib.import_module("gateway.run")
+    history = [
+        {"role": "user", "content": "before"},
+        {"role": "assistant", "content": "older"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call-1", "type": "function"},
+                {"id": "call-2", "type": "function"},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "tool result 1"},
+        {"role": "tool", "tool_call_id": "call-2", "content": "tool result 2"},
+        {"role": "assistant", "content": "after tools"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    limited = gateway_run._limit_history_depth(history, 4)
+
+    assert limited == history[2:]
+    assert limited[0]["role"] == "assistant"
+
+
 class HygieneCaptureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)

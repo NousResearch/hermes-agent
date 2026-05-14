@@ -672,6 +672,7 @@ The context engine controls how conversations are managed when approaching the m
 ```yaml
 context:
   engine: "compressor"    # default — built-in lossy summarization
+  max_history_depth: 0     # optional gateway hard cap; 0 disables it
 ```
 
 To use a plugin engine (e.g., LCM for lossless context management):

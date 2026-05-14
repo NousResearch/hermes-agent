@@ -619,7 +619,7 @@ def test_run_slash_every_verb_returns_sensible_output(kanban_home):
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
-    SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
+    SIGTERM'd, emits a ``timed_out`` event, and is blocked for recovery."""
     killed = []
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
@@ -651,9 +651,10 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             assert killed and killed[0][0] == os.getpid()
 
             task = kb.get_task(conn, tid)
-            assert task.status == "ready",                 f"timed-out task should reset to ready, got {task.status}"
+            assert task.status == "blocked",                 f"timed-out task should block for recovery, got {task.status}"
             assert task.worker_pid is None
             assert task.last_heartbeat_at is None
+            assert task.result and task.result.startswith("ORCHESTRATOR_PROCESS_BLOCK")
 
             events = kb.list_events(conn, tid)
             assert any(e.kind == "timed_out" for e in events)
@@ -700,8 +701,7 @@ def test_create_task_persists_max_runtime(kanban_home):
 
 def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
     """enforce_max_runtime + dispatch_once integrate cleanly — a timed-out
-    task goes through ``timed_out`` → ``ready`` and dispatch_once can then
-    re-spawn it without re-reporting the timeout."""
+    task is blocked for operator recovery and is not re-spawned in a retry loop."""
     import hermes_cli.kanban_db as _kb
     # Leave _pid_alive=True so the crash detector doesn't steal the task
     # before timeout enforcement runs. After SIGTERM in enforce_max_runtime,
@@ -737,12 +737,12 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         assert tid in before, "kernel enforce_max_runtime should catch the overrun"
 
         # Now a second dispatch_once run should be a no-op on this task
-        # (already released). Confirm the loop doesn't re-report it.
+        # (blocked for operator recovery). Confirm the dispatcher does not
+        # immediately re-spawn the same logical task.
         res = kb.dispatch_once(conn, spawn_fn=lambda t, ws: None)
         task = kb.get_task(conn, tid)
-        # After timeout, task is back in 'ready' and will be re-spawned
-        # by the same pass. That's the intended behaviour.
-        assert task.status in ("ready", "running")
+        assert task.status == "blocked"
+        assert res.spawned == []
     finally:
         conn.close()
 
@@ -760,6 +760,8 @@ def test_heartbeat_on_running_task(kanban_home):
         assert ok is True
         task = kb.get_task(conn, tid)
         assert task.last_heartbeat_at is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires > int(time.time())
         events = kb.list_events(conn, tid)
         hb = [e for e in events if e.kind == "heartbeat"]
         assert len(hb) == 1

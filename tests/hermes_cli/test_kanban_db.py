@@ -182,6 +182,24 @@ def test_stale_claim_reclaimed(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_stale_claim_with_live_worker_pid_is_extended_not_reclaimed(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, os.getpid())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        reclaimed = kb.release_stale_claims(conn)
+        task = kb.get_task(conn, t)
+        assert reclaimed == 0
+        assert task.status == "running"
+        assert task.worker_pid == os.getpid()
+        assert task.claim_expires > int(time.time())
+        assert task.last_heartbeat_at is not None
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

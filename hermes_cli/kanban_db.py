@@ -1810,17 +1810,47 @@ def heartbeat_claim(
 def release_stale_claims(conn: sqlite3.Connection) -> int:
     """Reset any ``running`` task whose claim has expired.
 
-    Returns the number of stale claims reclaimed.  Safe to call often.
+    If the expired claim still has a live worker PID on this host, do not
+    reclaim it. Extend the claim instead. This prevents the dispatcher from
+    spawning a duplicate worker while the original process is still making
+    progress but failed to heartbeat from inside a long LLM/tool loop.
+
+    Returns the number of claims actually reclaimed. Safe to call often.
     """
     now = int(time.time())
     reclaimed = 0
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT id, claim_lock FROM tasks "
+            "SELECT id, claim_lock, worker_pid FROM tasks "
             "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
             (now,),
         ).fetchall()
         for row in stale:
+            pid = row["worker_pid"]
+            if pid and _pid_alive(pid):
+                # PID is host-local and still alive. Treat the expired lease
+                # as a missed heartbeat rather than a dead worker. This keeps
+                # exactly one worker attached to the task and avoids duplicate
+                # writes into shared workspaces.
+                new_expires = now + DEFAULT_CLAIM_TTL_SECONDS
+                conn.execute(
+                    "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (new_expires, now, row["id"]),
+                )
+                run_id = _current_run_id(conn, row["id"])
+                if run_id is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET claim_expires = ?, last_heartbeat_at = ? "
+                        "WHERE id = ?",
+                        (new_expires, now, run_id),
+                    )
+                _append_event(
+                    conn, row["id"], "heartbeat",
+                    {"note": "dispatcher lease extended for live worker after stale claim"},
+                    run_id=run_id,
+                )
+                continue
             conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -2191,18 +2221,19 @@ def heartbeat_worker(
     """
     now = int(time.time())
     with write_txn(conn):
+        expires = now + DEFAULT_CLAIM_TTL_SECONDS
         cur = conn.execute(
-            "UPDATE tasks SET last_heartbeat_at = ? "
+            "UPDATE tasks SET last_heartbeat_at = ?, claim_expires = ? "
             "WHERE id = ? AND status = 'running'",
-            (now, task_id),
+            (now, expires, task_id),
         )
         if cur.rowcount != 1:
             return False
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
-                (now, run_id),
+                "UPDATE task_runs SET last_heartbeat_at = ?, claim_expires = ? WHERE id = ?",
+                (now, expires, run_id),
             )
         _append_event(
             conn, task_id, "heartbeat",
@@ -2220,10 +2251,10 @@ def enforce_max_runtime(
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
     Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
-    ``timed_out`` event and drops the task back to ``ready`` so the next
-    dispatcher tick re-spawns it — unless the spawn-failure circuit
-    breaker has already given up, in which case the task stays blocked
-    where ``_record_spawn_failure`` parked it.
+    ``timed_out`` event and blocks the logical task instead of dropping it
+    back to ``ready``. A timeout usually means the task needs decomposition,
+    recovery, or an operator decision; automatic re-spawn can create an
+    infinite retry/start-ping loop.
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
@@ -2276,11 +2307,17 @@ def enforce_max_runtime(
 
         with write_txn(conn):
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, result = ? "
                 "WHERE id = ? AND status = 'running'",
-                (tid,),
+                (
+                    f"ORCHESTRATOR_PROCESS_BLOCK: worker exceeded "
+                    f"max_runtime_seconds ({int(elapsed)}s > "
+                    f"{int(row['max_runtime_seconds'])}s); inspect/recover "
+                    f"before retry",
+                    tid,
+                ),
             )
             if cur.rowcount == 1:
                 payload = {

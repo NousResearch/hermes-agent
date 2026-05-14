@@ -1,0 +1,24 @@
+{
+  "name": "@nousresearch/hermes-agent-acp",
+  "version": "0.13.0",
+  "description": "ACP launcher for Hermes Agent",
+  "bin": {
+    "hermes-agent-acp": "bin/hermes-agent-acp.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/hermes-agent.git",
+    "directory": "packages/hermes-agent-acp"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

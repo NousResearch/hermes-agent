@@ -33,6 +33,7 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
+from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
@@ -92,6 +93,41 @@ class TestInitialize:
         assert "list" in session_caps
         assert "resume" in session_caps
 
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: "openrouter")
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: "openrouter")
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads[0]["id"] == "openrouter"
+        assert payloads[0]["name"] == "openrouter runtime credentials"
+        terminal = next(payload for payload in payloads if payload["id"] == TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert terminal["type"] == "terminal"
+        assert terminal["args"] == ["--setup"]
+
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_terminal_setup_auth_when_no_provider(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: None)
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: None)
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads == [
+            {
+                "args": ["--setup"],
+                "description": (
+                    "Open Hermes' interactive model/provider setup in a terminal. "
+                    "Use this when Hermes has not been configured on this machine yet."
+                ),
+                "id": TERMINAL_SETUP_AUTH_METHOD_ID,
+                "name": "Configure Hermes provider",
+                "type": "terminal",
+            }
+        ]
+
 
 # ---------------------------------------------------------------------------
 # authenticate
@@ -133,6 +169,24 @@ class TestAuthenticate:
             lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
+        assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_accepts_terminal_setup_after_provider_configured(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_terminal_setup_without_provider(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: None,
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
         assert resp is None
 
 

@@ -5627,6 +5627,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    timeout: int = 300,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -5636,33 +5637,51 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    A ``timeout`` (seconds) prevents indefinite hangs during postinstall scripts
+    that download large binaries (e.g. Camofox browser fetch).  Defaults to 300s
+    (5 minutes) which is generous for most installations.
     """
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
-        ci_result = subprocess.run(
-            ci_cmd,
+        try:
+            ci_result = subprocess.run(
+                ci_cmd,
+                cwd=cwd,
+                capture_output=capture_output,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  ⚠ npm ci timed out after {timeout}s in {cwd.name}")
+            return subprocess.CompletedProcess(
+                args=ci_cmd, returncode=1, stdout="", stderr=f"Timed out after {timeout}s"
+            )
+        if ci_result.returncode == 0:
+            return ci_result
+        # Fall through to `npm install` — lockfile may be out of sync on a
+        # WIP fork/branch, or `npm ci` may not be available on very old npm.
+    install_cmd = [npm, "install", *extra_args]
+    try:
+        return subprocess.run(
+            install_cmd,
             cwd=cwd,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=timeout,
         )
-        if ci_result.returncode == 0:
-            return ci_result
-        # Fall through to `npm install` — lockfile may be out of sync on a
-        # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
-    return subprocess.run(
-        install_cmd,
-        cwd=cwd,
-        capture_output=capture_output,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠ npm install timed out after {timeout}s in {cwd.name}")
+        return subprocess.CompletedProcess(
+            args=install_cmd, returncode=1, stdout="", stderr=f"Timed out after {timeout}s"
+        )
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
@@ -5716,7 +5735,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--loglevel=warn",), timeout=300)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -7089,10 +7108,12 @@ def _update_node_dependencies() -> None:
         if not (path / "package.json").exists():
             continue
 
+        print(f"  Installing {label}... (this may take a moment during postinstall scripts)")
         result = _run_npm_install_deterministic(
             npm,
             path,
-            extra_args=("--silent", "--no-fund", "--no-audit", "--progress=false"),
+            extra_args=("--loglevel=warn", "--no-fund", "--no-audit", "--progress=false"),
+            timeout=300,
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")

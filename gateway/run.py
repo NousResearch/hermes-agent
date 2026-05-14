@@ -10246,12 +10246,42 @@ class GatewayRunner:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+        if source.platform == Platform.MATRIX:
+            adapter = self.adapters.get(Platform.MATRIX)
+            scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
+            thread = source.thread_id or "none"
+            lines.extend([
+                "",
+                "**Matrix scope:**",
+                f"  room: {source.chat_name or source.chat_id}",
+                f"  room_id: {source.chat_id}",
+                f"  thread_id: {thread}",
+                f"  session_scope: {scope}",
+                f"  session_key: {session_key}",
+            ])
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
         return "\n".join(lines)
+
+    def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
+        """Best-effort origin lookup for gateway session IDs."""
+        entries = getattr(self.session_store, "_entries", {}) or {}
+        for entry in entries.values():
+            if getattr(entry, "session_id", None) == session_id:
+                return getattr(entry, "origin", None)
+        return None
+
+    @staticmethod
+    def _same_matrix_room(current: SessionSource, origin: Optional[SessionSource]) -> bool:
+        return (
+            origin is not None
+            and origin.platform == Platform.MATRIX
+            and current.platform == Platform.MATRIX
+            and origin.chat_id == current.chat_id
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -10970,7 +11000,16 @@ class GatewayRunner:
                         lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    metadata = dict(
+                        self._thread_metadata_for_source(
+                            source, self._reply_anchor_for_event(event)
+                        )
+                        or {}
+                    )
+                    if source.user_id:
+                        metadata["requester_user_id"] = source.user_id
+                    if not metadata:
+                        metadata = None
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -13583,7 +13622,18 @@ class GatewayRunner:
 
         source = event.source
         session_key = self._session_key_for_source(source)
-        name = event.get_command_args().strip()
+        raw_args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return (
+                f"⚠️ Could not parse `/resume` arguments: {exc}.\n"
+                'Use quotes around titles with spaces, for example: '
+                '`/resume "Project A Plan"`.'
+            )
+        allow_all = "--all" in parts
+        allow_cross_room = "--cross-room" in parts
+        name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
 
         # Strip common outer brackets/quotes users may type literally from the
         # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
@@ -13604,11 +13654,29 @@ class GatewayRunner:
             # List recent titled sessions for this user/platform
             try:
                 titled = _list_titled_sessions()
+                if source.platform == Platform.MATRIX and not allow_all:
+                    scoped = []
+                    for s in titled:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if self._same_matrix_room(source, origin):
+                            scoped.append(s)
+                    titled = scoped
                 if not titled:
+                    if source.platform == Platform.MATRIX and not allow_all:
+                        return (
+                            "No named sessions found for this Matrix room.\n"
+                            "Use `/title My Session` to name the current room session, "
+                            "`/resume --all` to list all Matrix sessions, or "
+                            "`/resume --cross-room <session name>` to explicitly cross room boundaries."
+                        )
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
+                    if source.platform == Platform.MATRIX and allow_all:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if origin:
+                            title = f"{title} — {origin.chat_name or origin.chat_id}"
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
@@ -13648,6 +13716,23 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
+        if source.platform == Platform.MATRIX:
+            target_origin = self._gateway_session_origin_for_id(target_id)
+            if not self._same_matrix_room(source, target_origin) and not allow_cross_room:
+                if target_origin is None:
+                    return (
+                        "⚠️ Matrix /resume blocked: this named session has no recorded "
+                        "room origin, so Hermes will not resume it inside the current "
+                        "room by default. Use `/resume --cross-room "
+                        f"{name}` if you intentionally want to cross room boundaries."
+                    )
+                return (
+                    "⚠️ Matrix /resume blocked: that session belongs to a different "
+                    f"Matrix room ({target_origin.chat_name or target_origin.chat_id}). "
+                    "Use `/resume --cross-room "
+                    f"{name}` if you intentionally want to resume it here."
+                )
+
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
@@ -13675,6 +13760,15 @@ class GatewayRunner:
         # Count messages for context
         history = self.session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+
+        if source.platform == Platform.MATRIX and allow_cross_room:
+            return (
+                f"⚠️ Cross-room resume: resumed **{title}** inside Matrix room "
+                f"**{source.chat_name or source.chat_id}**.\n"
+                "Future messages in this room will use that transcript until `/reset` "
+                f"or another `/resume`.{msg_part}"
+            )
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
         if msg_count == 1:
@@ -16795,10 +16889,14 @@ class GatewayRunner:
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
+            if event_type == "tool.completed":
                 try:
                     duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                    if (
+                        not long_tool_hint_fired[0]
+                        and duration >= _LONG_TOOL_THRESHOLD_S
+                        and progress_mode == "all"
+                    ):
                         from agent.onboarding import (
                             TOOL_PROGRESS_FLAG,
                             is_seen,
@@ -16816,11 +16914,28 @@ class GatewayRunner:
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+                if source.platform == Platform.MATRIX:
+                    progress_queue.put((
+                        "__matrix_tool_completed__",
+                        tool_name,
+                        float(kwargs.get("duration") or 0.0),
+                        bool(kwargs.get("is_error")),
+                    ))
+                return
+
+            if source.platform == Platform.MATRIX and event_type in (
+                "reasoning.available",
+                "_thinking",
+            ):
+                thinking_text = str(preview or tool_name or "").strip()
+                if thinking_text:
+                    progress_queue.put(("__matrix_thinking__", thinking_text))
                 return
 
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in {"tool.started",}:
+            # Only act on tool.started events (completion and Matrix thinking
+            # pane events are handled above).
+            if event_type not in ("tool.started",):
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -16940,6 +17055,8 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
+            thinking_msg_id = None   # Matrix-only reasoning/thinking pane
+            thinking_text = ""       # Latest accumulated Matrix thinking text
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -17058,6 +17175,63 @@ class GatewayRunner:
                 progress_lines = groups[-1]
                 return True
 
+            async def _send_or_edit_progress(message_id: Optional[str], content: str) -> Optional[str]:
+                if not content:
+                    return message_id
+                if can_edit and message_id is not None:
+                    result = await _edit_progress_message(message_id, content)
+                    if result.success:
+                        return message_id
+                    return None
+                result = await _send_progress_text(content)
+                if result.success and result.message_id:
+                    return result.message_id
+                return message_id
+
+            async def _handle_matrix_progress_tuple(raw: tuple) -> bool:
+                """Handle Matrix-specific pane updates. Returns True if consumed."""
+                nonlocal progress_msg_id, progress_lines, thinking_msg_id, thinking_text
+                tag = raw[0] if raw else ""
+                if tag == "__matrix_thinking__":
+                    addition = str(raw[1] if len(raw) > 1 else "").strip()
+                    if not addition:
+                        return True
+                    if thinking_text:
+                        thinking_text = f"{thinking_text}\n\n{addition}"
+                    else:
+                        thinking_text = addition
+                    if len(thinking_text) > 3500:
+                        thinking_text = "...\n" + thinking_text[-3496:]
+                    thinking_msg_id = await _send_or_edit_progress(
+                        thinking_msg_id,
+                        f"💭 Thinking\n\n{thinking_text}",
+                    )
+                    return True
+                if tag == "__matrix_tool_completed__":
+                    tool = str(raw[1] if len(raw) > 1 else "tool")
+                    duration = float(raw[2] if len(raw) > 2 else 0.0)
+                    is_error = bool(raw[3] if len(raw) > 3 else False)
+                    marker = "❌" if is_error else "✅"
+                    state = "failed" if is_error else "completed"
+                    progress_lines.append(f"{marker} {tool} {state} ({duration:.1f}s)")
+                    progress_msg_id = await _send_or_edit_progress(
+                        progress_msg_id,
+                        "\n".join(progress_lines),
+                    )
+                    return True
+                if tag == "__matrix_finalize__":
+                    outcome = str(raw[1] if len(raw) > 1 else "")
+                    if outcome in ("failed", "aborted") and progress_lines:
+                        marker = "❌" if outcome == "failed" else "⚠️"
+                        label = "Tool activity failed" if outcome == "failed" else "Tool activity aborted"
+                        progress_lines.append(f"{marker} {label}")
+                        progress_msg_id = await _send_or_edit_progress(
+                            progress_msg_id,
+                            "\n".join(progress_lines),
+                    )
+                    return True
+                return False
+
             while True:
                 try:
                     if not _run_still_current():
@@ -17092,6 +17266,13 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif (
+                        source.platform == Platform.MATRIX
+                        and isinstance(raw, tuple)
+                        and await _handle_matrix_progress_tuple(raw)
+                    ):
+                        _last_edit_ts = time.monotonic()
+                        continue
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17229,6 +17410,12 @@ class GatewayRunner:
                                 progress_lines = []
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
+                            elif (
+                                source.platform == Platform.MATRIX
+                                and isinstance(raw, tuple)
+                                and await _handle_matrix_progress_tuple(raw)
+                            ):
+                                pass
                             else:
                                 progress_lines.append(raw)
                                 await _roll_progress_overflow_if_needed()
@@ -17781,6 +17968,9 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                _approval_metadata = dict(_status_thread_metadata or {})
+                if getattr(source, "user_id", None):
+                    _approval_metadata["requester_user_id"] = source.user_id
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -17793,7 +17983,7 @@ class GatewayRunner:
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_metadata or None,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -18783,6 +18973,15 @@ class GatewayRunner:
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
+            if progress_queue is not None and source.platform == Platform.MATRIX:
+                try:
+                    _response_for_progress = locals().get("response")
+                    if isinstance(_response_for_progress, dict) and _response_for_progress.get("failed"):
+                        progress_queue.put(("__matrix_finalize__", "failed"))
+                    elif _interrupt_detected.is_set():
+                        progress_queue.put(("__matrix_finalize__", "aborted"))
+                except Exception:
+                    pass
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()

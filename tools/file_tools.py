@@ -213,6 +213,8 @@ _read_tracker: dict = {}
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_NOT_FOUND_CAP = 500          # dict; per-task negative-result cache for missing paths
+_NOT_FOUND_TTL_SECONDS = 60.0 # short TTL — a path that didn't exist may be created soon
 _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
@@ -269,6 +271,60 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 ts.pop(next(iter(ts)))
             except (StopIteration, KeyError):
                 break
+
+    nf = task_data.get("not_found")
+    if nf is not None and len(nf) > _NOT_FOUND_CAP:
+        excess = len(nf) - _NOT_FOUND_CAP
+        for _ in range(excess):
+            try:
+                nf.pop(next(iter(nf)))
+            except (StopIteration, KeyError):
+                break
+
+
+def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | None:
+    """Return cached not-found JSON for *(op, resolved_str)* if still fresh.
+
+    Skips the expensive subprocess + suggestion walk when the model retries
+    the same missing path. Observed in agent.log: a single typo'd path was
+    retried 13 times — each retry forked a shell to walk the parent directory
+    and score similar names.
+
+    *op* is "read" or "search" — kept separate because the two callers return
+    different error JSON shapes ("File not found:" vs "Path not found:").
+
+    Eviction: TTL or write_file/patch on the path (see invalidate_for_path).
+    """
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if not task_data:
+            return None
+        nf = task_data.get("not_found")
+        if not nf:
+            return None
+        entry = nf.get((op, resolved_str))
+        if entry is None:
+            return None
+        ts, cached_json = entry
+        if time.monotonic() - ts > _NOT_FOUND_TTL_SECONDS:
+            nf.pop((op, resolved_str), None)
+            return None
+        return cached_json
+
+
+def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str) -> None:
+    """Cache a not-found error so the next *op* call for *resolved_str* skips I/O."""
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.setdefault(task_id, {
+            "last_key": None, "consecutive": 0,
+            "read_history": set(), "dedup": {},
+            "dedup_hits": {}, "read_timestamps": {},
+        })
+        nf = task_data.setdefault("not_found", {})
+        nf[(op, resolved_str)] = (time.monotonic(), error_json)
+        _cap_read_tracker_data(task_data)
 
 
 def _is_internal_file_status_text(content: str) -> bool:
@@ -479,6 +535,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if block_error:
             return json.dumps({"error": block_error})
 
+        # ── Negative-result cache ─────────────────────────────────────
+        # If we already discovered this path doesn't exist (within TTL),
+        # return the cached error without spawning the subprocess +
+        # similar-files walk. Cleared by write_file/patch on the same path.
+        resolved_str_for_neg = str(_resolve_path_for_task(path, task_id))
+        cached_not_found = _check_not_found_cache("read", resolved_str_for_neg, task_id)
+        if cached_not_found is not None:
+            return cached_not_found
+
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
@@ -543,6 +608,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+
+        # ── Populate negative-result cache on not-found ───────────────
+        # _suggest_similar_files returns ReadResult(error="File not found: ..").
+        # Cache the JSON we'd return so a retry skips the parent-dir walk.
+        _err = result_dict.get("error") or ""
+        if isinstance(_err, str) and _err.startswith("File not found:"):
+            _not_found_json = json.dumps(result_dict, ensure_ascii=False)
+            _record_not_found("read", resolved_str_for_neg, task_id, _not_found_json)
+            return _not_found_json
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -727,12 +801,18 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         if task_data is None:
             return
         dedup = task_data.get("dedup")
-        if not dedup:
-            return
-        # Collect keys to remove (can't mutate dict during iteration).
-        stale_keys = [k for k in dedup if k[0] == resolved]
-        for k in stale_keys:
-            del dedup[k]
+        if dedup:
+            # Collect keys to remove (can't mutate dict during iteration).
+            stale_keys = [k for k in dedup if k[0] == resolved]
+            for k in stale_keys:
+                del dedup[k]
+        # Also evict from the negative-result cache: a write_file that
+        # creates the path means subsequent reads (or searches under it)
+        # must hit disk.
+        nf = task_data.get("not_found")
+        if nf:
+            nf.pop(("read", resolved), None)
+            nf.pop(("search", resolved), None)
 
 
 def _update_read_timestamp(filepath: str, task_id: str) -> None:
@@ -985,6 +1065,19 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        # ── Negative-result cache ─────────────────────────────────────
+        # Search returns "Path not found: <path>" when the search root
+        # doesn't exist. The error path also lists the parent directory
+        # (file_operations.py:1402) — expensive to repeat. Cache so the
+        # next call to a known-missing root skips both shells.
+        try:
+            resolved_search_path = str(_resolve_path_for_task(path, task_id))
+        except (OSError, ValueError):
+            resolved_search_path = path
+        cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
+        if cached_search_nf is not None:
+            return cached_search_nf
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
@@ -995,6 +1088,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
+
+        # Populate negative cache when search root was missing.
+        _search_err = result_dict.get("error") or ""
+        if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
+            _search_nf_json = json.dumps(result_dict, ensure_ascii=False)
+            _record_not_found("search", resolved_search_path, task_id, _search_nf_json)
+            return _search_nf_json
 
         if count >= 3:
             result_dict["_warning"] = (

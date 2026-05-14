@@ -625,6 +625,82 @@ class TestSendToPlatformWhatsapp:
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
 
+class TestSendWhatsappJidNormalization:
+    """The Baileys bridge expects WhatsApp JIDs (digits@s.whatsapp.net), but
+    _parse_target_ref returns E.164 strings unchanged.  _send_whatsapp must
+    bridge that format gap before POSTing to the bridge."""
+
+    def _post_capture(self):
+        """Return (post_mock, session_ctx_mock) that records the JSON body."""
+        post_resp = MagicMock()
+        post_resp.status = 200
+        post_resp.json = AsyncMock(return_value={"messageId": "wamid.ABC"})
+        post_resp.__aenter__ = AsyncMock(return_value=post_resp)
+        post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        post_mock = MagicMock(return_value=post_resp)
+        session_obj = MagicMock()
+        session_obj.post = post_mock
+        session_obj.__aenter__ = AsyncMock(return_value=session_obj)
+        session_obj.__aexit__ = AsyncMock(return_value=False)
+        return post_mock, session_obj
+
+    def test_e164_target_is_converted_to_jid(self):
+        """+15551234567 -> 15551234567@s.whatsapp.net before HTTP POST."""
+        from tools.send_message_tool import _send_whatsapp
+
+        post_mock, session_obj = self._post_capture()
+        with patch("aiohttp.ClientSession", return_value=session_obj):
+            result = asyncio.run(_send_whatsapp({}, "+15551234567", "hi"))
+
+        assert result["success"] is True
+        _, kwargs = post_mock.call_args
+        assert kwargs["json"]["chatId"] == "15551234567@s.whatsapp.net"
+        # chat_id in the return value is normalized too, so callers can
+        # correlate with the eventual bridge state
+        assert result["chat_id"] == "15551234567@s.whatsapp.net"
+
+    def test_already_formed_jid_passes_through(self):
+        """Targets already in JID form must not be double-normalized."""
+        from tools.send_message_tool import _send_whatsapp
+
+        post_mock, session_obj = self._post_capture()
+        with patch("aiohttp.ClientSession", return_value=session_obj):
+            result = asyncio.run(
+                _send_whatsapp({}, "15551234567@s.whatsapp.net", "hi")
+            )
+
+        assert result["success"] is True
+        _, kwargs = post_mock.call_args
+        assert kwargs["json"]["chatId"] == "15551234567@s.whatsapp.net"
+
+    def test_lid_jid_passes_through(self):
+        """The newer @lid identity format must not be rewritten."""
+        from tools.send_message_tool import _send_whatsapp
+
+        post_mock, session_obj = self._post_capture()
+        with patch("aiohttp.ClientSession", return_value=session_obj):
+            result = asyncio.run(_send_whatsapp({}, "123456789012345@lid", "hi"))
+
+        assert result["success"] is True
+        _, kwargs = post_mock.call_args
+        assert kwargs["json"]["chatId"] == "123456789012345@lid"
+
+    def test_group_jid_passes_through(self):
+        """Group JIDs (digits@g.us) must reach the bridge unchanged."""
+        from tools.send_message_tool import _send_whatsapp
+
+        post_mock, session_obj = self._post_capture()
+        with patch("aiohttp.ClientSession", return_value=session_obj):
+            result = asyncio.run(
+                _send_whatsapp({}, "120363045123456789@g.us", "hi")
+            )
+
+        assert result["success"] is True
+        _, kwargs = post_mock.call_args
+        assert kwargs["json"]["chatId"] == "120363045123456789@g.us"
+
+
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""

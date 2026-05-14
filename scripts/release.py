@@ -88,6 +88,7 @@ AUTHOR_MAP = {
     "62420081+kjames2001@users.noreply.github.com": "kjames2001",
     "132184373+wilsen0@users.noreply.github.com": "wilsen0",
     "ra2157218@gmail.com": "Abd0r",
+    "oswaldb22@users.noreply.github.com": "oswaldb22",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",
     "ytchen0719@gmail.com": "liquidchen",

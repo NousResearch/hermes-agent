@@ -1139,3 +1139,145 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
+
+
+# ---------------------------------------------------------------------------
+# Auto-subscribe tests (PR #2: agent-created tasks get notify subscriptions)
+# ---------------------------------------------------------------------------
+
+
+def test_create_no_subscription_outside_gateway(worker_env):
+    """Normal tool invocation outside a gateway session must NOT create
+    notify subscriptions."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "outside-gw-task",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    tid = d["task_id"]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs == [], (
+            f"Expected no subscription outside gateway, got {len(subs)}"
+        )
+    finally:
+        conn.close()
+
+
+def test_create_auto_subscribes_in_gateway_context(monkeypatch, tmp_path):
+    """When gateway session context is present, _handle_create must
+    auto-subscribe the originating chat to the new task's notifications."""
+    import json
+    from pathlib import Path
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Mock gateway session context as it would be set by a Feishu session
+    mock_platform = "feishu"
+    mock_chat_id = "oc_fake_chat_123"
+    mock_user_id = "user_abc"
+
+    def mock_get_session_env(name, default=""):
+        mapping = {
+            "HERMES_SESSION_PLATFORM": mock_platform,
+            "HERMES_SESSION_CHAT_ID": mock_chat_id,
+            "HERMES_SESSION_THREAD_ID": "",
+            "HERMES_SESSION_USER_ID": mock_user_id,
+        }
+        return mapping.get(name, default)
+
+    monkeypatch.setattr(
+        "gateway.session_context.get_session_env",
+        mock_get_session_env,
+    )
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "gw-created-task",
+        "assignee": "worker1",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, f"create failed: {d}"
+    tid = d["task_id"]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1, (
+            f"Expected 1 subscription, got {len(subs)}: {subs}"
+        )
+        assert subs[0]["platform"] == mock_platform
+        assert subs[0]["chat_id"] == mock_chat_id
+        assert subs[0]["user_id"] == mock_user_id
+    finally:
+        conn.close()
+
+
+def test_try_auto_subscribe_creates_subscription(monkeypatch, tmp_path):
+    """_try_auto_subscribe helper must register a notify sub when gateway
+    session env vars are available, and be a no-op otherwise."""
+    from pathlib import Path
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="sub-test", assignee="worker1")
+
+        # Phase 1: no gateway context → no subscription
+        from tools.kanban_tools import _try_auto_subscribe
+        _try_auto_subscribe(kb, conn, tid)
+        subs_before = kb.list_notify_subs(conn, tid)
+        assert subs_before == [], (
+            f"Expected no sub without gateway context, got {len(subs_before)}"
+        )
+
+        # Phase 2: mock gateway context → subscription created
+        mock_platform = "discord"
+        mock_chat_id = "123456789"
+
+        def mock_get_env(name, default=""):
+            mapping = {
+                "HERMES_SESSION_PLATFORM": mock_platform,
+                "HERMES_SESSION_CHAT_ID": mock_chat_id,
+                "HERMES_SESSION_THREAD_ID": "thread-42",
+                "HERMES_SESSION_USER_ID": "",
+            }
+            return mapping.get(name, default)
+
+        monkeypatch.setattr(
+            "gateway.session_context.get_session_env",
+            mock_get_env,
+        )
+
+        _try_auto_subscribe(kb, conn, tid)
+        subs_after = kb.list_notify_subs(conn, tid)
+        assert len(subs_after) == 1, (
+            f"Expected 1 sub with gateway context, got {len(subs_after)}"
+        )
+        assert subs_after[0]["platform"] == mock_platform
+        assert subs_after[0]["chat_id"] == mock_chat_id
+        assert subs_after[0]["thread_id"] == "thread-42"
+    finally:
+        conn.close()

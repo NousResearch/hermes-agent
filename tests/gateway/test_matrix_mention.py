@@ -258,6 +258,33 @@ class TestOutboundMentions:
         assert content["msgtype"] == "m.notice"
         assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
 
+    @pytest.mark.asyncio
+    async def test_room_wide_mention_is_gated_by_default(self):
+        result = await self.adapter.send(
+            "!room1:example.org",
+            "Heads up @room",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert "m.mentions" not in content
+
+    @pytest.mark.asyncio
+    async def test_room_wide_mention_can_be_enabled(self):
+        self.adapter._allow_room_mentions = True
+
+        result = await self.adapter.send(
+            "!room1:example.org",
+            "Heads up @room and @alice:example.org",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {
+            "room": True,
+            "user_ids": ["@alice:example.org"],
+        }
+
 
 # ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message

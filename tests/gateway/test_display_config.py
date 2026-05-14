@@ -188,11 +188,24 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
     def test_medium_tier_platforms(self):
-        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
+        """Mattermost, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
+        for plat in ("mattermost", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
+
+    def test_matrix_defaults_to_quiet_progress_and_streaming(self):
+        """Matrix defaults to final-answer-only to avoid edit/read-marker churn."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "off"
+        assert resolve_display_setting({}, "matrix", "streaming") is False
+
+    def test_matrix_default_tool_preview_length_is_room_friendly(self):
+        """Matrix opt-in progress uses longer previews when enabled."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_preview_length") == 160
 
     def test_slack_defaults_tool_progress_off(self):
         """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""

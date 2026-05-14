@@ -88,6 +88,20 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
 
+    # Clear DISCORD_* env vars the test file exercises so tests don't leak
+    # process-env state from the contributor's shell into per-test behaviour.
+    # Individual tests still monkeypatch.setenv() for their own scenarios.
+    for _var in (
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
@@ -491,6 +505,76 @@ async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter
         content="thread reply without mention",
     )
 
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_default_keeps_responding_after_participation(adapter, monkeypatch):
+    """Default behavior: once the bot is in a thread, it auto-responds without @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+
+    thread = FakeThread(channel_id=456, name="follow-up")
+    adapter._threads.mark("456")  # bot has previously participated
+
+    message = make_message(channel=thread, content="follow-up without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_gates_followups(adapter, monkeypatch):
+    """When thread_require_mention=true, even bot-participated threads need @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")  # bot has previously participated
+
+    message = make_message(channel=thread, content="ambient chatter — not for me")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_still_responds_when_mentioned(adapter, monkeypatch):
+    """thread_require_mention=true still lets explicit @mentions through in threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")
+    bot_user = adapter._client.user
+
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> hey, this one's for you",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypatch):
+    """thread_require_mention can also be set via config.extra (yaml)."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_require_mention"] = True
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")
+
+    message = make_message(channel=thread, content="ambient — should be ignored")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()

@@ -606,6 +606,7 @@ AUTHOR_MAP = {
     "iacobs@m0n5t3r.info": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
     "jonny@nousresearch.com": "jquesnelle",
+    "jake@nousresearch.com": "simpolism",
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",

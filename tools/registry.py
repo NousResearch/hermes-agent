@@ -15,6 +15,7 @@ Import chain (circular-import safe):
 """
 
 import ast
+import copy
 import importlib
 import json
 import logging
@@ -365,6 +366,91 @@ class ToolRegistry:
                     )
             result.append({"type": "function", "function": schema_with_name})
         return result
+
+    def finalize_definitions(self, definitions: List[dict]) -> List[dict]:
+        """Apply availability-aware schema finalization to tool definitions.
+
+        ``get_definitions()`` handles registration, check functions, and
+        dynamic per-tool overrides. This method handles cross-tool schema
+        details that depend on the whole available tool set, so callers don't
+        need to duplicate ordering assumptions or tool-name checks.
+        """
+        finalized = copy.deepcopy(definitions)
+        available_tool_names = {
+            td.get("function", {}).get("name")
+            for td in finalized
+            if td.get("function", {}).get("name")
+        }
+
+        if "execute_code" in available_tool_names:
+            try:
+                from tools.code_execution_tool import (
+                    SANDBOX_ALLOWED_TOOLS,
+                    _get_execution_mode,
+                    build_execute_code_schema,
+                )
+
+                sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
+                dynamic_schema = build_execute_code_schema(
+                    sandbox_enabled,
+                    mode=_get_execution_mode(),
+                )
+                self._replace_definition(finalized, "execute_code", dynamic_schema)
+            except Exception as exc:
+                logger.warning("execute_code schema finalization skipped: %s", exc)
+
+        discord_schema_fns = {
+            "discord": "get_dynamic_schema_core",
+            "discord_admin": "get_dynamic_schema_admin",
+        }
+        for tool_name, schema_fn_name in discord_schema_fns.items():
+            if tool_name not in available_tool_names:
+                continue
+            try:
+                from tools import discord_tool
+
+                dynamic_schema = getattr(discord_tool, schema_fn_name)()
+            except Exception:
+                dynamic_schema = None
+            if dynamic_schema is None:
+                finalized = self._drop_definition(finalized, tool_name)
+                available_tool_names.discard(tool_name)
+            else:
+                self._replace_definition(finalized, tool_name, dynamic_schema)
+
+        if "browser_navigate" in available_tool_names:
+            web_tools_available = {"web_search", "web_extract"} & available_tool_names
+            if not web_tools_available:
+                for td in finalized:
+                    if td.get("function", {}).get("name") != "browser_navigate":
+                        continue
+                    function = td.get("function", {})
+                    desc = function.get("description", "")
+                    desc = desc.replace(
+                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                        "",
+                    )
+                    td["function"] = {**function, "description": desc}
+                    break
+
+        return finalized
+
+    @staticmethod
+    def _replace_definition(definitions: List[dict], name: str, schema: dict) -> bool:
+        """Replace a named tool definition in place."""
+        for i, td in enumerate(definitions):
+            if td.get("function", {}).get("name") == name:
+                definitions[i] = {"type": "function", "function": schema}
+                return True
+        return False
+
+    @staticmethod
+    def _drop_definition(definitions: List[dict], name: str) -> List[dict]:
+        """Return definitions without the named tool."""
+        return [
+            td for td in definitions
+            if td.get("function", {}).get("name") != name
+        ]
 
     # ------------------------------------------------------------------
     # Dispatch

@@ -1,4 +1,8 @@
-"""xAI (Grok) provider profile."""
+"""xAI (Grok) provider profile (API key version).
+
+For the recommended browser-based OAuth experience that reuses your existing
+Grok CLI / Grok Build login (~/.grok/auth.json), use the "xai-oauth" provider instead.
+"""
 
 from providers import register_provider
 from providers.base import ProviderProfile

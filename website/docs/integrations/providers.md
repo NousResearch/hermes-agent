@@ -329,15 +329,46 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 
 ### xAI (Grok) — Responses API + Prompt Caching
 
-xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-1-fast-reasoning`.
+xAI Grok is available through two providers:
 
 SuperGrok subscribers can sign in with browser OAuth instead of using an API key — pick **xAI Grok OAuth (SuperGrok Subscription)** in `hermes model`, or run `hermes auth add xai-oauth`. The same OAuth bearer token is automatically reused by direct-to-xAI tools (TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md) for the full flow — and if Hermes runs on a remote host, also see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md) for the required `ssh -L` tunnel.
 
 When using xAI as a provider (any base URL containing `x.ai`), Hermes automatically enables prompt caching by sending the `x-grok-conv-id` header with every API request. This routes requests to the same server within a conversation session, allowing xAI's infrastructure to reuse cached system prompts and conversation history.
 
-No configuration is needed — caching activates automatically when an xAI endpoint is detected and a session ID is available. This reduces latency and cost for multi-turn conversations.
+Additionally, xAI ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
 
-xAI also ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
+The `xai-oauth` provider is the best experience if you already use the official Grok CLI or Grok Build:
+
+```bash
+grok login          # Log in with the official Grok CLI first
+hermes model        # Then select "xAI (OAuth login)"
+```
+
+Hermes will automatically detect your `~/.grok/auth.json` and import the credentials. No additional browser login is needed in most cases.
+
+This provider uses the `codex_responses` API mode for native reasoning support on Grok 4+ models.
+
+#### API Key Path (`xai`)
+
+For users who prefer a traditional API key:
+
+```bash
+export XAI_API_KEY=sk-...
+hermes model        # Select "xAI (API key)"
+```
+
+#### Prompt Caching
+
+When using any xAI endpoint (base URL containing `x.ai`), Hermes automatically enables prompt caching by sending the `x-grok-conv-id` header. This allows xAI's infrastructure to reuse system prompts and conversation history across requests in the same session.
+
+#### TTS
+
+xAI provides a dedicated TTS endpoint. Select **xAI TTS** in `hermes tools` → Voice & TTS.
+
+#### Aliases
+
+- `xai-oauth`, `grok-oauth`, `grok-login`
+- `xai`, `grok`, `x-ai` (for the API key provider)
 
 ### NovitaAI
 

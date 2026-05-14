@@ -101,6 +101,125 @@ XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+
+# xAI (Grok) OAuth — uses the same public desktop client as the official Grok CLI
+XAI_OAUTH_ISSUER = "https://auth.x.ai"
+XAI_OAUTH_AUTHORIZE_URL = "https://auth.x.ai/oauth/authorize"
+XAI_OAUTH_TOKEN_URL = "https://auth.x.ai/oauth/token"
+XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:access"
+XAI_OAUTH_REDIRECT_PATH = "/xai/callback"
+XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300  # 5 minutes
+
+
+def _xai_exchange_code_for_tokens(
+    *,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Exchange authorization code for access + refresh tokens at auth.x.ai."""
+    try:
+        response = httpx.post(
+            XAI_OAUTH_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "client_id": XAI_OAUTH_CLIENT_ID,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token exchange failed: {exc}",
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "xAI token exchange failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        )
+
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "xAI token exchange returned invalid response.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+
+    return payload
+
+
+def _xai_refresh_access_token(
+    refresh_token: str,
+    timeout_seconds: float = 15.0,
+) -> Dict[str, Any]:
+    """Refresh an xAI access token using the refresh_token."""
+    try:
+        response = httpx.post(
+            XAI_OAUTH_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": XAI_OAUTH_CLIENT_ID,
+                "refresh_token": refresh_token,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token refresh failed: {exc}",
+            provider="xai-oauth",
+            code="xai_token_refresh_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "xAI token refresh failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="xai-oauth",
+            code="xai_token_refresh_failed",
+            relogin_required=True,
+        )
+
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "xAI refresh returned invalid response.",
+            provider="xai-oauth",
+            code="xai_token_refresh_invalid",
+        )
+
+    return payload
+
+
+def _xai_pkce_pair(length: int = 64) -> tuple[str, str, str]:
+    """Generate (code_verifier, code_challenge_S256, state) for xAI OAuth."""
+    import secrets
+    import string
+
+    alphabet = string.ascii_letters + string.digits + "-._~"
+    verifier = "".join(secrets.choice(alphabet) for _ in range(length))
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    state = secrets.token_urlsafe(32)
+    return verifier, challenge, state
+
+
+# Grok CLI credential location (for seamless import)
+GROK_CLI_AUTH_PATH = Path.home() / ".grok" / "auth.json"
+GROK_CLI_AUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"  # public desktop client
 DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
 DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
@@ -339,6 +458,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.x.ai/v1",
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
+    ),
+    "xai-oauth": ProviderConfig(
+        id="xai-oauth",
+        name="xAI (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url="https://api.x.ai/v1",
     ),
     "nvidia": ProviderConfig(
         id="nvidia",
@@ -1377,6 +1502,17 @@ def resolve_provider(
     """
     normalized = (requested or "auto").strip().lower()
 
+    # Auto-import from existing Grok CLI login if the user chose any xAI provider
+    # and does not yet have Hermes credentials for it. This gives instant "just works"
+    # experience for anyone who already uses the official Grok CLI / Grok Build.
+    if normalized in {"xai", "xai-oauth", "grok", "x-ai", "x.ai", "auto"}:
+        try:
+            _import_grok_cli_into_hermes("xai-oauth")
+            # Also seed the plain "xai" entry so people using the API-key path benefit
+            _import_grok_cli_into_hermes("xai")
+        except Exception:
+            pass
+
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
@@ -1584,6 +1720,111 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
             code="qwen_auth_invalid",
         )
     return data
+
+
+def _read_grok_cli_auth() -> Optional[Dict[str, Any]]:
+    """Read and return the active xAI OIDC credentials from the Grok CLI auth store.
+
+    Returns a dict with at least 'access_token' (the JWT) and optionally
+    'refresh_token' and 'expires_at' if a matching entry for auth.x.ai is found.
+    Returns None if no usable Grok CLI login exists.
+    """
+    auth_path = GROK_CLI_AUTH_PATH
+    if not auth_path.exists():
+        return None
+
+    try:
+        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug("Grok CLI auth.json is unreadable or corrupt")
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+
+    # The Grok CLI stores entries keyed as "https://auth.x.ai::CLIENT_ID"
+    target_prefix = "https://auth.x.ai::"
+    target_client = GROK_CLI_AUTH_CLIENT_ID
+
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.startswith(target_prefix):
+            continue
+        if not isinstance(value, dict):
+            continue
+        # Match the exact client ID used by the official Grok desktop/CLI
+        if target_client not in key:
+            continue
+
+        access = value.get("key") or value.get("access_token")
+        if not isinstance(access, str) or not access.strip():
+            continue
+
+        result = {
+            "access_token": access.strip(),
+            "source": "grok-cli",
+            "auth_mode": value.get("auth_mode", "oidc"),
+            "email": value.get("email"),
+            "user_id": value.get("user_id"),
+        }
+
+        refresh = value.get("refresh_token")
+        if isinstance(refresh, str) and refresh.strip():
+            result["refresh_token"] = refresh.strip()
+
+        expires = value.get("expires_at")
+        if isinstance(expires, str):
+            result["expires_at"] = expires
+
+        # Also keep the raw entry in case we need more fields later
+        result["_raw"] = value
+        return result
+
+    return None
+
+
+def _import_grok_cli_into_hermes(provider_id: str = "xai-oauth") -> bool:
+    """Import credentials from ~/.grok/auth.json into Hermes' credential pool.
+
+    Returns True if import succeeded and credentials were stored.
+    Idempotent — will not overwrite fresher Hermes credentials.
+    """
+    grok_creds = _read_grok_cli_auth()
+    if not grok_creds:
+        return False
+
+    access_token = grok_creds["access_token"]
+
+    # Check if we already have something usable in Hermes for this provider
+    existing = get_provider_auth_state(provider_id) or {}
+    if existing.get("access_token") or existing.get("token"):
+        # Don't clobber existing Hermes auth
+        return False
+
+    # Also check credential pool
+    pool_entries = read_credential_pool(provider_id)
+    if pool_entries:
+        return False
+
+    # Build a Hermes-style credential entry
+    entry = {
+        "access_token": access_token,
+        "refresh_token": grok_creds.get("refresh_token"),
+        "expires_at": grok_creds.get("expires_at"),
+        "source": "grok-cli",
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+        "email": grok_creds.get("email"),
+    }
+
+    try:
+        write_credential_pool(provider_id, [entry])
+        logger.info("Imported active Grok CLI login into Hermes for %s", provider_id)
+        # Make it visible to the user during `hermes model`
+        if os.environ.get("HERMES_QUIET") != "1":
+            print(f"  → Using credentials imported from Grok CLI ({entry.get('email', 'unknown')})")
+        return True
+    except Exception as exc:
+        logger.warning("Failed to import Grok CLI credentials: %s", exc)
+        return False
 
 
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
@@ -5154,6 +5395,228 @@ def login_command(args) -> None:
     raise SystemExit(0)
 
 
+def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
+    """Perform browser-based PKCE OAuth login for xAI (Grok) against auth.x.ai."""
+    existing = get_provider_auth_state("xai-oauth") or {}
+    if existing.get("access_token") and not force_new_login:
+        # Already logged in — optionally allow re-login with --force
+        if not getattr(args, "force", False):
+            print("Already logged into xAI via OAuth.")
+            print("Run `hermes model` or `hermes auth login xai-oauth --force` to re-authenticate.")
+            return
+
+    print("Starting xAI OAuth login...")
+    print("NOTE: Browser login uses xAI's public desktop client and may fail due to redirect URI restrictions.")
+    print("      For the most reliable experience, use the official Grok CLI (`grok login`) and let Hermes auto-import.")
+    print("A browser window will open to https://auth.x.ai")
+
+    verifier, challenge, state = _xai_pkce_pair()
+
+    # Use a high port in a range commonly used by desktop apps.
+    # Note: Success depends on whether xAI has registered this redirect URI
+    # for their public client ID. The Grok CLI import path is strongly preferred.
+    redirect_port = 8765 + (os.getpid() % 800)
+    redirect_uri = f"http://127.0.0.1:{redirect_port}{XAI_OAUTH_REDIRECT_PATH}"
+
+    auth_url = (
+        f"{XAI_OAUTH_AUTHORIZE_URL}?"
+        + urlencode({
+            "response_type": "code",
+            "client_id": XAI_OAUTH_CLIENT_ID,
+            "redirect_uri": redirect_uri,
+            "scope": XAI_OAUTH_SCOPE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        })
+    )
+
+    # Start local callback server
+    auth_code_container: Dict[str, Optional[str]] = {"code": None, "state": None, "error": None}
+
+    class XaiCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            auth_code_container["code"] = qs.get("code", [None])[0]
+            auth_code_container["state"] = qs.get("state", [None])[0]
+            auth_code_container["error"] = qs.get("error", [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+
+            html = """<!DOCTYPE html>
+<html><body style="font-family: system-ui; padding: 40px; text-align: center;">
+<h2 style="color: #22c55e;">Login successful</h2>
+<p>You can now close this window and return to the terminal.</p>
+<script>setTimeout(() => window.close(), 1200);</script>
+</body></html>"""
+            self.wfile.write(html.encode("utf-8"))
+
+        def log_message(self, format, *args):
+            pass  # quiet
+
+    server = HTTPServer(("127.0.0.1", redirect_port), XaiCallbackHandler)
+    server.timeout = 0.5
+
+    print(f"Listening for callback on {redirect_uri} ...")
+    webbrowser.open(auth_url)
+
+    deadline = time.time() + 180  # 3 minutes
+    received_code = None
+    received_state = None
+
+    while time.time() < deadline:
+        server.handle_request()
+        if auth_code_container["code"]:
+            received_code = auth_code_container["code"]
+            received_state = auth_code_container["state"]
+            break
+        if auth_code_container["error"]:
+            server.server_close()
+            raise AuthError(
+                f"xAI login failed: {auth_code_container['error']}",
+                provider="xai-oauth",
+                code="login_failed",
+            )
+
+    server.server_close()
+
+    if not received_code or received_state != state:
+        raise AuthError(
+            "xAI login timed out or state mismatch.",
+            provider="xai-oauth",
+            code="login_failed",
+        )
+
+    print("Exchanging authorization code for tokens...")
+
+    token_payload = _xai_exchange_code_for_tokens(
+        code=received_code,
+        code_verifier=verifier,
+        redirect_uri=redirect_uri,
+    )
+
+    access_token = token_payload["access_token"]
+    refresh_token = token_payload.get("refresh_token")
+    expires_in = int(token_payload.get("expires_in", 3600))
+
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(seconds=expires_in)).isoformat()
+
+    auth_state = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "obtained_at": now.isoformat(),
+        "expires_at": expires_at,
+        "expires_in": expires_in,
+        "auth_type": "oauth_external",
+        "client_id": XAI_OAUTH_CLIENT_ID,
+        "scope": XAI_OAUTH_SCOPE,
+        "inference_base_url": pconfig.inference_base_url,
+    }
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        _store_provider_state(store, "xai-oauth", auth_state, set_active=True)
+        _save_auth_store(store)
+
+    # Also seed into credential pool for runtime resolution
+    try:
+        write_credential_pool("xai-oauth", [{
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "source": "xai-oauth",
+        }])
+    except Exception:
+        pass
+
+    print("[OK] Successfully logged into xAI via OAuth (Grok).")
+    print("You can now use Grok models with `hermes chat --provider xai-oauth` or set it in config.")
+
+
+def _refresh_xai_oauth_state(
+    state: Dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False
+) -> Dict[str, Any]:
+    """Refresh xAI access token if close to expiry."""
+    refresh_token = state.get("refresh_token")
+    if not refresh_token:
+        raise AuthError(
+            "xAI OAuth state has no refresh_token. Please re-login with `hermes model`.",
+            provider="xai-oauth",
+            code="no_refresh_token",
+            relogin_required=True,
+        )
+
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+    except Exception:
+        expires_at = 0.0
+
+    now = time.time()
+    if not force and (expires_at - now) > XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS:
+        return state
+
+    payload = _xai_refresh_access_token(refresh_token, timeout_seconds=timeout_seconds)
+
+    new_access = payload["access_token"]
+    new_refresh = payload.get("refresh_token", refresh_token)
+    new_expires_in = int(payload.get("expires_in", 3600))
+
+    now_dt = datetime.now(timezone.utc)
+    new_expires_at = (now_dt + timedelta(seconds=new_expires_in)).isoformat()
+
+    new_state = dict(state)
+    new_state.update({
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "obtained_at": now_dt.isoformat(),
+        "expires_at": new_expires_at,
+        "expires_in": new_expires_in,
+    })
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        _store_provider_state(store, "xai-oauth", new_state, set_active=True)
+        _save_auth_store(store)
+
+    return new_state
+
+
+def resolve_xai_oauth_runtime_credentials() -> Dict[str, Any]:
+    """Return runtime credentials for xai-oauth (used by runtime_provider.py)."""
+    state = get_provider_auth_state("xai-oauth")
+    if not state or not state.get("access_token"):
+        # Try credential pool as fallback (from Grok CLI import or previous login)
+        pool = read_credential_pool("xai-oauth")
+        if pool:
+            entry = pool[0]
+            state = {
+                "access_token": entry.get("access_token"),
+                "refresh_token": entry.get("refresh_token"),
+                "expires_at": entry.get("expires_at"),
+            }
+
+    if not state or not state.get("access_token"):
+        raise AuthError(
+            "Not logged into xAI via OAuth. Run `hermes model` and select 'xAI (OAuth login)'.",
+            provider="xai-oauth",
+            code="not_logged_in",
+            relogin_required=True,
+        )
+
+    state = _refresh_xai_oauth_state(state)
+
+    return {
+        "provider": "xai-oauth",
+        "api_key": state["access_token"],
+        "base_url": "https://api.x.ai/v1",
+        "source": "oauth",
+    }
+
+
 def _login_openai_codex(
     args,
     pconfig: ProviderConfig,
@@ -5936,6 +6399,36 @@ def get_minimax_oauth_auth_status() -> Dict[str, Any]:
         "provider": "minimax-oauth",
         "region": state.get("region", "global"),
         "expires_at": state.get("expires_at"),
+    }
+
+
+def get_xai_oauth_auth_status() -> Dict[str, Any]:
+    """Return auth status dict for xAI (Grok) OAuth provider."""
+    state = get_provider_auth_state("xai-oauth")
+    if not state or not state.get("access_token"):
+        # Also check credential pool (from Grok CLI import)
+        pool = read_credential_pool("xai-oauth")
+        if pool and pool[0].get("access_token"):
+            return {
+                "logged_in": True,
+                "provider": "xai-oauth",
+                "source": "grok-cli-import",
+                "email": pool[0].get("email"),
+            }
+        return {"logged_in": False, "provider": "xai-oauth"}
+
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+        token_valid = (expires_at - time.time()) > XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+    except Exception:
+        token_valid = bool(state.get("access_token"))
+
+    return {
+        "logged_in": token_valid,
+        "provider": "xai-oauth",
+        "source": state.get("source", "oauth"),
+        "expires_at": state.get("expires_at"),
+        "email": state.get("email"),
     }
 
 

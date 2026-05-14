@@ -257,6 +257,16 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "anthropic_messages"
         pconfig = PROVIDER_REGISTRY.get(provider)
         base_url = base_url or (pconfig.inference_base_url if pconfig else "")
+    elif provider == "xai-oauth":
+        api_mode = "codex_responses"
+        base_url = base_url or "https://api.x.ai/v1"
+        try:
+            from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+            creds = resolve_xai_oauth_runtime_credentials()
+            api_key = creds.get("api_key") or api_key
+            base_url = creds.get("base_url") or base_url
+        except Exception as e:
+            logger.debug("xai-oauth credential resolution failed: %s", e)
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

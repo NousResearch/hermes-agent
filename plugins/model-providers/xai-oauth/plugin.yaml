@@ -1,0 +1,5 @@
+name: xai-oauth
+kind: model-provider
+version: 1.0.0
+description: xAI Grok via OAuth (recommended - auto-imports from official Grok CLI)
+author: xAI + Hermes contributors

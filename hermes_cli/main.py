@@ -1994,6 +1994,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "xai-oauth":
+        _model_flow_xai_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -3121,6 +3123,91 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         )
     else:
         print("No change.")
+
+
+def _model_flow_xai_oauth(config, current_model=""):
+    """
+    xAI (Grok) OAuth flow — primarily uses import from the official Grok CLI.
+
+    This is the recommended path. If you are already logged into the official
+    Grok CLI / Grok Build, Hermes will automatically import and use those
+    credentials (no browser login needed).
+    """
+    from hermes_cli.auth import (
+        get_provider_auth_state,
+        get_xai_oauth_auth_status,
+        _login_xai_oauth,
+        resolve_xai_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        _import_grok_cli_into_hermes,
+        read_credential_pool,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.models import _xai_curated_models, fetch_api_models
+
+    print("Checking for existing Grok CLI login...")
+
+    # === Step 1: Auto-import from official Grok CLI (best experience) ===
+    imported = _import_grok_cli_into_hermes("xai-oauth")
+    if imported:
+        print("✓ Imported credentials from your existing Grok CLI login.")
+
+    # === Step 2: Check if we now have usable credentials ===
+    status = get_xai_oauth_auth_status()
+    has_creds = status.get("logged_in", False)
+
+    if has_creds and status.get("source") == "grok-cli-import":
+        print("✓ Using credentials imported from Grok CLI.")
+
+    if not has_creds:
+        print("\nNo xAI credentials found.")
+        print("Recommended: Log in with the official Grok CLI (`grok login`), then run `hermes model` again.")
+        print("Hermes will automatically import your credentials.")
+        print("\nAlternative: Perform a fresh browser login now? (y/N): ", end="")
+
+        try:
+            choice = input().strip().lower()
+        except EOFError:
+            choice = "n"
+
+        if choice == "y":
+            try:
+                import argparse
+                pconfig = PROVIDER_REGISTRY.get("xai-oauth")
+                mock_args = argparse.Namespace(force=True)
+                _login_xai_oauth(mock_args, pconfig, force_new_login=True)
+            except Exception as e:
+                print(f"\nBrowser login failed: {e}")
+                return
+        else:
+            print("\nPlease run `grok login` (or the official Grok CLI), then run `hermes model` again.")
+            print("Hermes will automatically detect and use your Grok CLI login.")
+            return
+
+    # === Step 3: We have credentials — fetch models and let user choose ===
+    print("\nFetching available Grok models...")
+
+    models = None
+    try:
+        creds = resolve_xai_oauth_runtime_credentials()
+        models = fetch_api_models(creds.get("api_key"), creds.get("base_url"))
+    except Exception:
+        pass
+
+    if not models:
+        models = list(_xai_curated_models() or ["grok-4", "grok-3", "grok-3-mini"])
+
+    default = current_model or (models[0] if models else "grok-4")
+    selected = _prompt_model_selection(models, current_model=default)
+
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("xai-oauth", "https://api.x.ai/v1")
+        print(f"\n✓ Default model set to: {selected} (via xAI / Grok OAuth)")
+    else:
+        print("\nNo change.")
 
 
 def _model_flow_custom(config):

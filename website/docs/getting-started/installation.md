@@ -108,7 +108,7 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Prerequisites
 
-The only prerequisite is **Git**. The installer automatically handles everything else:
+The only prerequisites are **Git**, **Curl**, **tar** and **xz**. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)

@@ -10268,6 +10268,11 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
+        _compression_activity = "compressing context / splitting session"
+        if approx_tokens:
+            _compression_activity += f" (~{approx_tokens:,} tokens)"
+        self._current_tool = "context compression"
+        self._touch_activity(_compression_activity)
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:
@@ -10282,6 +10287,10 @@ class AIAgent:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        except Exception:
+            self._current_tool = None
+            self._touch_activity("context compression failed")
+            raise
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -10390,6 +10399,8 @@ class AIAgent:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
         # Warn on repeated compressions (quality degrades with each pass)
+        self._current_tool = None
+        self._touch_activity("context compression completed")
         _cc = self.context_compressor.compression_count
         if _cc >= 2:
             self._vprint(

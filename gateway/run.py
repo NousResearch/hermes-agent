@@ -2616,15 +2616,21 @@ class GatewayRunner:
                 iteration = summary.get("api_call_count", 0)
                 max_iter = summary.get("max_iterations", 0)
                 current_tool = summary.get("current_tool")
+                last_activity = summary.get("last_activity_desc")
+                seconds_since_activity = summary.get("seconds_since_activity")
                 start_ts = self._running_agents_ts.get(session_key, 0)
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
                     if elapsed_min > 0:
                         status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
                 if current_tool:
                     status_parts.append(f"running: {current_tool}")
+                elif last_activity and last_activity != "initializing":
+                    status_parts.append(f"status: {last_activity}")
+                if max_iter and iteration:
+                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                if seconds_since_activity is not None and seconds_since_activity >= 30:
+                    status_parts.append(f"last activity {int(seconds_since_activity)}s ago")
             except Exception:
                 pass
 

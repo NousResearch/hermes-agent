@@ -380,6 +380,65 @@ class TestBusySessionAck:
         assert "10 min" in content  # elapsed
 
     @pytest.mark.asyncio
+    async def test_ack_shows_context_compression_without_zero_iteration_noise(self):
+        """Compression runs outside the normal agent iteration loop; don't call it iteration 0/N."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="still alive?")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 0,
+            "max_iterations": 90,
+            "current_tool": "context compression",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "compressing context / splitting session (~120,000 tokens)",
+            "seconds_since_activity": 5.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 90
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "context compression" in content
+        assert "iteration 0/90" not in content
+
+    @pytest.mark.asyncio
+    async def test_ack_falls_back_to_last_activity_when_no_tool_is_active(self):
+        """Busy acks should still report useful activity when no current tool is set."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="queue this")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 0,
+            "max_iterations": 90,
+            "current_tool": None,
+            "last_activity_ts": time.time() - 45,
+            "last_activity_desc": "compressing context / splitting session (~120,000 tokens)",
+            "seconds_since_activity": 45.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 90
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "status: compressing context / splitting session" in content
+        assert "last activity 45s ago" in content
+        assert "iteration 0/90" not in content
+
+    @pytest.mark.asyncio
     async def test_draining_still_works(self):
         """Draining case should still produce the drain-specific message."""
         runner, sentinel = _make_runner()

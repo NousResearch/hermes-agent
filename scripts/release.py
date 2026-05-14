@@ -55,6 +55,7 @@ AUTHOR_MAP = {
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
     "buraysandro9@gmail.com": "ygd58",
+    "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "421774554@qq.com": "wuli666",

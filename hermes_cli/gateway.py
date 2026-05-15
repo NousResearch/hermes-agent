@@ -2103,6 +2103,38 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _login_shell_hermes_home(username: str) -> str | None:
+    """Best-effort lookup of ``HERMES_HOME`` from ``username``'s login shell.
+
+    This helps ``sudo hermes gateway install --system`` preserve a custom
+    ``HERMES_HOME`` that exists in the target user's login environment even
+    when sudo sanitizes it out of the root process environment.
+    """
+    username = (username or "").strip()
+    if not username or username == "root":
+        return None
+
+    try:
+        result = subprocess.run(
+            ["su", "-l", username, "-s", "/bin/sh", "-c", 'printf %s "$HERMES_HOME"'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    value = (result.stdout or "").strip()
+    if not value:
+        return None
+
+    return str(Path(value).expanduser())
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2131,6 +2163,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
+        if (
+            not os.getenv("HERMES_HOME", "").strip()
+            and hermes_home == str(Path(home_dir) / ".hermes")
+        ):
+            login_shell_home = _login_shell_hermes_home(username)
+            if login_shell_home:
+                hermes_home = login_shell_home
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can

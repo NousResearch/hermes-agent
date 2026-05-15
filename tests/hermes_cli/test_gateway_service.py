@@ -1253,6 +1253,27 @@ class TestSystemUnitHermesHome:
 
         assert 'HERMES_HOME=/opt/hermes-shared' in unit
 
+    def test_system_unit_uses_target_login_shell_hermes_home_when_sudo_drops_env(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_login_shell_hermes_home",
+            lambda username: "/srv/hermes-shared",
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'HERMES_HOME=/srv/hermes-shared' in unit
+
     def test_user_unit_unaffected_by_change(self):
         # User-scope units should still use the calling user's HERMES_HOME
         unit = gateway_cli.generate_systemd_unit(system=False)

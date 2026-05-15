@@ -783,6 +783,13 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     "invalid tool call arguments".  This function applies common repairs;
     if all fail it returns ``"{}"`` so the request succeeds (better than
     crashing the session).  All repairs are logged at WARNING level.
+
+    ``gemini-3-flash-preview`` (and any provider whose streaming tool-call
+    accumulator merges parallel tool-call argument deltas into one buffer)
+    occasionally emits two complete JSON objects back-to-back with no
+    delimiter -- ``{...}{...}``.  The first object is recoverable via
+    ``raw_decode``; the trailing-object is dropped with a clear log line
+    so the caller can investigate (see #25333).
     """
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
@@ -810,6 +817,30 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 tool_name,
             )
         return reserialised
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # Repair pass 0.5: concatenated top-level JSON objects (gemini-3-flash-
+    # preview parallel tool-call accumulator merges multiple tool_call args
+    # into one field with no delimiter -- see #25333). ``raw_decode`` parses
+    # the first complete JSON value and reports where it ended; any
+    # non-whitespace content after that boundary is the concatenation
+    # signature. Recover the first object so at least one tool call lands
+    # instead of dropping both.
+    try:
+        decoder = json.JSONDecoder()
+        first_obj, end_idx = decoder.raw_decode(raw_stripped, idx=0)
+        trailing = raw_stripped[end_idx:].lstrip()
+        if trailing:
+            reserialised = json.dumps(first_obj, separators=(",", ":"))
+            logger.warning(
+                "Recovered first object from concatenated tool_call arguments "
+                "for %s -- kept first object, dropped %d trailing chars (likely "
+                "the streaming tool-call accumulator merged parallel calls; "
+                "see #25333). Dropped tail starts: %s",
+                tool_name, len(trailing), trailing[:60],
+            )
+            return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 

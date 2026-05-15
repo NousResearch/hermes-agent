@@ -141,3 +141,76 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Stage 0.5: concatenated top-level JSON objects (#25333) --
+    # gemini-3-flash-preview occasionally emits parallel tool-call args
+    # merged into one buffer as `}{` with no delimiter. raw_decode parses
+    # the first complete object; we keep that and drop the trailing
+    # concatenation with a clear log line so at least one tool call lands.
+
+    def test_two_concatenated_objects_keeps_first(self):
+        """Real-world repro from yantrikos/yantrikdb-hermes-plugin#5:
+        gemini-3-flash-preview emitted two complete ``yantrikdb_relate``
+        argument objects back-to-back with no delimiter."""
+        raw = (
+            '{"entity": "Don Bowman", "relationship": "ceo_of", "target": "Agilicus"}'
+            '{"entity": "Don Bowman", "relationship": "works_at", "target": "Agilicus"}'
+        )
+        result = _repair_tool_call_arguments(raw, "yantrikdb_relate")
+        parsed = json.loads(result)
+        # First object preserved, second dropped (caller can still see the
+        # warning log line and act on it if needed).
+        assert parsed == {
+            "entity": "Don Bowman",
+            "relationship": "ceo_of",
+            "target": "Agilicus",
+        }
+
+    def test_concatenated_objects_with_braces_inside_strings(self):
+        """The boundary detector must not be confused by `}{` characters
+        that appear *inside* a JSON string value."""
+        raw = (
+            '{"snippet": "if (cfg) { run(); }", "ok": true}'
+            '{"snippet": "second call", "ok": false}'
+        )
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["snippet"] == "if (cfg) { run(); }"
+        assert parsed["ok"] is True
+
+    def test_three_concatenated_objects_keeps_only_first(self):
+        """When the model glues N>2 objects, still only the first is
+        recovered. The remaining N-1 are dropped (with a warning) — a
+        higher-fidelity recovery is a fix for the streaming accumulator,
+        not this repair pass."""
+        raw = '{"i": 1}{"i": 2}{"i": 3}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"i": 1}
+
+    def test_first_object_invalid_then_trailing_object_still_falls_back(self):
+        """If the first object is itself malformed, raw_decode fails and
+        the trailing-object pass shouldn't claim to recover anything.
+        We expect the existing brace-counting heuristic to take over (or
+        the final {} fallback if all repair stages fail)."""
+        raw = '{"a": 1,}{"b": 2}'
+        result = _repair_tool_call_arguments(raw, "t")
+        # The downstream trailing-comma + raw_decode flow recovers {"a":1}
+        # from the leading object. Either {"a": 1} or {} is acceptable here;
+        # what we MUST NOT do is silently emit invalid JSON.
+        parsed = json.loads(result)
+        assert parsed in ({}, {"a": 1})
+
+    def test_concatenated_at_array_top_level(self):
+        """raw_decode works equally well for top-level arrays, though
+        tool_call args are usually objects. Cover the case for safety."""
+        raw = '[1, 2, 3][4, 5]'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == [1, 2, 3]
+
+    def test_single_object_with_trailing_whitespace_is_not_treated_as_concatenation(self):
+        """The raw_decode pass should not log a warning or drop content when
+        the only trailing content is whitespace — that's a normal valid
+        input, handled by the strict=False pass above."""
+        raw = '{"key": "value"}   \n\t'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"key": "value"}
+

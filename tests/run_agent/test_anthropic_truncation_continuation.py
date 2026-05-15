@@ -59,7 +59,7 @@ class TestTruncatedAnthropicResponseNormalization:
         nr = get_transport("anthropic_messages").normalize_response(response)
 
         # The continuation block checks these two attributes:
-        #   assistant_message.content  → appended to truncated_response_prefix
+        #   assistant_message.content  → appended to truncated_response_parts
         #   assistant_message.tool_calls → guards the text-retry branch
         assert nr.content is not None
         assert "partial response" in nr.content

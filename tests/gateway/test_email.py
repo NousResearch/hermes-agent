@@ -47,6 +47,19 @@ class TestConfigEnvOverrides(unittest.TestCase):
         "EMAIL_PASSWORD": "secret",
         "EMAIL_IMAP_HOST": "imap.test.com",
         "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SESSION_BY_SUBJECT": "true",
+    }, clear=False)
+    def test_email_session_by_subject_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertTrue(config.platforms[Platform.EMAIL].extra["session_by_subject"])
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
         "EMAIL_HOME_ADDRESS": "user@test.com",
     }, clear=False)
     def test_email_home_channel_loaded(self):
@@ -57,7 +70,10 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "user@test.com")
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {
+        "HOME": os.path.expanduser("~"),
+        "USERPROFILE": os.path.expanduser("~"),
+    }, clear=True)
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
@@ -123,6 +139,13 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(
             _extract_email_address("John@Example.COM"),
             "john@example.com"
+        )
+
+    def test_normalize_email_subject_strips_reply_prefixes(self):
+        from gateway.platforms.email import _normalize_email_subject
+        self.assertEqual(
+            _normalize_email_subject(" RE: Fwd: 答复:  Project   Plan "),
+            "Project Plan",
         )
 
     def test_strip_html_basic(self):
@@ -425,6 +448,38 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    @patch.dict(os.environ, {
+        "EMAIL_SESSION_BY_SUBJECT": "true",
+    }, clear=False)
+    def test_session_by_subject_sets_thread_id(self):
+        """When enabled, sessions are isolated by normalized subject."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"7",
+            "sender_addr": "john@example.com",
+            "sender_name": "John Doe",
+            "subject": "RE: Fwd: 答复: Project   Plan",
+            "message_id": "<msg7@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        event = captured_events[0]
+        self.assertEqual(event.source.chat_id, "john@example.com")
+        self.assertEqual(event.source.thread_id, "Project Plan")
+        self.assertIn("john@example.com\0Project Plan", adapter._thread_context)
+
     def test_non_allowlisted_sender_dropped(self):
         """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
         import asyncio
@@ -606,6 +661,38 @@ class TestThreadContext(unittest.TestCase):
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
             self.assertIn("Date", send_call)
+
+    @patch.dict(os.environ, {
+        "EMAIL_SESSION_BY_SUBJECT": "true",
+    }, clear=False)
+    def test_reply_uses_subject_thread_metadata(self):
+        """Outbound replies should use the context for the matching subject."""
+        import asyncio
+        adapter = self._make_adapter()
+        budget_key = adapter._thread_context_key("user@test.com", "Budget")
+        roadmap_key = adapter._thread_context_key("user@test.com", "Roadmap")
+        adapter._thread_context[budget_key] = {
+            "subject": "Budget",
+            "message_id": "<budget@test.com>",
+        }
+        adapter._thread_context[roadmap_key] = {
+            "subject": "Roadmap",
+            "message_id": "<roadmap@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            asyncio.run(adapter.send(
+                "user@test.com",
+                "Approved.",
+                metadata={"thread_id": "Budget"},
+            ))
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Budget")
+            self.assertEqual(send_call["In-Reply-To"], "<budget@test.com>")
 
 
 class TestSendMethods(unittest.TestCase):

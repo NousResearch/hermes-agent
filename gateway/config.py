@@ -1443,6 +1443,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        email_session_by_subject = os.getenv("EMAIL_SESSION_BY_SUBJECT")
+        if email_session_by_subject is not None:
+            config.platforms[Platform.EMAIL].extra["session_by_subject"] = _coerce_bool(
+                email_session_by_subject,
+                default=False,
+            )
     email_home = os.getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

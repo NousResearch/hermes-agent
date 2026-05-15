@@ -13,6 +13,7 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_SESSION_BY_SUBJECT — Isolate sessions by normalized email subject
 """
 
 import asyncio
@@ -42,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -64,6 +66,13 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+# Prefixes stripped when EMAIL_SESSION_BY_SUBJECT builds an email thread id.
+_SUBJECT_REPLY_PREFIX_RE = re.compile(
+    r"^(?:(?:re|fw|fwd)\s*:\s*|(?:答复|回复|转发)\s*:\s*)+",
+    re.IGNORECASE,
+)
+_THREAD_CONTEXT_SEPARATOR = "\0"
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
@@ -182,6 +191,13 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _normalize_email_subject(subject: str) -> str:
+    """Normalize a subject for optional email session isolation."""
+    normalized = str(subject or "").strip()
+    normalized = _SUBJECT_REPLY_PREFIX_RE.sub("", normalized).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
 def _extract_attachments(
     msg: email_lib.message.Message,
     skip_attachments: bool = False,
@@ -262,13 +278,17 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        session_by_subject = os.getenv("EMAIL_SESSION_BY_SUBJECT")
+        if session_by_subject is None:
+            session_by_subject = extra.get("session_by_subject")
+        self._session_by_subject = is_truthy_value(session_by_subject, default=False)
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
+        # Map chat/session key -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
@@ -292,6 +312,31 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _subject_thread_id(self, subject: str) -> Optional[str]:
+        """Return a normalized subject thread id when subject isolation is enabled."""
+        if not self._session_by_subject:
+            return None
+        normalized = _normalize_email_subject(subject)
+        return normalized or None
+
+    def _thread_context_key(self, address: str, thread_id: Optional[str] = None) -> str:
+        """Build the key used for email reply context."""
+        normalized_address = address.lower()
+        if self._session_by_subject and thread_id:
+            return f"{normalized_address}{_THREAD_CONTEXT_SEPARATOR}{thread_id}"
+        return normalized_address
+
+    def _context_key_from_metadata(
+        self,
+        address: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Map outbound metadata back to the inbound email thread context."""
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id is not None:
+            thread_id = str(thread_id)
+        return self._thread_context_key(address, thread_id)
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -456,6 +501,7 @@ class EmailAdapter(BasePlatformAdapter):
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]
+        subject_thread_id = self._subject_thread_id(subject)
 
         # Build message text: include subject as context
         text = body
@@ -474,7 +520,8 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_type = MessageType.PHOTO
 
         # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
+        context_key = self._thread_context_key(sender_addr, subject_thread_id)
+        self._thread_context[context_key] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
         }
@@ -485,6 +532,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=subject_thread_id,
         )
 
         event = MessageEvent(
@@ -510,8 +558,9 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
+            context_key = self._context_key_from_metadata(chat_id, metadata)
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, context_key
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -523,6 +572,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        context_key: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
@@ -530,7 +580,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["To"] = to_addr
 
         # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(context_key or to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -571,11 +621,12 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image URL as part of an email body."""
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata=metadata)
 
     async def send_multiple_images(
         self,
@@ -615,6 +666,7 @@ class EmailAdapter(BasePlatformAdapter):
             return
 
         body = "\n\n".join(body_parts)
+        context_key = self._context_key_from_metadata(chat_id, metadata)
 
         try:
             loop = asyncio.get_running_loop()
@@ -624,6 +676,7 @@ class EmailAdapter(BasePlatformAdapter):
                 chat_id,
                 body,
                 local_paths,
+                context_key,
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -634,13 +687,14 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        context_key: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(context_key or to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -691,11 +745,13 @@ class EmailAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
         try:
             loop = asyncio.get_running_loop()
+            context_key = self._context_key_from_metadata(chat_id, metadata)
             message_id = await loop.run_in_executor(
                 None,
                 self._send_email_with_attachment,
@@ -703,6 +759,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                context_key,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -715,13 +772,14 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        context_key: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(context_key or to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"

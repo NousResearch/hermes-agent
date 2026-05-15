@@ -72,6 +72,7 @@ EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
+EMAIL_SESSION_BY_SUBJECT=false         # Isolate sessions per sender + subject
 ```
 
 ---
@@ -99,6 +100,7 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 
 - **Subject line** is included as context (e.g., `[Subject: Deploy to production]`)
 - **Reply emails** (subject starting with `Re:`) skip the subject prefix — the thread context is already established
+- **Optional subject-based sessions** can isolate one sender's conversations by normalized subject with `EMAIL_SESSION_BY_SUBJECT=true`
 - **Attachments** are cached locally:
   - Images (JPEG, PNG, GIF, WebP) → available to the vision tool
   - Documents (PDF, ZIP, etc.) → available for file access
@@ -187,4 +189,5 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
+| `EMAIL_SESSION_BY_SUBJECT` | No | `false` | Use sender + normalized subject as the session key |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

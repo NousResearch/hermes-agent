@@ -1,6 +1,8 @@
 """Tests for FileSyncManager — mtime tracking, deletion detection, transactional rollback."""
 
 import os
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -309,3 +311,91 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+def _bulk_download_tar(remote_files):
+    """Return a bulk_download_fn that writes remote_files into a tar."""
+
+    def bulk_download(dest_tar_path):
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = Path(source_dir)
+            for remote_path, content in remote_files.items():
+                member_path = source / remote_path.lstrip("/")
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                member_path.write_text(content)
+            with tarfile.open(dest_tar_path, "w") as tar:
+                for member_path in source.rglob("*"):
+                    if member_path.is_file():
+                        tar.add(member_path, arcname=str(member_path.relative_to(source)))
+
+    return bulk_download
+
+
+class TestSyncBackSecurity:
+    def test_sync_back_does_not_infer_top_level_hermes_home_files(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        credential = hermes_home / "google_token.json"
+        credential.write_text("original token")
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(str(credential), "/root/.hermes/google_token.json")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_download_fn=_bulk_download_tar(
+                {
+                    "/root/.hermes/google_token.json": "original token",
+                    "/root/.hermes/config.yaml": "model:\n  provider: poisoned\n",
+                }
+            ),
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mgr.sync(force=True)
+        mgr.sync_back(hermes_home=hermes_home)
+
+        assert not (hermes_home / "config.yaml").exists()
+
+    def test_sync_back_applies_inferred_nested_file_when_allowed(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        skill_dir = hermes_home / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        skill = skill_dir / "SKILL.md"
+        skill.write_text("original skill")
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(str(skill), "/root/.hermes/skills/demo/SKILL.md")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_download_fn=_bulk_download_tar(
+                {
+                    "/root/.hermes/skills/demo/SKILL.md": "original skill",
+                    "/root/.hermes/skills/demo/notes.md": "remote notes",
+                }
+            ),
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mgr.sync(force=True)
+        mgr.sync_back(hermes_home=hermes_home)
+
+        assert (skill_dir / "notes.md").read_text() == "remote notes"
+
+    def test_sync_back_enforces_write_denylist_for_explicit_mapping(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_file = hermes_home / ".env"
+        env_file.write_text("SAFE=1\n")
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(str(env_file), "/root/.hermes/.env")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_download_fn=_bulk_download_tar({"/root/.hermes/.env": "POISONED=1\n"}),
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mgr.sync(force=True)
+        mgr.sync_back(hermes_home=hermes_home)
+
+        assert env_file.read_text() == "SAFE=1\n"

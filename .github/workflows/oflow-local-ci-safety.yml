@@ -1,0 +1,92 @@
+name: Oflow Local CI Safety
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Read-only upstream ref used for changed-file discovery"
+        required: false
+        default: "origin/main"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: oflow-local-ci-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-ci-safety:
+    name: Local-only safety validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce non-main branch execution
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" == "main" || "${GITHUB_REF_NAME}" == "master" ]]; then
+            echo "Oflow local CI is review-only and must not run as direct main mutation evidence." >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Prepare artifact directory
+        run: mkdir -p artifacts/oflow-local-ci
+
+      - name: Denylist safety check
+        run: |
+          set -o pipefail
+          python3 scripts/review/oflow_local_ci.py denylist --repo . --upstream "${{ inputs.upstream }}" \
+            | tee artifacts/oflow-local-ci/denylist.json
+
+      - name: Python compile check
+        run: |
+          set -o pipefail
+          python3 scripts/review/oflow_local_ci.py py-compile --repo . --upstream "${{ inputs.upstream }}" \
+            | tee artifacts/oflow-local-ci/py-compile.json
+
+      - name: Git whitespace diff check
+        run: python3 scripts/review/oflow_local_ci.py diff-check --repo . --upstream "${{ inputs.upstream }}"
+
+      - name: Workflow YAML validation
+        run: |
+          set -o pipefail
+          python3 scripts/review/oflow_local_ci.py workflow-yaml --repo . --upstream "${{ inputs.upstream }}" \
+            | tee artifacts/oflow-local-ci/workflow-yaml.json
+
+      - name: Focused fixture tests
+        run: python3 scripts/review/oflow_local_ci.py pytest-subset --repo . tests/review/test_oflow_local_ci.py
+
+      - name: Write CI summary artifact
+        if: always()
+        run: |
+          python3 scripts/review/oflow_local_ci.py summary --repo . --upstream "${{ inputs.upstream }}" \
+            --output artifacts/oflow-local-ci/summary.json
+
+      - name: Handoff gate
+        run: |
+          python3 scripts/review/oflow_tracked_file_handoff_check.py --repo . --upstream "${{ inputs.upstream }}" \
+            --summary artifacts/oflow-local-ci/summary.json \
+            | tee artifacts/oflow-local-ci/handoff-gate.json
+
+      - name: Upload artifact-only review outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: oflow-local-ci-safety-${{ github.run_id }}
+          path: artifacts/oflow-local-ci/
+          if-no-files-found: error

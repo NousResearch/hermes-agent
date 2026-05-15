@@ -70,3 +70,6 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Oflow local CI generated review artifacts
+artifacts/oflow-local-ci/

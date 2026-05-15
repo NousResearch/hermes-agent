@@ -1,5 +1,7 @@
 import json
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -753,6 +755,136 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_session_close_teardown_is_idempotent_and_single_path(monkeypatch):
+    events: list[str] = []
+
+    class _Agent:
+        session_id = "agent-session"
+
+        def close(self):
+            events.append("agent.close")
+
+    class _Worker:
+        def close(self):
+            events.append("worker.close")
+
+    monkeypatch.setattr(server, "_get_db", lambda: types.SimpleNamespace(end_session=lambda sid, reason: events.append(f"end:{sid}:{reason}")))
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda event, sid: events.append(f"hook:{event}:{sid}"))
+    monkeypatch.setitem(sys.modules, "tools.approval", types.SimpleNamespace(unregister_gateway_notify=lambda key: events.append(f"unregister:{key}")))
+    server._sessions["sid"] = _session(agent=_Agent(), slash_worker=_Worker())
+
+    try:
+        first = server.handle_request({"id": "1", "method": "session.close", "params": {"session_id": "sid"}})
+        second = server.handle_request({"id": "2", "method": "session.close", "params": {"session_id": "sid"}})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert first["result"]["closed"] is True
+    assert second["result"]["closed"] is False
+    assert events == [
+        "hook:on_session_finalize:agent-session",
+        "end:agent-session:tui_close",
+        "unregister:session-key",
+        "agent.close",
+        "worker.close",
+    ]
+
+
+def test_shutdown_sessions_uses_canonical_teardown_once(monkeypatch):
+    closed: list[tuple[str, str]] = []
+    monkeypatch.setattr(server, "_close_session", lambda sid, reason="tui_close": closed.append((sid, reason)) or server._sessions.pop(sid, None) is not None)
+    server._sessions["sid"] = _session()
+    try:
+        server._shutdown_sessions()
+        server._shutdown_sessions()
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert closed == [("sid", "tui_shutdown")]
+
+
+def test_shutdown_signal_runs_session_closeout_before_exit(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(server, "_shutdown_sessions", lambda: calls.append("shutdown"))
+
+    try:
+        server._handle_shutdown_signal(signal.SIGTERM, None)
+        raise AssertionError("shutdown signal handler did not exit")
+    except SystemExit as exc:
+        assert exc.code == 128 + signal.SIGTERM
+
+    assert calls == ["shutdown"]
+
+
+def test_shutdown_signals_are_registered():
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        assert signal.getsignal(signum) is server._handle_shutdown_signal
+
+
+def test_reap_idle_sessions_closes_only_eligible(monkeypatch):
+    now = 1000.0
+    closed: list[tuple[str, str]] = []
+    monkeypatch.setattr(server, "_close_session", lambda sid, reason="tui_close": closed.append((sid, reason)) or server._sessions.pop(sid, None) is not None)
+    server._sessions.update(
+        {
+            "idle": _session(last_seen_at=now - 7200, running=False),
+            "active": _session(last_seen_at=now - 7200, running=True),
+            "recent": _session(last_seen_at=now - 10, running=False),
+        }
+    )
+    try:
+        result = server._reap_idle_sessions(now=now, max_idle_s=3600)
+    finally:
+        for sid in ("idle", "active", "recent"):
+            server._sessions.pop(sid, None)
+
+    assert result == {"sessions_finalized": 1}
+    assert closed == [("idle", "tui_idle_reap")]
+
+
+def test_slash_worker_close_kills_and_waits_after_timeout(monkeypatch):
+    events: list[str] = []
+
+    class _Stdin:
+        def close(self):
+            events.append("stdin.close")
+
+    class _Proc:
+        stdin = _Stdin()
+        stdout: list[str] = []
+        stderr: list[str] = []
+
+        def __init__(self):
+            self.waits = 0
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self):
+            events.append("terminate")
+
+        def kill(self):
+            events.append("kill")
+            self.alive = False
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            events.append(f"wait:{timeout}")
+            if self.waits < 2:
+                raise subprocess.TimeoutExpired("slash", timeout)
+            self.alive = False
+            return 0
+
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **kw: _Proc())
+
+    worker = server._SlashWorker("session-key", "model")
+    worker.close()
+    worker.close()
+
+    assert events == ["stdin.close", "terminate", "wait:1.0", "kill", "wait:1.0"]
 
 
 def test_init_session_fires_reset_hook(monkeypatch):

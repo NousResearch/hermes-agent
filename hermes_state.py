@@ -732,6 +732,51 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def mark_stale_open_sessions(
+        self,
+        *,
+        now: float | None = None,
+        stale_after_s: float = 43200,
+        exclude_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+        end_reason: str = "dashboard_stale_reap",
+        sources: tuple[str, ...] = ("tui", "dashboard"),
+    ) -> int:
+        """Conservatively mark stale open dashboard/TUI sessions ended.
+
+        This never deletes sessions/messages/transcripts and never overwrites
+        an existing ``end_reason`` because it only updates rows with
+        ``ended_at IS NULL``. ``exclude_ids`` protects sessions currently owned
+        by a live TUI/dashboard runtime process.
+        """
+        now = time.time() if now is None else float(now)
+        cutoff = now - max(300.0, float(stale_after_s))
+        excluded = {str(sid) for sid in (exclude_ids or []) if sid}
+        source_values = tuple(str(src) for src in sources if src)
+        if not source_values:
+            source_values = ("tui",)
+
+        def _do(conn):
+            clauses = [
+                "ended_at IS NULL",
+                "COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = sessions.id), started_at) < ?",
+            ]
+            params: list[Any] = [cutoff]
+            placeholders = ",".join("?" for _ in source_values)
+            clauses.append(f"source IN ({placeholders})")
+            params.extend(source_values)
+            if excluded:
+                placeholders = ",".join("?" for _ in excluded)
+                clauses.append(f"id NOT IN ({placeholders})")
+                params.extend(sorted(excluded))
+            params = [now, end_reason] + params
+            cur = conn.execute(
+                f"UPDATE sessions SET ended_at = ?, end_reason = ? WHERE {' AND '.join(clauses)}",
+                params,
+            )
+            return cur.rowcount or 0
+
+        return int(self._execute_write(_do) or 0)
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):

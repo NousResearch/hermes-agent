@@ -422,6 +422,62 @@ class TestGatewaySurfacesNullResponse:
 # Prune: finalize_orphaned_compression_sessions
 # ===========================================================================
 
+class TestStaleOpenSessionReap:
+    def test_marks_only_stale_open_rows_and_preserves_counts(self, tmp_path):
+        db = _make_session_db(tmp_path)
+        now = time.time()
+        db.create_session(session_id="stale", source="tui", model="test")
+        db.append_message("stale", role="user", content="hello")
+        db.create_session(session_id="recent", source="tui", model="test")
+        db.append_message("recent", role="user", content="active")
+        db.create_session(session_id="ended", source="tui", model="test")
+        db.append_message("ended", role="user", content="done")
+        db.end_session("ended", "user_exit")
+        db._execute_write(
+            lambda conn: conn.executemany(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                [(now - 90000, "stale"), (now - 90000, "ended"), (now, "recent")],
+            )
+        )
+        db._execute_write(
+            lambda conn: conn.executemany(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                [(now - 90000, "stale"), (now - 90000, "ended")],
+            )
+        )
+
+        before_sessions = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        before_messages = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        marked = db.mark_stale_open_sessions(now=now, stale_after_s=43200, exclude_ids={"recent"})
+        after_sessions = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        after_messages = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+        assert marked == 1
+        assert db.get_session("stale")["end_reason"] == "dashboard_stale_reap"
+        assert db.get_session("recent")["ended_at"] is None
+        assert db.get_session("ended")["end_reason"] == "user_exit"
+        assert before_sessions == after_sessions
+        assert before_messages == after_messages
+
+    def test_stale_ended_session_can_reopen(self, tmp_path):
+        db = _make_session_db(tmp_path)
+        now = time.time()
+        db.create_session(session_id="stale", source="tui", model="test")
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (now - 90000, "stale"),
+            )
+        )
+        assert db.mark_stale_open_sessions(now=now, stale_after_s=43200) == 1
+
+        db.reopen_session("stale")
+
+        reopened = db.get_session("stale")
+        assert reopened["ended_at"] is None
+        assert reopened["end_reason"] is None
+
+
 class TestFinalizeOrphanedCompressionSessions:
     """The prune migration marks ghost compression continuations as ended."""
 

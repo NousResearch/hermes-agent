@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -253,15 +254,48 @@ class _SlashWorker:
             )
 
     def close(self):
+        with self._lock:
+            if getattr(self, "_closed", False):
+                return
+            self._closed = True
+            proc = self.proc
+
+        pid = getattr(proc, "pid", None)
         try:
-            if self.proc.poll() is None:
-                self.proc.terminate()
-                self.proc.wait(timeout=1)
-        except Exception:
+            if getattr(proc, "stdin", None):
+                try:
+                    proc.stdin.close()
+                except Exception as exc:
+                    logger.debug("slash worker stdin close failed pid=%s: %s", pid, exc)
+
+            if proc.poll() is not None:
+                try:
+                    proc.wait(timeout=0)
+                except Exception:
+                    pass
+                return
+
             try:
-                self.proc.kill()
-            except Exception:
-                pass
+                proc.terminate()
+                proc.wait(timeout=1.0)
+                logger.info("slash worker closed pid=%s", pid)
+                return
+            except subprocess.TimeoutExpired:
+                logger.warning("slash worker terminate timed out; killing pid=%s", pid)
+            except Exception as exc:
+                logger.warning("slash worker terminate/wait failed pid=%s: %s", pid, exc)
+
+            try:
+                proc.kill()
+            except Exception as exc:
+                logger.warning("slash worker kill failed pid=%s: %s", pid, exc)
+            try:
+                proc.wait(timeout=1.0)
+                logger.warning("slash worker killed and reaped pid=%s", pid)
+            except Exception as exc:
+                logger.warning("slash worker kill wait failed pid=%s: %s", pid, exc)
+        except Exception as exc:
+            logger.warning("slash worker close failed pid=%s: %s", pid, exc)
 
 
 def _load_busy_input_mode() -> str:
@@ -321,18 +355,124 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
 
+def _close_session(sid: str, end_reason: str = "tui_close") -> bool:
+    """Canonical best-effort teardown for one TUI/dashboard runtime session."""
+    session = _sessions.pop(sid, None)
+    if not session:
+        return False
+    session["closed_at"] = time.time()
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session["session_key"])
+    except Exception as exc:
+        logger.debug("approval notify unregister failed sid=%s: %s", sid, exc)
+    try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
+    except Exception as exc:
+        logger.debug("agent close failed sid=%s: %s", sid, exc)
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+            session["slash_worker"] = None
+    except Exception as exc:
+        logger.warning("slash worker close failed sid=%s: %s", sid, exc)
+    logger.info("TUI session finalized sid=%s reason=%s", sid, end_reason)
+    return True
+
+
 def _shutdown_sessions() -> None:
-    for session in list(_sessions.values()):
-        _finalize_session(session, end_reason="tui_shutdown")
+    finalized = 0
+    for sid in list(_sessions.keys()):
+        if _close_session(sid, "tui_shutdown"):
+            finalized += 1
+    if finalized:
+        logger.info("TUI shutdown finalized sessions=%s", finalized)
+
+
+def _reap_idle_sessions(*, now: float | None = None, max_idle_s: float | None = None) -> dict:
+    now = time.time() if now is None else float(now)
+    if max_idle_s is None:
         try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+            max_idle_s = float(os.environ.get("HERMES_TUI_IDLE_REAP_S") or "43200")
+        except (TypeError, ValueError):
+            max_idle_s = 43200.0
+    max_idle_s = max(300.0, float(max_idle_s))
+    closed = 0
+    for sid, session in list(_sessions.items()):
+        last_seen = float(session.get("last_seen_at") or session.get("created_at") or now)
+        if session.get("running") or now - last_seen < max_idle_s:
+            continue
+        if _close_session(sid, "tui_idle_reap"):
+            closed += 1
+    if closed:
+        logger.info("TUI idle reaper finalized sessions=%s max_idle_s=%s", closed, max_idle_s)
+    return {"sessions_finalized": closed}
+
+
+def _mark_session_activity(sid: str | None) -> None:
+    if not sid:
+        return
+    session = _sessions.get(sid)
+    if session is not None:
+        session["last_seen_at"] = time.time()
+
+
+def _run_stale_session_maintenance() -> int:
+    db = _get_db()
+    if db is None or not hasattr(db, "mark_stale_open_sessions"):
+        return 0
+    live_ids = {
+        getattr(session.get("agent"), "session_id", None) or session.get("session_key")
+        for session in list(_sessions.values())
+    }
+    live_ids = {sid for sid in live_ids if sid}
+    try:
+        marked = db.mark_stale_open_sessions(exclude_ids=live_ids)
+    except Exception as exc:
+        logger.warning("TUI stale-session DB maintenance failed: %s", exc)
+        return 0
+    if marked:
+        logger.info("TUI stale-session DB maintenance marked rows=%s", marked)
+    return int(marked or 0)
+
+
+def _maintenance_loop() -> None:
+    try:
+        interval = float(os.environ.get("HERMES_TUI_REAPER_INTERVAL_S") or "300")
+    except (TypeError, ValueError):
+        interval = 300.0
+    interval = max(30.0, interval)
+    while True:
+        time.sleep(interval)
+        _reap_idle_sessions()
+        _run_stale_session_maintenance()
+
+
+if os.environ.get("HERMES_TUI_REAPER_DISABLED") != "1":
+    _reaper_thread = threading.Thread(
+        target=_maintenance_loop,
+        name="tui-session-reaper",
+        daemon=True,
+    )
+    _reaper_thread.start()
 
 
 atexit.register(_shutdown_sessions)
+
+
+def _handle_shutdown_signal(signum, _frame) -> None:
+    """Finalize live TUI sessions before Python exits on OS signals."""
+    _shutdown_sessions()
+    raise SystemExit(128 + int(signum))
+
+
+for _shutdown_signal in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(_shutdown_signal, _handle_shutdown_signal)
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -493,6 +633,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
+        _mark_session_activity((_params or {}).get("session_id"))
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 
@@ -1930,6 +2071,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
+        "created_at": time.time(),
+        "last_seen_at": time.time(),
     }
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
@@ -2120,6 +2263,8 @@ def _(rid, params: dict) -> dict:
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
+        "created_at": time.time(),
+        "last_seen_at": time.time(),
     }
 
     # Return the lightweight session immediately so Ink can paint the composer
@@ -2637,29 +2782,8 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    session = _sessions.pop(sid, None)
-    if not session:
-        return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
-    return _ok(rid, {"closed": True})
+    closed = _close_session(sid, "tui_close")
+    return _ok(rid, {"closed": closed})
 
 
 @method("session.branch")

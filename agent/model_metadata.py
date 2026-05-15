@@ -1496,6 +1496,13 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+            elif provider == "openai-oauth" and cached <= 272_000:
+                logger.info(
+                    "Dropping stale OpenAI OAuth cache entry %s@%s -> %s (Codex-sized value); "
+                    "re-resolving via OpenAI OAuth model metadata",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
             # Invalidate stale 32k cache entries for Kimi-family models.
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
@@ -1638,6 +1645,18 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
+    if effective_provider == "openai-oauth":
+        # OpenCode's OAuth-backed `openai` provider exposes GPT-5.4 with the
+        # full OpenAI model catalog limits even though requests are routed
+        # through ChatGPT's backend-api/codex surface. Treat this as OpenAI
+        # metadata, not Codex OAuth metadata, so gpt-5.4 resolves to ~1.05M.
+        from agent.models_dev import lookup_models_dev_context
+
+        ctx = lookup_models_dev_context("openai", model)
+        if ctx:
+            if base_url:
+                save_context_length(model, base_url, ctx)
+            return ctx
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.

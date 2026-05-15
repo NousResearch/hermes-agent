@@ -55,3 +55,4 @@ def test_format_direct_research_progress_prefixes_subject():
     text = _format_direct_research_progress("the best browser", ["📚 skimming", "🌐 browsing", "🛠️ tinkering"])
     assert text.startswith("Researching the best browser:\n")
     assert text.endswith("🛠️ tinkering")
+    assert text.count("\n") == 3

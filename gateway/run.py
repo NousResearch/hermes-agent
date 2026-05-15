@@ -13719,6 +13719,7 @@ class GatewayRunner:
         direct_research_delivery = bool(watcher.get("direct_research_delivery"))
         progress_message_id = watcher.get("progress_message_id")
         progress_subject = str(watcher.get("progress_subject") or "research")
+        progress_history = ["🧠 thinking"]
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -13750,7 +13751,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = final_url
+                        final_text = f"done\n{final_url}"
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None
@@ -13886,10 +13887,12 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        label = _format_direct_research_progress(
-                            progress_subject,
-                            _extract_research_progress_lines(session.output_buffer, limit=3),
-                        )
+                        latest_labels = _extract_research_progress_lines(session.output_buffer, limit=1)
+                        latest = latest_labels[-1] if latest_labels else "🧠 thinking"
+                        if latest != progress_history[-1]:
+                            progress_history.append(latest)
+                            progress_history[:] = progress_history[-3:]
+                        label = _format_direct_research_progress(progress_subject, progress_history)
                         if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
                             await adapter.edit_message(
                                 chat_id=chat_id,

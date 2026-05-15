@@ -1455,7 +1455,13 @@ _LIGHT_MODE_REMAP: dict[str, str] = {
 
 def _maybe_remap_for_light_mode(hex_color: str) -> str:
     """If we're in light mode, remap a dark-mode-tuned color to a
-    higher-contrast equivalent.  No-op in dark mode."""
+    higher-contrast equivalent.  No-op in dark mode.
+
+    Test harnesses may replace terminal/color helpers with MagicMock objects;
+    never pass those non-string sentinels through to Rich style fields.
+    """
+    if not isinstance(hex_color, str):
+        return ""
     if not _detect_light_mode():
         return hex_color
     if not hex_color or not hex_color.startswith("#"):
@@ -11303,9 +11309,9 @@ class HermesCLI:
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "⚕ Hermes")
-                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    label = str(_skin.get_branding("response_label", "⚕ Hermes") or "⚕ Hermes")
+                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32")) or "#CD7F32"
+                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC")) or "#FFF8DC"
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
@@ -11322,17 +11328,20 @@ class HermesCLI:
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
-                    _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label}[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        style=_resp_text,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                        width=self._scrollback_box_width(),
-                    ))
+                    try:
+                        ChatConsole().print(Panel(
+                            _render_final_assistant_content(response, mode=self.final_response_markdown),
+                            title=f"[{_resp_color} bold]{label}[/]",
+                            title_align="left",
+                            border_style=_resp_color,
+                            style=_resp_text,
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        ))
+                    except Exception as display_exc:
+                        logger.debug("final response panel rendering failed: %s", display_exc, exc_info=True)
+                        _cprint(response)
 
 
             # Play terminal bell when agent finishes (if enabled).

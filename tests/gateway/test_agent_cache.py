@@ -386,6 +386,36 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
 
+    def test_evict_on_session_reset_soft_releases_clients(self):
+        """Direct eviction should release cached client state without closing tools."""
+        from gateway import run as gw_run
+
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        agent = MagicMock()
+        agent._session_messages = [{"role": "user", "content": "old"}]
+
+        class ImmediateThread:
+            def __init__(self, *, target, args=(), kwargs=None, **_thread_kwargs):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (agent, "sig123")
+
+        with patch.object(gw_run.threading, "Thread", ImmediateThread):
+            runner._evict_cached_agent(session_key)
+
+        with runner._agent_cache_lock:
+            assert session_key not in runner._agent_cache
+        agent.release_clients.assert_called_once()
+        agent.close.assert_not_called()
+        assert agent._session_messages == []
+
     def test_evict_does_not_affect_other_sessions(self):
         """Evicting one session leaves other sessions cached."""
         runner = _make_runner()
@@ -570,6 +600,17 @@ class TestAgentCacheBoundedGrowth:
         assert new_agent not in release_calls
         # Hard-cleanup path must NOT have fired — that's for session expiry only.
         assert cleanup_calls == []
+
+    def test_soft_release_clears_retained_session_messages(self):
+        """Soft cache release should drop large model histories from memory."""
+        runner = self._bounded_runner()
+        agent = self._fake_agent()
+        agent._session_messages = [{"role": "tool", "content": "large output"}]
+
+        runner._release_evicted_agent_soft(agent)
+
+        agent.release_clients.assert_called_once()
+        assert agent._session_messages == []
 
     def test_idle_ttl_sweep_evicts_stale_agents(self, monkeypatch):
         """_sweep_idle_cached_agents removes agents idle past the TTL."""

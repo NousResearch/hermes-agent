@@ -250,6 +250,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_TOOL_DEFS_CACHE_MAX_SIZE = 8
 
 
 def _clear_tool_defs_cache() -> None:
@@ -318,6 +319,8 @@ def get_tool_definitions(
         # agent inits and providers that enforce unique tool names
         # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
         # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
+        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX_SIZE:
+            _tool_defs_cache.clear()
         _tool_defs_cache[cache_key] = result
         return list(result)
     return result

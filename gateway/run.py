@@ -13845,11 +13845,28 @@ class GatewayRunner:
             self._release_running_agent_state(session_key)
 
     def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        """Remove a cached agent for a session and release soft client state."""
+        evicted_agent = None
         _lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache is None:
+            return
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                entry = _cache.pop(session_key, None)
+        else:
+            entry = _cache.pop(session_key, None)
+        if isinstance(entry, tuple) and entry:
+            evicted_agent = entry[0]
+        else:
+            evicted_agent = entry
+        if evicted_agent is not None:
+            threading.Thread(
+                target=self._release_evicted_agent_soft,
+                args=(evicted_agent,),
+                daemon=True,
+                name=f"agent-cache-evict-{str(session_key)[:24]}",
+            ).start()
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -13885,6 +13902,9 @@ class GatewayRunner:
         try:
             if hasattr(agent, "release_clients"):
                 agent.release_clients()
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, (list, dict, set)):
+                    session_messages.clear()
             else:
                 # Older agent instance (shouldn't happen in practice) —
                 # fall back to the legacy full-close path.

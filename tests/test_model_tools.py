@@ -40,6 +40,19 @@ class TestHandleFunctionCall:
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_tool_definition_cache_is_bounded(self, monkeypatch):
+        """Config-mtime churn must not grow the quiet-mode schema cache forever."""
+        import model_tools
+
+        model_tools._tool_defs_cache.clear()
+        for idx in range(model_tools._TOOL_DEFS_CACHE_MAX_SIZE):
+            model_tools._tool_defs_cache[(idx,)] = []
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", lambda *a, **kw: [])
+        model_tools.get_tool_definitions(enabled_toolsets=["web"], quiet_mode=True)
+
+        assert len(model_tools._tool_defs_cache) == 1
+
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),

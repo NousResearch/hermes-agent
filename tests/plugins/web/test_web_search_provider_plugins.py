@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, brave-search, ddgs, searxng, exa,
+  parallel, tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -33,6 +33,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every web-provider env var so is_available() returns False."""
     for k in (
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_API_KEY",
         "SEARXNG_URL",
         "TAVILY_API_KEY",
         "TAVILY_BASE_URL",
@@ -68,15 +69,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "brave-search",
             "ddgs",
             "exa",
             "firecrawl",
@@ -90,6 +92,7 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
+            ("brave-search", True, False),
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
@@ -116,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -160,6 +163,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no BRAVE_SEARCH_API_KEY
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_brave_search_accepts_primary_or_legacy_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("brave-search")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("BRAVE_API_KEY", "real")
         assert p.is_available() is True
 
     def test_searxng_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:

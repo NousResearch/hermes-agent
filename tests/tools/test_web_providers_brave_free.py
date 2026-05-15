@@ -215,6 +215,7 @@ class TestBraveFreeBackendWiring:
                     "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools._get_backend() == "brave-free"

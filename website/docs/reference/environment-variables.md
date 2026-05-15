@@ -137,6 +137,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API key for `brave-free`, `brave-search`, and `brave_search` ([brave.com/search/api](https://brave.com/search/api/)) |
+| `BRAVE_API_KEY` | Optional legacy fallback for the `brave-search` provider and `brave_search` tool. Prefer `BRAVE_SEARCH_API_KEY` for new setup. |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |

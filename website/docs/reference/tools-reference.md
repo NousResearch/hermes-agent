@@ -210,8 +210,37 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | Backend dependent, for example EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, SEARXNG_URL, BRAVE_SEARCH_API_KEY, or BRAVE_API_KEY |
 | `web_extract` | Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `brave_search` | Search Brave Search API directly with richer modes. Default `both` returns web results plus grounding context. Modes include `web`, `llm`, `images`, `news`, `videos`, `discussions`, `suggest`, and bounded `raw`. Configure `web.search_backend: brave-search` when you also want generic `web_search` to use Brave Search API. Existing `brave-free` remains basic search only. | BRAVE_SEARCH_API_KEY |
+
+### Brave Search API
+
+Hermes includes two Brave providers:
+
+- `brave-free` is the existing basic search-only provider.
+- `brave-search` uses Brave Search API Search plan access for richer search and grounding context workflows.
+
+Configure the paid or credit-enabled provider with:
+
+```yaml
+web:
+  search_backend: brave-search
+```
+
+Example direct tool calls:
+
+```text
+brave_search(query="latest Hermes Agent release", mode="both")
+brave_search(query="Hermes Agent", mode="llm")
+brave_search(query="Hermes Agent", mode="videos")
+brave_search(query="Hermes Agent", mode="images")
+brave_search(query="Hermes Agent", mode="news")
+brave_search(query="Hermes Agent Reddit", mode="discussions")
+brave_search(query="Hermes Agent", mode="suggest")
+```
+
+Some advanced Brave endpoints may require a paid or credit-enabled Brave Search API account. Brave Answers is a separate plan and is not implemented by `brave_search`.
 
 ## `x_search` toolset
 

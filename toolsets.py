@@ -30,7 +30,7 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "brave_search",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -89,13 +89,13 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
+        "tools": ["web_search", "web_extract", "brave_search"],
         "includes": []  # No other toolsets included
     },
     
     "search": {
         "description": "Web search only (no content extraction/scraping)",
-        "tools": ["web_search"],
+        "tools": ["web_search", "brave_search"],
         "includes": []
     },
 
@@ -174,7 +174,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "web_search", "brave_search"
         ],
         "includes": []
     },
@@ -347,7 +347,7 @@ TOOLSETS = {
     "hermes-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
-            "web_search", "web_extract",
+            "web_search", "web_extract", "brave_search",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
@@ -367,7 +367,7 @@ TOOLSETS = {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
             # Web
-            "web_search", "web_extract",
+            "web_search", "web_extract", "brave_search",
             # Terminal + process management
             "terminal", "process",
             # File manipulation

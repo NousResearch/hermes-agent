@@ -19,6 +19,7 @@ Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop
 | Version | `1.0.0` |
 | Author | arceus77-7, enhanced by Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `security`, `secrets`, `1password`, `op`, `cli` |
 
 ## Reference: full SKILL.md

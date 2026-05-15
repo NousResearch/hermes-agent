@@ -14,6 +14,8 @@ to ``_run_agent``'s return dict and uses it for the slice.
 
 import pytest
 
+from gateway.run import _preserve_queued_followup_history_offset
+
 
 # ---------------------------------------------------------------------------
 # Helpers - replicate the filtering logic from _run_agent
@@ -265,3 +267,60 @@ class TestTranscriptHistoryOffset:
         assert len(fixed_new) == 2
         assert fixed_new[0]["content"] == "Now search for dogs"
         assert fixed_new[1]["content"] == "Dog results here."
+
+    def test_recursive_queued_followup_keeps_outer_history_offset(self):
+        """Queued drain persistence must include every turn in the chain.
+
+        ``_run_agent()`` recurses when a follow-up arrived while the current turn
+        was running. The recursive call naturally returns a later
+        ``history_offset`` because it received the previous turn as part of its
+        input history. If the outer caller persists transcript rows using that
+        later offset, it only sees the *last* queued turn as new and drops the
+        earlier queued turn from the transcript.
+        """
+        history_before_chain = [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+        first_followup_turn = [
+            {"role": "user", "content": "First follow-up question"},
+            {"role": "assistant", "content": "First follow-up answer"},
+        ]
+        second_followup_turn = [
+            {"role": "user", "content": "Second follow-up question"},
+            {"role": "assistant", "content": "Second follow-up answer"},
+        ]
+
+        current_result = {
+            "history_offset": len(history_before_chain),
+            "messages": history_before_chain + first_followup_turn,
+        }
+        followup_result = {
+            "history_offset": len(history_before_chain + first_followup_turn),
+            "messages": (
+                history_before_chain
+                + first_followup_turn
+                + second_followup_turn
+            ),
+        }
+
+        merged = _preserve_queued_followup_history_offset(
+            current_result,
+            followup_result,
+        )
+        assert merged["history_offset"] == len(history_before_chain)
+
+        persisted = merged["messages"][merged["history_offset"]:]
+        assert persisted == first_followup_turn + second_followup_turn
+
+    def test_recursive_queued_followup_preserves_smaller_existing_offset(self):
+        """Do not widen the slice if the nested result is already conservative."""
+        current_result = {"history_offset": 4}
+        followup_result = {"history_offset": 3, "messages": []}
+
+        merged = _preserve_queued_followup_history_offset(
+            current_result,
+            followup_result,
+        )
+
+        assert merged["history_offset"] == 3

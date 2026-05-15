@@ -393,14 +393,21 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- OpenCode Zen: Claude stays hyphenated; other models keep dots ---
-    if provider == "opencode-zen":
-        bare = _strip_matching_provider_prefix(name, provider)
-        if "/" in bare:
-            return bare
-        if bare.lower().startswith("claude-"):
-            return _dots_to_hyphens(bare)
-        return bare
+    # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
+    #     Their /v1/models API returns bare IDs only (no vendor prefix), and
+    #     the inference endpoint rejects vendor-prefixed names with HTTP 401
+    #     "Model not supported".  Strip ANY leading ``vendor/`` so config
+    #     entries like ``minimax/minimax-m2.7`` or ``deepseek/deepseek-v4-flash``
+    #     — commonly copied from aggregator slugs into fallback_model lists —
+    #     resolve to bare ``minimax-m2.7`` / ``deepseek-v4-flash`` the API
+    #     actually serves.  See PR reviewing opencode-go fallback 401s. ---
+    if provider in {"opencode-zen", "opencode-go"}:
+        if "/" in name:
+            _, bare_after_slash = name.split("/", 1)
+            name = bare_after_slash.strip() or name
+        if provider == "opencode-zen" and name.lower().startswith("claude-"):
+            return _dots_to_hyphens(name)
+        return name
 
     # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:

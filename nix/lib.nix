@@ -163,35 +163,42 @@
       for entry in "''${ENTRIES[@]}"; do
         IFS=":" read -r ATTR FOLDER NIX_FILE <<< "$entry"
         echo "==> .#$ATTR ($FOLDER -> $NIX_FILE)"
-        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --print-build-logs 2>&1)
-        STATUS=$?
-        if [ "$STATUS" -eq 0 ]; then
+
+        # Compute the actual hash from the lockfile directly using
+        # prefetch-npm-deps. This avoids false "ok" from nix build when
+        # an old derivation is cached in a substituter (cachix/cache.nixos.org).
+        LOCK_FILE="$FOLDER/package-lock.json"
+        NEW_HASH=$(${pkgs.lib.getExe pkgs.prefetch-npm-deps} "$LOCK_FILE" 2>/dev/null)
+        if [ -z "$NEW_HASH" ]; then
+          echo "    prefetch-npm-deps failed, falling back to nix build" >&2
+          OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --print-build-logs 2>&1)
+          STATUS=$?
+          if [ "$STATUS" -eq 0 ]; then
+            echo "    ok (via nix build)"
+            continue
+          fi
+          NEW_HASH=$(echo "$OUTPUT" | awk '/got:/ {print $2; exit}')
+          if [ -z "$NEW_HASH" ]; then
+            if echo "$OUTPUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
+              echo "    skipped (transient cache failure — see primary nix build for real status)" >&2
+              echo "$OUTPUT" | tail -8 >&2
+              continue
+            fi
+            echo "    build failed with no hash mismatch:" >&2
+            echo "$OUTPUT" | tail -40 >&2
+            exit 1
+          fi
+        fi
+
+        OLD_HASH=$(grep -oE 'hash = "sha256-[^"]+"' "$NIX_FILE" | head -1 \
+          | sed -E 's/hash = "(.*)"/\1/')
+
+        if [ "$NEW_HASH" = "$OLD_HASH" ]; then
           echo "    ok"
           continue
         fi
 
-        NEW_HASH=$(echo "$OUTPUT" | awk '/got:/ {print $2; exit}')
-        if [ -z "$NEW_HASH" ]; then
-          # Magic-Nix-Cache occasionally returns HTTP 418 / cache-throttled
-          # mid-run; nix then prints "outputs … not valid, so checking is
-          # not possible" without a `got:` line.  That's an infrastructure
-          # blip, not a stale lockfile — warn + skip rather than failing
-          # the lint.  A real hash mismatch would still surface in the
-          # primary `.#$ATTR` build, which is a separate CI job.
-          if echo "$OUTPUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
-            echo "    skipped (transient cache failure — see primary nix build for real status)" >&2
-            echo "$OUTPUT" | tail -8 >&2
-            continue
-          fi
-          echo "    build failed with no hash mismatch:" >&2
-          echo "$OUTPUT" | tail -40 >&2
-          exit 1
-        fi
-
         HASH_LINE=$(grep -n 'hash = "sha256-' "$NIX_FILE" | head -1 | cut -d: -f1)
-        OLD_HASH=$(grep -oE 'hash = "sha256-[^"]+"' "$NIX_FILE" | head -1 \
-          | sed -E 's/hash = "(.*)"/\1/')
-        LOCK_FILE="$FOLDER/package-lock.json"
         echo "    stale: $NIX_FILE:$HASH_LINE $OLD_HASH -> $NEW_HASH"
         STALE=1
 

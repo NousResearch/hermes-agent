@@ -41,6 +41,7 @@ from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +347,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
     # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in ("RGBA", "P"):
+    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.
@@ -401,6 +402,232 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 
     # Shouldn't reach here, but fall back to full encode
     return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+
+
+# ---------------------------------------------------------------------------
+# Native fast path: short-circuit the auxiliary LLM when the active main model
+# supports native vision. Instead of asking a separate LLM to describe the
+# image and returning text, we load the image, base64-encode it, and return a
+# multimodal tool-result envelope. The agent loop unwraps the envelope into an
+# OpenAI-style content list on the `tool` role; provider adapters (anthropic,
+# codex_responses, chat_completions) translate that into Anthropic
+# tool_result image blocks / Responses input_image / OpenAI image_url tool
+# content. The main model then "sees" the pixels directly on its next turn.
+# ---------------------------------------------------------------------------
+
+
+def _supports_media_in_tool_results(provider: str, model: str) -> bool:
+    """Whether the given provider+model combination accepts image content
+    inside a tool-result message.
+
+    Providers covered today (per spec docs verified Apr-2026):
+
+      * Anthropic Messages API (``anthropic`` provider, plus aggregators that
+        proxy Claude — ``openrouter``, ``nous``, ``vertex``, ``bedrock``):
+        ``tool_result`` blocks accept ``image`` content blocks.
+      * OpenAI Chat Completions: tool messages accept array content with
+        ``image_url`` parts.
+      * OpenAI Responses (``openai-codex``): ``function_call_output.output``
+        accepts an array of ``input_text``/``input_image`` items.
+      * Gemini 3 (and proxied via aggregators): supports multimodal tool
+        results. Older Gemini does NOT.
+
+    For unknown / legacy providers we conservatively return False — the
+    caller falls back to the legacy aux-LLM text path.
+    """
+    if not isinstance(provider, str):
+        return False
+    p = provider.strip().lower()
+    if not p:
+        return False
+
+    # Aggregators that route to multiple vendors — assume support since
+    # users on these aggregators are typically using vision-capable
+    # frontier models. Falling back to text would be a regression for
+    # them.
+    _AGGREGATORS = {
+        "openrouter", "nous", "vertex", "bedrock", "anthropic-vertex",
+        "google-vertex",
+    }
+    if p in _AGGREGATORS:
+        return True
+
+    # Native Anthropic
+    if p in {"anthropic", "claude", "anthropic-direct"}:
+        return True
+
+    # OpenAI Chat Completions and Responses
+    if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
+        return True
+
+    # Gemini — gate on model name; older Gemini variants did not support
+    # multimodal functionResponse. Gemini 3.x does.
+    if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:
+        if not isinstance(model, str):
+            return False
+        m = model.strip().lower()
+        if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
+            return True
+        return False
+
+    # Other vision-capable provider stacks. Conservative default: False.
+    # Add explicit entries here as we verify each provider's tool-result
+    # multimodal support empirically.
+    return False
+
+
+def _build_native_vision_tool_result(
+    image_url: str,
+    question: str,
+    image_data_url: str,
+    image_size_bytes: int,
+) -> Dict[str, Any]:
+    """Build the multimodal tool-result envelope returned by the fast path.
+
+    Shape:
+      {
+        "_multimodal": True,
+        "content": [
+          {"type": "text", "text": "<short note + the user's question>"},
+          {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ],
+        "text_summary": "<plain-text fallback>",
+        "meta": {"image_url": ..., "size_bytes": N},
+      }
+
+    The text part exists for two reasons: (1) it gives the model an
+    instruction to act on now that the pixels are in context, and
+    (2) providers that don't support multimodal tool results can fall back
+    to ``text_summary``.
+    """
+    # The tool-result text part is intentionally minimal. The model already
+    # has the user's original question in context; this just acknowledges
+    # the image is now visible and reminds it what it was asked.
+    text_part = (
+        "Image loaded into your context — you can see it natively now. "
+        "Use your built-in vision to answer the user."
+    )
+    if isinstance(question, str) and question.strip():
+        text_part += f"\n\nQuestion: {question.strip()}"
+
+    summary = (
+        f"Image attached natively for the main model "
+        f"({image_size_bytes / 1024:.1f} KB). "
+        "Answer using built-in vision."
+    )
+
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": text_part},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ],
+        "text_summary": summary,
+        "meta": {
+            "image_url": image_url[:200],
+            "size_bytes": image_size_bytes,
+            "native_vision": True,
+        },
+    }
+
+
+async def _vision_analyze_native(
+    image_url: str,
+    question: str,
+) -> Any:
+    """Fast path for vision-capable main models.
+
+    Loads the image (local file OR remote URL), base64-encodes it, and
+    returns a multimodal tool-result envelope. The agent loop unwraps it;
+    provider adapters serialize it into the right tool-result-with-image
+    shape for each backend.
+
+    Returns:
+        A ``_multimodal`` envelope dict on success.
+        A JSON error string on failure (matches the existing tool-result
+        contract so the agent loop displays errors normally).
+    """
+    if not isinstance(image_url, str) or not image_url.strip():
+        return tool_error("image_url is required", success=False)
+
+    temp_image_path: Optional[Path] = None
+    should_cleanup = False
+    try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return tool_error("Interrupted", success=False)
+
+        # Resolve the image source (mirrors vision_analyze_tool's logic
+        # exactly so behaviour is consistent).
+        resolved_url = image_url
+        if resolved_url.startswith("file://"):
+            resolved_url = resolved_url[len("file://"):]
+        local_path = Path(os.path.expanduser(resolved_url))
+
+        if local_path.is_file():
+            temp_image_path = local_path
+            should_cleanup = False
+        elif _validate_image_url(image_url):
+            blocked = check_website_access(image_url)
+            if blocked:
+                return tool_error(blocked["message"], success=False)
+            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
+            await _download_image(image_url, temp_image_path)
+            should_cleanup = True
+        else:
+            return tool_error(
+                "Invalid image source. Provide an HTTP/HTTPS URL or a "
+                "valid local file path.",
+                success=False,
+            )
+
+        image_size_bytes = temp_image_path.stat().st_size
+        detected_mime_type = _detect_image_mime_type(temp_image_path)
+        if not detected_mime_type:
+            return tool_error(
+                "Only real image files are supported for vision analysis.",
+                success=False,
+            )
+
+        image_data_url = _image_to_base64_data_url(
+            temp_image_path, mime_type=detected_mime_type,
+        )
+
+        # Honour the same hard cap as the legacy path. Resize if needed.
+        if len(image_data_url) > _MAX_BASE64_BYTES:
+            image_data_url = _resize_image_for_vision(
+                temp_image_path, mime_type=detected_mime_type,
+            )
+            if len(image_data_url) > _MAX_BASE64_BYTES:
+                return tool_error(
+                    f"Image too large for vision API: base64 payload is "
+                    f"{len(image_data_url) / (1024 * 1024):.1f} MB "
+                    f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
+                    f"even after resizing. Install Pillow "
+                    f"(`pip install Pillow`) for better auto-resize, "
+                    f"or compress the image manually.",
+                    success=False,
+                )
+
+        return _build_native_vision_tool_result(
+            image_url=image_url,
+            question=question,
+            image_data_url=image_data_url,
+            image_size_bytes=image_size_bytes,
+        )
+
+    except Exception as exc:
+        logger.warning("Native vision fast path failed: %s", exc)
+        return tool_error(f"Native vision failed: {exc}", success=False)
+    finally:
+        # Only delete temp files we created — never user-provided paths.
+        if should_cleanup and temp_image_path is not None:
+            try:
+                if temp_image_path.exists():
+                    temp_image_path.unlink()
+            except Exception:
+                pass
 
 
 async def vision_analyze_tool(
@@ -711,7 +938,7 @@ if __name__ == "__main__":
     if not api_available:
         print("❌ No auxiliary vision model available")
         print("Configure a supported multimodal backend (OpenRouter, Nous, Codex, Anthropic, or a custom OpenAI-compatible endpoint).")
-        exit(1)
+        sys.exit(1)
     else:
         print("✅ Vision model available")
     
@@ -758,24 +985,25 @@ from tools.registry import registry, tool_error
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
     "description": (
-        "Inspect an image from a URL, file path, or tool output when you need "
-        "closer detail than what's visible in the conversation. If the user's "
-        "image is already attached to the conversation and you can see it, "
-        "just answer directly — only call this tool for images referenced by "
-        "URL/path, images returned inside other tool results (browser "
-        "screenshots, search thumbnails), or when you need a deeper look at "
-        "a specific region the main model's vision may have missed."
+        "Load an image into the conversation so you can see it. Accepts a "
+        "URL, local file path, or data URL. When your active model has "
+        "native vision, the image is attached to your context directly "
+        "and you read the pixels yourself on the next turn — call this "
+        "any time the user references an image (filepath in their message, "
+        "URL in tool output, screenshot from the browser, etc.). For "
+        "non-vision models, falls back to an auxiliary vision model that "
+        "returns a text description."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "image_url": {
                 "type": "string",
-                "description": "Image URL (http/https) or local file path to analyze."
+                "description": "Image URL (http/https), local file path, or data: URL to load."
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question."
+                "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."
             }
         },
         "required": ["image_url", "question"]
@@ -786,6 +1014,31 @@ VISION_ANALYZE_SCHEMA = {
 def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
+
+    # Fast path: when the active main model supports native vision AND the
+    # provider supports image content inside tool results, short-circuit
+    # the auxiliary LLM and return the image bytes as a multimodal
+    # tool-result envelope. The main model sees the pixels directly on its
+    # next turn — no aux call, no information loss, no extra latency.
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from agent.image_routing import decide_image_input_mode
+        from hermes_cli.config import load_config
+
+        _provider = _read_main_provider()
+        _model = _read_main_model()
+        _cfg = load_config()
+        _mode = decide_image_input_mode(_provider, _model, _cfg)
+        if _mode == "native" and _supports_media_in_tool_results(_provider, _model):
+            logger.info(
+                "vision_analyze: native fast path (provider=%s, model=%s)",
+                _provider, _model,
+            )
+            return _vision_analyze_native(image_url, question)
+    except Exception as exc:
+        logger.debug("Native vision fast-path check failed; using aux LLM: %s", exc)
+
+    # Legacy path: aux LLM describes the image and we return its text.
     full_prompt = (
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"

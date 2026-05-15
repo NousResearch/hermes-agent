@@ -49,10 +49,10 @@ SCOPE_SETS = {
         "https://www.googleapis.com/auth/gmail.modify",
     ],
     "calendar": ["https://www.googleapis.com/auth/calendar"],
-    "drive": ["https://www.googleapis.com/auth/drive.readonly"],
+    "drive": ["https://www.googleapis.com/auth/drive"],
     "contacts": ["https://www.googleapis.com/auth/contacts.readonly"],
     "sheets": ["https://www.googleapis.com/auth/spreadsheets"],
-    "docs": ["https://www.googleapis.com/auth/documents.readonly"],
+    "docs": ["https://www.googleapis.com/auth/documents"],
 }
 
 SCOPES = [scope for scopes in SCOPE_SETS.values() for scope in scopes]
@@ -161,7 +161,33 @@ def _ensure_deps():
             sys.exit(1)
 
 
-def check_auth(required_scopes: list[str] | None = None):
+def check_auth_live(required_scopes: list[str] | None = None):
+    """Check auth with a real API call to detect disabled_client/account issues."""
+    # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
+    # final status line reflects the live-call outcome (OK or FAILED).
+    if not check_auth(required_scopes, quiet=True):
+        return False
+    try:
+        from googleapiclient.discovery import build
+        from google.oauth2.credentials import Credentials
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
+        service = build("calendar", "v3", credentials=creds)
+        service.calendarList().list(maxResults=1).execute()
+        print("LIVE_CHECK_OK: Real API call succeeded.")
+        return True
+    except Exception as e:
+        err_str = str(e).lower()
+        if "disabled_client" in err_str or "invalid_client" in err_str:
+            print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {e}")
+            print("  1. Check Google Cloud Console for disabled OAuth client")
+            print("  2. Check myaccount.google.com for account status")
+            print("  3. Do NOT retry with a disabled account")
+        else:
+            print(f"LIVE_CHECK_FAILED: {e}")
+        return False
+
+
+def check_auth(required_scopes: list[str] | None = None, quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
@@ -194,7 +220,8 @@ def check_auth(required_scopes: list[str] | None = None):
                 for s in missing_scopes:
                     print(f"  - {s}")
                 return False
-        print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
+        if not quiet:
+            print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
     if creds.expired and creds.refresh_token:
@@ -217,10 +244,25 @@ def check_auth(required_scopes: list[str] | None = None):
                     for s in missing_scopes:
                         print(f"  - {s}")
                     return False
-            print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
+            if not quiet:
+                print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
-            print(f"REFRESH_FAILED: {e}")
+            err_str = str(e).lower()
+            if "disabled_client" in err_str or "invalid_client" in err_str:
+                print(f"OAUTH_CLIENT_DISABLED: {e}")
+                print("  The OAuth client or Google account has been disabled.")
+                print("  Steps to resolve:")
+                print("    1. Check your Google Cloud Console — verify the OAuth client is not disabled")
+                print("    2. Check if your Google account itself has been disabled at myaccount.google.com")
+                print("    3. If the account is disabled, you can appeal at accounts.google.com/signin/recovery")
+                print("    4. Do NOT retry API calls with a disabled account — this may worsen the situation")
+                print("    5. If the OAuth client is disabled, create a new one in Google Cloud Console")
+            elif "token_revoked" in err_str or "invalid_grant" in err_str:
+                print(f"TOKEN_REVOKED: {e}")
+                print("  Re-run setup to re-authenticate.")
+            else:
+                print(f"REFRESH_FAILED: {e}")
             return False
 
     print("TOKEN_INVALID: Re-run setup.")
@@ -433,6 +475,7 @@ def main():
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")
+    group.add_argument("--check-live", action="store_true", help="Check auth with a real API call (detects disabled_client)")
     group.add_argument("--client-secret", metavar="PATH", help="Store OAuth client_secret.json")
     group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
@@ -455,6 +498,10 @@ def main():
         scopes = _resolve_scopes(args.services)
         required_scopes = None if args.services is None else scopes
         sys.exit(0 if check_auth(required_scopes) else 1)
+    if getattr(args, "check_live", False):
+        scopes = _resolve_scopes(args.services)
+        required_scopes = None if args.services is None else scopes
+        sys.exit(0 if check_auth_live(required_scopes) else 1)
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:

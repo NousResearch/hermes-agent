@@ -339,6 +339,47 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     assert not (tmp_path / ".gateway-takeover.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch, tmp_path, caplog):
+    """When all enabled platforms have no adapter (missing library or credentials),
+    the gateway should NOT return failure — it should warn and continue running for
+    cron job execution, matching the behaviour of 'no platforms enabled' (#5196).
+
+    In fleet deployments the same config.yaml is shared across nodes that may only
+    have credentials for a subset of platforms.  Requiring perfect credentials on
+    every node makes fleet operation impossible."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    # Simulate _create_adapter returning None for ALL platforms (missing library /
+    # missing credentials — no connection attempt ever made).
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        ok = await runner.start()
+
+    # Must NOT return False — gateway should keep running for cron.
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner.adapters == {}
+    # Runtime state must remain "running", not "startup_failed".
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    # A warning must be emitted explaining why no platforms connected.
+    assert any(
+        "No adapter could be created" in record.message
+        for record in caplog.records
+    ), "Expected degraded-mode warning when all adapters are missing"
+
+
 def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TERMINAL_ENV", "docker")

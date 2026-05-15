@@ -12,9 +12,11 @@ import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
+    PluginOperationError,
     _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
+    _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
     plugins_command,
@@ -97,6 +99,69 @@ class TestResolveGitUrl:
     def test_invalid_three_parts_raises(self):
         with pytest.raises(ValueError, match="Invalid plugin identifier"):
             _resolve_git_url("a/b/c")
+
+
+# ── _resolve_git_executable ─────────────────────────────────────────────────
+
+
+class TestResolveGitExecutable:
+    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
+
+    def teardown_method(self):
+        _resolve_git_executable.cache_clear()
+
+    def test_prefers_shutil_which(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
+            assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_fallback_posix_first_matching_path(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+
+        def _isfile(p: str) -> bool:
+            return p == "/usr/local/bin/git"
+
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
+                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_returns_none_when_unavailable(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", return_value=False):
+                    assert pc._resolve_git_executable() is None
+
+    def test_git_pull_uses_resolved_executable(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(
+            pc,
+            "_resolve_git_executable",
+            return_value="/resolved/git",
+        ):
+            with patch.object(pc.subprocess, "run") as run:
+                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        run.assert_called_once()
+        assert run.call_args[0][0][0] == "/resolved/git"
+
+    def test_install_core_raises_when_git_unresolved(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value=None):
+            with pytest.raises(PluginOperationError, match="git is not installed"):
+                pc._install_plugin_core("owner/repo", force=True)
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────

@@ -7,6 +7,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolCallSignature,
     canonical_tool_args,
+    classify_tool_failure,
 )
 
 
@@ -129,6 +130,21 @@ def test_success_resets_exact_signature_failure_streak():
     assert controller.before_call("web_search", args).action == "allow"
     controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
     assert controller.before_call("web_search", args).action == "allow"
+
+
+def test_file_mutation_lint_error_result_is_not_a_tool_failure():
+    write_result = json.dumps({
+        "bytes_written": 12,
+        "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
+    })
+    patch_result = json.dumps({
+        "success": True,
+        "diff": "--- a/tmp.py\n+++ b/tmp.py\n",
+        "lsp_diagnostics": "<diagnostics>ERROR [1:1] type mismatch</diagnostics>",
+    })
+
+    assert classify_tool_failure("write_file", write_result) == (False, "")
+    assert classify_tool_failure("patch", patch_result) == (False, "")
 
 
 def test_same_tool_varying_args_warns_by_default_without_halting():

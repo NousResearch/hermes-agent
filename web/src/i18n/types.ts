@@ -1,4 +1,20 @@
-export type Locale = "en" | "zh";
+export type Locale =
+  | "en"
+  | "zh"
+  | "zh-hant"
+  | "ja"
+  | "de"
+  | "es"
+  | "fr"
+  | "tr"
+  | "uk"
+  | "af"
+  | "ko"
+  | "it"
+  | "ga"
+  | "pt"
+  | "ru"
+  | "hu";
 
 export interface Translations {
   // ── Common ──
@@ -432,5 +448,252 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+  };
+
+  // ── Achievements plugin (plugins/hermes-achievements) ──
+  achievements: {
+    hero: {
+      kicker: string;
+      title: string;
+      subtitle: string;
+      scan_subtitle: string;
+    };
+    actions: {
+      rescan: string;
+    };
+    stats: {
+      unlocked: string;
+      unlocked_hint: string;
+      discovered: string;
+      discovered_hint: string;
+      secrets: string;
+      secrets_hint: string;
+      highest_tier: string;
+      highest_tier_hint: string;
+      latest: string;
+      latest_hint_empty: string;
+      none_yet: string;
+    };
+    state: {
+      unlocked: string;
+      discovered: string;
+      secret: string;
+    };
+    tier: {
+      target: string;
+      hidden: string;
+      complete: string;
+      objective: string;
+    };
+    progress: {
+      hidden: string;
+    };
+    scan: {
+      building_headline: string;
+      building_detail: string;
+      starting_headline: string;
+      progress_detail: string;
+      idle_detail: string;
+    };
+    guide: {
+      tiers_header: string;
+      secret_header: string;
+      secret_body: string;
+      scan_status_header: string;
+      scan_status_body: string;
+      what_scanned_header: string;
+      what_scanned_body: string;
+    };
+    card: {
+      share_title: string;
+      share_label: string;
+      share_text: string;
+      how_to_reveal: string;
+      what_counts: string;
+      evidence_label: string;
+      evidence_session_fallback: string;
+      no_evidence: string;
+    };
+    latest: {
+      header: string;
+    };
+    empty: {
+      no_secrets_header: string;
+      no_secrets_body: string;
+    };
+    filters: {
+      all_categories: string;
+      visibility_all: string;
+      visibility_unlocked: string;
+      visibility_discovered: string;
+      visibility_secret: string;
+    };
+    share: {
+      dialog_label: string;
+      header: string;
+      close: string;
+      rendering: string;
+      card_alt: string;
+      error_generic: string;
+      x_title: string;
+      x_button: string;
+      copy_title: string;
+      copy_button: string;
+      copied: string;
+      download_button: string;
+      hint: string;
+      clipboard_unsupported: string;
+      tweet_text: string;
+    };
+  };
+
+  // ── Kanban ──
+  kanban: {
+    loading: string;
+    loadFailed: string;
+    loadFailedHint: string;
+    board: string;
+    newBoard: string;
+    newBoardTitle: string;
+    newBoardDescription: string;
+    slug: string;
+    slugHint: string;
+    displayName: string;
+    displayNameHint: string;
+    description: string;
+    descriptionHint: string;
+    icon: string;
+    iconHint: string;
+    switchAfterCreate: string;
+    cancel: string;
+    creating: string;
+    createBoard: string;
+    search: string;
+    filterCards: string;
+    tenant: string;
+    allTenants: string;
+    assignee: string;
+    allProfiles: string;
+    showArchived: string;
+    lanesByProfile: string;
+    nudgeDispatcher: string;
+    refresh: string;
+    selected: string;
+    complete: string;
+    archive: string;
+    apply: string;
+    clear: string;
+    createTask: string;
+    noTasks: string;
+    unassigned: string;
+    untitled: string;
+    loadingDetail: string;
+    addComment: string;
+    comment: string;
+    status: string;
+    workspace: string;
+    skills: string;
+    createdBy: string;
+    result: string;
+    comments: string;
+    events: string;
+    runHistory: string;
+    workerLog: string;
+    loadingLog: string;
+    noWorkerLog: string;
+    noDescription: string;
+    noComments: string;
+    edit: string;
+    save: string;
+    dependencies: string;
+    parents: string;
+    children: string;
+    none: string;
+    addParent: string;
+    addChild: string;
+    removeDependency: string;
+    block: string;
+    unblock: string;
+    notifyHomeChannels: string;
+    diagnostics: string;
+    hide: string;
+    show: string;
+    attention: string;
+    tasksNeedAttention: string;
+    taskNeedsAttention: string;
+    diagnostic: string;
+    open: string;
+    close: string;
+    reassignTo: string;
+    copied: string;
+    copyCommand: string;
+    reclaim: string;
+    reassign: string;
+    renderingError: string;
+    reloadView: string;
+    wsAuthFailed: string;
+    markDone: string;
+    markArchived: string;
+    warning: string;
+    phantomIds: string;
+    active: string;
+    ended: string;
+    noProfile: string;
+    showAllAttempts: string;
+    sendingUpdates: string;
+    sendNotifications: string;
+    archiveBoardConfirm: string;
+    archiveBoardTitle: string;
+    boardSwitcherHint: string;
+    taskCreatedWarning: string;
+    moveFailed: string;
+    bulkFailed: string;
+    completionBlockedHallucination: string;
+    suspectedHallucinatedReferences: string;
+    pickProfileFirst: string;
+    unblockedMessage: string;
+    unblockFailed: string;
+    reclaimedMessage: string;
+    reclaimFailed: string;
+    reassignedMessage: string;
+    reassignFailed: string;
+    selectForBulk: string;
+    clickToEdit: string;
+    clickToEditAssignee: string;
+    emptyAssignee: string;
+    columnLabels: {
+      triage: string;
+      todo: string;
+      ready: string;
+      running: string;
+      blocked: string;
+      done: string;
+      archived: string;
+    };
+    columnHelp: {
+      triage: string;
+      todo: string;
+      ready: string;
+      running: string;
+      blocked: string;
+      done: string;
+      archived: string;
+    };
+    confirmDone: string;
+    confirmArchive: string;
+    confirmBlocked: string;
+    completionSummary: string;
+    completionSummaryRequired: string;
+    triagePlaceholder: string;
+    taskTitlePlaceholder: string;
+    specifier: string;
+    assigneePlaceholder: string;
+    priority: string;
+    skillsPlaceholder: string;
+    noParent: string;
+    workspacePathDir: string;
+    workspacePathOptional: string;
+    logTruncated: string;
+    logAt: string;
   };
 }

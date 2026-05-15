@@ -33,8 +33,8 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,26 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+# Judge output budget. The freeform judge returns a one-line JSON verdict, but
+# reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
+# before emitting the visible JSON — and the first /goal turn's prompt is
+# larger than later turns, which pushes total reply length past tight caps.
+# 200 tokens (the original default) reliably truncated the JSON on reasoning
+# models, leaving '{"done": true, "reason": "The agent successfully' and
+# triggering the auto-pause. 4096 covers reasoning + verdict on every model
+# we've live-tested; override via auxiliary.goal_judge.max_tokens for
+# specifically constrained setups.
+DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+# After this many consecutive judge *parse* failures (empty output / non-JSON),
+# the loop auto-pauses and points the user at the goal_judge config. API /
+# transport errors do NOT count toward this — those are transient. This guards
+# against small models (e.g. deepseek-v4-flash) that cannot follow the strict
+# JSON reply contract; without it the loop runs until the turn budget is
+# exhausted with every reply shaped like `judge returned empty response` or
+# `judge reply was not JSON`.
+DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -55,6 +73,21 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "Continue working toward this goal. Take the next concrete step. "
     "If you believe the goal is complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly and stop."
+)
+
+# Used when the user has added one or more /subgoal criteria. Surfaced
+# to the agent verbatim so it sees what to target on the next turn,
+# and surfaced to the judge so the verdict considers them too.
+CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Additional criteria the user added mid-loop:\n"
+    "{subgoals_block}\n\n"
+    "Continue working toward the goal AND all additional criteria. Take "
+    "the next concrete step. If you believe the goal and every "
+    "additional criterion are complete, state so explicitly and stop. "
+    "If you are blocked and need input from the user, say so clearly "
+    "and stop."
 )
 
 
@@ -80,6 +113,23 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Is the goal satisfied?"
 )
 
+# Used when the user has added /subgoal criteria. The judge must
+# evaluate ALL of them being met, not just the original goal.
+JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "Additional criteria the user added mid-loop (all must also be "
+    "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
+    "Decision: For each numbered criterion above, find concrete "
+    "evidence in the agent's response that the criterion is "
+    "satisfied. Do not accept generic phrases like 'all requirements "
+    "met' or 'implying it was done' — require specific evidence (a "
+    "file contents excerpt, an output line, a command result). If "
+    "ANY criterion lacks specific evidence in the response, the goal "
+    "is NOT done — return CONTINUE.\n\n"
+    "Is the goal AND every additional criterion satisfied?"
+)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Dataclass
@@ -99,6 +149,13 @@ class GoalState:
     last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
+    consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # User-added criteria appended mid-loop via the /subgoal command.
+    # When non-empty the judge prompt and continuation prompt both
+    # include them so the agent works toward them and the judge factors
+    # them into the verdict. Backwards-compatible: defaults to empty so
+    # old state_meta rows load unchanged.
+    subgoals: List[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -106,6 +163,10 @@ class GoalState:
     @classmethod
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
+        raw_subgoals = data.get("subgoals") or []
+        subgoals: List[str] = []
+        if isinstance(raw_subgoals, list):
+            subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
@@ -116,7 +177,18 @@ class GoalState:
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
+            consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            subgoals=subgoals,
         )
+
+    # --- subgoals helpers -------------------------------------------------
+
+    def render_subgoals_block(self) -> str:
+        """Render the subgoals as a numbered ``- N. text`` block. Empty
+        when no subgoals exist."""
+        if not self.subgoals:
+            return ""
+        return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -220,13 +292,41 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
-def _parse_judge_response(raw: str) -> Tuple[bool, str]:
-    """Parse the judge's reply. Fail-open to ``(False, "<reason>")``.
+def _goal_judge_max_tokens() -> int:
+    """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
 
-    Returns ``(done, reason)``.
+    ``load_config()`` is cached on the config file's (mtime, size), so calling
+    this once per judge turn is cheap. A non-positive or non-int value falls
+    back to the default rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS)
+        )
+        value = int(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_MAX_TOKENS
+
+
+def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
+    """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
+
+    Returns ``(done, reason, parse_failed)``. ``parse_failed`` is True when the
+    judge returned output that couldn't be interpreted as the expected JSON
+    verdict (empty body, prose, malformed JSON). Callers use that flag to
+    auto-pause after N consecutive parse failures so a weak judge model
+    doesn't silently burn the turn budget.
     """
     if not raw:
-        return False, "judge returned empty response"
+        return False, "judge returned empty response", True
 
     text = raw.strip()
 
@@ -252,17 +352,17 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str]:
                 data = None
 
     if not isinstance(data, dict):
-        return False, f"judge reply was not JSON: {_truncate(raw, 200)!r}"
+        return False, f"judge reply was not JSON: {_truncate(raw, 200)!r}", True
 
     done_val = data.get("done")
     if isinstance(done_val, str):
-        done = done_val.strip().lower() in ("true", "yes", "1", "done")
+        done = done_val.strip().lower() in {"true", "yes", "1", "done"}
     else:
         done = bool(done_val)
     reason = str(data.get("reason") or "").strip()
     if not reason:
         reason = "no reason provided"
-    return done, reason
+    return done, reason, False
 
 
 def judge_goal(
@@ -270,41 +370,65 @@ def judge_goal(
     last_response: str,
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
-) -> Tuple[str, str]:
+    subgoals: Optional[List[str]] = None,
+) -> Tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
-    Returns ``(verdict, reason)`` where verdict is ``"done"``, ``"continue"``,
-    or ``"skipped"`` (when the judge couldn't be reached).
+    Returns ``(verdict, reason, parse_failed)`` where verdict is ``"done"``,
+    ``"continue"``, or ``"skipped"`` (when the judge couldn't be reached).
 
-    This is deliberately fail-open: any error returns ``("continue", "...")``
-    so a broken judge doesn't wedge progress — the turn budget is the
-    backstop.
+    ``parse_failed`` is True only when the judge call succeeded but its output
+    was unusable (empty or non-JSON). API/transport errors return False — they
+    are transient and should fail-open silently. Callers use this flag to
+    auto-pause after N consecutive parse failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
+
+    ``subgoals`` is an optional list of user-added criteria (from
+    ``/subgoal``) that the judge must also factor into its DONE/CONTINUE
+    decision. When non-empty the prompt switches to the with-subgoals
+    template; otherwise behavior is identical to the original judge.
+
+    This is deliberately fail-open: any error returns ``("continue", "...", False)``
+    so a broken judge doesn't wedge progress — the turn budget and the
+    consecutive-parse-failures auto-pause are the backstops.
     """
     if not goal.strip():
-        return "skipped", "empty goal"
+        return "skipped", "empty goal", False
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
-        return "continue", "empty response (nothing to evaluate)"
+        return "continue", "empty response (nothing to evaluate)", False
 
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable"
+        return "continue", "auxiliary client unavailable", False
 
     try:
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception as exc:
         logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable"
+        return "continue", "auxiliary client unavailable", False
 
     if client is None or not model:
-        return "continue", "no auxiliary client configured"
+        return "continue", "no auxiliary client configured", False
 
-    prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
-        goal=_truncate(goal, 2000),
-        response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-    )
+    # Build the prompt — pick the with-subgoals variant when applicable.
+    clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    if clean_subgoals:
+        subgoals_block = "\n".join(
+            f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
+        )
+        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            subgoals_block=_truncate(subgoals_block, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        )
+    else:
+        prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        )
 
     try:
         resp = client.chat.completions.create(
@@ -314,22 +438,23 @@ def judge_goal(
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=200,
+            max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
+            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}"
+        return "continue", f"judge error: {type(exc).__name__}", False
 
     try:
         raw = resp.choices[0].message.content or ""
     except Exception:
         raw = ""
 
-    done, reason = _parse_judge_response(raw)
+    done, reason, parse_failed = _parse_judge_response(raw)
     verdict = "done" if done else "continue"
     logger.info("goal judge: verdict=%s reason=%s", verdict, _truncate(reason, 120))
-    return verdict, reason
+    return verdict, reason, parse_failed
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -369,21 +494,22 @@ class GoalManager:
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in ("active", "paused")
+        return self._state is not None and self._state.status in {"active", "paused"}
 
     def status_line(self) -> str:
         s = self._state
-        if s is None or s.status in ("cleared",):
+        if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
+        sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         if s.status == "active":
-            return f"⊙ Goal (active, {turns}): {s.goal}"
+            return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {turns}{extra}): {s.goal}"
+            return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
         if s.status == "done":
-            return f"✓ Goal done ({turns}): {s.goal}"
-        return f"Goal ({s.status}, {turns}): {s.goal}"
+            return f"✓ Goal done ({turns}{sub}): {s.goal}"
+        return f"Goal ({s.status}, {turns}{sub}): {s.goal}"
 
     # --- mutation -----------------------------------------------------
 
@@ -436,6 +562,53 @@ class GoalManager:
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
 
+    # --- /subgoal user controls ---------------------------------------
+
+    def add_subgoal(self, text: str) -> str:
+        """Append a user-added criterion to the active goal. Requires
+        ``has_goal()``; raises ``RuntimeError`` otherwise.
+
+        Returns the cleaned text so the caller can show it back to the user.
+        """
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("subgoal text is empty")
+        self._state.subgoals.append(text)
+        save_goal(self.session_id, self._state)
+        return text
+
+    def remove_subgoal(self, index_1based: int) -> str:
+        """Remove a subgoal by 1-based index. Returns the removed text."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        idx = int(index_1based) - 1
+        if idx < 0 or idx >= len(self._state.subgoals):
+            raise IndexError(
+                f"index out of range (1..{len(self._state.subgoals)})"
+            )
+        removed = self._state.subgoals.pop(idx)
+        save_goal(self.session_id, self._state)
+        return removed
+
+    def clear_subgoals(self) -> int:
+        """Wipe all subgoals. Returns the previous count."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        prev = len(self._state.subgoals)
+        self._state.subgoals = []
+        save_goal(self.session_id, self._state)
+        return prev
+
+    def render_subgoals(self) -> str:
+        """Public helper for the /subgoal slash command."""
+        if self._state is None:
+            return "(no active goal)"
+        if not self._state.subgoals:
+            return "(no subgoals — use /subgoal <text> to add criteria)"
+        return self._state.render_subgoals_block()
+
     # --- the main entry point called after every turn -----------------
 
     def evaluate_after_turn(
@@ -473,9 +646,19 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason = judge_goal(state.goal, last_response)
+        verdict, reason, parse_failed = judge_goal(
+            state.goal, last_response, subgoals=state.subgoals or None
+        )
         state.last_verdict = verdict
         state.last_reason = reason
+
+        # Track consecutive judge parse failures. Reset on any usable reply,
+        # including API / transport errors (parse_failed=False) so a flaky
+        # network doesn't trip the auto-pause meant for bad judge models.
+        if parse_failed:
+            state.consecutive_parse_failures += 1
+        else:
+            state.consecutive_parse_failures = 0
 
         if verdict == "done":
             state.status = "done"
@@ -487,6 +670,36 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        # Auto-pause when the judge model can't produce the expected JSON
+        # verdict N turns in a row. Points the user at the goal_judge config
+        # so they can route this side task to a model that follows the
+        # contract (e.g. google/gemini-3-flash-preview). Without this guard,
+        # weak judge models burn the entire turn budget returning prose or
+        # empty strings.
+        if state.consecutive_parse_failures >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
+            state.status = "paused"
+            state.paused_reason = (
+                f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
+                    "isn't returning the required JSON verdict. Route the judge to a stricter "
+                    "model in ~/.hermes/config.yaml:\n"
+                    "  auxiliary:\n"
+                    "    goal_judge:\n"
+                    "      provider: openrouter\n"
+                    "      model: google/gemini-3-flash-preview\n"
+                    "Then /goal resume to continue."
+                ),
             }
 
         if state.turns_used >= state.max_turns:
@@ -520,6 +733,11 @@ class GoalManager:
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
             return None
+        if self._state.subgoals:
+            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+                goal=self._state.goal,
+                subgoals_block=self._state.render_subgoals_block(),
+            )
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
 
 
@@ -527,6 +745,9 @@ __all__ = [
     "GoalState",
     "GoalManager",
     "CONTINUATION_PROMPT_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "JUDGE_USER_PROMPT_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "DEFAULT_MAX_TURNS",
     "load_goal",
     "save_goal",

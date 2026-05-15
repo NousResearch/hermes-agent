@@ -75,8 +75,14 @@ export interface ConfigDisplayConfig {
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 
+export interface ConfigVoiceConfig {
+  // Raw `yaml.safe_load()` value from config; may be non-string if hand-edited.
+  // Callers must normalize/validate at runtime (parseVoiceRecordKey()).
+  record_key?: unknown
+}
+
 export interface ConfigFullResponse {
-  config?: { display?: ConfigDisplayConfig }
+  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig }
 }
 
 export interface ConfigMtimeResponse {
@@ -168,6 +174,10 @@ export interface SessionUsageResponse {
   model?: string
   output?: number
   total?: number
+}
+
+export interface SessionStatusResponse {
+  output?: string
 }
 
 export interface SessionCompressResponse {
@@ -279,12 +289,13 @@ export interface VoiceToggleResponse {
   available?: boolean
   details?: string
   enabled?: boolean
+  record_key?: string
   stt_available?: boolean
   tts?: boolean
 }
 
 export interface VoiceRecordResponse {
-  status?: string
+  status?: 'busy' | 'recording' | 'stopped'
   text?: string
 }
 

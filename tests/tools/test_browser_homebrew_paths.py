@@ -340,7 +340,15 @@ class TestRunBrowserCommandPathConstruction:
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         assert captured_cmd is not None
-        assert captured_cmd[:2] == ["npx", "agent-browser"]
+        # The prefix must split "npx agent-browser" into two argv items.
+        # On POSIX shutil.which("npx") returns the absolute path if npx is on
+        # PATH (which the test's patched PATH always contains when the system
+        # has it installed).  The important invariant is that the second
+        # argv item is the package name "agent-browser", not a merged
+        # "npx agent-browser" string — that's what Popen needs.
+        assert len(captured_cmd) >= 2
+        assert captured_cmd[0].endswith("npx") or captured_cmd[0] == "npx"
+        assert captured_cmd[1] == "agent-browser"
         assert captured_cmd[2:6] == [
             "--session",
             "test-session",

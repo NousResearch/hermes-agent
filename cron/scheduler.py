@@ -711,12 +711,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        # Structured side-channel so plugin adapters can recover cron context
+        # without regex-parsing the envelope text. `thread_id` was the only
+        # existing key; nested under "cron" we expose job_id/job_name/schedule/
+        # deliver/origin. Adapters that ignore unknown keys are unaffected.
+        cron_meta = {
+            "job_id": job.get("id", ""),
+            "job_name": job.get("name") or job.get("id", ""),
+            "schedule": job.get("schedule"),
+            "deliver": job.get("deliver"),
+            "origin": origin or None,
+        }
+        cron_meta = {k: v for k, v in cron_meta.items() if v}
+
+        send_metadata: Optional[dict] = None
+        if thread_id:
+            send_metadata = {"thread_id": thread_id}
+        if cron_meta:
+            send_metadata = {**(send_metadata or {}), "cron": cron_meta}
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

@@ -595,8 +595,15 @@ class TestToolObservationKeying:
         assert ended["output"] == {"ok": True}
         assert state.pending_tools_by_name.get("my_tool") is None
 
-    def test_empty_tool_call_id_concurrent_fifo_order(self, monkeypatch):
-        """Two queued observations are consumed in FIFO order, not swapped."""
+    def test_empty_tool_call_id_observations_are_fifo_within_tool_name(self, monkeypatch):
+        """Two queued observations are consumed in FIFO order so the first
+        post hook gets the first observation's output, not the second.
+
+        Sequential-on-one-thread coverage; the real concurrent case is
+        guarded by ``_STATE_LOCK`` around every read-modify-write on
+        ``pending_tools_by_name`` and is exercised in
+        ``test_threaded_post_calls_preserve_fifo_under_lock`` below.
+        """
         mod = self._make_mod()
         obs_a, obs_b = object(), object()
         state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
@@ -623,6 +630,51 @@ class TestToolObservationKeying:
 
         assert calls[0] == (obs_a, {"val": "a"})
         assert calls[1] == (obs_b, {"val": "b"})
+        assert state.pending_tools_by_name.get("web_extract") is None
+
+    def test_threaded_post_calls_preserve_fifo_under_lock(self, monkeypatch):
+        """The actual concurrency contract: when 8 threads race to drain
+        the pending queue, no observation is consumed twice and none is
+        lost.  Validates ``_STATE_LOCK`` discipline, not Python list
+        semantics."""
+        import threading
+
+        mod = self._make_mod()
+        n = 8
+        observations = [object() for _ in range(n)]
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.pending_tools_by_name["web_extract"] = list(observations)
+
+        task_key = mod._trace_key("task-thr", "sess-thr")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        recorded: list = []
+        lock = threading.Lock()
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            with lock:
+                recorded.append(o)
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        barrier = threading.Barrier(n)
+
+        def worker():
+            barrier.wait()
+            mod.on_post_tool_call(
+                tool_name="web_extract", args={}, result='{"ok": true}',
+                task_id="task-thr", session_id="sess-thr", tool_call_id="",
+            )
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Every observation was consumed exactly once; queue is empty.
+        assert len(recorded) == n
+        assert set(map(id, recorded)) == set(map(id, observations))
         assert state.pending_tools_by_name.get("web_extract") is None
 
     def test_explicit_tool_call_id_uses_tools_dict(self, monkeypatch):

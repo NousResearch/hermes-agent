@@ -94,7 +94,10 @@ def _debug(message: str) -> None:
 
 # Sentinel: "_get_langfuse() has tried and failed". Lets us short-circuit
 # every subsequent hook call without re-checking env vars or re-attempting
-# SDK init. Cleared by reset_cache_for_tests().
+# SDK init. Tests clear this by reloading the module via
+# ``sys.modules.pop(...) + importlib.import_module(...)`` rather than via a
+# dedicated reset function. Runtime callers cannot reset the cache; if an
+# operator fixes a misconfigured credential they must restart the process.
 _INIT_FAILED = object()
 
 

@@ -534,6 +534,33 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _resolve_provider_secret_from_env_vars(
+    provider_id: str, env_vars: tuple[str, ...] | list[str]
+) -> tuple[str, str]:
+    """Resolve a provider secret from env/.env, then the credential pool."""
+    from hermes_cli.config import get_env_value
+
+    for env_var in env_vars:
+        val = (get_env_value(env_var) or "").strip()
+        if has_usable_secret(val):
+            return val, env_var
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_id)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                key = str(key).strip()
+                if has_usable_secret(key):
+                    return key, f"credential_pool:{provider_id}"
+    except Exception:
+        pass
+
+    return "", ""
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -551,28 +578,20 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
-    from hermes_cli.config import get_env_value
-    for env_var in pconfig.api_key_env_vars:
-        # Check both os.environ and ~/.hermes/.env file
-        val = (get_env_value(env_var) or "").strip()
-        if has_usable_secret(val):
-            return val, env_var
+    return _resolve_provider_secret_from_env_vars(provider_id, list(pconfig.api_key_env_vars))
 
-    # Fallback: try credential pool (e.g. zai key stored via auth.json)
+
+def _get_plugin_api_key_provider_profile(provider_id: str):
+    """Return a plugin-backed API-key ProviderProfile when available."""
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            if entry:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                key = str(key).strip()
-                if has_usable_secret(key):
-                    return key, f"credential_pool:{provider_id}"
+        from providers import get_provider_profile
     except Exception:
-        pass
+        return None
 
-    return "", ""
+    profile = get_provider_profile(provider_id)
+    if not profile or getattr(profile, "auth_type", "") != "api_key":
+        return None
+    return profile
 
 
 # =============================================================================
@@ -1405,12 +1424,15 @@ def resolve_provider(
     except Exception:
         pass
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+    plugin_profile = _get_plugin_api_key_provider_profile(normalized)
 
     if normalized == "openrouter":
         return "openrouter"
     if normalized == "custom":
         return "custom"
     if normalized in PROVIDER_REGISTRY:
+        return normalized
+    if plugin_profile is not None:
         return normalized
     if normalized != "auto":
         # Check for common config.yaml issues that cause this error
@@ -1455,6 +1477,22 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    try:
+        from providers import list_providers as _lp
+        for _pp in _lp():
+            if getattr(_pp, "auth_type", "") != "api_key":
+                continue
+            if _pp.name in ("copilot", "lmstudio"):
+                continue
+            _secret, _source = _resolve_provider_secret_from_env_vars(
+                _pp.name,
+                list(getattr(_pp, "env_vars", ()) or ()),
+            )
+            if _secret:
+                return _pp.name
+    except Exception:
+        pass
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
@@ -4033,28 +4071,44 @@ def get_codex_auth_status() -> Dict[str, Any]:
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if pconfig and pconfig.auth_type == "api_key":
+        api_key = ""
+        key_source = ""
+        api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+
+        env_url = ""
+        if pconfig.base_url_env_var:
+            env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+        if provider_id in ("kimi-coding", "kimi-coding-cn"):
+            base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+        elif env_url:
+            base_url = env_url
+        else:
+            base_url = pconfig.inference_base_url
+
+        return {
+            "configured": bool(api_key),
+            "provider": provider_id,
+            "name": pconfig.name,
+            "key_source": key_source,
+            "base_url": base_url,
+            "logged_in": bool(api_key),  # compat with OAuth status shape
+        }
+
+    profile = _get_plugin_api_key_provider_profile(provider_id)
+    if not profile:
         return {"configured": False}
-
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url
-    else:
-        base_url = pconfig.inference_base_url
+    api_key, key_source = _resolve_provider_secret_from_env_vars(
+        provider_id,
+        list(getattr(profile, "env_vars", ()) or ()),
+    )
+    base_url = str(getattr(profile, "base_url", "") or "").strip()
 
     return {
         "configured": bool(api_key),
         "provider": provider_id,
-        "name": pconfig.name,
+        "name": getattr(profile, "display_name", "") or provider_id,
         "key_source": key_source,
         "base_url": base_url,
         "logged_in": bool(api_key),  # compat with OAuth status shape
@@ -4128,41 +4182,55 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     Returns dict with: provider, api_key, base_url, source.
     """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if pconfig and pconfig.auth_type == "api_key":
+        api_key = ""
+        key_source = ""
+        api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+
+        # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
+        # see the local server as configured. doctor still reports unconfigured
+        # because get_api_key_provider_status uses the raw secret resolver.
+        if not api_key and provider_id == "lmstudio":
+            api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+            key_source = key_source or "default"
+
+        env_url = ""
+        if pconfig.base_url_env_var:
+            env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+        if provider_id in ("kimi-coding", "kimi-coding-cn"):
+            base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+        elif provider_id == "zai":
+            base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+        elif env_url:
+            base_url = env_url.rstrip("/")
+        else:
+            base_url = pconfig.inference_base_url
+
+        return {
+            "provider": provider_id,
+            "api_key": api_key,
+            "base_url": base_url.rstrip("/"),
+            "source": key_source or "default",
+        }
+
+    profile = _get_plugin_api_key_provider_profile(provider_id)
+    if not profile:
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id,
             code="invalid_provider",
         )
-
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-
-    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
-    # see the local server as configured. doctor still reports unconfigured
-    # because get_api_key_provider_status uses the raw secret resolver.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-        key_source = key_source or "default"
-
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif provider_id == "zai":
-        base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url.rstrip("/")
-    else:
-        base_url = pconfig.inference_base_url
+    api_key, key_source = _resolve_provider_secret_from_env_vars(
+        provider_id,
+        list(getattr(profile, "env_vars", ()) or ()),
+    )
+    base_url = str(getattr(profile, "base_url", "") or "").strip().rstrip("/")
 
     return {
         "provider": provider_id,
         "api_key": api_key,
-        "base_url": base_url.rstrip("/"),
+        "base_url": base_url,
         "source": key_source or "default",
     }
 

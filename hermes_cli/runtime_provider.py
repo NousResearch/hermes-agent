@@ -213,6 +213,43 @@ def _maybe_apply_codex_app_server_runtime(
     return api_mode
 
 
+_SPECIAL_RUNTIME_PROVIDERS = frozenset({
+    "openrouter",
+    "custom",
+    "anthropic",
+    "bedrock",
+    "nous",
+    "openai-codex",
+    "qwen-oauth",
+    "minimax-oauth",
+    "google-gemini-cli",
+    "copilot-acp",
+    "azure-foundry",
+})
+
+
+def _get_generic_plugin_api_key_profile(provider: Optional[str]):
+    """Return a plugin-only API-key ProviderProfile for generic runtime handling.
+
+    Excludes providers with dedicated runtime branches (openrouter/custom/etc.)
+    so their established resolution logic keeps winning.
+    """
+    normalized = str(provider or "").strip().lower()
+    if not normalized or normalized in _SPECIAL_RUNTIME_PROVIDERS:
+        return None
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(normalized)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    if str(getattr(profile, "auth_type", "") or "").strip() != "api_key":
+        return None
+    return profile
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -948,6 +985,38 @@ def _resolve_explicit_runtime(
             "requested_provider": requested_provider,
         }
 
+    plugin_profile = _get_generic_plugin_api_key_profile(provider)
+    if plugin_profile is not None:
+        base_url = explicit_base_url or str(getattr(plugin_profile, "base_url", "") or "").strip().rstrip("/")
+        api_key = explicit_api_key
+        if not api_key:
+            creds = resolve_api_key_provider_credentials(provider)
+            api_key = creds.get("api_key", "")
+            if not base_url:
+                base_url = creds.get("base_url", "").rstrip("/")
+
+        api_mode = "chat_completions"
+        profile_mode = str(getattr(plugin_profile, "api_mode", "") or "").strip()
+        if profile_mode:
+            api_mode = profile_mode
+        else:
+            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+            if configured_mode:
+                api_mode = configured_mode
+            else:
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
+
+        return {
+            "provider": provider,
+            "api_mode": api_mode,
+            "base_url": base_url.rstrip("/"),
+            "api_key": api_key,
+            "source": "explicit",
+            "requested_provider": requested_provider,
+        }
+
     return None
 
 
@@ -1332,9 +1401,14 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API-key providers (built-in + plugin-only ProviderProfile rows)
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
+    plugin_api_key_profile = None
+    if not (pconfig and pconfig.auth_type == "api_key"):
+        plugin_api_key_profile = _get_generic_plugin_api_key_profile(provider)
+    if (pconfig and pconfig.auth_type == "api_key") or (
+        plugin_api_key_profile is not None
+    ):
         creds = resolve_api_key_provider_credentials(provider)
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
@@ -1346,6 +1420,10 @@ def resolve_runtime_provider(
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
+        if plugin_api_key_profile is not None:
+            _profile_mode = str(getattr(plugin_api_key_profile, "api_mode", "") or "").strip()
+            if _profile_mode:
+                api_mode = _profile_mode
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         elif provider == "xai":

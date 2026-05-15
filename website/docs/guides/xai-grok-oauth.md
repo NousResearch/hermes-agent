@@ -198,13 +198,13 @@ The auth store has no `xai-oauth` entry and no `XAI_API_KEY` is set. You haven't
 
 ## Logging Out
 
-To remove stored xAI Grok OAuth credentials:
+To remove all stored xAI Grok OAuth credentials:
 
 ```bash
-hermes auth remove xai-oauth
+hermes auth logout xai-oauth
 ```
 
-This clears both the singleton `loopback_pkce` entry in `auth.json` and any matching credential-pool rows.
+This clears both the singleton OAuth entry in `auth.json` and any credential-pool rows for `xai-oauth`. Use `hermes auth remove xai-oauth <index|id|label>` if you only want to drop a single pool entry (run `hermes auth list xai-oauth` to see them).
 
 ## See Also
 

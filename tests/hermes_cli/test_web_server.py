@@ -17,6 +17,29 @@ from hermes_cli.config import (
 )
 
 
+def test_resolve_chat_argv_exports_config_preloaded_skills(monkeypatch):
+    pytest.importorskip("fastapi")
+
+    import hermes_cli.main as main_mod
+    import hermes_cli.web_server as web_server
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_config_preloaded_tui_skills",
+        lambda: ["cavecrew", "everything-code"],
+    )
+    monkeypatch.setenv("HERMES_TUI_SKILLS", "github-auth,cavecrew")
+
+    _argv, _cwd, env = web_server._resolve_chat_argv()
+
+    assert env["HERMES_TUI_SKILLS"] == "cavecrew,everything-code,github-auth"
+
+
 # ---------------------------------------------------------------------------
 # reload_env tests
 # ---------------------------------------------------------------------------

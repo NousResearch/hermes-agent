@@ -386,6 +386,11 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
+        "skills": {
+            # Skills to preload into every CLI/TUI session. CLI --skills is
+            # additive; --ignore-rules skips this config-driven preload.
+            "preload": [],
+        },
         "onboarding": {
             # First-touch hint flags (see agent/onboarding.py).  Each hint is
             # shown once per install then latched here.

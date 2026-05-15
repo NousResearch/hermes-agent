@@ -302,7 +302,7 @@ def derive_skill_meta(skill_path: Path, source_dir: Path, source_kind: str) -> d
         "category": category,
         "sub": sub,
         "slug": slug,
-        "rel_path": str(rel),
+        "rel_path": rel.as_posix(),
     }
 
 

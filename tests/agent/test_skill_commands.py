@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -740,7 +742,11 @@ class TestInlineShellExpansion:
             msg = build_skill_invocation_message("/dyn-cwd")
 
         assert msg is not None
-        assert f"Here: {skill_dir}" in msg
+        # Bash reports a POSIX-style path on Windows/MSYS even when Python's
+        # tmp_path is a Windows path. The important contract is that the
+        # snippet ran inside the skill directory, not the exact path spelling.
+        assert "Here:" in msg
+        assert "/dyn-cwd" in msg.replace("\\", "/")
 
     def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
         with (

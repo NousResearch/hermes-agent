@@ -467,6 +467,17 @@ skills:
       path: ~/myplugin-data   # Example — each skill defines its own keys
 ```
 
+To load the same skills at the start of every CLI, TUI, and dashboard chat session, set `skills.preload`:
+
+```yaml
+skills:
+  preload:
+    - cavecrew
+    - everything-code
+```
+
+`--skills` remains additive for one-off sessions, and Hermes deduplicates repeated skill names while preserving order. `--ignore-rules` skips this config-driven preload together with the other rules/context startup surfaces.
+
 **How skill settings work:**
 
 - `hermes config migrate` scans all enabled skills, finds unconfigured settings, and offers to prompt you

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -157,6 +158,21 @@ def test_main_ignore_rules_skips_config_preloaded_skills(monkeypatch):
         cli_mod.main(skills="github-auth", list_tools=True, ignore_rules=True)
 
     assert requested["result"][0] == ["github-auth"]
+
+
+def test_bundled_cavecrew_and_everything_code_preload():
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    repo_skills = Path(__file__).resolve().parents[2] / "skills"
+    with patch("tools.skills_tool.SKILLS_DIR", repo_skills):
+        prompt, loaded, missing = build_preloaded_skills_prompt(
+            ["cavecrew", "everything-code"], task_id="test-preload"
+        )
+
+    assert loaded == ["cavecrew", "everything-code"]
+    assert missing == []
+    assert "Cavecrew Skill" in prompt
+    assert "Everything Code Skill" in prompt
 
 
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):

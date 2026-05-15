@@ -528,6 +528,14 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Skills to load into every CLI/TUI session before the first turn.
+  # The --skills flag is additive and duplicates are ignored in first-seen
+  # order. Use --ignore-rules for an isolated session without config-driven
+  # preloaded skills.
+  # preload:
+  #   - cavecrew
+  #   - everything-code
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

@@ -457,6 +457,64 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_merges_config_and_explicit_skills(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"skills": {"preload": ["cavecrew", "everything-code"]}},
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(skills=["github-auth,cavecrew"])
+
+    assert captured["env"]["HERMES_TUI_SKILLS"] == (
+        "cavecrew,everything-code,github-auth"
+    )
+
+
+def test_launch_tui_ignore_rules_skips_config_preloaded_skills(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    import hermes_cli.config as config_mod
+
+    def fail_load_config():
+        raise AssertionError("config should not load when rules are ignored")
+
+    monkeypatch.setattr(config_mod, "load_config", fail_load_config)
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(skills="github-auth")
+
+    assert captured["env"]["HERMES_TUI_SKILLS"] == "github-auth"
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 

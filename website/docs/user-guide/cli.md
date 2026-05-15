@@ -165,6 +165,17 @@ hermes chat -s github-pr-workflow -s github-auth
 
 Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.
 
+To make a skill part of your everyday startup context, add it to `skills.preload` in `~/.hermes/config.yaml`:
+
+```yaml
+skills:
+  preload:
+    - cavecrew
+    - everything-code
+```
+
+Config preloads run before `--skills`, and duplicate names are ignored in first-seen order. Use `--ignore-rules` when you want a clean session without rules, memory, context files, or config-driven preloaded skills.
+
 ## Skill Slash Commands
 
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:

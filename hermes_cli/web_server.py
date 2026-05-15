@@ -3047,7 +3047,12 @@ def _resolve_chat_argv(
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
     """
-    from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
+    from hermes_cli.main import (
+        PROJECT_ROOT,
+        _config_preloaded_tui_skills,
+        _make_tui_argv,
+        _normalize_tui_skills,
+    )
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
@@ -3068,6 +3073,19 @@ def _resolve_chat_argv(
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+
+    tui_skills = []
+    tui_skills.extend(_config_preloaded_tui_skills())
+    tui_skills.extend(_normalize_tui_skills(env.get("HERMES_TUI_SKILLS")))
+    if tui_skills:
+        deduped = []
+        seen = set()
+        for skill in tui_skills:
+            if skill in seen:
+                continue
+            seen.add(skill)
+            deduped.append(skill)
+        env["HERMES_TUI_SKILLS"] = ",".join(deduped)
 
     return list(argv), str(cwd) if cwd else None, env
 

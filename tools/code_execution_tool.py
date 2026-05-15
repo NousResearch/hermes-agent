@@ -1166,9 +1166,10 @@ def execute_code(
         # Build a minimal environment for the child. We intentionally exclude
         # API keys and tokens to prevent credential exfiltration from LLM-
         # generated scripts. The child accesses tools via RPC, not direct API.
-        # Exception: env vars declared by loaded skills (via env_passthrough
-        # registry) or explicitly allowed by the user in config.yaml
-        # (terminal.env_passthrough) are passed through.  On Windows, a small
+        # Exception: non-managed env vars declared by loaded skills (via
+        # env_passthrough registry) or explicitly allowed by the user in
+        # config.yaml (terminal.env_passthrough) are passed through.
+        # On Windows, a small
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.

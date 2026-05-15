@@ -1,20 +1,21 @@
 """Environment variable passthrough registry.
 
-Skills that declare ``required_environment_variables`` in their frontmatter
-need those vars available in sandboxed execution environments (execute_code,
-terminal).  By default both sandboxes strip secrets from the child process
-environment for security.  This module provides a session-scoped allowlist
-so skill-declared vars (and user-configured overrides) pass through.
+Skills can declare ``required_environment_variables`` in their frontmatter.
+By default subprocess sandboxes strip secrets from the child process
+environment for security. This module provides a session-scoped allowlist
+so non-managed skill vars and user-configured overrides can pass through.
+Hermes-managed secrets are never allowlisted into model-controlled children.
 
 Two sources feed the allowlist:
 
 1. **Skill declarations** — when a skill is loaded via ``skill_view``, its
-   ``required_environment_variables`` are registered here automatically.
+   non-blocklisted ``required_environment_variables`` are registered here.
 2. **User config** — ``terminal.env_passthrough`` in config.yaml lets users
-   explicitly allowlist vars for non-skill use cases.
+   explicitly allowlist non-managed vars for non-skill use cases.
 
-Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
-:func:`is_env_passthrough` before stripping a variable.
+``code_execution_tool.py`` consults :func:`is_env_passthrough` before
+stripping a variable; terminal backends use :func:`get_all_passthrough` only
+for non-local sandbox adapters that require an explicit forwarded-var list.
 """
 
 from __future__ import annotations
@@ -45,20 +46,13 @@ def _get_allowed() -> set[str]:
 _config_passthrough: frozenset[str] | None = None
 
 
-def _is_hermes_provider_credential(name: str) -> bool:
-    """True if ``name`` is a Hermes-managed provider credential (API key,
-    token, or similar) per ``_HERMES_PROVIDER_ENV_BLOCKLIST``.
+def _is_blocklisted_secret(name: str) -> bool:
+    """True if ``name`` is a Hermes-managed secret that must not be
+    forwarded into model-controlled subprocess environments.
 
-    Skill-declared ``required_environment_variables`` frontmatter must
-    not be able to override this list — that was the bypass in
-    GHSA-rhgp-j443-p4rf where a malicious skill registered
-    ``ANTHROPIC_TOKEN`` / ``OPENAI_API_KEY`` as passthrough and received
-    the credential in the ``execute_code`` child process, defeating the
-    sandbox's scrubbing guarantee.
-
-    Non-Hermes API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
-    in the blocklist and remain legitimately registerable — skills that
-    wrap third-party APIs still work.
+    Skill-declared and config-declared passthrough must not be able to
+    override this list; otherwise managed credentials from ``.env`` can be
+    disclosed by terminal or execute_code subprocesses.
     """
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -72,27 +66,22 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
 
     Typically called when a skill declares ``required_environment_variables``.
 
-    Variables that are Hermes-managed provider credentials (from
-    ``_HERMES_PROVIDER_ENV_BLOCKLIST``) are rejected here to preserve
-    the ``execute_code`` sandbox's credential-scrubbing guarantee per
-    GHSA-rhgp-j443-p4rf. A skill that needs to talk to a Hermes-managed
-    provider should do so via the agent's main-process tools (web_search,
-    web_extract, etc.) where the credential remains safely in the main
-    process.
-
-    Non-Hermes third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.)
-    pass through normally — they were never in the sandbox scrub list.
+    Hermes-managed secrets (from ``_HERMES_PROVIDER_ENV_BLOCKLIST``) are
+    rejected here to preserve subprocess credential-scrubbing guarantees.
+    This includes provider credentials and optional password variables saved
+    by Hermes, such as bundled-skill API keys. Unmanaged, caller-owned
+    variables can still be allowlisted explicitly.
     """
     for name in var_names:
         name = name.strip()
         if not name:
             continue
-        if _is_hermes_provider_credential(name):
+        if _is_blocklisted_secret(name):
             logger.warning(
-                "env passthrough: refusing to register Hermes provider "
-                "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
-                "Skills must not override the execute_code sandbox's "
-                "credential scrubbing; see GHSA-rhgp-j443-p4rf.",
+                "env passthrough: refusing to register managed secret %r "
+                "(blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). Skills and "
+                "terminal.env_passthrough must not override subprocess "
+                "credential scrubbing.",
                 name,
             )
             continue
@@ -126,16 +115,23 @@ def is_env_passthrough(var_name: str) -> bool:
     """Check whether *var_name* is allowed to pass through to sandboxes.
 
     Returns ``True`` if the variable was registered by a skill or listed in
-    the user's ``tools.env_passthrough`` config.
+    the user's ``tools.env_passthrough`` config, unless it is a managed
+    secret that subprocess sandboxes must always scrub.
     """
+    if _is_blocklisted_secret(var_name):
+        return False
     if var_name in _get_allowed():
         return True
     return var_name in _load_config_passthrough()
 
 
 def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    """Return non-blocklisted skill-registered and config passthrough vars."""
+    return frozenset(
+        name
+        for name in (frozenset(_get_allowed()) | _load_config_passthrough())
+        if not _is_blocklisted_secret(name)
+    )
 
 
 def clear_env_passthrough() -> None:

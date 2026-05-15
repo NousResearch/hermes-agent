@@ -70,7 +70,7 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        with patch("hermes_cli.banner._check_via_pypi", return_value=0):
+        with patch("hermes_cli.banner.check_via_pypi", return_value=0):
             result = banner.check_for_updates()
     assert result == 0
     mock_run.assert_not_called()

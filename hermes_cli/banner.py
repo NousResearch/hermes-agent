@@ -199,7 +199,7 @@ def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
         return None
 
 
-def _check_via_pypi() -> Optional[int]:
+def check_via_pypi() -> Optional[int]:
     """Compare installed version against PyPI latest.
 
     Returns 0 if up-to-date, 1 if behind, None on failure.
@@ -255,7 +255,7 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
-            behind = _check_via_pypi()
+            behind = check_via_pypi()
         else:
             behind = _check_via_local_git(repo_dir)
 

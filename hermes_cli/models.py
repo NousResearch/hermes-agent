@@ -2098,6 +2098,7 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "minimax-cn",
 })
 
 

@@ -99,6 +99,36 @@ class TestProviderModelIdsPreferred:
         assert "kimi-k2.6" in out
 
 
+class TestMinimaxCnPreferred:
+    """minimax-cn was added to _MODELS_DEV_PREFERRED so that /model picker
+    shows the same models as `hermes setup model` (which always calls the
+    live models.dev API). Without this, MiniMax-M2.7-highspeed and other
+    variant models only appeared in the setup wizard but not in /model."""
+
+    def test_minimax_cn_is_in_preferred_set(self):
+        assert "minimax-cn" in _MODELS_DEV_PREFERRED
+
+    def test_minimax_cn_includes_highspeed_from_models_dev(self):
+        """The primary bug: MiniMax-M2.7-highspeed must appear in the
+        /model picker once minimax-cn is preferred."""
+        mdev = ["MiniMax-M2.7-highspeed", "MiniMax-M2.7", "MiniMax-M2.5"]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = provider_model_ids("minimax-cn")
+        assert "MiniMax-M2.7-highspeed" in out
+        assert "MiniMax-M2.7" in out
+        assert "MiniMax-M2.5" in out
+
+    def test_minimax_cn_offline_falls_back_to_curated(self):
+        """Offline models.dev → curated-only list, no crash."""
+        with patch("agent.models_dev.list_agentic_models", return_value=[]):
+            out = provider_model_ids("minimax-cn")
+        # Curated floor (see _PROVIDER_MODELS["minimax-cn"])
+        assert "MiniMax-M2.7" in out
+        assert "MiniMax-M2.5" in out
+        assert "MiniMax-M2.1" in out
+        assert "MiniMax-M2" in out
+
+
 class TestOpenRouterAndNousUnchanged:
     """Per Teknium: openrouter and nous are NEVER merged with models.dev."""
 

@@ -2,7 +2,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _build_media_placeholder
 from gateway.session import SessionSource, build_session_key
 
 
@@ -77,3 +77,42 @@ async def test_native_image_buffer_not_cleared_by_other_sessions_without_images(
 
     assert runner._consume_pending_native_image_paths(build_session_key(source_a)) == ["/tmp/a.png"]
     assert runner._consume_pending_native_image_paths(build_session_key(source_b)) == []
+
+
+@pytest.mark.asyncio
+async def test_native_image_buffer_excludes_document_attachments_from_photo_messages():
+    runner = _make_runner()
+    source = _source("chat-mixed")
+    event = MessageEvent(
+        text="see both",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/picture.png", "/tmp/notes.md"],
+        media_types=["image/png", "text/markdown"],
+    )
+
+    await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert runner._consume_pending_native_image_paths(build_session_key(source)) == [
+        "/tmp/picture.png"
+    ]
+
+
+def test_media_placeholder_respects_per_attachment_media_types():
+    source = _source("chat-placeholder")
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/picture.png", "/tmp/notes.md"],
+        media_types=["image/png", "text/markdown"],
+    )
+
+    assert _build_media_placeholder(event) == (
+        "[User sent an image: /tmp/picture.png]\n"
+        "[User sent a file: /tmp/notes.md]"
+    )

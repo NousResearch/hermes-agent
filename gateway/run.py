@@ -766,16 +766,33 @@ def _build_media_placeholder(event) -> str:
     """
     parts = []
     media_urls = getattr(event, "media_urls", None) or []
-    media_types = getattr(event, "media_types", None) or []
     for i, url in enumerate(media_urls):
-        mtype = media_types[i] if i < len(media_types) else ""
-        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+        if _event_media_is_image(event, i):
             parts.append(f"[User sent an image: {url}]")
-        elif mtype.startswith("audio/"):
+        elif _event_media_is_audio(event, i):
             parts.append(f"[User sent audio: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _event_media_type_at(event, index: int) -> str:
+    media_types = getattr(event, "media_types", None) or []
+    return media_types[index] if index < len(media_types) else ""
+
+
+def _event_media_is_image(event, index: int) -> bool:
+    mtype = _event_media_type_at(event, index)
+    if mtype:
+        return mtype.startswith("image/")
+    return getattr(event, "message_type", None) == MessageType.PHOTO
+
+
+def _event_media_is_audio(event, index: int) -> bool:
+    mtype = _event_media_type_at(event, index)
+    if mtype:
+        return mtype.startswith("audio/")
+    return getattr(event, "message_type", None) in {MessageType.VOICE, MessageType.AUDIO}
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -6819,10 +6836,9 @@ class GatewayRunner:
             image_paths = []
             audio_paths = []
             for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                if _event_media_is_image(event, i):
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                if _event_media_is_audio(event, i):
                     audio_paths.append(path)
 
             if image_paths:

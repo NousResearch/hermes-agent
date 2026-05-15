@@ -5307,6 +5307,13 @@ class TestMemoryContextSanitization:
         assert "sanitize_context(user_message)" not in src
         assert "sanitize_context(persist_user_message)" not in src
 
+    def test_plugin_context_is_sanitized_before_user_message_injection(self):
+        """pre_llm_call plugins must not bypass the single memory-context path."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "_plugin_context = sanitize_context(_plugin_user_context)" in src
+        assert "_injections.append(_plugin_user_context)" not in src
+
     def test_sanitize_context_strips_full_block(self):
         """Helper-level: a string with an embedded memory-context block is
         cleaned to just the surrounding text.  Used by build_memory_context_block
@@ -5371,11 +5378,13 @@ class TestResolvedMemoryContextInjection:
             self.prefetch_queries.append(query)
             return self.context
 
-    def _run_and_capture_api_messages(self, agent, *, packet_builder_enabled):
+    def _run_and_capture_api_messages(self, agent, *, packet_builder_enabled, memory_context=None):
         captured = {}
         agent._memory_packet_builder_enabled = packet_builder_enabled
         agent._memory_manager = self._FakeMemoryManager(
-            "# Facts\nDarwin is local\n# Preferences\nJuan prefers direct Spanish"
+            memory_context
+            if memory_context is not None
+            else "# Facts\nDarwin is local\n# Preferences\nJuan prefers direct Spanish"
         )
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
@@ -5414,3 +5423,61 @@ class TestResolvedMemoryContextInjection:
         assert "# Resolved Memory Context" in content
         assert "Darwin is local" in content
         assert content.count("Darwin is local") == 1
+
+    def test_packet_builder_on_sanitizes_raw_plus_resolved_before_api_message(self, agent):
+        contaminated = (
+            "## Session Summary\n"
+            "Juan pidió retomar mejorar su memoria/contexto.\n"
+            "## User Peer Card\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Communication in neutral Spanish, direct.\n"
+            "<think>private upstream reasoning</think>\n"
+            "---\n"
+            "# Resolved Memory Context\n"
+            "# Sources (in priority order): unknown\n"
+            "# Preferences\n"
+            "- Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+        )
+        api_messages = self._run_and_capture_api_messages(
+            agent,
+            packet_builder_enabled=True,
+            memory_context=contaminated,
+        )
+        content = [m for m in api_messages if m.get("role") == "user"][0]["content"]
+
+        assert content.count("# Resolved Memory Context") == 1
+        assert "honcho_session_summary" in content
+        assert "unknown" not in content
+        assert "Preferred name is Darwin" not in content
+        assert "private upstream reasoning" not in content
+        assert content.count("Juan pidió retomar") == 1
+
+    def test_pre_llm_plugin_context_is_sanitized_before_api_message(self, agent, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(
+            plugins,
+            "invoke_hook",
+            lambda *args, **kwargs: [
+                {
+                    "context": (
+                        "plugin-visible note\n"
+                        "<memory-context>\n"
+                        "stale injected fact\n"
+                        "</memory-context>\n"
+                        "<think>plugin private reasoning</think>"
+                    )
+                }
+            ],
+        )
+        api_messages = self._run_and_capture_api_messages(
+            agent,
+            packet_builder_enabled=True,
+            memory_context="",
+        )
+        content = [m for m in api_messages if m.get("role") == "user"][0]["content"]
+
+        assert "plugin-visible note" in content
+        assert "stale injected fact" not in content
+        assert "plugin private reasoning" not in content
+        assert "<memory-context>" not in content

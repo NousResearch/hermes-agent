@@ -12313,7 +12313,9 @@ class AIAgent:
                         if _fenced:
                             _injections.append(_fenced)
                     if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
+                        _plugin_context = sanitize_context(_plugin_user_context)
+                        if _plugin_context.strip():
+                            _injections.append(_plugin_context)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

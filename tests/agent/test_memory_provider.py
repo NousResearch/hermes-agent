@@ -1280,6 +1280,70 @@ class TestBuildMemoryContextPacket:
         # Should not crash, facts should contain "fact line" but not empty whitespace
         assert "fact line" in pkt["facts"]
 
+    def test_m2_realistic_raw_plus_resolved_fixture_has_named_sources(self):
+        from agent.memory_manager import build_memory_context_packet
+
+        raw = (
+            "## Session Summary\n"
+            "Juan pidió retomar mejorar su memoria/contexto, no capacidad OVH.\n"
+            "\n"
+            "## User Representation\n"
+            "[2026-05-14] The user should be called Juan; Darwin is this instance/agent.\n"
+            "\n"
+            "## User Peer Card\n"
+            "Name: Juan Carlos Verni\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Communication in neutral Spanish, direct.\n"
+            "\n"
+            "## AI Identity Card\n"
+            "Name: Darwin\n"
+            "Primary model: GPT-5.5 via OpenAI Codex OAuth\n"
+            "Fallback/comparison model: DeepSeek V4 Pro only when primary model fails.\n"
+            "\n"
+            "<think>internal analysis should never be injected</think>\n"
+            "---\n"
+            "# Resolved Memory Context\n"
+            "# Sources (in priority order): unknown\n"
+            "# Preferences\n"
+            "- Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+        )
+
+        pkt = build_memory_context_packet(raw)
+        combined = "\n".join(pkt["facts"] + pkt["preferences"] + pkt["operational_state"])
+
+        assert pkt["source_precedence"]
+        assert "unknown" not in pkt["source_precedence"]
+        assert "honcho_session_summary" in pkt["source_precedence"]
+        assert "honcho_user_peer_card" in pkt["source_precedence"]
+        assert "internal analysis" not in combined
+        assert "# Resolved Memory Context" not in combined
+        assert "Preferred name is Darwin" not in combined
+        assert any("Preferred name is Darwin" in item for item in pkt["excluded_context"])
+
+    def test_m2_identity_and_model_canon_exclude_superseded_preferences(self):
+        from agent.memory_manager import build_memory_context_packet
+
+        raw = (
+            "## User Peer Card\n"
+            "Name: Juan Carlos Verni\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Model routing for Darwin — GPT-5.5 orchestrates; MiniMax M2.7 executes delegated code/SQL/debug; DeepSeek V4 Pro is fallback/contrast.\n"
+            "PREFERENCE: Model routing for Darwin — GPT-5.5 orchestrates; MiniMax M2.7 executes delegated code/SQL/debug; DeepSeek V4 Pro is fallback/contrast (CORRECTION: DeepSeek V4 Pro is the reasoning orchestrator that DELEGATES to Darwin on MiniMax, not Darwin's primary model)\n"
+            "## AI Identity Card\n"
+            "Primary model: GPT-5.5 via OpenAI Codex OAuth\n"
+            "Delegated executor: MiniMax M2.7 via delegate_task\n"
+            "Fallback/comparison model: DeepSeek V4 Pro only when primary model fails, is limited, or Juan explicitly asks for contrast\n"
+        )
+
+        pkt = build_memory_context_packet(raw)
+        rendered_items = "\n".join(pkt["facts"] + pkt["preferences"] + pkt["operational_state"])
+
+        assert "Preferred name is Darwin" not in rendered_items
+        assert "DeepSeek V4 Pro is the reasoning orchestrator" not in rendered_items
+        assert "GPT-5.5 orchestrates" in rendered_items
+        assert any(c["kind"] == "identity" for c in pkt["conflicts"])
+        assert any(c["kind"] == "model" for c in pkt["conflicts"])
+
 
 class TestPacketToText:
     """Tests for _packet_to_text helper."""
@@ -1369,6 +1433,32 @@ class TestBuildMemoryContextBlock:
         result = build_memory_context_block(raw, packet_builder_enabled=True)
         assert result.count("fact one") == 1
         assert "---" not in result
+
+    def test_m2_block_enabled_rebuilds_raw_plus_resolved_as_single_packet(self):
+        from agent.memory_manager import build_memory_context_block
+
+        raw = (
+            "## Session Summary\n"
+            "Juan pidió retomar mejorar su memoria/contexto.\n"
+            "## User Peer Card\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Communication in neutral Spanish, direct.\n"
+            "<think>do not leak this</think>\n"
+            "---\n"
+            "# Resolved Memory Context\n"
+            "# Sources (in priority order): unknown\n"
+            "# Preferences\n"
+            "- Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+        )
+
+        result = build_memory_context_block(raw, packet_builder_enabled=True)
+
+        assert result.count("# Resolved Memory Context") == 1
+        assert "unknown" not in result
+        assert "honcho_session_summary" in result
+        assert "Preferred name is Darwin" not in result
+        assert "do not leak this" not in result
+        assert result.count("Juan pidió retomar") == 1
 
     def test_pre_wraps_context_stripped(self):
         from agent.memory_manager import build_memory_context_block

@@ -1108,6 +1108,13 @@ class AIAgent:
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
+    # Maximum consecutive auth refresh attempts for the same credential pool
+    # entry before treating the credential as unrecoverable and falling through
+    # to rotation / fallback activation.  Prevents infinite retry loops when
+    # try_refresh_current() "succeeds" but the provider keeps rejecting the
+    # token (see issue #26080).
+    _MAX_AUTH_REFRESH_RETRIES = 3
+
     @property
     def base_url(self) -> str:
         return self._base_url
@@ -1263,6 +1270,7 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self._auth_refresh_consecutive = 0
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -7326,6 +7334,7 @@ class AIAgent:
                 self._client_kwargs.pop("default_headers", None)
 
     def _swap_credential(self, entry) -> None:
+        self._auth_refresh_consecutive = 0
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
@@ -7421,9 +7430,21 @@ class AIAgent:
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
-                logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
-                self._swap_credential(refreshed)
-                return True, has_retried_429
+                self._auth_refresh_consecutive += 1
+                if self._auth_refresh_consecutive <= self._MAX_AUTH_REFRESH_RETRIES:
+                    logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')} (attempt {self._auth_refresh_consecutive}/{self._MAX_AUTH_REFRESH_RETRIES})")
+                    self._swap_credential(refreshed)
+                    return True, has_retried_429
+                # Too many consecutive refreshes of the same entry — the token
+                # keeps getting rejected despite "successful" refresh.  Fall
+                # through to rotation/fallback (issue #26080).
+                logger.warning(
+                    "Auth refresh succeeded %d times but 401 persists for pool entry %s "
+                    "— skipping to rotation/fallback",
+                    self._auth_refresh_consecutive,
+                    getattr(refreshed, 'id', '?'),
+                )
+                self._auth_refresh_consecutive = 0
             # Refresh failed — rotate to next credential instead of giving up.
             # The failed entry is already marked exhausted by try_refresh_current().
             rotate_status = status_code if status_code is not None else 401

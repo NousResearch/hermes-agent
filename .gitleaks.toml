@@ -33,6 +33,7 @@ regexes = [
 id = "generic-api-key"
 description = "Allow documented/public OAuth client identifiers and model identifiers"
 path = '''^(hermes_cli/auth\.py|agent/google_oauth\.py|hermes_cli/copilot_auth\.py|tools/mixture_of_agents_tool\.py|agent/anthropic_adapter\.py)$'''
+regex = '''(XAI_OAUTH_CLIENT_ID\s*=\s*"b1a00492-073a-47ea-816f-4c329264a828"|_PUBLIC_CLIENT_SECRET_SUFFIX\s*=\s*"4uHgMPm-1o7Sk-geV6Cu5clXFsxl")'''
 
 [[rules]]
 id = "private-key"

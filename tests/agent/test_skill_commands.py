@@ -351,6 +351,34 @@ class TestScanSkillCommands:
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
+    def test_invocation_loads_external_skill_from_absolute_cache(self, tmp_path):
+        """External skill slash commands cache an absolute skill_dir (#26337)."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+        _make_skill(
+            external_dir,
+            "external-only",
+            body="EXTERNAL SKILL BODY",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_dir]),
+        ):
+            result = scan_skill_commands()
+            assert result["/external-only"]["skill_dir"] == str(
+                external_dir / "external-only"
+            )
+
+            msg = build_skill_invocation_message("/external-only", "run it")
+
+        assert msg is not None
+        assert "[Failed to load skill" not in msg
+        assert "EXTERNAL SKILL BODY" in msg
+        assert "run it" in msg
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

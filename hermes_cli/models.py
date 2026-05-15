@@ -453,6 +453,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "xai-coding-plan": ["grok-build", "grok-4-1-fast", "grok-code-fast-1", "grok-4.3", "grok-4.3-latest"],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -945,6 +946,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("xai-coding-plan", "xAI Coding Plan",          "xAI Coding Plan (OAuth — requires grok CLI)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1014,6 +1016,19 @@ _PROVIDER_ALIASES = {
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
     "dashscope": "alibaba",
+    "xai-coding-plan": "xai-coding-plan",
+    "x.ai coding plan": "xai-coding-plan",
+    "xai coding plan": "xai-coding-plan",
+    "xai-oauth": "xai-coding-plan",
+    "grok-plan": "xai-coding-plan",
+    "grok-code": "xai-coding-plan",
+    "xai-grok-build": "xai-coding-plan",
+    "x.ai oauth": "xai-coding-plan",
+    "xai oauth": "xai-coding-plan",
+    "x.ai coding plan": "xai-coding-plan",
+    "xai-coding": "xai-coding-plan",
+
+
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",

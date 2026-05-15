@@ -161,6 +161,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
     ),
+    "xai-coding-plan": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -244,6 +249,10 @@ ALIASES: Dict[str, str] = {
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
+    "xai-oauth": "xai-coding-plan",
+    "xai-coding-plan": "xai-coding-plan",
+    "xai coding plan": "xai-coding-plan",
+    "x.ai coding plan": "xai-coding-plan",
 
     # nvidia
     "nim": "nvidia",

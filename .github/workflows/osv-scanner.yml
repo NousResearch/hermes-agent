@@ -54,6 +54,17 @@ permissions:
   security-events: write
 
 jobs:
+  npm-lockfile-integrity:
+    name: Validate npm lockfiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Check npm lockfile resolved URLs and integrity hashes
+        run: python3 scripts/validate_npm_lockfiles.py
+
   scan:
     name: Scan lockfiles
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@c51854704019a247608d928f370c98740469d4b5  # v2.3.5

@@ -49,6 +49,7 @@ class SSHEnvironment(BaseEnvironment):
         self.user = user
         self.port = port
         self.key_path = key_path
+        self._remote_tar_no_overwrite_dir_support: bool | None = None
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +221,7 @@ class SSHEnvironment(BaseEnvironment):
         # that specific error and fall back to a plain copy; all other
         # OSErrors (e.g. disk full, bad path) are re-raised as normal.
         with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            staged_relatives: list[str] = []
             for host_path, remote_path in files:
                 try:
                     rel_remote = os.path.relpath(remote_path, base)
@@ -234,6 +236,7 @@ class SSHEnvironment(BaseEnvironment):
                     )
 
                 staged = os.path.join(staging, rel_remote)
+                staged_relatives.append(rel_remote)
                 os.makedirs(os.path.dirname(staged), exist_ok=True)
                 try:
                     os.symlink(os.path.abspath(host_path), staged)
@@ -244,13 +247,27 @@ class SSHEnvironment(BaseEnvironment):
                     else:
                         raise
 
-            tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
+            # Do not archive the staging root itself.  The remote parents are
+            # created above, and including ``.`` lets tar apply the local
+            # staging directory's permissions to an existing remote sync root.
+            # GNU tar's --no-overwrite-dir guards that, but bsdtar has no
+            # equivalent flag; sending only file entries keeps both paths from
+            # clobbering existing directory metadata.
+            tar_cmd = ["tar", "-chf", "-", "-C", staging, *staged_relatives]
             ssh_cmd = self._build_ssh_command()
-            # --no-overwrite-dir prevents tar from overwriting the mode of
-            # existing directories (e.g. /home/<user>) with the staging
-            # directory's mode.  Without this, a umask 002 produces 0775
-            # dirs which breaks sshd StrictModes (refuses authorized_keys).
-            ssh_cmd.append(f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}")
+            # GNU tar supports --no-overwrite-dir, but macOS ships bsdtar,
+            # which rejects that flag. Detect support on the remote side so
+            # SSH workers targeting macOS can still run without a persistent
+            # file-sync warning on every tool call. Keep the safer GNU-tar
+            # flag where available to avoid clobbering directory modes.
+            quoted_base = shlex.quote(base)
+            tar_extract_cmd = f"tar xf - --no-overwrite-dir -C {quoted_base}"
+            if not self._remote_tar_supports_no_overwrite_dir():
+                # bsdtar on macOS also tries to restore mtimes on existing
+                # directories from the archive and exits non-zero when that
+                # is not permitted. -m skips mtime restoration.
+                tar_extract_cmd = f"tar xmf - -C {quoted_base}"
+            ssh_cmd.append(tar_extract_cmd)
 
             tar_proc = subprocess.Popen(
                 tar_cmd,
@@ -299,6 +316,32 @@ class SSHEnvironment(BaseEnvironment):
                 )
 
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _remote_tar_supports_no_overwrite_dir(self) -> bool:
+        """Return whether remote tar accepts GNU tar's --no-overwrite-dir."""
+        cached = getattr(self, "_remote_tar_no_overwrite_dir_support", None)
+        if cached is not None:
+            return cached
+
+        cmd = self._build_ssh_command()
+        cmd.append("tar --no-overwrite-dir --help >/dev/null 2>&1")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            supported = result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            logger.debug(
+                "SSH: remote tar --no-overwrite-dir probe failed; using portable extraction",
+                exc_info=True,
+            )
+            supported = False
+        self._remote_tar_no_overwrite_dir_support = supported
+        return supported
 
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

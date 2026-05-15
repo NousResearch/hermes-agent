@@ -125,10 +125,20 @@ class TestAuditDiff:
         assert "private-key-material" in result.critical
 
     def test_env_secret_literal_blocked(self):
-        diff = "+api_key = 'sk-1234567890abcdef12345678'\n"
+        diff = "+api_key = 'sk-1234567890abcdef1234567890abcdef'\n"
         result = audit_diff(diff)
         assert result.passed is False
         assert "env-secret-literal" in result.critical
+
+    def test_env_secret_test_fixture_passes(self):
+        diff = "+        api_key=\"resolver-key\",\n"
+        result = audit_diff(diff)
+        assert result.passed is True
+
+    def test_env_secret_your_key_passes(self):
+        diff = "+api_key: your-api-key-here\n"
+        result = audit_diff(diff)
+        assert result.passed is True
 
     def test_chmod_suid_blocked(self):
         diff = "+chmod 4755 /usr/bin/evil\n"

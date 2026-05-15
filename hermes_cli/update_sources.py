@@ -45,7 +45,10 @@ _CRITICAL_PATTERNS: List[Tuple[str, re.Pattern]] = [
     (
         "env-secret-literal",
         re.compile(
-            r"(?i)(api[_-]?key|token|secret|password)\s*[=:]\s*['\"]?[^\s'\"]{12,}"
+            r"(?i)(api[_-]?key|token|secret|password)\s*[=:]\s*['\"]?"
+            r"(?!test|fake|dummy|placeholder|example|resolver|x{4,}|your[-_]"
+            r"|TODO|CHANGEME|REPLACE)"
+            r"[^\s'\"]{16,}"
         ),
     ),
     (

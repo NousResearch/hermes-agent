@@ -3321,6 +3321,15 @@ class DiscordAdapter(BasePlatformAdapter):
         if not await self._check_slash_authorization(interaction, slash_name):
             return
 
+        try:
+            response = getattr(interaction, "response", None)
+            is_done = getattr(response, "is_done", None)
+            already_done = callable(is_done) and is_done()
+            if response is not None and hasattr(response, "defer") and not already_done:
+                await response.defer(ephemeral=True)
+        except Exception as e:
+            logger.debug("[Discord] custom slash /%s defer failed: %s", command, e)
+
         channel = getattr(interaction, "channel", None)
         channel_id = str(getattr(interaction, "channel_id", "") or getattr(channel, "id", "") or "")
         guild = getattr(interaction, "guild", None)
@@ -3377,6 +3386,10 @@ class DiscordAdapter(BasePlatformAdapter):
             response = getattr(interaction, "response", None)
             is_done = getattr(response, "is_done", None)
             if callable(is_done) and is_done():
+                edit_original = getattr(interaction, "edit_original_response", None)
+                if edit_original is not None:
+                    await edit_original(content=message)
+                    return
                 return
             if response and hasattr(response, "send_message"):
                 await response.send_message(message, ephemeral=ephemeral)
@@ -4062,6 +4075,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            await self._emit_discord_auto_thread_created_hook(message, thread, thread_name)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -4073,6 +4087,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
+                await self._emit_discord_auto_thread_created_hook(
+                    message,
+                    thread,
+                    thread_name,
+                    starter_message=message,
+                    seed_message=seed_msg,
+                )
                 return thread
             except Exception as fallback_error:
                 logger.warning(
@@ -4082,6 +4103,55 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def _emit_discord_auto_thread_created_hook(
+        self,
+        message: 'DiscordMessage',
+        thread: Any,
+        initial_name: str,
+        *,
+        starter_message: Optional[Any] = None,
+        seed_message: Optional[Any] = None,
+    ) -> None:
+        """Emit a plugin hook after auto-thread creation.
+
+        Core exposes the Discord objects and IDs only; plugins decide how to
+        title, persist, react, archive, or otherwise manage thread state.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            starter = starter_message or message
+            parent_channel = getattr(thread, "parent", None) or getattr(message, "channel", None)
+            guild = getattr(thread, "guild", None) or getattr(message, "guild", None)
+            author = getattr(message, "author", None)
+            hook_results = invoke_hook(
+                "discord_auto_thread_created",
+                adapter=self,
+                message=message,
+                starter_message=starter,
+                seed_message=seed_message,
+                content=getattr(message, "content", "") or "",
+                initial_name=initial_name,
+                thread=thread,
+                channel=thread,
+                thread_id=str(getattr(thread, "id", "") or ""),
+                channel_id=str(getattr(thread, "id", "") or ""),
+                parent_channel=parent_channel,
+                parent_channel_id=str(getattr(parent_channel, "id", "") or ""),
+                guild=guild,
+                guild_id=str(getattr(guild, "id", "") or ""),
+                user=author,
+                user_id=str(getattr(author, "id", "") or ""),
+                user_name=getattr(author, "display_name", None) or getattr(author, "name", ""),
+                starter_message_id=str(getattr(starter, "id", "") or ""),
+                seed_message_id=str(getattr(seed_message, "id", "") or "") if seed_message is not None else "",
+            )
+            for result in hook_results:
+                if hasattr(result, "__await__"):
+                    await result
+        except Exception as e:
+            logger.warning("[%s] discord_auto_thread_created hook failed: %s", self.name, e)
 
     async def create_handoff_thread(
         self,

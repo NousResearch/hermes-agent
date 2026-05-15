@@ -566,7 +566,7 @@ async def _standalone_send(
         # Per-request timeouts so a slow STS endpoint cannot starve the
         # subsequent activity POST of its budget.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
-        async with _aiohttp.ClientSession() as session:
+        async with _aiohttp.ClientSession(trust_env=True) as session:
             async with session.post(
                 token_url,
                 data={

@@ -864,7 +864,7 @@ Available providers for auxiliary tasks: `auto`, `main`, plus any provider in th
 :::
 
 :::warning `"main"` is for auxiliary tasks only
-The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
+The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`). It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
 :::
 
 ### Full auxiliary config reference
@@ -934,7 +934,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
@@ -977,7 +977,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 
 ### Provider Options
 
-These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`, `fallback_model:`), not to your main `model.provider` setting.
+These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`) and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`), not to your main `model.provider` setting.
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|

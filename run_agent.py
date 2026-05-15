@@ -594,6 +594,70 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
+def _file_mutation_fingerprint(path: str, max_hash_bytes: int = 16 * 1024 * 1024) -> Dict[str, Any]:
+    """Return a small fingerprint for a file path at mutation-failure time.
+
+    The verifier uses this to distinguish "the failed patch still appears
+    unrecovered" from "a later tool changed this path, so verify the final
+    diff." Errors are represented as data so verifier reporting never breaks
+    the conversation loop.
+    """
+    try:
+        p = Path(path).expanduser()
+        if not p.exists():
+            return {"exists": False}
+        stat = p.stat()
+        if not p.is_file():
+            return {
+                "exists": True,
+                "kind": "directory" if p.is_dir() else "other",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        if stat.st_size > max_hash_bytes:
+            return {
+                "exists": True,
+                "kind": "file",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "hash_skipped": True,
+            }
+        digest = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "exists": True,
+            "kind": "file",
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "sha256": digest.hexdigest(),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _annotate_file_mutation_recovery_state(
+    failed: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Add best-effort recovery annotations to failed file mutations.
+
+    A later successful ``write_file``/``patch`` clears the entry directly.
+    Other tools can still recover by changing the file on disk; in that case
+    keep the warning but downgrade it with ``changed_after_failure=True``.
+    """
+    annotated: Dict[str, Dict[str, Any]] = {}
+    for path, info in (failed or {}).items():
+        entry = dict(info or {})
+        baseline = entry.get("fingerprint_after_failure")
+        if baseline is not None:
+            current = _file_mutation_fingerprint(path)
+            entry["current_fingerprint"] = current
+            entry["changed_after_failure"] = current != baseline
+        annotated[path] = entry
+    return annotated
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -5453,6 +5517,7 @@ class AIAgent:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "fingerprint_after_failure": _file_mutation_fingerprint(path),
                     }
         else:
             for path in targets:
@@ -5497,9 +5562,9 @@ class AIAgent:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            f"{len(failed)} file-edit attempt(s) failed this turn. Verify "
+            "the listed paths before trusting any completion claim. Run "
+            "`git status` or `read_file` to confirm."
         ]
         shown = 0
         for path, info in failed.items():
@@ -5508,9 +5573,12 @@ class AIAgent:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             if preview:
-                lines.append(f"  • {path} — [{tool}] {preview}")
+                line = f"  • {path} — [{tool}] {preview}"
             else:
-                lines.append(f"  • {path} — [{tool}] failed")
+                line = f"  • {path} — [{tool}] failed"
+            if info.get("changed_after_failure") is True:
+                line += " (file changed later; verify the final diff)"
+            lines.append(line)
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
@@ -12215,8 +12283,8 @@ class AIAgent:
         # each failed ``write_file`` / ``patch`` call records the error
         # preview.  Later successful writes to the same path remove the
         # entry (the model recovered).  At end-of-turn, any entries still
-        # present are surfaced in an advisory footer so the model cannot
-        # over-claim success while the file is actually unchanged on disk.
+        # present are surfaced in an advisory footer.  The footer reports
+        # failed edit attempts and notes when a path changed later anyway.
         self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
         
         # Record the execution thread so interrupt()/clear_interrupt() can
@@ -15529,9 +15597,10 @@ class AIAgent:
         # — where a model issues a batch of parallel patches, half of them
         # fail with "Could not find old_string", and the model summarises
         # the turn claiming every file was edited.  The user then has to
-        # manually run ``git status`` to catch the lie.  With this footer
-        # the truth is surfaced on every turn, so over-claiming is
-        # structurally impossible past the model.
+        # manually run ``git status`` to catch the lie.  With this footer,
+        # the response names failed edit attempts and marks paths that
+        # changed later so the user can verify the final diff instead of
+        # getting a false "not modified" claim.
         #
         # Gate: only applied when a real text response exists for this
         # turn and the user didn't interrupt.  Empty/interrupted turns
@@ -15540,6 +15609,7 @@ class AIAgent:
             try:
                 _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
                 if _failed and self._file_mutation_verifier_enabled():
+                    _failed = _annotate_file_mutation_recovery_state(_failed)
                     footer = self._format_file_mutation_failure_footer(_failed)
                     if footer:
                         final_response = final_response.rstrip() + "\n\n" + footer

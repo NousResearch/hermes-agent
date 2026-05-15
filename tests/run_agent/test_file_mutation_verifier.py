@@ -13,8 +13,8 @@ Covers the three moving pieces:
 Regression target: the "Ben Eng llm-wiki" session where grok-4.1-fast
 batched parallel patches, half failed, and the model summarised the
 turn claiming every file was edited.  This verifier makes over-claiming
-structurally impossible past the model: the user always sees the real
-list of files that did NOT change.
+harder past the model: the user sees failed edit attempts and whether
+those paths changed later in the turn.
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ import pytest
 from run_agent import (
     AIAgent,
     _FILE_MUTATING_TOOLS,
+    _annotate_file_mutation_recovery_state,
     _extract_error_preview,
     _extract_file_mutation_targets,
+    _file_mutation_fingerprint,
 )
 
 
@@ -150,6 +152,20 @@ class TestRecordFileMutationResult:
         assert "/tmp/a.md" in state
         assert state["/tmp/a.md"]["tool"] == "patch"
         assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+
+    def test_failure_records_file_snapshot_for_later_recovery_check(self, tmp_path):
+        target = tmp_path / "a.md"
+        target.write_text("before", encoding="utf-8")
+        agent = _bare_agent()
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "after"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations[str(target)]["fingerprint_after_failure"] == _file_mutation_fingerprint(str(target))
 
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()
@@ -274,6 +290,49 @@ class TestRecordFileMutationResult:
 # ---------------------------------------------------------------------------
 
 
+class TestRecoveryAnnotation:
+    def test_fingerprint_skips_hash_for_files_over_size_cap(self, tmp_path):
+        target = tmp_path / "large.md"
+        target.write_text("larger than cap", encoding="utf-8")
+
+        fingerprint = _file_mutation_fingerprint(str(target), max_hash_bytes=3)
+
+        assert fingerprint["exists"] is True
+        assert fingerprint["kind"] == "file"
+        assert fingerprint["hash_skipped"] is True
+        assert "sha256" not in fingerprint
+
+    def test_marks_file_changed_after_failed_attempt(self, tmp_path):
+        target = tmp_path / "a.md"
+        target.write_text("before", encoding="utf-8")
+        failed = {
+            str(target): {
+                "tool": "patch",
+                "error_preview": "Could not find old_string",
+                "fingerprint_after_failure": _file_mutation_fingerprint(str(target)),
+            },
+        }
+
+        target.write_text("after", encoding="utf-8")
+
+        annotated = _annotate_file_mutation_recovery_state(failed)
+        assert annotated[str(target)]["changed_after_failure"] is True
+
+    def test_marks_file_unchanged_after_failed_attempt(self, tmp_path):
+        target = tmp_path / "a.md"
+        target.write_text("before", encoding="utf-8")
+        failed = {
+            str(target): {
+                "tool": "patch",
+                "error_preview": "Could not find old_string",
+                "fingerprint_after_failure": _file_mutation_fingerprint(str(target)),
+            },
+        }
+
+        annotated = _annotate_file_mutation_recovery_state(failed)
+        assert annotated[str(target)]["changed_after_failure"] is False
+
+
 class TestFormatFooter:
     def test_empty_returns_empty_string(self):
         assert AIAgent._format_file_mutation_failure_footer({}) == ""
@@ -282,10 +341,28 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 file-edit attempt(s) failed" in out
+        assert "were NOT modified" not in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+
+    def test_changed_after_failure_gets_recovery_hint(self, tmp_path):
+        target = tmp_path / "a.md"
+        target.write_text("before", encoding="utf-8")
+        failed = {
+            str(target): {
+                "tool": "patch",
+                "error_preview": "Could not find old_string",
+                "fingerprint_after_failure": _file_mutation_fingerprint(str(target)),
+            },
+        }
+        target.write_text("after", encoding="utf-8")
+
+        out = AIAgent._format_file_mutation_failure_footer(_annotate_file_mutation_recovery_state(failed))
+
+        assert "changed later" in out
+        assert "verify the final diff" in out
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -293,7 +370,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 file-edit attempt(s) failed" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

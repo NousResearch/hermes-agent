@@ -168,6 +168,69 @@ def test_kb_command_renders_live_attention_summary_shape(monkeypatch):
     assert "Queue: 309" in text
 
 
+def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_dashboard_live": {
+                "result": {
+                    "surface": "dashboard.live",
+                    "summary": {
+                        "active_run_count": 1,
+                        "active_todo_count": 4,
+                        "publication_status": "clean",
+                        "queue_item_count": 2,
+                        "readiness_status": "ready",
+                    },
+                    "sections": [
+                        {
+                            "id": "now",
+                            "title": "Now",
+                            "cards": [
+                                {"id": "system:readiness", "title": "Readiness: ready", "detail": ""},
+                                {"id": "system:runs", "title": "1 active run(s)", "detail": "sync"},
+                            ],
+                        },
+                        {
+                            "id": "queue",
+                            "title": "Queue",
+                            "cards": [{"id": "queue:1", "title": "Review one proposal", "detail": "low risk"}],
+                        },
+                    ],
+                    "refresh": {"ttl_seconds": 60},
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/dashboard"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [
+        (
+            "mcp_kb_engine_prod_dashboard_live",
+            {
+                "limit": 5,
+                "include_feedback": True,
+                "include_publication": True,
+                "include_readiness": True,
+            },
+        )
+    ]
+    text = adapter.sent[0]["text"]
+    assert "KB Dashboard" in text
+    assert "Readiness: ready" in text
+    assert "Publication: clean" in text
+    assert "Queue 2" in text
+    assert "Review one proposal" in text
+    assert [action.label for action in adapter.sent[0]["actions"]] == ["Refresh", "Queue", "Runs", "Status"]
+
+
 def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
     from tools.kb_callback_registry import KbCallbackContext

@@ -1,0 +1,15 @@
+{
+  "name": "kb-live-dashboard",
+  "label": "KB Dashboard",
+  "description": "Live KB attention dashboard rendered from the configured kb-engine dashboard.live packet.",
+  "icon": "LayoutDashboard",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kb-dashboard",
+    "position": "after:sessions"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

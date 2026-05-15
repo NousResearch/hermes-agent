@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
-SUPPORTED_COMMANDS = {"kb", "today", "kbstatus", "runs", "queue", "run"}
+SUPPORTED_COMMANDS = {"dashboard", "kb", "today", "kbstatus", "runs", "queue", "run"}
 
 
 def _sanitize_component(value: str) -> str:
@@ -246,6 +246,67 @@ def _render_today(data: Any) -> dict[str, Any]:
     return {"title": "KB Today", "text": "\n".join(lines), "actions": []}
 
 
+def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"title": "KB Dashboard", "text": f"KB Dashboard\n{_short(data, 'No dashboard details returned.')}", "actions": []}
+
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    readiness = _short(
+        summary.get("readiness_status")
+        or _readiness_status(data)
+    )
+    publication = _short(
+        summary.get("publication_status")
+        or _publication_status(data)
+    )
+    sections = data.get("sections") if isinstance(data.get("sections"), list) else []
+    queue_count = summary.get("queue_item_count")
+    todo_count = summary.get("active_todo_count") or summary.get("triage_todo_count")
+    active_runs = summary.get("active_run_count")
+    lines = [
+        "KB Dashboard",
+        f"Readiness: {readiness}",
+        f"Publication: {publication}",
+    ]
+    counts: list[str] = []
+    if queue_count is not None:
+        counts.append(f"Queue {queue_count}")
+    if todo_count is not None:
+        counts.append(f"TODOs {todo_count}")
+    if active_runs is not None:
+        counts.append(f"Runs {active_runs}")
+    if counts:
+        lines.append(" · ".join(counts))
+    for section in sections[:4]:
+        if not isinstance(section, dict):
+            continue
+        cards = section.get("cards") if isinstance(section.get("cards"), list) else []
+        if not cards:
+            continue
+        lines.append("")
+        lines.append(_short(section.get("title") or section.get("id"), "Section"))
+        for card in cards[:3]:
+            if not isinstance(card, dict):
+                continue
+            detail = _short(card.get("detail"), "")
+            suffix = f" — {detail}" if detail else ""
+            lines.append(f"- {_short(card.get('title'), 'item')}{suffix}")
+    warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+    if warnings:
+        lines.append("")
+        lines.append(f"Warnings: {len(warnings)}")
+    refresh = data.get("refresh") if isinstance(data.get("refresh"), dict) else {}
+    if refresh:
+        lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
+    actions = [
+        _command_card_action(ctx, target, "Refresh", "dashboard"),
+        _command_card_action(ctx, target, "Queue", "queue"),
+        _command_card_action(ctx, target, "Runs", "runs"),
+        _command_card_action(ctx, target, "Status", "kbstatus"),
+    ]
+    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": actions}
+
+
 def _config_snapshot() -> dict[str, str]:
     config: dict[str, Any] = {}
     try:
@@ -367,6 +428,19 @@ def _kb_action(label: str, action_id: str, handler: Callable[[Any], Any], metada
             "handler": handler,
             "metadata": metadata or {},
         }
+
+
+def _command_card_action(ctx: Any, target: str, label: str, command: str) -> Any:
+    async def _handler(_callback_ctx: Any) -> str:
+        card = _card_for_command(ctx, command)
+        return str(card.get("text") or card.get("title") or label)
+
+    return _kb_action(
+        label,
+        f"dashboard.{command}",
+        _handler,
+        {"command": command, "target": target},
+    )
 
 
 def _proposal_ids_for_item(item: Any) -> list[str]:
@@ -764,6 +838,24 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         "include_readiness": True,
         "run_limit": 3,
     }
+    if command == "dashboard":
+        _, data, errors = _dispatch_first(
+            ctx,
+            target,
+            [
+                (
+                    "dashboard.live",
+                    {
+                        "limit": 5,
+                        "include_feedback": True,
+                        "include_publication": True,
+                        "include_readiness": True,
+                    },
+                ),
+                ("attention.cockpit", cockpit_args),
+            ],
+        )
+        return _render_error("KB Dashboard", target, errors) if data is None else _render_dashboard(data, ctx=ctx, target=target)
     if command in {"kb", "today"}:
         _, data, errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         return _render_error("KB Today", target, errors) if data is None else _render_today(data)

@@ -73,6 +73,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "421774554@qq.com": "wuli666",
+    "twebefy@gmail.com": "tw2818",
     "harish.kukreja@gmail.com": "counterposition",
     "korkyzer@gmail.com": "Korkyzer",
     "1046611633@qq.com": "zhengyn0001",

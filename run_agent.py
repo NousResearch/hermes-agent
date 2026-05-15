@@ -11634,7 +11634,17 @@ class AIAgent:
 
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                # ephemeral_system_prompt is typed and documented as str, but
+                # some callers (e.g. multi-model orchestration paths) pass a
+                # dict. Concatenating a non-str with str raises TypeError, so
+                # coerce defensively before use.
+                eph = self.ephemeral_system_prompt
+                if not isinstance(eph, str):
+                    try:
+                        eph = json.dumps(eph)
+                    except (TypeError, ValueError):
+                        eph = str(eph)
+                effective_system = (effective_system + "\n\n" + eph).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -12476,7 +12486,17 @@ class AIAgent:
             # stay warm.
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                # ephemeral_system_prompt is typed and documented as str, but
+                # some callers (e.g. multi-model orchestration paths) pass a
+                # dict. Concatenating a non-str with str raises TypeError, so
+                # coerce defensively before use.
+                eph = self.ephemeral_system_prompt
+                if not isinstance(eph, str):
+                    try:
+                        eph = json.dumps(eph)
+                    except (TypeError, ValueError):
+                        eph = str(eph)
+                effective_system = (effective_system + "\n\n" + eph).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

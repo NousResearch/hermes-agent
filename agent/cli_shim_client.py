@@ -73,16 +73,17 @@ def _dispatch_for_model(model: str) -> dict[str, Any]:
             "args": ["--print", "--model", "opus"],
             "label": "claude-opus-cli",
         }
-    if m in ("codex-gpt5-cli", "codex-cli", "codex"):
-        # ChatGPT subscription accounts don't accept `--model gpt-5` —
-        # codex picks the right model from the OAuth'd account itself.
+    if m in ("codex-gpt5-cli", "codex-cli", "codex", "codex-gpt55-cli", "codex-gpt5.5-cli"):
+        # ChatGPT $200 Pro subscription — unrestricted gpt-5.5 access.
+        # Pinning the model explicitly ensures we get the latest codex model
+        # regardless of the OAuth account's interactive default.
         # We use --output-last-message to get clean output instead of the
         # interactive scaffold; the temp-file path is filled in at call time.
         return {
             "mode": "codex_exec",
             "command": "codex",
-            "args": ["exec", "--skip-git-repo-check"],
-            "label": "codex-gpt5-cli",
+            "args": ["exec", "--skip-git-repo-check", "--model", "gpt-5.5"],
+            "label": "codex-gpt5.5-cli",
         }
     if m in ("gemini-cli", "gemini-acp", "gemini"):
         return {

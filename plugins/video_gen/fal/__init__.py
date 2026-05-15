@@ -158,6 +158,20 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "audio": False,
         "negative": False,
     },
+    "pika-v2.2": {
+        "display": "Pika 2.2",
+        "speed": "~60-120s",
+        "price": "premium",
+        "strengths": "Pika Labs. Cinematic video with strong prompt adherence, negative prompts.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/pika/v2.2/text-to-video",
+        "image_endpoint": "fal-ai/pika/v2.2/image-to-video",
+        "aspect_ratios": ("16:9", "9:16", "1:1", "4:3", "3:4"),
+        "resolutions": ("720p", "1080p"),
+        "durations": (3, 10),
+        "audio": False,
+        "negative": True,
+    },
 }
 
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults

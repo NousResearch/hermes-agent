@@ -1,7 +1,0 @@
-name: pika
-version: 1.0.0
-description: "Pika Labs video generation backend. Animation-focused text-to-video and image-to-video with style controls."
-author: 0z1
-kind: backend
-requires_env:
-  - PIKA_API_KEY

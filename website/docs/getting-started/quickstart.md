@@ -48,7 +48,15 @@ Pick the row that matches your goal:
 
 ## 1. Install Hermes Agent
 
-Run the one-line installer:
+**Option A — pip (simplest):**
+
+```bash
+pip install hermes-agent
+```
+
+PyPI releases track tagged versions (major/minor releases), not every commit on `main`. For bleeding-edge, use Option B.
+
+**Option B — git installer (tracks main branch):**
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)

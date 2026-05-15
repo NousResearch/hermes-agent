@@ -97,6 +97,8 @@ DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
+DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
+DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -150,6 +152,39 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 # provider as configured. This sentinel is sent only to LM Studio, never to
 # any remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+ACTUAL_LOCAL_NOAUTH_PLACEHOLDER = "dummy-actual-local-api-key"
+
+
+def is_actual_local_base_url(base_url: str) -> bool:
+    """Return True for Actual's loopback local API endpoint."""
+    try:
+        host = (urlparse(base_url or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def normalize_actual_base_url(base_url: str) -> str:
+    """Return Actual's OpenAI-compatible base URL.
+
+    Actual hosted inference is exposed at api.actual.inc, while the Actual
+    client's offline local server binds a loopback host. Both use a /v1 API
+    surface for Hermes' Responses transport.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return DEFAULT_ACTUAL_BASE_URL
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path = parsed.path.rstrip("/")
+    except Exception:
+        return url
+    if host == "api.actual.inc" and path in {"", "/"}:
+        return url + "/v1"
+    if is_actual_local_base_url(url) and path in {"", "/"}:
+        return url + "/v1"
+    return url
 
 
 # =============================================================================
@@ -289,6 +324,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.gmi-serving.com/v1",
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
+    ),
+    "actual": ProviderConfig(
+        id="actual",
+        name="Actual Computer",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_ACTUAL_BASE_URL,
+        api_key_env_vars=("ACTUAL_API_KEY",),
+        base_url_env_var="ACTUAL_BASE_URL",
     ),
     "minimax": ProviderConfig(
         id="minimax",
@@ -1968,6 +2011,7 @@ def resolve_provider(
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
+        "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
@@ -6937,13 +6981,22 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     else:
         base_url = pconfig.inference_base_url
 
+    if provider_id == "actual":
+        base_url = normalize_actual_base_url(base_url)
+
+    actual_local_noauth = (
+        provider_id == "actual"
+        and not api_key
+        and is_actual_local_base_url(base_url)
+    )
+
     return {
-        "configured": bool(api_key),
+        "configured": bool(api_key) or actual_local_noauth,
         "provider": provider_id,
         "name": pconfig.name,
-        "key_source": key_source,
+        "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": bool(api_key) or actual_local_noauth,  # compat with OAuth status shape
     }
 
 
@@ -7149,11 +7202,18 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if provider_id == "lmstudio":
         base_url = _normalize_lmstudio_runtime_base_url(base_url)
 
+    if provider_id == "actual":
+        base_url = normalize_actual_base_url(base_url)
+
     # Last-resort guard: an API-key provider must never hand back an empty
     # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
     # otherwise wedges chat inference — #50252).
     if not (isinstance(base_url, str) and base_url.strip()):
         base_url = pconfig.inference_base_url
+
+    if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
+        api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+        key_source = key_source or "local-offline"
 
     return {
         "provider": provider_id,

@@ -1586,6 +1586,8 @@ class AIAgent:
     ) -> bool:
         """Return True when this provider/model pair should use Responses API."""
         normalized_provider = (provider or "").strip().lower()
+        if normalized_provider == "actual":
+            return True
         # Nous serves GPT-5.x models via its OpenAI-compatible chat
         # completions endpoint; its /v1/responses endpoint returns 404.
         if normalized_provider == "nous":

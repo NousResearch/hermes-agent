@@ -205,6 +205,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("FIREWORKS_API_KEY",),
         base_url_override="https://api.fireworks.ai/inference/v1",
     ),
+    "actual": HermesOverlay(
+        transport="codex_responses",
+        extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
+        base_url_override="https://api.actual.inc/v1",
+        base_url_env_var="ACTUAL_BASE_URL",
+    ),
     "upstage": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("UPSTAGE_API_KEY",),
@@ -383,6 +389,11 @@ ALIASES: Dict[str, str] = {
     # upstage
     "solar": "upstage",
 
+    # Actual Computer
+    "actual-computer": "actual",
+    "actualcomputer": "actual",
+    "aci": "actual",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -408,6 +419,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "upstage": "Upstage Solar",
+    "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

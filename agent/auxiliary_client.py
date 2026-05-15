@@ -509,6 +509,9 @@ _PROVIDER_ALIASES = {
     "moonshot-cn": "kimi-coding-cn",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "actual-computer": "actual",
+    "actualcomputer": "actual",
+    "aci": "actual",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -5802,6 +5805,8 @@ def resolve_provider_client(
             return False
         if raw_codex:
             return False
+        if provider == "actual":
+            return True
         if api_mode == "codex_responses":
             return True
         # Auto-detect: api.openai.com + codex model name pattern
@@ -6219,6 +6224,22 @@ def resolve_provider_client(
         # credential is registered for this provider alias.
         if explicit_api_key:
             api_key = explicit_api_key.strip() or api_key
+        raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        if explicit_base_url:
+            raw_base_url = explicit_base_url.strip().rstrip("/")
+        if provider == "actual":
+            try:
+                from hermes_cli.auth import (
+                    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
+                    is_actual_local_base_url,
+                    normalize_actual_base_url,
+                )
+
+                raw_base_url = normalize_actual_base_url(raw_base_url)
+                if not api_key and is_actual_local_base_url(raw_base_url):
+                    api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+            except Exception:
+                pass
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
             if provider == "copilot":
@@ -6228,7 +6249,6 @@ def resolve_provider_client(
                          provider, ", ".join(tried_sources))
             return None, None
 
-        raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         base_url = _to_openai_base_url(raw_base_url)
         # Honour an explicit base_url override from the caller — used when a
         # fallback_model entry (or custom_providers lookup) routes through a

@@ -116,7 +116,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
-    "platform.discord": ("discord.py[voice]==2.7.1",),
+    # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
+    # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
+    # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
+    # uploaded to the Discord gateway fails to decode at att.read() with
+    # "Can not decode content-encoding: br" — see #12511 / #15744.
+    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",

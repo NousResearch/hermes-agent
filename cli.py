@@ -3235,25 +3235,27 @@ class HermesCLI:
 
     @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
-        """Return a resize-safe width for printed scrollback box rules.
+        """Return the full viewport width for printed scrollback box rules.
 
-        Lines already printed to terminal scrollback are reflowed by the
-        terminal emulator when the column count shrinks. A full-width response
-        border drawn at, say, 200 columns will wrap into two or three rows of
-        dashes after the user resizes to 80 columns, looking like duplicated
-        separator lines (the family of bugs tracked by #18449, #19280, #22976).
+        Previously this clamped to ``max(32, min(width, 56))`` as a defense
+        against terminal-emulator reflow on column-shrink (#25975, salvaging
+        #24403).  That clamp made response/reasoning borders look stubby on
+        any modern wide terminal.  We now trust the prompt_toolkit
+        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
+        #25981) to keep chrome out of scrollback in the first place, and
+        accept that an aggressive column-shrink may visually reflow already
+        printed Panel borders — that's a cosmetic artifact of stamped
+        scrollback history, not a live-render bug.
 
-        Keep decorative scrollback boxes intentionally narrower than the
-        viewport so a moderate resize never triggers reflow. The live TUI
-        footer (status bar, input rule) still uses the full width — only
-        content that is *stamped into scrollback* needs this clamp.
+        A small floor (32 cols) is kept so the box still renders on tiny
+        terminals without negative ``'─' * (w - 2)`` math.
         """
         if width is None:
             try:
                 width = shutil.get_terminal_size((80, 24)).columns
             except Exception:
                 width = 80
-        return max(32, min(int(width or 80), 56))
+        return max(32, int(width or 80))
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""

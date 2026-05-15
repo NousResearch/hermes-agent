@@ -329,6 +329,15 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_unquoted_windows_paths_with_unicode_spaces(self):
+        path = "C:\\Users\\\u0418\u0432\u0430\u043d \u0418\u0432\u0430\u043d\u043e\u0432\\voice file.ogg"
+        content = f"Here is the voice:\nMEDIA:{path}\nDone"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(path, False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is the voice:" in cleaned
+        assert "Done" in cleaned
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

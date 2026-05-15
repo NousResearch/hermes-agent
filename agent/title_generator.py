@@ -58,7 +58,10 @@ def generate_title(
             task="title_generation",
             messages=messages,
             max_tokens=500,
-            temperature=0.3,
+            # Some reasoning/frontier models (notably OpenAI GPT-5-style
+            # models) reject non-default sampling values. Title generation
+            # does not require custom sampling, so omit temperature and let
+            # the provider default apply.
             timeout=timeout,
             main_runtime=main_runtime,
         )

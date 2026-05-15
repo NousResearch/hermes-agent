@@ -1939,16 +1939,31 @@ def check_tts_requirements() -> bool:
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback.
 
+    Resolution order:
+    1. ``tts.openai.api_key`` / ``tts.openai.base_url`` from ``config.yaml``
+    2. ``VOICE_TOOLS_OPENAI_KEY`` / ``OPENAI_API_KEY`` environment variables
+    3. Managed OpenAI audio tool gateway
+
     When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
-    even if direct OpenAI credentials are present.
+    even if direct credentials (config or env) are present.
     """
+    # 1. Config (tts.openai.*) — mirror STT resolution order
+    tts_config = _load_tts_config()
+    openai_cfg = tts_config.get("openai", {})
+    cfg_api_key = openai_cfg.get("api_key", "") or ""
+    cfg_base_url = openai_cfg.get("base_url", "") or ""
+    if cfg_api_key and not prefers_gateway("tts"):
+        return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL)
+
+    # 2. Environment variables
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key and not prefers_gateway("tts"):
-        return direct_api_key, DEFAULT_OPENAI_BASE_URL
+        return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL)
 
+    # 3. Managed gateway
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
-        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        message = "Neither tts.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
         if managed_nous_tools_enabled():
             message += ", and the managed OpenAI audio gateway is unavailable"
         raise ValueError(message)

@@ -227,6 +227,7 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        self._resume_fail_count: int = 0  # consecutive resume failures, fallback to identify at 3
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -572,11 +573,24 @@ class QQAdapter(BasePlatformAdapter):
                     self._access_token = None
                     self._token_expires_at = 0.0
 
-                # Session invalid → clear session, will re-identify on next Hello
-                if code in {
-                        4006,
-                        4007,
-                        4009,
+                # 4009: QQ Official doc says can RESUME, do NOT clear session
+                # Ref: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/error-trace/websocket.html
+                if code == 4009:
+                    logger.info(
+                        "[%s] Session timeout (4009), will resume (keeping session_id=%s)",
+                        self._log_tag,
+                        self._session_id,
+                    )
+                elif code in {4006, 4007}:
+                    logger.info(
+                        "[%s] Session invalid (%d), clearing for re-identify",
+                        self._log_tag,
+                        code,
+                    )
+                    self._session_id = None
+                    self._last_seq = None
+                    self._resume_fail_count = 0
+                elif code in {
                         4900,
                         4901,
                         4902,
@@ -593,12 +607,13 @@ class QQAdapter(BasePlatformAdapter):
                         4913,
                 }:
                     logger.info(
-                        "[%s] Session error (%d), clearing session for re-identify",
+                        "[%s] Server error (%d), clearing session for re-identify",
                         self._log_tag,
                         code,
                     )
                     self._session_id = None
                     self._last_seq = None
+                    self._resume_fail_count = 0
 
                 if await self._reconnect(backoff_idx):
                     backoff_idx = 0
@@ -756,9 +771,17 @@ class QQAdapter(BasePlatformAdapter):
                 )
         except Exception as exc:
             logger.error("[%s] Failed to send Resume: %s", self._log_tag, exc)
-            # If resume fails, clear session and fall back to identify on next Hello
-            self._session_id = None
-            self._last_seq = None
+            self._resume_fail_count += 1
+            logger.warning(
+                "[%s] Resume failed (%d/3), will fallback to identify on next failure",
+                self._log_tag,
+                self._resume_fail_count,
+            )
+            if self._resume_fail_count >= 3:
+                logger.warning("[%s] Resume failed 3 times, clearing session for re-identify", self._log_tag)
+                self._session_id = None
+                self._last_seq = None
+                self._resume_fail_count = 0
 
     @staticmethod
     def _create_task(coro):
@@ -832,6 +855,7 @@ class QQAdapter(BasePlatformAdapter):
         """Handle the READY event — store session_id for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
+            self._resume_fail_count = 0  # reset counter on successful fresh identify
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
 
     # ------------------------------------------------------------------

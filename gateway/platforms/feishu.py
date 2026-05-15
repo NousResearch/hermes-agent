@@ -3918,6 +3918,16 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if normalized.text_content:
             return normalized.text_content
+        # For image messages the text_content is empty but we still have
+        # image_keys -- return a placeholder so reply-to-image context is
+        # not silently lost.  (Fixes #26037.)
+        if getattr(normalized, "image_keys", None):
+            keys_str = ", ".join(normalized.image_keys)
+            return f"[Image: {keys_str}]"
+        # Same idea for file/audio/media attachments.
+        if getattr(normalized, "media_refs", None):
+            names = [getattr(r, "file_name", "") or "attachment" for r in normalized.media_refs]
+            return f"[Attachment: {', '.join(names)}]"
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
         return str(placeholder).strip() or None
 

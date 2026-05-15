@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import acp
-from acp.schema import ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
+from acp.schema import AgentPlanUpdate, ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
 
 from acp_adapter.events import (
     _send_update,
@@ -295,6 +295,36 @@ class TestStepCallback:
             "snapshot": "snapshot",
         }
         mock_send.assert_called_once()
+
+    def test_todo_completion_emits_native_plan_update(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        tool_call_ids = {"todo": deque(["tc-todo"])}
+        loop = event_loop_fixture
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
+        todo_result = (
+            '{"todos":['
+            '{"id":"inspect","content":"Inspect ACP","status":"completed"},'
+            '{"id":"patch","content":"Patch renderer","status":"in_progress"},'
+            '{"id":"old","content":"Drop stale task","status":"cancelled"}'
+            '],"summary":{"total":3}}'
+        )
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb(1, [{"name": "todo", "result": todo_result}])
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        plan_updates = [u for u in updates if getattr(u, "session_update", None) == "plan"]
+        assert len(plan_updates) == 1
+        plan = plan_updates[0]
+        assert isinstance(plan, AgentPlanUpdate)
+        assert [entry.content for entry in plan.entries] == [
+            "Inspect ACP",
+            "Patch renderer",
+            "[cancelled] Drop stale task",
+        ]
+        assert [entry.status for entry in plan.entries] == ["completed", "in_progress", "completed"]
+        assert [entry.priority for entry in plan.entries] == ["medium", "medium", "medium"]
 
 
 # ---------------------------------------------------------------------------

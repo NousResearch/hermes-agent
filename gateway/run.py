@@ -2707,6 +2707,14 @@ class GatewayRunner:
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
+        # During a planned --replace takeover, skip notifications entirely.
+        # The old gateway is being replaced immediately — no need to tell
+        # users it's shutting down when a new instance is taking over, and
+        # platform rate limiting (especially weixin) can delay shutdown
+        # long enough for the replacer's 10s timeout to fire SIGKILL.
+        if getattr(self, '_planned_takeover', False):
+            logger.info("Shutdown notification skipped (planned --replace takeover)")
+            return
         active = self._snapshot_running_agents()
 
         action = "restarting" if self._restart_requested else "shutting down"
@@ -9937,19 +9945,29 @@ class GatewayRunner:
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
         )
+        logger.info("[runner] _should_send_voice_reply: voice_mode=%r is_voice=%r should=%r already_sent=%r",
+                     voice_mode, is_voice_input, should, already_sent)
         if not should:
             return False
 
-        # Dedup: agent already called TTS tool
-        has_agent_tts = any(
-            msg.get("role") == "assistant"
+        # Dedup: agent already called TTS tool in the latest assistant message.
+        # Only check the most recent assistant message with tool_calls — not the
+        # entire history.  Otherwise a single TTS call in any earlier turn
+        # permanently disables gateway auto-TTS for the session.
+        last_assistant_with_tools = None
+        for msg in reversed(agent_messages):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                last_assistant_with_tools = msg
+                break
+        has_agent_tts = (
+            last_assistant_with_tools is not None
             and any(
                 tc.get("function", {}).get("name") == "text_to_speech"
-                for tc in (msg.get("tool_calls") or [])
+                for tc in last_assistant_with_tools.get("tool_calls") or []
             )
-            for msg in agent_messages
         )
         if has_agent_tts:
+            logger.info("[runner] _should_send_voice_reply: SKIP — last assistant message already called text_to_speech")
             return False
 
         # Dedup: base adapter auto-TTS already handles voice input
@@ -9968,17 +9986,19 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
+            logger.info("[runner] _send_voice_reply START text=%r", text[:200])
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
             tts_text = _strip_markdown_for_tts(text[:4000])
+            logger.info("[runner] _send_voice_reply stripped_text=%r", tts_text[:200] if tts_text else "(empty)")
             if not tts_text:
+                logger.warning("[runner] _send_voice_reply SKIP: stripped text is empty")
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            # Use .ogg extension for native voice bubble support on Telegram.
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}.ogg",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
@@ -16477,6 +16497,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "Received %s as a planned --replace takeover — exiting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
             )
+            # Mark the runner so shutdown-phase notifications can be skipped.
+            # The old gateway is being replaced — no need to tell users it's
+            # shutting down when a new instance is taking over immediately.
+            runner._planned_takeover = True
         elif planned_stop:
             logger.info(
                 "Received %s as a planned gateway stop — exiting cleanly",

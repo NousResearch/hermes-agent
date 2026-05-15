@@ -12288,6 +12288,23 @@ class AIAgent:
             self._api_call_count = api_call_count
             self._touch_activity(f"starting API call #{api_call_count}")
 
+            # Per-turn ingest hook for context-engine plugins.
+            # ContextEngine.should_compress_preflight() is the per-turn entry
+            # point that plugin engines (e.g. LCM) override to ingest the
+            # rolling message list each turn. The base class returns False
+            # with no work, so this is zero overhead for the built-in
+            # ContextCompressor and any engine that does not override it.
+            # The decision logic later in this loop still uses the more
+            # accurate provider-reported token count via should_compress();
+            # the return value here is intentionally discarded.
+            try:
+                self.context_compressor.should_compress_preflight(messages)
+            except Exception as _ce_preflight_err:
+                logger.debug(
+                    "Context engine preflight ingest skipped: %s",
+                    _ce_preflight_err,
+                )
+
             # Grace call: the budget is exhausted but we gave the model one
             # more chance.  Consume the grace flag so the loop exits after
             # this iteration regardless of outcome.
@@ -15699,6 +15716,18 @@ class AIAgent:
         # provider before the second message. Actual session-end cleanup is
         # handled by the CLI (atexit / /reset) and gateway (session expiry /
         # _reset_session).
+
+        # Final ingest flush for context-engine plugins so the last
+        # assistant message reaches the engine even when this turn exited
+        # via the no-tool-calls (final response) branch and therefore
+        # never hit the per-turn hook above.
+        try:
+            self.context_compressor.should_compress_preflight(messages)
+        except Exception as _ce_flush_err:
+            logger.debug(
+                "Context engine end-of-turn ingest skipped: %s",
+                _ce_flush_err,
+            )
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.

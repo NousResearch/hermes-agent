@@ -18,6 +18,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -50,7 +51,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -62,7 +63,7 @@ except ImportError:
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -244,6 +245,82 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+_AUDIO_SUFFIX_BY_CONTENT_TYPE = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/webm": ".webm",
+    "video/webm": ".webm",
+}
+
+
+def _upload_audio_suffix(file: UploadFile) -> str:
+    """Best-effort suffix for uploaded dashboard STT audio."""
+    name_suffix = Path(file.filename or "").suffix.lower()
+    if name_suffix in {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}:
+        return name_suffix
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    return _AUDIO_SUFFIX_BY_CONTENT_TYPE.get(content_type, ".webm")
+
+
+@app.post("/api/stt/transcribe")
+async def transcribe_dashboard_audio(file: UploadFile = File(...)):
+    """Transcribe browser-recorded chat input audio using Hermes' built-in STT stack.
+
+    The dashboard records with the browser MediaRecorder API, posts the blob here,
+    and this endpoint delegates to the same provider selection used for gateway
+    voice-message transcription: local faster-whisper, Groq/OpenAI/Mistral/etc.
+    based on ``stt`` config and available credentials.
+    """
+    from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
+    from tools.voice_mode import is_whisper_hallucination
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="No audio data received")
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="Audio file is too large")
+
+    suffix = _upload_audio_suffix(file)
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        result = transcribe_audio(tmp_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("dashboard STT transcription failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error") or "Transcription failed")
+
+    transcript = str(result.get("transcript") or "").strip()
+    if transcript and is_whisper_hallucination(transcript):
+        transcript = ""
+
+    return {
+        "ok": True,
+        "text": transcript,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "note": "Uses Hermes built-in STT provider selection from the stt config.",
+    }
 
 
 # ---------------------------------------------------------------------------

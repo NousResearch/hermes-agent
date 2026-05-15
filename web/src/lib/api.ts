@@ -71,6 +71,15 @@ export const api = {
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
     ),
+  transcribeAudio: (audio: Blob) => {
+    const form = new FormData();
+    const ext = audio.type.includes("ogg") ? "ogg" : audio.type.includes("wav") ? "wav" : "webm";
+    form.set("file", audio, `chat-input.${ext}`);
+    return fetchJSON<SpeechToTextResponse>("/api/stt/transcribe", {
+      method: "POST",
+      body: form,
+    });
+  },
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -403,6 +412,14 @@ export interface SessionLatestDescendantResponse {
   session_id: string;
   path: string[];
   changed: boolean;
+}
+
+export interface SpeechToTextResponse {
+  ok: boolean;
+  text: string;
+  provider?: string | null;
+  model?: string | null;
+  note?: string;
 }
 
 export interface PaginatedSessions {

@@ -25,8 +25,9 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, Loader2, Mic, PanelRight, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
@@ -56,6 +57,14 @@ function generateChannelId(): string {
     return crypto.randomUUID();
   }
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
+
+function preferredRecorderMimeType(): string | undefined {
+  if (typeof MediaRecorder === "undefined") return undefined;
+  for (const mime of ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return undefined;
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -121,7 +130,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [speechState, setSpeechState] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const pointerHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pointerHoldActiveRef = useRef(false);
+  const pendingSpeechStopRef = useRef(false);
+  const suppressNextMicClickRef = useRef(false);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -264,6 +282,160 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const stopMediaTracks = useCallback(() => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  }, []);
+
+  const insertTranscriptIntoInput = useCallback((text: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setSpeechError("Chat session is not connected; transcription was not inserted.");
+      return;
+    }
+    ws.send(text);
+    termRef.current?.focus();
+  }, []);
+
+  const startSpeechRecording = useCallback(async () => {
+    if (speechState !== "idle") return;
+    if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setSpeechError("Browser speech recording is not supported here.");
+      return;
+    }
+
+    setSpeechError(null);
+    setSpeechState("recording");
+    pendingSpeechStopRef.current = false;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = preferredRecorderMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        setSpeechError("Speech recording failed.");
+        setSpeechState("idle");
+        stopMediaTracks();
+      };
+
+      recorder.onstop = async () => {
+        setSpeechState("transcribing");
+        stopMediaTracks();
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        mediaRecorderRef.current = null;
+
+        if (chunks.length === 0) {
+          setSpeechState("idle");
+          return;
+        }
+
+        try {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const result = await api.transcribeAudio(blob);
+          const text = result.text.trim();
+          if (text) insertTranscriptIntoInput(text);
+        } catch (error) {
+          setSpeechError(error instanceof Error ? error.message : "Speech transcription failed.");
+        } finally {
+          setSpeechState("idle");
+        }
+      };
+
+      recorder.start();
+      if (pendingSpeechStopRef.current) {
+        pendingSpeechStopRef.current = false;
+        setSpeechState("transcribing");
+        recorder.stop();
+      }
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : "Microphone permission was denied.");
+      setSpeechState("idle");
+      stopMediaTracks();
+    }
+  }, [insertTranscriptIntoInput, speechState, stopMediaTracks]);
+
+  const stopSpeechRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") {
+      if (speechState === "recording") {
+        pendingSpeechStopRef.current = true;
+        setSpeechState("transcribing");
+        return;
+      }
+      setSpeechState("idle");
+      stopMediaTracks();
+      return;
+    }
+    pendingSpeechStopRef.current = false;
+    setSpeechState("transcribing");
+    recorder.stop();
+  }, [speechState, stopMediaTracks]);
+
+  const toggleSpeechRecording = useCallback(() => {
+    if (speechState === "recording") {
+      stopSpeechRecording();
+    } else if (speechState === "idle") {
+      void startSpeechRecording();
+    }
+  }, [speechState, startSpeechRecording, stopSpeechRecording]);
+
+  const handleMicPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || speechState !== "idle") return;
+    pointerHoldActiveRef.current = false;
+    pointerHoldTimerRef.current = setTimeout(() => {
+      pointerHoldActiveRef.current = true;
+      suppressNextMicClickRef.current = true;
+      void startSpeechRecording();
+    }, 300);
+  };
+
+  const handleMicPointerEnd = () => {
+    if (pointerHoldTimerRef.current) {
+      clearTimeout(pointerHoldTimerRef.current);
+      pointerHoldTimerRef.current = null;
+    }
+    if (pointerHoldActiveRef.current) {
+      pointerHoldActiveRef.current = false;
+      stopSpeechRecording();
+    }
+  };
+
+  const handleMicClick = () => {
+    if (suppressNextMicClickRef.current) {
+      suppressNextMicClickRef.current = false;
+      return;
+    }
+    toggleSpeechRecording();
+  };
+
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        toggleSpeechRecording();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [isActive, toggleSpeechRecording]);
+
+  useEffect(() => () => {
+    if (pointerHoldTimerRef.current) clearTimeout(pointerHoldTimerRef.current);
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    stopMediaTracks();
+  }, [stopMediaTracks]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -333,7 +505,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -806,6 +978,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
       )}
 
+      {speechError && (
+        <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
+          Speech-to-text: {speechError}
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
           className={cn(
@@ -821,6 +999,51 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          <Button
+            ghost
+            onPointerDown={handleMicPointerDown}
+            onPointerUp={handleMicPointerEnd}
+            onPointerCancel={handleMicPointerEnd}
+            onPointerLeave={handleMicPointerEnd}
+            onClick={handleMicClick}
+            disabled={speechState === "transcribing"}
+            title="Dictate into the chat input. Click to toggle, hold to speak, or press Ctrl+Shift+M. Uses Hermes built-in STT config."
+            aria-label={
+              speechState === "recording"
+                ? "Stop speech-to-text recording"
+                : "Start speech-to-text recording"
+            }
+            aria-pressed={speechState === "recording"}
+            className={cn(
+              "absolute z-10",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
+              "bottom-2 left-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:left-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-4 lg:left-4",
+              speechState === "recording" && "border-red-300/80 text-red-200 opacity-100",
+            )}
+            style={{ color: speechState === "recording" ? undefined : TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              {speechState === "transcribing" ? (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+              ) : speechState === "recording" ? (
+                <Square className="h-3 w-3 shrink-0" />
+              ) : (
+                <Mic className="h-3 w-3 shrink-0" />
+              )}
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {speechState === "transcribing"
+                  ? "transcribing"
+                  : speechState === "recording"
+                    ? "stop dictation"
+                    : "dictate"}
+              </span>
+            </span>
+          </Button>
 
           <Button
             ghost

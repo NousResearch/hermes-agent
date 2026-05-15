@@ -125,6 +125,70 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_stt_transcribe_uses_existing_transcription_stack(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+        import tools.voice_mode as voice_mode
+
+        observed = {}
+
+        def fake_transcribe_audio(path):
+            observed["path"] = path
+            observed["suffix"] = Path(path).suffix
+            observed["exists_during_call"] = Path(path).exists()
+            return {
+                "success": True,
+                "transcript": " build the thing ",
+                "provider": "test-provider",
+                "model": "test-model",
+            }
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+        monkeypatch.setattr(voice_mode, "is_whisper_hallucination", lambda text: False)
+
+        resp = self.client.post(
+            "/api/stt/transcribe",
+            files={"file": ("clip.webm", b"not-real-audio", "audio/webm;codecs=opus")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "text": "build the thing",
+            "provider": "test-provider",
+            "model": "test-model",
+            "note": "Uses Hermes built-in STT provider selection from the stt config.",
+        }
+        assert observed == {"path": observed["path"], "suffix": ".webm", "exists_during_call": True}
+        assert not Path(observed["path"]).exists()
+
+    def test_stt_transcribe_filters_whisper_hallucination(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+        import tools.voice_mode as voice_mode
+
+        monkeypatch.setattr(
+            transcription_tools,
+            "transcribe_audio",
+            lambda _path: {"success": True, "transcript": "Thank you for watching.", "provider": "local", "model": "whisper"},
+        )
+        monkeypatch.setattr(voice_mode, "is_whisper_hallucination", lambda text: True)
+
+        resp = self.client.post(
+            "/api/stt/transcribe",
+            files={"file": ("clip.ogg", b"not-real-audio", "audio/ogg")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["text"] == ""
+
+    def test_stt_transcribe_rejects_empty_upload(self):
+        resp = self.client.post(
+            "/api/stt/transcribe",
+            files={"file": ("empty.webm", b"", "audio/webm")},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "No audio data received"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

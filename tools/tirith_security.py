@@ -191,6 +191,12 @@ def _detect_target() -> str | None:
         plat = "apple-darwin"
     elif system in {"Linux", "Android"}:
         plat = "unknown-linux-gnu"
+    elif system == "Windows":
+        # Only x86_64 Windows builds are published in tirith releases.
+        # ARM64 Windows is not yet supported.
+        if machine in {"x86_64", "amd64"}:
+            return "x86_64-pc-windows-msvc"
+        return None
     else:
         return None
 
@@ -295,7 +301,10 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                      platform.system(), platform.machine())
         return None, "unsupported_platform"
 
-    archive_name = f"tirith-{target}.tar.gz"
+    # Windows releases use .zip, Linux/macOS use .tar.gz
+    is_windows = platform.system() == "Windows"
+    archive_ext = ".zip" if is_windows else ".tar.gz"
+    archive_name = f"tirith-{target}{archive_ext}"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
     tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -346,21 +355,41 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         if not _verify_checksum(archive_path, checksums_path, archive_name):
             return None, "checksum_failed"
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
-                log("tirith binary not found in archive")
-                return None, "binary_not_in_archive"
+        import zipfile
 
-        src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_hermes_bin_dir(), "tirith")
+        binary_name = "tirith.exe" if is_windows else "tirith"
+
+        if is_windows:
+            # Extract from .zip archive
+            with zipfile.ZipFile(archive_path) as zf:
+                for name in zf.namelist():
+                    if name.endswith(binary_name) and ".." not in name:
+                        zf.extract(name, tmpdir)
+                        # Move to tmpdir root
+                        extracted = os.path.join(tmpdir, name)
+                        src = os.path.join(tmpdir, binary_name)
+                        if extracted != src:
+                            shutil.move(extracted, src)
+                        break
+                else:
+                    log("tirith binary not found in archive")
+                    return None, "binary_not_in_archive"
+        else:
+            # Extract from .tar.gz archive
+            with tarfile.open(archive_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name == "tirith" or member.name.endswith("/tirith"):
+                        if ".." in member.name:
+                            continue
+                        member.name = "tirith"
+                        tar.extract(member, tmpdir)
+                        break
+                else:
+                    log("tirith binary not found in archive")
+                    return None, "binary_not_in_archive"
+
+        src = os.path.join(tmpdir, binary_name)
+        dest = os.path.join(_hermes_bin_dir(), binary_name)
         try:
             shutil.move(src, dest)
         except OSError:

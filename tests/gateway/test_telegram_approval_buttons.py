@@ -1,5 +1,6 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -588,3 +589,246 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+# ===========================================================================
+# Issue #25693 — "Request Changes" button
+# ===========================================================================
+
+class TestTelegramRequestChangesButton:
+    """Telegram-side wiring for the new \"Request Changes\" approval option.
+
+    Three things to lock in:
+      1. ``send_exec_approval`` renders the 5th button with the
+         documented ``callback_data=\"ea:changes:<id>\"`` schema.
+      2. Clicking the button registers a ``clarify_gateway`` entry in
+         text-capture mode so the existing intercept resolves the user's
+         next typed reply.
+      3. The bridge eventually calls ``resolve_gateway_approval(...,
+         choice=\"changes\", feedback=...)`` so the agent thread unblocks
+         with the user's feedback.
+    """
+
+    @pytest.mark.asyncio
+    async def test_inline_keyboard_includes_request_changes_button(self):
+        """The 5-button layout must include the Request Changes button
+        with the right callback_data shape so the callback parser can
+        route it correctly.
+
+        NOTE: this module mocks the ``telegram`` SDK (see
+        ``_ensure_telegram_mock``), so ``InlineKeyboardMarkup`` /
+        ``InlineKeyboardButton`` are MagicMocks whose ``.inline_keyboard``
+        attribute is itself a mock, not a real nested list. We therefore
+        capture the ``InlineKeyboardButton`` constructor calls directly
+        rather than introspecting the assembled markup object — that works
+        whether the SDK is mocked (local) or real (CI with
+        python-telegram-bot installed)."""
+        import gateway.platforms.telegram as tg
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 99
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        # Capture every InlineKeyboardButton(...) call's callback_data.
+        captured_callback_data = []
+
+        def _spy_button(text, callback_data=None, **kwargs):
+            captured_callback_data.append(callback_data)
+            return SimpleNamespace(text=text, callback_data=callback_data)
+
+        with patch.object(tg, "InlineKeyboardButton", side_effect=_spy_button):
+            await adapter.send_exec_approval(
+                chat_id="12345",
+                command="DELETE FROM strava_activities",
+                session_key="agent:main:telegram:direct:7675116888",
+                description="SQL DELETE without WHERE",
+            )
+
+        assert any(
+            cb is not None and cb.startswith("ea:changes:")
+            for cb in captured_callback_data
+        ), f"Request Changes button missing from layout: {captured_callback_data}"
+        # All five required choices must be present.
+        for choice in ("once", "session", "always", "changes", "deny"):
+            assert any(
+                cb is not None and cb.startswith(f"ea:{choice}:")
+                for cb in captured_callback_data
+            ), f"Missing 'ea:{choice}:*' button (captured: {captured_callback_data})"
+
+    @pytest.mark.asyncio
+    async def test_changes_click_starts_capture_and_keeps_approval_pending(self, tmp_path):
+        """Clicking Request Changes must NOT pop _approval_state (the
+        agent thread is still blocked) and must register a clarify entry
+        in text-capture mode so the user's next reply resolves it."""
+        from tools import clarify_gateway as cg
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:7675116888"
+        approval_id = 7
+        adapter._approval_state[approval_id] = session_key
+
+        query = AsyncMock()
+        query.data = f"ea:changes:{approval_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 88
+        query.message.text = "⚠️ Command Approval Required"
+        query.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = 7675116888
+        query.from_user.first_name = "Daniel"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        # Authorize the caller.
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+            await adapter._handle_callback_query(update, context)
+
+        # Approval entry stays pending — agent thread still blocked.
+        assert approval_id in adapter._approval_state, (
+            "Request Changes click prematurely popped _approval_state — "
+            "the agent thread is no longer reachable!"
+        )
+
+        # The clarify entry was registered in text-capture mode.
+        pending = cg.get_pending_for_session(session_key)
+        assert pending is not None, "clarify entry not registered"
+        assert pending.awaiting_text is True, (
+            "clarify entry must be in awaiting_text mode for the gateway "
+            "text-intercept to pick up the user's reply"
+        )
+
+        # UI was acknowledged + edited to show the awaiting state.
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+
+        # Cleanup so the next test doesn't see this entry.
+        cg.clear_session(session_key)
+
+    @pytest.mark.asyncio
+    async def test_changes_bridge_resolves_with_feedback(self):
+        """Once the clarify entry resolves (simulating the user's typed
+        reply being intercepted by the gateway), the bridge forwards the
+        feedback into resolve_gateway_approval so the agent unblocks
+        with the feedback intact."""
+        from tools import approval as approval_module
+        from tools import clarify_gateway as cg
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:bridge-test"
+        approval_id = 42
+        adapter._approval_state[approval_id] = session_key
+
+        # Pre-register the approval entry so resolve_gateway_approval has
+        # something to set.
+        approval_module._gateway_queues.clear()
+        ap_entry = approval_module._ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(ap_entry)
+
+        query = AsyncMock()
+        query.data = f"ea:changes:{approval_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 88
+        query.message.text = "⚠️ Command Approval Required"
+        query.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = 7675116888
+        query.from_user.first_name = "Daniel"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        # Short-circuit the clarify timeout so the test doesn't hang if
+        # we forget to resolve. 5s is plenty for asyncio scheduling.
+        with patch.object(cg, "get_clarify_timeout", return_value=5):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+                await adapter._handle_callback_query(update, context)
+
+            # Simulate the gateway text-intercept resolving the clarify
+            # with the user's typed feedback.
+            clarify_id = f"approval-changes-{approval_id}"
+            await asyncio.sleep(0.05)  # let bridge task start
+            resolved = cg.resolve_gateway_clarify(
+                clarify_id, "Use INSERT OR REPLACE instead of DELETE",
+            )
+            assert resolved is True
+
+            # Wait for the bridge to forward the feedback. Bounded so a
+            # bug can't hang the suite.
+            for _ in range(50):
+                await asyncio.sleep(0.05)
+                if ap_entry.event.is_set():
+                    break
+
+        assert ap_entry.event.is_set(), "bridge did not resolve the approval entry"
+        assert isinstance(ap_entry.result, dict), (
+            f"expected dict result for 'changes', got {type(ap_entry.result).__name__}: "
+            f"{ap_entry.result!r}"
+        )
+        assert ap_entry.result["choice"] == "changes"
+        assert "INSERT OR REPLACE" in ap_entry.result["feedback"]
+        # Cleanup
+        assert approval_id not in adapter._approval_state, (
+            "approval state should be popped after the bridge resolves"
+        )
+
+    @pytest.mark.asyncio
+    async def test_changes_bridge_cancel_degrades_to_deny(self):
+        """If the user types the literal word ``cancel`` (case-insensitive)
+        the bridge treats it as a deny rather than feedback."""
+        from tools import approval as approval_module
+        from tools import clarify_gateway as cg
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:cancel-test"
+        approval_id = 77
+        adapter._approval_state[approval_id] = session_key
+
+        approval_module._gateway_queues.clear()
+        ap_entry = approval_module._ApprovalEntry({"command": "rm -rf /tmp"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(ap_entry)
+
+        query = AsyncMock()
+        query.data = f"ea:changes:{approval_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 88
+        query.message.text = "⚠️ Command Approval Required"
+        query.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = 7675116888
+        query.from_user.first_name = "Daniel"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.object(cg, "get_clarify_timeout", return_value=5):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+                await adapter._handle_callback_query(update, context)
+            clarify_id = f"approval-changes-{approval_id}"
+            await asyncio.sleep(0.05)
+            cg.resolve_gateway_clarify(clarify_id, "CANCEL")
+            for _ in range(50):
+                await asyncio.sleep(0.05)
+                if ap_entry.event.is_set():
+                    break
+
+        assert ap_entry.event.is_set()
+        # "CANCEL" is the documented escape word.
+        assert ap_entry.result == "deny", (
+            f"cancel should degrade to deny, got {ap_entry.result!r}"
+        )

@@ -5416,16 +5416,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
+        """Add an in-progress reaction and pin the message when processing begins."""
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            if self._reactions_enabled():
+                await self._set_reaction(chat_id, message_id, "\U0001f440")
+            # Pin the incoming message for the duration of the turn
+            if self._bot:
+                try:
+                    await self._bot.pin_chat_message(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        disable_notification=True,
+                    )
+                except Exception:
+                    logger.debug("[Telegram] Failed to pin message %s in chat %s", message_id, chat_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Swap the in-progress reaction for a final success/failure reaction and unpin.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
@@ -5437,17 +5446,25 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
-        if not self._reactions_enabled():
-            return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
             return
-        if outcome == ProcessingOutcome.CANCELLED:
-            await self._clear_reactions(chat_id, message_id)
-        else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+        if self._reactions_enabled():
+            if outcome == ProcessingOutcome.CANCELLED:
+                await self._clear_reactions(chat_id, message_id)
+            else:
+                await self._set_reaction(
+                    chat_id,
+                    message_id,
+                    "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                )
+        # Unpin the message when processing is complete
+        if self._bot:
+            try:
+                await self._bot.unpin_chat_message(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                )
+            except Exception:
+                logger.debug("[Telegram] Failed to unpin message %s in chat %s", message_id, chat_id)

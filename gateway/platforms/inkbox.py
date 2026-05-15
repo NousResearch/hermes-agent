@@ -275,10 +275,15 @@ class InkboxAdapter(BasePlatformAdapter):
         # true so a missing INKBOX_SIGNING_KEY fails loudly instead of
         # silently accepting unsigned traffic from anyone who finds the
         # tunnel URL.
-        self._require_signature = str(
-            extra.get("require_signature")
-            or os.getenv("INKBOX_REQUIRE_SIGNATURE", "true")
-        ).lower() not in ("false", "0", "no")
+        #
+        # Explicit `in extra` check (not `extra.get(...) or ...`) so that
+        # a config-level boolean False isn't silently coalesced into the
+        # env default — `False or "true"` evaluates to "true".
+        if "require_signature" in extra:
+            raw_require_signature = extra["require_signature"]
+        else:
+            raw_require_signature = os.getenv("INKBOX_REQUIRE_SIGNATURE", "true")
+        self._require_signature = str(raw_require_signature).lower() not in ("false", "0", "no")
 
         # Live state.
         self._inkbox: Optional[Any] = None

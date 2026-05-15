@@ -128,6 +128,14 @@ class TestInkboxConfigLoading:
         _apply_env_overrides(config)
         assert Platform.INKBOX in config.get_connected_platforms()
 
+    def test_require_signature_boolean_false_honored(self, monkeypatch):
+        # Regression: `extra.get("require_signature") or os.getenv(...)`
+        # silently coalesced a config-level boolean False into the env
+        # default ("true"), so verification could not be disabled via config.
+        monkeypatch.delenv("INKBOX_REQUIRE_SIGNATURE", raising=False)
+        adapter = _make_adapter(monkeypatch, require_signature=False)
+        assert adapter._require_signature is False
+
 
 # ---------------------------------------------------------------------------
 # Webhook routing

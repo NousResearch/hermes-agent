@@ -232,6 +232,153 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
 
+    def test_on_event_bridge_wired_to_tool_progress_callback(self, monkeypatch):
+        """Verify run_agent passes an on_event adapter that forwards codex
+        events to the agent's tool_progress_callback.
+
+        We capture the kwargs passed to CodexAppServerSession.__init__,
+        then invoke the captured on_event with a synthetic
+        commandExecution event and assert the progress callback fires
+        with the expected shape.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[
+                    {"role": "assistant", "content": "ok"}
+                ],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="t",
+                thread_id="th",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        # Track invocations of the agent's tool_progress_callback
+        progress_calls = []
+
+        def progress_cb(event_type, tool_name, preview, args):
+            progress_calls.append(
+                (event_type, tool_name, preview, args)
+            )
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = progress_cb
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        # The session constructor must have received an on_event callable
+        assert "on_event" in captured, (
+            "run_agent must pass on_event to CodexAppServerSession so codex's "
+            "tool calls surface in the gateway/CLI tool-progress display"
+        )
+        on_event = captured["on_event"]
+        assert callable(on_event)
+
+        # Drive a synthetic codex notification through the wired bridge
+        on_event({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "x",
+                    "command": "echo hello",
+                    "cwd": "/tmp",
+                }
+            }
+        })
+        assert len(progress_calls) == 1
+        event_type, tool_name, preview, _args = progress_calls[0]
+        assert event_type == "tool.started"
+        assert tool_name == "exec_command"
+        assert "echo hello" in preview
+
+    def test_on_event_late_binds_per_turn_progress_callback(self, monkeypatch):
+        """The CodexAppServerSession is cached across turns but the
+        gateway's progress_callback is per-turn. Regression for the bug
+        surfaced by live Discord testing where the first tool-using turn
+        rendered tool bubbles but subsequent turns were silent: the
+        bridge had captured turn 1's callback at session construction
+        and was firing turn 2's events into the dead queue.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="t",
+                thread_id="th",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        agent = _make_codex_agent()
+
+        # Turn 1: set callback, run conversation, capture on_event
+        turn1_calls = []
+        agent.tool_progress_callback = (
+            lambda *args: turn1_calls.append(args)
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+        on_event = captured["on_event"]
+
+        # Fire an event — should route to turn 1's callback
+        synthetic_event = {
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "e1",
+                    "command": "echo t1",
+                    "cwd": "/tmp",
+                }
+            }
+        }
+        on_event(synthetic_event)
+        assert len(turn1_calls) == 1
+
+        # Turn 2: gateway installed a fresh per-turn callback
+        # (different progress queue). The cached CodexAppServerSession
+        # gets reused but the bridge must observe the new callback.
+        turn2_calls = []
+        agent.tool_progress_callback = (
+            lambda *args: turn2_calls.append(args)
+        )
+        on_event(synthetic_event)
+        assert len(turn1_calls) == 1, (
+            "turn 1's callback received turn 2's event — bridge captured "
+            "the callback at session-construction time instead of "
+            "late-binding via self.tool_progress_callback"
+        )
+        assert len(turn2_calls) == 1, (
+            "turn 2's callback received no events — bridge didn't see "
+            "the swap"
+        )
+
 
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background

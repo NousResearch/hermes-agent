@@ -465,6 +465,20 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    # Mirror the main notification-handling block at :493
+                    # so display events surface and stay in step with
+                    # projector state.  Without this, item/started /
+                    # item/completed events drained as part of the
+                    # approval-roundtrip preamble are projected into
+                    # messages but never reach the tool-progress display,
+                    # silently hiding tool bubbles around approvals.
+                    if self._on_event is not None:
+                        try:
+                            self._on_event(pending)
+                        except Exception:  # pragma: no cover - display callback
+                            logger.debug(
+                                "on_event callback raised", exc_info=True
+                            )
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:

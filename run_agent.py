@@ -15749,6 +15749,7 @@ class AIAgent:
         Returns the same dict shape as the chat_completions path.
         """
         from agent.transports.codex_app_server_session import CodexAppServerSession
+        from agent.transports.codex_event_display import make_progress_bridge
 
         # Lazy session: one CodexAppServerSession per AIAgent instance.
         # Spawned on first turn, reused across turns, closed at AIAgent
@@ -15763,9 +15764,26 @@ class AIAgent:
                 approval_callback = _get_approval_callback()
             except Exception:
                 approval_callback = None
+            # Surface codex's tool calls through Hermes' standard
+            # tool_progress_callback channel so gateway/CLI users see
+            # "exec_command", "apply_patch", "mcp.*", etc. activity in
+            # real time — matching the experience for native Hermes
+            # tools. See agent/transports/codex_event_display.py for the
+            # item-type → display-name mapping and the hermes-tools MCP
+            # bare-name rule.
+            #
+            # We pass a getter, NOT the callback directly. The gateway
+            # swaps self.tool_progress_callback per turn (each turn has
+            # its own progress queue), but this CodexAppServerSession is
+            # cached across turns. A captured callback would route turn
+            # N+1's tool events into turn N's dead queue.
+            on_event = make_progress_bridge(
+                lambda: self.tool_progress_callback
+            )
             self._codex_session = CodexAppServerSession(
                 cwd=cwd,
                 approval_callback=approval_callback,
+                on_event=on_event,
             )
 
         # NOTE: the user message is ALREADY appended to messages by the

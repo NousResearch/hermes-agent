@@ -183,5 +183,75 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                         f"Expected 'interrupted', got '{result['status']}'")
 
 
+class TestInterruptAllSubagents(unittest.TestCase):
+    """Test interrupt_all_subagents for gateway shutdown orphan prevention."""
+
+    def setUp(self):
+        from tools.delegate_tool import _active_subagents
+        _active_subagents.clear()
+
+    def tearDown(self):
+        from tools.delegate_tool import _active_subagents
+        _active_subagents.clear()
+
+    def test_interrupt_all_subagents_empty(self):
+        """No active subagents returns 0."""
+        from tools.delegate_tool import interrupt_all_subagents
+        count = interrupt_all_subagents("test")
+        assert count == 0
+
+    def test_interrupt_all_subagents_interrupts_registered(self):
+        """All registered subagents with an agent are interrupted."""
+        from tools.delegate_tool import (
+            _active_subagents,
+            _register_subagent,
+            interrupt_all_subagents,
+        )
+
+        mock_agent_1 = MagicMock()
+        mock_agent_2 = MagicMock()
+
+        _register_subagent({"subagent_id": "sub-1", "agent": mock_agent_1})
+        _register_subagent({"subagent_id": "sub-2", "agent": mock_agent_2})
+
+        count = interrupt_all_subagents("Gateway restart")
+        assert count == 2
+        mock_agent_1.interrupt.assert_called_once()
+        mock_agent_2.interrupt.assert_called_once()
+
+    def test_interrupt_all_subagents_skips_none_agent(self):
+        """Subagent records with None agent are skipped."""
+        from tools.delegate_tool import (
+            _active_subagents,
+            _register_subagent,
+            interrupt_all_subagents,
+        )
+
+        _register_subagent({"subagent_id": "sub-1", "agent": None})
+        _register_subagent({"subagent_id": "sub-2", "agent": MagicMock()})
+
+        count = interrupt_all_subagents("test")
+        assert count == 1
+
+    def test_interrupt_all_subagents_catches_exceptions(self):
+        """Exceptions from individual interrupts don't stop the loop."""
+        from tools.delegate_tool import (
+            _active_subagents,
+            _register_subagent,
+            interrupt_all_subagents,
+        )
+
+        bad_agent = MagicMock()
+        bad_agent.interrupt.side_effect = RuntimeError("boom")
+        good_agent = MagicMock()
+
+        _register_subagent({"subagent_id": "bad", "agent": bad_agent})
+        _register_subagent({"subagent_id": "good", "agent": good_agent})
+
+        count = interrupt_all_subagents("test")
+        assert count == 1
+        good_agent.interrupt.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

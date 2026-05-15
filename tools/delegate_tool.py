@@ -203,6 +203,35 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def interrupt_all_subagents(reason: str = "Gateway shutdown") -> int:
+    """Interrupt every active delegate subagent.
+
+    Called during gateway shutdown/restart to prevent subagents from
+    orphaned when the gateway process disconnects from the event loop.
+    Returns the count of subagents that were interrupted.
+    """
+    with _active_subagents_lock:
+        records = list(_active_subagents.values())
+    count = 0
+    for record in records:
+        agent = record.get("agent")
+        sid = record.get("subagent_id", "?")
+        if agent is None:
+            continue
+        try:
+            agent.interrupt(f"{reason} ({sid})")
+            count += 1
+            logger.debug("interrupt_all_subagents: interrupted %s", sid)
+        except Exception as exc:
+            logger.debug("interrupt_all_subagents(%s) failed: %s", sid, exc)
+    if count:
+        logger.info(
+            "interrupt_all_subagents: interrupted %d active subagent(s) — %s",
+            count, reason,
+        )
+    return count
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 

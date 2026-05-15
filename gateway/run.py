@@ -2732,6 +2732,22 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+        # Also interrupt delegate subagents that are running in
+        # ThreadPoolExecutor workers.  These are NOT in _running_agents
+        # (which only tracks main agent sessions) and would otherwise be
+        # orphaned when the gateway disconnects from the event loop,
+        # causing 12+ min timeout waits (issue #26315).
+        try:
+            from tools.delegate_tool import interrupt_all_subagents
+            interrupted = interrupt_all_subagents(reason)
+            if interrupted:
+                logger.info(
+                    "Shutdown: interrupted %d delegate subagent(s) — %s",
+                    interrupted, reason,
+                )
+        except Exception as e:
+            logger.debug("Failed interrupting delegate subagents during shutdown: %s", e)
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 

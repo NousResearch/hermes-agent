@@ -552,6 +552,127 @@ def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     assert adapter.sent[0]["actions"] == []
 
 
+def test_kb_publish_previews_without_committing(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_publication_preview_commit": {
+                "result": {
+                    "status": "ready",
+                    "ok": True,
+                    "message": "Publish KB update",
+                    "changed_paths": ["accounts/mistral/state.md", "_state/runtime/transactions.jsonl"],
+                    "git": {"branch": "main", "head": "abc123", "upstream": "origin/main"},
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb publish"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"})]
+    text = adapter.sent[0]["text"]
+    assert "KB Publish Preview" in text
+    assert "Changed paths: 2" in text
+    assert "accounts/mistral/state.md" in text
+    assert "To publish: /kb publish confirm" in text
+    assert "No commit or push has been made." in text
+
+
+def test_kb_publish_confirm_commits_and_pushes_after_fresh_preview(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_publication_preview_commit": {
+                "result": {
+                    "status": "ready",
+                    "ok": True,
+                    "message": "Publish KB update",
+                    "changed_paths": ["accounts/mistral/state.md"],
+                    "git": {"branch": "main", "head": "abc123", "upstream": "origin/main"},
+                }
+            },
+            "mcp_kb_engine_prod_publication_commit_confirmed": {
+                "result": {
+                    "status": "committed",
+                    "ok": True,
+                    "publication": {
+                        "status": "committed",
+                        "changed_paths": ["accounts/mistral/state.md"],
+                        "commit": "def456",
+                    },
+                }
+            },
+            "mcp_kb_engine_prod_publication_push_confirmed": {
+                "result": {
+                    "status": "pushed",
+                    "ok": True,
+                    "publication": {"status": "pushed", "branch": "main", "upstream": "origin/main"},
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb publish confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert [call[0] for call in ctx.calls] == [
+        "mcp_kb_engine_prod_publication_preview_commit",
+        "mcp_kb_engine_prod_publication_commit_confirmed",
+        "mcp_kb_engine_prod_publication_push_confirmed",
+    ]
+    commit_args = ctx.calls[1][1]
+    assert commit_args["expected_git_head"] == "abc123"
+    assert commit_args["expected_changed_paths"] == ["accounts/mistral/state.md"]
+    assert commit_args["user_confirmation"]["confirmed"] is True
+    assert commit_args["push"] is False
+    assert ctx.calls[2][1]["user_confirmation"]["confirmed"] is True
+    text = adapter.sent[0]["text"]
+    assert "KB Published" in text
+    assert "Committed: committed" in text
+    assert "Pushed: pushed" in text
+    assert "accounts/mistral/state.md" in text
+
+
+def test_kb_publish_confirm_noops_when_preview_has_no_changes(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_publication_preview_commit": {
+                "result": {
+                    "status": "noop",
+                    "ok": True,
+                    "message": "Publish KB update",
+                    "changed_paths": [],
+                    "git": {"branch": "main", "head": "abc123"},
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb publish confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [("mcp_kb_engine_prod_publication_preview_commit", {"message": "Publish KB update"})]
+    assert "Nothing to publish" in adapter.sent[0]["text"]
+
+
 def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

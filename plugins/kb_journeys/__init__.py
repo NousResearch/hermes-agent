@@ -743,6 +743,199 @@ def _queue_summary_payload(ctx: Any, target: str, *, limit: int = 5) -> tuple[An
     return data, errors
 
 
+def _changed_paths(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    paths = payload.get("changed_paths")
+    if paths is None:
+        paths = _get_path(payload, "publication", "changed_paths")
+    if isinstance(paths, str):
+        return [paths]
+    if isinstance(paths, list):
+        return [str(path).strip() for path in paths if str(path).strip()]
+    return []
+
+
+def _format_changed_paths(paths: list[str], *, limit: int = 10) -> list[str]:
+    if not paths:
+        return []
+    lines = [f"- {path}" for path in paths[:limit]]
+    remaining = len(paths) - limit
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more")
+    return lines
+
+
+def _publish_args(args: str) -> tuple[bool, str]:
+    parts = (args or "").strip().split()
+    confirm = any(part.lower() in {"confirm", "confirmed", "apply", "publish", "push"} for part in parts)
+    message_parts = [part for part in parts if part.lower() not in {"confirm", "confirmed", "apply", "publish", "push"}]
+    if message_parts and message_parts[0].lower() in {"message", "msg"}:
+        message_parts = message_parts[1:]
+    message = " ".join(message_parts).strip() or "Publish KB update"
+    return confirm, message
+
+
+def _publication_git_line(git_state: Any) -> str:
+    if not isinstance(git_state, dict):
+        return ""
+    branch = _short(git_state.get("branch"), "")
+    head = _short(git_state.get("head"), "")
+    upstream = _short(git_state.get("upstream"), "")
+    bits: list[str] = []
+    if branch:
+        bits.append(branch)
+    if head:
+        bits.append(head[:12])
+    if upstream:
+        bits.append(upstream)
+    return " · ".join(bits)
+
+
+def _render_publish_preview(payload: Any, *, confirm_hint: str = "/kb publish confirm") -> dict[str, Any]:
+    if isinstance(payload, dict) and payload.get("error"):
+        return {"title": "KB Publish", "text": f"KB Publish Preview Failed\n{payload['error']}", "actions": []}
+    if not isinstance(payload, dict):
+        return {"title": "KB Publish", "text": "KB Publish Preview Failed\nPublication preview returned an unexpected response.", "actions": []}
+    changed_paths = _changed_paths(payload)
+    status = _short(payload.get("status"))
+    message = _short(payload.get("message"), "Publish KB update")
+    git_line = _publication_git_line(payload.get("git"))
+    if not changed_paths:
+        lines = [
+            "KB Publish Preview",
+            "Nothing to publish.",
+            f"Status: {status}",
+            f"Message: {message}",
+        ]
+        if git_line:
+            lines.append(f"Git: {git_line}")
+        return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
+    lines = [
+        "KB Publish Preview",
+        f"Status: {status}",
+        f"Message: {message}",
+        f"Changed paths: {len(changed_paths)}",
+    ]
+    if git_line:
+        lines.append(f"Git: {git_line}")
+    lines.append("")
+    lines.extend(_format_changed_paths(changed_paths))
+    lines.extend(
+        [
+            "",
+            f"To publish: {confirm_hint}",
+            "No commit or push has been made.",
+        ]
+    )
+    return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
+
+
+def _render_publish_result(preview: Any, commit: Any, push: Any) -> dict[str, Any]:
+    changed_paths = _changed_paths(preview)
+    if isinstance(commit, dict) and commit.get("error"):
+        return {"title": "KB Publish", "text": f"KB Publish Failed\nCommit failed: {commit['error']}", "actions": []}
+    if not isinstance(commit, dict):
+        return {"title": "KB Publish", "text": "KB Publish Failed\nCommit returned an unexpected response.", "actions": []}
+    commit_status = _short(commit.get("status"))
+    commit_ok = bool(commit.get("ok"))
+    if not commit_ok:
+        reason = _short(commit.get("reason") or _get_path(commit, "publication", "reason"), "unknown")
+        lines = [
+            "KB Publish Blocked",
+            f"Committed: {commit_status}",
+            f"Reason: {reason}",
+        ]
+        if changed_paths:
+            lines.append(f"Changed paths: {len(changed_paths)}")
+            lines.extend(_format_changed_paths(changed_paths))
+        lines.append("Next: /kb publish")
+        return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
+    push_status = "not run"
+    push_ok = False
+    if isinstance(push, dict):
+        push_status = _short(push.get("status"))
+        push_ok = bool(push.get("ok"))
+    elif push is not None:
+        push_status = "unexpected response"
+    publication = commit.get("publication") if isinstance(commit.get("publication"), dict) else {}
+    commit_hash = _short(publication.get("commit") or publication.get("head"), "")
+    lines = [
+        "KB Published",
+        f"Committed: {commit_status}",
+        f"Pushed: {push_status}",
+    ]
+    if commit_hash:
+        lines.append(f"Commit: {commit_hash[:12]}")
+    if changed_paths:
+        lines.append(f"Changed paths: {len(changed_paths)}")
+        lines.extend(_format_changed_paths(changed_paths))
+    if not push_ok:
+        lines.append("Warning: commit succeeded but push did not report success.")
+        lines.append("Next: /kb publish push confirm")
+    else:
+        lines.append("Next: /kb status")
+    return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
+
+
+def _render_publish_command(ctx: Any, target: str, args: str) -> dict[str, Any]:
+    confirm, message = _publish_args(args)
+    preview_tool = _mcp_tool_name(target, "publication.preview_commit")
+    commit_tool = _mcp_tool_name(target, "publication.commit_confirmed")
+    push_tool = _mcp_tool_name(target, "publication.push_confirmed")
+    actor = "telegram:operator"
+    source = "Hermes Telegram"
+    session_id = f"telegram-kb-publish-{int(time.time())}"
+    preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, {"message": message}))
+    if not confirm:
+        return _render_publish_preview(preview_payload)
+    if not isinstance(preview_payload, dict) or preview_payload.get("error"):
+        return _render_publish_preview(preview_payload)
+    changed_paths = _changed_paths(preview_payload)
+    if not changed_paths:
+        return {
+            "title": "KB Publish",
+            "text": _render_publish_preview(preview_payload)["text"].replace("KB Publish Preview", "KB Publish"),
+            "actions": [],
+        }
+    confirmation = {
+        "confirmed": True,
+        "surface": "telegram",
+        "action": "publication.commit_and_push",
+        "preview_required": True,
+        "confirmation_text": "/kb publish confirm",
+    }
+    commit_payload = _result_payload(
+        ctx.dispatch_tool(
+            commit_tool,
+            {
+                "message": message,
+                "expected_git_head": _short(_get_path(preview_payload, "git", "head"), ""),
+                "expected_changed_paths": changed_paths,
+                "push": False,
+                "actor": actor,
+                "source": source,
+                "session_id": session_id,
+                "user_confirmation": confirmation,
+            },
+        )
+    )
+    if not isinstance(commit_payload, dict) or not commit_payload.get("ok"):
+        return _render_publish_result(preview_payload, commit_payload, None)
+    push_payload = _result_payload(
+        ctx.dispatch_tool(
+            push_tool,
+            {
+                "actor": actor,
+                "source": source,
+                "session_id": session_id,
+                "user_confirmation": confirmation,
+            },
+        )
+    )
+    return _render_publish_result(preview_payload, commit_payload, push_payload)
+
+
 def _queue_items_from_payload(data: Any) -> list[Any]:
     return _items(data, ("items",), ("proposals",), ("queue", "items"))
 
@@ -1119,6 +1312,8 @@ def _kb_root_command(args: str) -> tuple[str, str]:
         return "kbqueue", rest
     if key == "review":
         return "kbqueue", f"review {rest}".strip()
+    if key in {"publish", "publication"}:
+        return "kbpublish", rest
     if key in {"run", "workflow"}:
         return "kbrun", rest
     if key == "sync":
@@ -1137,6 +1332,8 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb queue review 1 - inspect one queue item",
                 "/kb queue reject 1 - preview a decision",
                 "/kb queue reject 1 confirm - apply a previewed decision",
+                "/kb publish - preview KB Git publication",
+                "/kb publish confirm - commit and push after preview",
                 "/kb status - lane, model, readiness, publication",
                 "/kb runs - active and recent workflow runs",
                 "/kb run sync - preview a KB sync",
@@ -1208,6 +1405,8 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         if mode == "decision" and indices and decision:
             return _render_queue_text_decision(ctx, target, data, indices=indices, decision=decision, confirm=confirm)
         return _render_queue(data, ctx=ctx, target=target)
+    if command == "kbpublish":
+        return _render_publish_command(ctx, target, args)
     if command == "kbrun":
         workflow_id, intent, confirm = _workflow_args_from_text(args)
         if not workflow_id:

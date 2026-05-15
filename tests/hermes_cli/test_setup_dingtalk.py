@@ -5,8 +5,6 @@ from types import ModuleType
 
 import pytest
 
-pytest.importorskip("yaml")
-
 
 def test_dingtalk_qr_setup_does_not_enable_allow_all(monkeypatch):
     """QR setup must not silently authorize every DingTalk sender."""
@@ -36,8 +34,21 @@ def test_dingtalk_manual_setup_does_not_enable_allow_all(monkeypatch):
 
     saved_values = {}
     standard_setup_calls = []
+    # Track calls to DINGTALK_CLIENT_ID: the first call is the "already
+    # configured?" guard — return None so we proceed to setup.  Subsequent
+    # calls simulate that _setup_standard_platform persisted the credential,
+    # which is exactly the condition the pre-fix code used to gate on before
+    # enabling DINGTALK_ALLOW_ALL_USERS.
+    get_client_id_calls = [0]
 
-    monkeypatch.setattr(gateway, "get_env_value", lambda _name: None)
+    def fake_get_env_value(name):
+        if name == "DINGTALK_CLIENT_ID":
+            get_client_id_calls[0] += 1
+            if get_client_id_calls[0] > 1:
+                return "mock-client-id"
+        return None
+
+    monkeypatch.setattr(gateway, "get_env_value", fake_get_env_value)
     monkeypatch.setattr(gateway, "save_env_value", saved_values.__setitem__)
     monkeypatch.setattr(setup_prompts, "prompt_choice", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(

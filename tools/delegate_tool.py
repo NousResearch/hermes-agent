@@ -28,6 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -39,6 +40,135 @@ _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+_MODEL_USAGE_LOG = Path.home() / ".hermes" / "logs" / "model_usage.jsonl"
+
+
+def _read_observability(task_id: str) -> Dict[str, Any] | None:
+    """Read model_usage.jsonl and return a compact observability dict for task_id.
+
+    Reads model routing evidence from the model_observability plugin log
+    (plugins/model_observability/). If the log file is absent (first run,
+    log rotated, or plugin disabled), returns None silently — delegate_task
+    still succeeds and the 'observability' field is omitted from the result.
+
+    Returns None if the log doesn't exist, task_id is falsy, or has no entries.
+    Called via _read_observability_batch() — do not call directly in hot paths.
+    """
+    if not task_id:
+        return None
+    if not _MODEL_USAGE_LOG.exists():
+        logger.debug("observability log not found at %s — plugin may not be installed", _MODEL_USAGE_LOG)
+        return None
+    entries = []
+    try:
+        with _MODEL_USAGE_LOG.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("task_id") == task_id:
+                    entries.append(e)
+    except OSError:
+        return None
+    return _build_observability(entries)
+
+
+def _load_observability_log() -> Dict[str, list]:
+    """Read the full model_usage.jsonl log once and return entries keyed by task_id.
+
+    Used by the batch enrichment block to avoid reading the log N times for an
+    N-task batch. Returns an empty dict if the log doesn't exist or can't be read.
+    """
+    if not _MODEL_USAGE_LOG.exists():
+        logger.debug("observability log not found at %s — plugin may not be installed", _MODEL_USAGE_LOG)
+        return {}
+    log_by_task: Dict[str, list] = {}
+    try:
+        with _MODEL_USAGE_LOG.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                tid = e.get("task_id")
+                if tid:
+                    log_by_task.setdefault(tid, []).append(e)
+    except OSError:
+        return {}
+    return log_by_task
+
+
+def _build_observability(entries: list) -> Dict[str, Any] | None:
+    """Build a compact observability dict from a list of log entries for one task."""
+    if not entries:
+        return None
+
+    from collections import Counter
+    total_calls = len(entries)
+    tokens_in = sum(e.get("tokens_in", 0) for e in entries)
+    tokens_out = sum(e.get("tokens_out", 0) for e in entries)
+    duration_s = round(sum(e.get("duration_s", 0.0) for e in entries), 2)
+    response_models = Counter(e.get("model_response", "unknown") for e in entries)
+    request_models = Counter(e.get("model_request", "unknown") for e in entries)
+
+    # Router resolutions: requested → list of resolved models (preserves all)
+    # Key = requested router model (e.g. "openrouter/auto" or
+    # "openrouter/pareto-code"), value = Counter of what resolved.
+    auto_resolutions: Dict[str, Any] = {}
+    pareto_resolutions: Dict[str, Any] = {}
+    for e in entries:
+        req = e.get("model_request", "")
+        resp = e.get("model_response", "unknown")
+        if req.endswith("/auto"):
+            auto_resolutions.setdefault(req, Counter())
+            auto_resolutions[req][resp] += 1
+        elif req in {"openrouter/pareto-code", "pareto-code"}:
+            pareto_resolutions.setdefault(req, Counter())
+            pareto_resolutions[req][resp] += 1
+    # Flatten Counters to dicts for JSON serialization
+    auto_resolutions = {k: dict(v) for k, v in auto_resolutions.items()}
+    pareto_resolutions = {k: dict(v) for k, v in pareto_resolutions.items()}
+
+    # Real mismatches (non-auto, non-alias)
+    mismatches = []
+    for e in entries:
+        req = e.get("model_request", "")
+        resp = e.get("model_response", "")
+        # match=False means confirmed mismatch per model_observability plugin contract.
+        # Default True (not a mismatch) when field is absent — plugin always sets it explicitly.
+        if req.endswith("/auto") or req in {"openrouter/pareto-code", "pareto-code"} or e.get("match", True):
+            continue
+        req_slug = req.split("/", 1)[-1] if "/" in req else req
+        resp_slug = resp.split("/", 1)[-1] if "/" in resp else resp
+        req_parts = set(req_slug.replace("-", " ").split())
+        resp_parts = set(resp_slug.replace("-", " ").split())
+        if len(req_parts & resp_parts) >= 2:
+            continue  # cosmetic alias
+        mismatches.append({"requested": req, "actual": resp})
+
+    obs: Dict[str, Any] = {
+        "models_used": dict(response_models.most_common()),
+        "models_requested": dict(request_models.most_common()),
+        "api_calls": total_calls,
+        "tokens": {"input": tokens_in, "output": tokens_out},
+        "duration_seconds": duration_s,
+    }
+    if auto_resolutions:
+        obs["auto_router_resolutions"] = auto_resolutions
+    if pareto_resolutions:
+        obs["pareto_router_resolutions"] = pareto_resolutions
+    if mismatches:
+        obs["override_mismatches"] = mismatches
+    return obs
+
 
 
 # Tools that children must never have access to
@@ -144,6 +274,10 @@ _MIN_SPAWN_DEPTH = 1
 # No upper ceiling on spawn depth — like max_concurrent_children, depth has a
 # floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
 # stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
+
+# Model names that are only meaningful on OpenRouter (meta-routing or
+# aggregator-specific). Used by _warn_model_provider_mismatch.
+_OPENROUTER_ONLY_MODELS: frozenset = frozenset({"auto"})
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +498,105 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+def _warn_model_provider_mismatch(
+    task_model: Optional[str],
+    resolved_provider: Optional[str],
+    task_index: int,
+) -> None:
+    """Emit a warning when a per-task model is incompatible with the
+    resolved provider credentials.
+
+    Two cases are checked:
+
+    1. Provider-prefixed model string (e.g. 'x-ai/grok-4.1-fast') with a
+       non-matching resolved provider (e.g. 'anthropic'). The child will call
+       the wrong endpoint and receive an opaque invalid-model error.
+
+    2. OpenRouter-specific bare model names (e.g. 'auto', 'openrouter/auto')
+       used with a non-OpenRouter provider. 'auto' is OpenRouter's meta-routing
+       model and is meaningless on any other provider.
+
+    OpenRouter and other registered aggregator providers are excluded from
+    the prefix-mismatch check because they accept provider-prefixed model
+    strings as a feature.
+
+    Only warning-level — does not block execution.
+    """
+    if not task_model or not resolved_provider:
+        return
+
+    # --- Case 2: OpenRouter-specific bare model names ---
+    # 'auto' (and 'openrouter/auto') are only valid on OpenRouter.
+    # Normalize by stripping an 'openrouter/' prefix first.
+    bare_model = task_model.strip().lower()
+    if bare_model.startswith("openrouter/"):
+        bare_model = bare_model[len("openrouter/"):]
+    if bare_model in _OPENROUTER_ONLY_MODELS:
+        try:
+            from hermes_cli.model_normalize import _normalize_provider_alias
+            from hermes_cli.providers import is_aggregator
+            norm_resolved = _normalize_provider_alias(resolved_provider)
+            # Aggregators (openrouter, opencode, etc.) are all valid targets
+            # for OpenRouter-only models — skip silently.
+            if is_aggregator(norm_resolved) or norm_resolved == "":
+                return
+        except Exception:
+            # Alias resolution unavailable — fall back to raw string comparison.
+            # Unlike Case 1, a raw comparison is safe here: the only valid
+            # resolved provider for 'auto' is openrouter, always spelled the
+            # same way. Case 1 can't safely skip by raw comparison because
+            # provider aliases (xai vs x-ai, etc.) would produce false positives.
+            norm_resolved = (resolved_provider or "").strip().lower()
+            if norm_resolved in ("openrouter", ""):
+                return
+        logger.warning(
+            "delegate_task task[%d]: per-task model=%r is an OpenRouter-specific "
+            "model and is not valid on provider=%r. Use provider='openrouter' to "
+            "route through OpenRouter, or choose a model supported by %r.",
+            task_index, task_model, resolved_provider, resolved_provider,
+        )
+        return  # handled — don't fall through to prefix check
+
+    # --- Case 1: Provider-prefixed model strings ---
+    if "/" not in task_model:
+        return
+
+    model_prefix = task_model.split("/", 1)[0].strip().lower()
+    if not model_prefix:
+        return
+
+    try:
+        from hermes_cli.model_normalize import _normalize_provider_alias
+        norm_prefix = _normalize_provider_alias(model_prefix)
+        norm_resolved = _normalize_provider_alias(resolved_provider)
+    except Exception:
+        return  # normalisation unavailable — skip silently
+
+    # Aggregator providers (openrouter, opencode, vercel, etc.) accept
+    # provider-prefixed model strings as a feature — routing x-ai/... through
+    # openrouter is valid and intentional. Use the canonical registry check
+    # rather than a hardcoded list so new aggregators are covered automatically.
+    try:
+        from hermes_cli.providers import is_aggregator
+        if is_aggregator(norm_resolved):
+            return
+    except Exception:
+        # Fallback: openrouter is the most common aggregator
+        if norm_resolved in ("openrouter",):
+            return
+
+    if norm_prefix and norm_resolved and norm_prefix != norm_resolved:
+        logger.warning(
+            "delegate_task task[%d]: per-task model=%r has provider prefix %r "
+            "but credentials were resolved for provider=%r. The child agent will "
+            "call %r's endpoint with a foreign model name, which usually returns "
+            "an invalid-model error. To route tasks to different providers, set "
+            "provider='openrouter' at the top level and use provider-prefixed "
+            "model strings per task (e.g. 'anthropic/claude-haiku-4-5').",
+            task_index, task_model, model_prefix, resolved_provider, resolved_provider,
+        )
 
 
 def _get_max_concurrent_children() -> int:
@@ -1921,6 +2154,7 @@ def _run_single_child(
                 )
                 else 0.0
             ),
+            "_task_id": child_task_id,
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2130,6 +2364,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2208,7 +2444,11 @@ def delegate_task(
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(
+            cfg, parent_agent,
+            model_override=model,
+            provider_override=provider,
+        )
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2273,17 +2513,20 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_model = t.get("model") or creds["model"]
+            # Warn early if a per-task model prefix is incompatible with the
+            # resolved provider (e.g. model='x-ai/...' but provider='anthropic').
+            if t.get("model"):
+                # creds["provider"] may be None when no provider is configured
+                # (child inherits from parent); mismatch check is skipped in
+                # that case — see _warn_model_provider_mismatch docstring.
+                _warn_model_provider_mismatch(t["model"], creds["provider"], i)
             child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
+                task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
+                model=task_model,
+                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command")
@@ -2533,6 +2776,19 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
+# Enrich each result with task_id and inline observability data from the
+        # model_usage.jsonl log. Read the log once for the whole batch (O(1) lookup
+        # per result), then attach ground-truth routing data to each entry so the
+        # LLM sees it in the tool return without needing to run a separate script.
+        _obs_log = _load_observability_log()
+        for entry in results:
+            tid = entry.pop("_task_id", None)
+            if tid:
+                entry["task_id"] = tid
+                obs = _build_observability(_obs_log.get(tid, []))
+                if obs:
+                    entry["observability"] = obs
+
         return {
             "results": results,
             "total_duration_seconds": total_duration,
@@ -2744,7 +3000,12 @@ def _resolve_child_credential_pool(
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -2763,10 +3024,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
+    Per-call overrides:
+    - model_override: if set, takes precedence over cfg["model"]. Routes this
+      specific delegation to a different model.
+    - provider_override: if set, takes precedence over cfg["provider"]. Routes
+      this specific delegation to a different provider (e.g. openrouter).
+
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_model = (
+        (model_override and str(model_override).strip())
+        or str(cfg.get("model") or "").strip()
+        or None
+    )
+    configured_provider = (
+        (provider_override and str(provider_override).strip())
+        or str(cfg.get("provider") or "").strip()
+        or None
+    )
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
@@ -2987,7 +3262,13 @@ def _build_top_level_description() -> str:
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "\n"
+        "MODEL SELECTION: If the user has not explicitly specified a model or provider "
+        "for this delegation, load the 'subagent-model-routing' skill before filling "
+        "in the 'model' and 'provider' parameters. That skill contains the routing "
+        "decision matrix, tier tables, and known failure modes. Using the wrong model "
+        "silently degrades output quality or wastes cost with no error."
     )
 
 
@@ -3143,6 +3424,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'anthropic/claude-haiku-4-5'). "
+                                "Overrides the top-level model for this task only. "
+                                "See the 'subagent-model-routing' skill for selection guidance."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3190,6 +3479,36 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model for the subagent(s). Format: '<provider>/<model>' "
+                    "(e.g. 'anthropic/claude-haiku-4-5', 'x-ai/grok-4.1-fast', "
+                    "'openrouter/auto'). When omitted, subagents use "
+                    "delegation.model from config. Applies to all tasks in the "
+                    "batch unless a per-task model is set. "
+                    "Load the 'subagent-model-routing' skill to select the right "
+                    "model — task type, cost tier, and capability requirements all "
+                    "affect which model to use. Wrong model = silent quality "
+                    "degradation or wasted cost."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider for the subagent(s) (e.g. 'openrouter', "
+                    "'anthropic'). Usually omitted — provider is inferred from "
+                    "the model prefix and parent config. Set explicitly when "
+                    "routing through a specific provider. "
+                    "IMPORTANT: provider is resolved once per call and shared "
+                    "across all tasks in the batch — you cannot mix native "
+                    "providers in one batch. For mixed-provider batches, use "
+                    "provider='openrouter' with provider-prefixed model strings "
+                    "per task (e.g. 'anthropic/claude-haiku-4-5' and "
+                    "'x-ai/grok-4.1-fast' in the same batch). "
+                    "See the 'subagent-model-routing' skill for routing rules."
+                ),
+            },
         },
         "required": [],
     },
@@ -3231,6 +3550,8 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
+        model=args.get("model"),
+        provider=args.get("provider"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

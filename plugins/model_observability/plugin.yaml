@@ -1,0 +1,10 @@
+name: model_observability
+version: 1.1.0
+description: "Log every LLM API call with requested model, returned model, provider, tokens, and duration. Enriches delegate_task results with router-aware observability metadata. Writes JSONL to ~/.hermes/logs/model_usage.jsonl."
+author: Jordan
+requires_env: []
+hooks:
+  - post_api_request
+  - on_session_start
+  - pre_tool_call
+  - transform_tool_result

@@ -83,7 +83,7 @@ Open the printed URL. The browser will likely fail after approval when it redire
 
 ### Step 3: Exchange the authorization code
 
-Paste the full redirected URL, or just the `code` value:
+Paste the full redirected URL so Hermes can validate the OAuth state before exchanging the code:
 
 ```bash
 $MSETUP --auth-code "http://localhost:1/?code=...&state=..."

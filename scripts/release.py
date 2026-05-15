@@ -62,6 +62,7 @@ AUTHOR_MAP = {
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
+    "jithendranaidunara@gmail.com": "JithendraNara",
     "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",

@@ -1,6 +1,8 @@
 """Tests for acp_adapter.events — callback factories for ACP notifications."""
 
 import asyncio
+import gc
+import warnings
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +12,7 @@ import acp
 from acp.schema import ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
 
 from acp_adapter.events import (
+    _send_update,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -325,3 +328,46 @@ class TestMessageCallback:
             cb("")
 
         mock_rcts.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-failure regression
+# ---------------------------------------------------------------------------
+
+class TestSendUpdate:
+    def test_scheduler_failure_closes_update_coroutine(self, event_loop_fixture):
+        """If run_coroutine_threadsafe raises, _send_update must close the coro."""
+        created = {"coro": None}
+
+        async def _session_update(session_id, update):
+            return None
+
+        conn = MagicMock()
+
+        def _capture_update(session_id, update):
+            created["coro"] = _session_update(session_id, update)
+            return created["coro"]
+
+        conn.session_update = _capture_update
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with patch(
+                "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                side_effect=RuntimeError("scheduler down"),
+            ):
+                _send_update(conn, "session-1", event_loop_fixture, {"type": "noop"})
+            gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        # Only count warnings about THIS test's coroutine; other tests in the
+        # same xdist worker (or stdlib mock internals) may emit unrelated
+        # "coroutine was never awaited" warnings that bleed through.
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_session_update" in str(w.message)
+        ]
+        assert runtime_warnings == []

@@ -126,6 +126,22 @@ def auto_title_session(
                 title_callback(title)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
+    except ValueError as e:
+        # Title already in use — auto-deduplicate with #N suffix
+        # so repeated greetings / identical first exchanges don't
+        # silently leave sessions untitled (issue: title uniqueness).
+        logger.debug("Title collision for %s: %s", session_id, e)
+        try:
+            unique_title = session_db.get_next_title_in_lineage(title)
+            session_db.set_session_title(session_id, unique_title)
+            logger.debug("Auto-generated deduplicated session title: %s", unique_title)
+            if title_callback is not None:
+                try:
+                    title_callback(unique_title)
+                except Exception:
+                    logger.debug("Auto-title callback failed", exc_info=True)
+        except Exception as fallback_err:
+            logger.debug("Failed to set deduplicated title for %s: %s", session_id, fallback_err)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 

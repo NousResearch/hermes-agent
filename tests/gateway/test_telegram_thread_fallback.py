@@ -883,6 +883,55 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
 
 
 @pytest.mark.asyncio
+async def test_slash_confirm_callback_markdown_fallback_preserves_dm_topic_thread_kwargs(monkeypatch):
+    adapter = _make_adapter()
+    adapter._slash_confirm_state = {"confirm-1": "session-1"}
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Markdown parse error")
+        return SimpleNamespace(message_id=9002)
+
+    async def resolve(_session_key, _confirm_id, _choice):
+        return "*done* _now_"
+
+    from tools import slash_confirm
+
+    monkeypatch.setattr(slash_confirm, "resolve", resolve)
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    class Query:
+        data = "sc:once:confirm-1"
+        from_user = SimpleNamespace(id=42, first_name="Alice")
+        message = SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type=_fake_telegram_constants.ChatType.PRIVATE),
+            message_thread_id=20197,
+            message_id=462,
+        )
+
+        async def answer(self, **kwargs):
+            return None
+
+        async def edit_message_text(self, **kwargs):
+            return None
+
+    await adapter._handle_callback_query(SimpleNamespace(callback_query=Query()), SimpleNamespace())
+
+    assert len(call_log) == 2
+    assert call_log[0]["parse_mode"] == _fake_telegram_constants.ParseMode.MARKDOWN_V2
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[1]["parse_mode"] is None
+    assert call_log[1]["text"] == "done now"
+    assert call_log[1]["message_thread_id"] == 20197
+    assert call_log[1]["reply_to_message_id"] == 462
+
+
+@pytest.mark.asyncio
 async def test_base_send_image_fallback_preserves_metadata():
     """Base image fallback should pass metadata through instead of referencing kwargs."""
     from gateway.platforms.base import BasePlatformAdapter

@@ -3454,6 +3454,52 @@ class AIAgent:
 
         return 300.0, True
 
+    def _resolved_turn_wall_clock_max(self) -> float:
+        """Resolve the outer turn-loop wall-clock limit in seconds.
+
+        ``HERMES_TURN_WALL_CLOCK_MAX`` caps the total wall-clock time a single
+        ``run_conversation()`` turn may spend inside the outer tool / retry loop.
+        This is a last-resort guard above the per-request stale detectors.
+
+        Invalid or non-positive values fall back to the safe default of 600s.
+        """
+        raw = os.getenv("HERMES_TURN_WALL_CLOCK_MAX")
+        if raw is None:
+            return 600.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 600.0
+        return value if value > 0 else 600.0
+
+    def _compute_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+        """Compute the effective streaming stale timeout for this request.
+
+        ``HERMES_STREAM_STALE_TIMEOUT`` remains the explicit override. When it is
+        unset, Telegram turns use a shorter implicit baseline to reduce long
+        silent stalls on chat platforms, while local endpoints still disable the
+        detector entirely unless the user opted in.
+        """
+        raw = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+        implicit_default = raw is None
+        if raw is None:
+            platform_name = str(getattr(self, "platform", "") or "").lower()
+            stale_base = 120.0 if platform_name == "telegram" else 180.0
+        else:
+            stale_base = float(raw)
+
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        if implicit_default and base_url and is_local_endpoint(base_url):
+            logger.debug("Local provider detected (%s) — stale stream timeout disabled", base_url)
+            return float("inf")
+
+        est_tokens = sum(len(str(v)) for v in messages) // 4
+        if est_tokens > 100_000:
+            return max(stale_base, 300.0)
+        if est_tokens > 50_000:
+            return max(stale_base, 240.0)
+        return stale_base
+
     def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
@@ -8534,26 +8580,9 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
-        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
-        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-        # for prefill on large contexts.  Disable the stale detector unless
-        # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
-            _stream_stale_timeout = float("inf")
-            logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
-        else:
-            # Scale the stale timeout for large contexts: slow models (like Opus)
-            # can legitimately think for minutes before producing the first token
-            # when the context is large.  Without this, the stale detector kills
-            # healthy connections during the model's thinking phase, producing
-            # spurious RemoteProtocolError ("peer closed connection").
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-            elif _est_tokens > 50_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-            else:
-                _stream_stale_timeout = _stream_stale_timeout_base
+        _stream_stale_timeout = self._compute_stream_stale_timeout(
+            api_kwargs.get("messages", [])
+        )
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -12218,7 +12247,9 @@ class AIAgent:
         # present are surfaced in an advisory footer so the model cannot
         # over-claim success while the file is actually unchanged on disk.
         self._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
-        
+        _turn_wall_clock_max = self._resolved_turn_wall_clock_max()
+        _turn_started_at = time.time()
+
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
         # Must be set before any thread-scoped interrupt syncing.
@@ -12273,6 +12304,29 @@ class AIAgent:
             )
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+            _turn_elapsed = time.time() - _turn_started_at
+            if _turn_elapsed > _turn_wall_clock_max:
+                _turn_exit_reason = "turn_wall_clock_exhausted"
+                timeout_msg = (
+                    f"Turn wall-clock limit exceeded after {int(_turn_elapsed)}s "
+                    f"(max {int(_turn_wall_clock_max)}s)."
+                )
+                logger.warning(
+                    "%s %s",
+                    self._client_log_context(),
+                    timeout_msg,
+                )
+                self._emit_status(f"⚠️ {timeout_msg}")
+                self._persist_session(messages, conversation_history)
+                return {
+                    "final_response": timeout_msg,
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "failed": True,
+                    "error": timeout_msg,
+                }
+
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import textwrap
+
+import pytest
 
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -306,3 +309,158 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_default_stream_stale_timeout_is_shorter_for_telegram(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="telegram",
+    )
+
+    assert agent._compute_stream_stale_timeout([]) == 120.0
+
+
+def test_explicit_stream_stale_timeout_override_beats_telegram_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "210")
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="telegram",
+    )
+
+    assert agent._compute_stream_stale_timeout([]) == 210.0
+
+
+def test_default_stream_stale_timeout_auto_disables_for_local_endpoints(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="qwen3:32b",
+        provider="ollama-local",
+        api_key="sk-dummy",
+        base_url="http://127.0.0.1:11434/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="telegram",
+    )
+
+    assert agent._compute_stream_stale_timeout([]) == float("inf")
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (None, 600.0),
+        ("900", 900.0),
+        ("0", 600.0),
+        ("-5", 600.0),
+        ("nope", 600.0),
+    ],
+)
+def test_resolved_turn_wall_clock_max(monkeypatch, tmp_path, raw_value, expected):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    if raw_value is None:
+        monkeypatch.delenv("HERMES_TURN_WALL_CLOCK_MAX", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_TURN_WALL_CLOCK_MAX", raw_value)
+
+    import run_agent as ra_mod
+
+    importlib.reload(ra_mod)
+
+    agent = ra_mod.AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+
+    assert agent._resolved_turn_wall_clock_max() == expected
+
+
+def test_turn_wall_clock_timeout_short_circuits_outer_loop(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_TURN_WALL_CLOCK_MAX", "600")
+
+    import run_agent as ra_mod
+
+    importlib.reload(ra_mod)
+
+    agent = ra_mod.AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+        max_iterations=3,
+    )
+
+    agent._persist_session = lambda *args, **kwargs: None
+    agent._emit_status = lambda *args, **kwargs: None
+    agent._client_log_context = lambda: "ctx"
+    agent._execution_thread_id = None
+    agent._checkpoint_mgr.new_turn = lambda: None
+    agent._interrupt_requested = False
+    agent._budget_grace_call = False
+    agent._touch_activity = lambda *_args, **_kwargs: None
+
+    class _Budget:
+        remaining = 3
+        used = 0
+        max_total = 3
+
+        def consume(self):
+            self.used += 1
+            self.remaining = max(0, self.remaining - 1)
+            return True
+
+    agent.iteration_budget = _Budget()
+
+    tick = {"value": 0.0}
+
+    def _fake_time():
+        tick["value"] += 700.0
+        return tick["value"]
+
+    monkeypatch.setattr(ra_mod.time, "time", _fake_time)
+
+    result = agent.run_conversation("hello")
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert result["api_calls"] == 0
+    assert result["error"] == "Turn wall-clock limit exceeded after 700s (max 600s)."
+    assert result["final_response"] == result["error"]

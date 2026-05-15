@@ -2008,7 +2008,16 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / "go" / "bin"),            # Go tools
         str(home / ".npm-global" / "bin"),   # npm global packages
     ]
-    return [p for p in candidates if p not in path_entries and Path(p).exists()]
+    existing = []
+    for p in candidates:
+        if p in path_entries:
+            continue
+        try:
+            if Path(p).exists():
+                existing.append(p)
+        except OSError:
+            continue
+    return existing
 
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
@@ -3682,9 +3691,7 @@ def _all_platforms() -> list[dict]:
     platforms = [dict(p) for p in _PLATFORMS]
 
     # Drop platforms that can't function on this host. See docstring.
-    import platform as _platform
-
-    if sys.platform == "win32" and _platform.system().lower() == "windows":
+    if sys.platform == "win32":
         platforms = [p for p in platforms if p.get("key") != "matrix"]
 
     by_key = {p["key"]: p for p in platforms}
@@ -3726,11 +3733,8 @@ def _platform_status(platform: dict) -> str:
                 configured = bool(entry.is_connected(synthetic))
             except Exception:
                 configured = False
-        if not configured:
-            try:
-                configured = bool(entry.check_fn())
-            except Exception:
-                configured = False
+        if not configured and entry.required_env:
+            configured = all(bool(get_env_value(name)) for name in entry.required_env)
         return "configured" if configured else "not configured"
 
     token_var = platform.get("token_var", "")

@@ -56,7 +56,7 @@ def curses_checklist(
 
     # Safety: curses and input() both hang or spin when stdin is not a
     # terminal (e.g. subprocess pipe).  Return defaults immediately.
-    if not sys.stdin.isatty():
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
         return cancel_returns
 
     try:
@@ -159,6 +159,8 @@ def curses_checklist(
     except KeyboardInterrupt:
         return cancel_returns
     except Exception:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            return cancel_returns
         return _numbered_fallback(title, items, selected, cancel_returns, status_fn)
 
 

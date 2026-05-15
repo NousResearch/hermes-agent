@@ -520,3 +520,47 @@ Implemented follow-up:
 - Narrowed the install-hook scanner so root-level `setup.py` is still critical,
   while non-root application modules such as `hermes_cli/setup.py` are not
   treated as packaging install hooks.
+
+## CI Follow-Up: Full Test Job Residuals
+
+Date: 2026-05-15
+
+After the audit jobs were green, the upstream `test` job exposed ten residual
+failures:
+
+- non-interactive gateway setup still fell through to an input prompt under
+  captured pytest output;
+- Matrix needed to stay hidden from the Windows setup picker while still being
+  recognised as existing configuration for migration/service summaries;
+- plugin platform status treated installed dependencies as configured state;
+- systemd PATH generation could raise on inaccessible user-local directories;
+- xAI STT credential resolution could hold a stale imported config helper in a
+  long-lived test process.
+
+Implemented follow-up:
+
+- `curses_checklist()` now returns the cancel/default selection whenever stdin
+  or stdout is non-interactive, and avoids the numbered input fallback under
+  pytest capture.
+- Gateway setup summaries and service checks now use setup-visible platforms
+  plus built-in platforms hidden by host gating, so existing Matrix config can
+  be counted without showing Matrix in the Windows picker.
+- Plugin platform status now treats `is_connected`/required env vars as
+  configuration state, not dependency-only `check_fn()` success.
+- User-local PATH probing ignores inaccessible directories instead of raising.
+- `tools.xai_http.get_env_value()` resolves the live config helper at call
+  time, matching the STT dotenv fallback contract.
+
+Validation:
+
+```powershell
+python -m py_compile hermes_cli\setup.py hermes_cli\gateway.py hermes_cli\curses_ui.py tools\xai_http.py
+```
+
+Result: passed.
+
+```powershell
+python -m pytest tests\hermes_cli\test_setup.py tests\hermes_cli\test_setup_irc.py tests\hermes_cli\test_setup_openclaw_migration.py tests\hermes_cli\test_gateway_platform_gating.py tests\hermes_cli\test_gateway_service.py tests\tools\test_transcription_dotenv_fallback.py -q
+```
+
+Result: `73 passed, 1 skipped, 2 warnings`.

@@ -2483,8 +2483,12 @@ def setup_gateway(config: dict):
             pre_selected.append(i)
 
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
+    existing_messaging = any(
+        _gateway_status_is_configured(_platform_status(p))
+        for p in _gateway_known_platforms_for_summary()
+    )
 
-    if not selected and not pre_selected:
+    if not selected and not pre_selected and not existing_messaging:
         print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
         return
 
@@ -2495,16 +2499,9 @@ def setup_gateway(config: dict):
     # Count any platform (built-in or plugin) the user configured during this
     # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
     # are picked up without another hard-coded env-var list.
-    def _is_progress(status: str) -> bool:
-        s = status.lower()
-        return not (
-            s == "not configured"
-            or s.startswith("partially")
-            or s.startswith("plugin disabled")
-        )
-
     any_messaging = any(
-        _is_progress(_platform_status(p)) for p in _all_platforms()
+        _gateway_status_is_configured(_platform_status(p))
+        for p in _gateway_known_platforms_for_summary()
     )
     if any_messaging:
         print()
@@ -2798,6 +2795,28 @@ def _gateway_status_has_user_config(status: str) -> bool:
     return s != "not configured" and not s.startswith("plugin disabled")
 
 
+def _gateway_status_is_configured(status: str) -> bool:
+    """Return whether a gateway status is ready enough for service setup."""
+    if not status:
+        return False
+    s = status.lower()
+    return not (
+        s == "not configured"
+        or s.startswith("partially")
+        or s.startswith("plugin disabled")
+    )
+
+
+def _gateway_known_platforms_for_summary() -> list[dict]:
+    """Return setup-visible platforms plus built-ins hidden by host gating."""
+    from hermes_cli.gateway import _PLATFORMS, _all_platforms
+
+    platforms = {plat["key"]: plat for plat in _all_platforms()}
+    for plat in _PLATFORMS:
+        platforms.setdefault(plat["key"], plat)
+    return list(platforms.values())
+
+
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
     """Return a short summary if a setup section is already configured, else None.
 
@@ -2824,17 +2843,14 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        from hermes_cli.gateway import _PLATFORMS, _all_platforms, _platform_status
+        from hermes_cli.gateway import _platform_status
         # Count any user-configured status other than the empty sentinels —
         # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
         # + E2EE"), and Signal ("partially configured") all indicate the user
         # has already started setup and we shouldn't force the section to rerun.
-        platforms = {plat["key"]: plat for plat in _all_platforms()}
-        for plat in _PLATFORMS:
-            platforms.setdefault(plat["key"], plat)
         configured = [
             _gateway_platform_short_label(plat["label"])
-            for plat in platforms.values()
+            for plat in _gateway_known_platforms_for_summary()
             if _gateway_status_has_user_config(_platform_status(plat))
         ]
         if configured:

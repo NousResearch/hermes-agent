@@ -10462,6 +10462,7 @@ class AIAgent:
             (compressed_messages, new_system_prompt) tuple
         """
         _pre_msg_count = len(messages)
+        old_session_id = ""
         logger.info(
             "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
             self.session_id or "none", _pre_msg_count,
@@ -10478,6 +10479,35 @@ class AIAgent:
                 self._memory_manager.on_pre_compress(messages)
             except Exception:
                 pass
+
+        # Notify MCP servers that expose lifecycle hook tools (opt-in).
+        # Servers declare interest by registering a tool named
+        # ``hermes_lifecycle_pre_compress``.  See tools/mcp_tool.py
+        # ``call_mcp_lifecycle_hooks`` for the full convention.
+        _mcp_pre_compress_context = ""
+        try:
+            from tools.mcp_tool import call_mcp_lifecycle_hooks
+            _mcp_pre_compress_context = call_mcp_lifecycle_hooks(
+                "pre_compress",
+                {
+                    "event": "pre_compress",
+                    "session_id": self.session_id or "",
+                    "message_count": _pre_msg_count,
+                    "approx_tokens": approx_tokens or 0,
+                },
+            )
+        except Exception as exc:
+            logger.debug("MCP pre_compress lifecycle hook failed: %s", exc)
+
+        # If MCP servers returned context to preserve, merge it into the
+        # focus topic so the compression summary includes it — same pattern
+        # as MemoryManager.on_pre_compress return values.
+        if _mcp_pre_compress_context:
+            focus_topic = (
+                f"{focus_topic}\n{_mcp_pre_compress_context}"
+                if focus_topic
+                else _mcp_pre_compress_context
+            )
 
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
@@ -10629,6 +10659,24 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+
+        # Notify MCP servers that the compression is complete.
+        # Servers expose ``hermes_lifecycle_post_compress`` to receive this.
+        try:
+            from tools.mcp_tool import call_mcp_lifecycle_hooks
+            call_mcp_lifecycle_hooks(
+                "post_compress",
+                {
+                    "event": "post_compress",
+                    "session_id": self.session_id or "",
+                    "old_session_id": old_session_id,
+                    "pre_message_count": _pre_msg_count,
+                    "post_message_count": len(compressed),
+                    "post_approx_tokens": _compressed_est,
+                },
+            )
+        except Exception as exc:
+            logger.debug("MCP post_compress lifecycle hook failed: %s", exc)
         return compressed, new_system_prompt
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:

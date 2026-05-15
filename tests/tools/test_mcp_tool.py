@@ -3762,3 +3762,217 @@ class TestRegisterMcpServers:
                 )
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# MCP lifecycle hooks
+# ---------------------------------------------------------------------------
+
+class TestMCPLifecycleHooks:
+    """Tests for call_mcp_lifecycle_hooks (Option C: tool-naming convention)."""
+
+    @staticmethod
+    def _mock_run_on_mcp_loop(return_value=None, side_effect=None):
+        """Create a mock for _run_on_mcp_loop that closes unawaited coroutines.
+
+        When _run_on_mcp_loop is patched, the coroutine passed to it is never
+        awaited, which triggers RuntimeWarning.  This helper closes the
+        coroutine in the mock to suppress the warning.
+
+        When *side_effect* is a list, each call returns the next item and
+        ``_fake_run.call_count`` tracks invocations (similar to MagicMock).
+        """
+        if isinstance(side_effect, list):
+            it = iter(side_effect)
+            def _fake_run(coro, **kwargs):
+                _fake_run.call_count += 1
+                coro.close()
+                return next(it)
+            _fake_run.call_count = 0
+            return _fake_run
+
+        def _fake_run(coro, **kwargs):
+            coro.close()
+            if side_effect is not None:
+                raise side_effect
+            return return_value
+        return _fake_run
+
+    def test_no_servers_returns_empty(self):
+        """No connected MCP servers -> empty string, no errors."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+        _servers.clear()
+        result = call_mcp_lifecycle_hooks("pre_compress", {"event": "pre_compress"})
+        assert result == ""
+
+    def test_no_hook_tool_registered_returns_empty(self):
+        """Server without the lifecycle hook tool -> skipped, empty result."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+        server = _make_mock_server("kb")
+        server._registered_tool_names = ["mcp_kb_retain", "mcp_kb_search"]
+        _servers["kb"] = server
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True):
+                result = call_mcp_lifecycle_hooks("pre_compress", {"event": "pre_compress"})
+            assert result == ""
+        finally:
+            _servers.pop("kb", None)
+
+    def test_hook_tool_registered_and_called(self):
+        """Server with the lifecycle hook tool -> called, result returned."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server = _make_mock_server("kb")
+        server._registered_tool_names = [
+            "mcp_kb_retain",
+            "hermes_lifecycle_pre_compress",
+        ]
+        _servers["kb"] = server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._run_on_mcp_loop",
+                       self._mock_run_on_mcp_loop(
+                           return_value="[kb] Context backed up before compression.")):
+                result = call_mcp_lifecycle_hooks(
+                    "pre_compress",
+                    {"event": "pre_compress", "session_id": "abc123"},
+                )
+
+            assert "[kb] Context backed up before compression." in result
+        finally:
+            _servers.pop("kb", None)
+
+    def test_hook_error_skipped_gracefully(self):
+        """MCP hook that raises -> logged and skipped."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server = _make_mock_server("kb")
+        server._registered_tool_names = ["hermes_lifecycle_pre_compress"]
+        _servers["kb"] = server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._run_on_mcp_loop",
+                       self._mock_run_on_mcp_loop(
+                           side_effect=Exception("server crashed"))):
+                result = call_mcp_lifecycle_hooks(
+                    "pre_compress",
+                    {"event": "pre_compress"},
+                )
+
+            # Should not raise, just return empty
+            assert result == ""
+        finally:
+            _servers.pop("kb", None)
+
+    def test_hook_timeout_skipped_gracefully(self):
+        """MCP hook that times out -> logged and skipped."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server = _make_mock_server("kb")
+        server._registered_tool_names = ["hermes_lifecycle_pre_compress"]
+        _servers["kb"] = server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._run_on_mcp_loop",
+                       self._mock_run_on_mcp_loop(
+                           side_effect=TimeoutError("timed out"))):
+                result = call_mcp_lifecycle_hooks(
+                    "pre_compress",
+                    {"event": "pre_compress"},
+                )
+
+            assert result == ""
+        finally:
+            _servers.pop("kb", None)
+
+    def test_multiple_servers_with_hooks(self):
+        """Multiple servers with lifecycle hooks -> all called, results joined."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server_a = _make_mock_server("kb")
+        server_a._registered_tool_names = ["hermes_lifecycle_pre_compress"]
+        _servers["kb"] = server_a
+
+        server_b = _make_mock_server("notes")
+        server_b._registered_tool_names = [
+            "mcp_notes_read",
+            "hermes_lifecycle_pre_compress",
+        ]
+        _servers["notes"] = server_b
+
+        # Server without hook — should be ignored
+        server_c = _make_mock_server("github")
+        server_c._registered_tool_names = ["mcp_github_pr_list"]
+        _servers["github"] = server_c
+
+        try:
+            mock_run = self._mock_run_on_mcp_loop(
+                side_effect=[
+                    "[kb] Backed up context.",
+                    "[notes] Snapshot saved.",
+                ],
+            )
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._run_on_mcp_loop", mock_run):
+                result = call_mcp_lifecycle_hooks(
+                    "pre_compress",
+                    {"event": "pre_compress", "session_id": "s1"},
+                )
+
+            assert "[kb] Backed up context." in result
+            assert "[notes] Snapshot saved." in result
+            # GitHub should not have been called
+            assert mock_run.call_count == 2
+        finally:
+            for name in ("kb", "notes", "github"):
+                _servers.pop(name, None)
+
+    def test_post_compress_event(self):
+        """post_compress event uses correct tool name."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server = _make_mock_server("kb")
+        server._registered_tool_names = [
+            "hermes_lifecycle_pre_compress",
+            "hermes_lifecycle_post_compress",
+        ]
+        _servers["kb"] = server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._run_on_mcp_loop",
+                       self._mock_run_on_mcp_loop(
+                           return_value="[kb] Post-compress cleanup done.")):
+                result = call_mcp_lifecycle_hooks(
+                    "post_compress",
+                    {
+                        "event": "post_compress",
+                        "session_id": "new_session",
+                        "old_session_id": "old_session",
+                    },
+                )
+
+            assert "[kb] Post-compress cleanup done." in result
+        finally:
+            _servers.pop("kb", None)
+
+    def test_mcp_unavailable_returns_empty(self):
+        """When MCP SDK is not installed, returns empty string."""
+        from tools.mcp_tool import call_mcp_lifecycle_hooks, _servers
+
+        server = _make_mock_server("kb")
+        server._registered_tool_names = ["hermes_lifecycle_pre_compress"]
+        _servers["kb"] = server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+                result = call_mcp_lifecycle_hooks(
+                    "pre_compress",
+                    {"event": "pre_compress"},
+                )
+            assert result == ""
+        finally:
+            _servers.pop("kb", None)

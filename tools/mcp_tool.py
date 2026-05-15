@@ -3360,6 +3360,139 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
+# ---------------------------------------------------------------------------
+# MCP lifecycle hooks
+# ---------------------------------------------------------------------------
+
+# Naming convention for MCP lifecycle hook tools.
+# MCP servers that wish to receive lifecycle notifications expose tools
+# following this pattern:  ``hermes_lifecycle_{event}``
+# Currently defined events:
+#   - pre_compress   : called before context compression discards messages
+#   - post_compress  : called after context compression completes
+#
+# The hook receives a single JSON-string argument ``event`` containing a
+# dict with at least ``event`` and ``session_id`` keys.
+#
+# Example MCP server (opt-in)::
+#
+#     @mcp.tool()
+#     def hermes_lifecycle_pre_compress(event: str) -> str:
+#         data = json.loads(event)
+#         self._backup_context(data["session_id"])
+#         return "[my-server] Context backed up before compression."
+
+_LIFECYCLE_HOOK_PREFIX = "hermes_lifecycle_"
+_LIFECYCLE_HOOK_TIMEOUT = 30  # seconds — don't block compression indefinitely
+
+
+def call_mcp_lifecycle_hooks(event: str, payload: dict) -> str:
+    """Call lifecycle hook tools on all connected MCP servers (opt-in).
+
+    Scans each server's registered tool list for a tool named
+    ``hermes_lifecycle_{event}``.  If found, calls it with the serialised
+    *payload* dict and collects the text results.
+
+    Failures are logged and skipped — a slow or broken MCP hook must not
+    prevent Hermes from compressing context.
+
+    Args:
+        event: Lifecycle event name (e.g. ``"pre_compress"``).
+        payload: Dict of event-specific data.  Must be JSON-serialisable.
+
+    Returns:
+        Combined text from all responding servers (joined with ``\\n\\n``).
+        Empty string if no server has a matching hook.
+    """
+    if not _MCP_AVAILABLE:
+        return ""
+
+    hook_tool_name = f"{_LIFECYCLE_HOOK_PREFIX}{event}"
+
+    with _lock:
+        servers_snapshot = dict(_servers)
+
+    if not servers_snapshot:
+        return ""
+
+    # Pre-filter: only contact servers that registered the hook tool.
+    candidates: List[tuple] = []  # (server_name, MCPServerTask)
+    for srv_name, srv in servers_snapshot.items():
+        registered = getattr(srv, "_registered_tool_names", [])
+        if hook_tool_name in registered:
+            candidates.append((srv_name, srv))
+
+    if not candidates:
+        return ""
+
+    event_json = json.dumps(payload, ensure_ascii=False)
+    parts: List[str] = []
+
+    async def _call_hook(
+        srv: MCPServerTask,
+        srv_name: str,
+    ) -> Optional[str]:
+        if not srv or not srv.session:
+            return None
+        async with srv._rpc_lock:
+            result = await srv.session.call_tool(
+                hook_tool_name, arguments={"event": event_json},
+            )
+        if result.isError:
+            error_text = ""
+            for block in (result.content or []):
+                if hasattr(block, "text"):
+                    error_text += block.text
+            logger.warning(
+                "MCP lifecycle hook '%s' on server '%s' returned error: %s",
+                hook_tool_name, srv_name,
+                error_text or "unknown error",
+            )
+            return None
+        text_parts = []
+        for block in (result.content or []):
+            if hasattr(block, "text") and block.text:
+                text_parts.append(block.text)
+        return "\n".join(text_parts) if text_parts else None
+
+    for srv_name, srv in candidates:
+        try:
+            result = _run_on_mcp_loop(
+                _call_hook(srv, srv_name), timeout=_LIFECYCLE_HOOK_TIMEOUT,
+            )
+            if result and result.strip():
+                parts.append(result.strip())
+                logger.debug(
+                    "MCP lifecycle hook '%s' on server '%s' responded (%d chars)",
+                    hook_tool_name, srv_name, len(result),
+                )
+        except TimeoutError:
+            logger.warning(
+                "MCP lifecycle hook '%s' on server '%s' timed out after %ds — skipping",
+                hook_tool_name, srv_name, _LIFECYCLE_HOOK_TIMEOUT,
+            )
+        except InterruptedError:
+            # User sent a new message while we were calling hooks — abort.
+            logger.debug(
+                "MCP lifecycle hook '%s' interrupted — user sent new message",
+                hook_tool_name,
+            )
+            break
+        except Exception as exc:
+            logger.warning(
+                "MCP lifecycle hook '%s' on server '%s' failed: %s",
+                hook_tool_name, srv_name, exc,
+            )
+
+    if parts:
+        logger.info(
+            "MCP lifecycle hook '%s': %d server(s) responded",
+            hook_tool_name, len(parts),
+        )
+
+    return "\n\n".join(parts)
+
+
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 

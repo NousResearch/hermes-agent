@@ -254,6 +254,49 @@ class TestResolveVisionProviderClientModelNormalization:
         assert client is not None
         assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
+    def test_vision_auto_skips_gemini_cli_main_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gemini-3-flash-preview", "provider": "google-gemini-cli"},
+        })
+        fallback_client = MagicMock()
+
+        def fake_strict(provider, model=None):
+            if provider == "openrouter":
+                return fallback_client, "openrouter/vision-model"
+            return None, None
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
+            patch("agent.auxiliary_client._resolve_strict_vision_backend", side_effect=fake_strict),
+        ):
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "openrouter"
+        assert client is fallback_client
+        assert model == "openrouter/vision-model"
+        mock_resolve.assert_not_called()
+
+    def test_available_vision_backends_skips_gemini_cli_main_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gemini-3-flash-preview", "provider": "google-gemini-cli"},
+        })
+
+        def fake_strict(provider, model=None):
+            return (MagicMock(), f"{provider}-vision") if provider == "openrouter" else (None, None)
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
+            patch("agent.auxiliary_client._resolve_strict_vision_backend", side_effect=fake_strict),
+        ):
+            from agent.auxiliary_client import get_available_vision_backends
+
+            backends = get_available_vision_backends()
+
+        assert backends == ["openrouter"]
+        mock_resolve.assert_not_called()
+
 
 class TestVisionPathApiMode:
     """Vision path should propagate api_mode to _get_cached_client."""

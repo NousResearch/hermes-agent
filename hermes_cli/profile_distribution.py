@@ -532,12 +532,17 @@ def _relative_payload_path(root: Path, path: Path) -> str:
         return str(path)
 
 
-def _ensure_source_within_staged(staged_root: Path, source: Path) -> None:
+def _ensure_source_within_staged(
+    staged_root: Path,
+    source: Path,
+    *,
+    resolved_root: Optional[Path] = None,
+) -> None:
     """Reject source paths whose canonical location escapes the staged root."""
-    resolved_root = staged_root.resolve(strict=True)
+    root = resolved_root or staged_root.resolve(strict=True)
     resolved_source = source.resolve(strict=True)
     try:
-        resolved_source.relative_to(resolved_root)
+        resolved_source.relative_to(root)
     except ValueError as exc:
         rel = _relative_payload_path(staged_root, source)
         raise DistributionError(
@@ -547,14 +552,19 @@ def _ensure_source_within_staged(staged_root: Path, source: Path) -> None:
 
 def _validate_staged_payload(staged_root: Path) -> None:
     """Reject unsafe filesystem entries before copying an untrusted distribution."""
-    _ensure_source_within_staged(staged_root, staged_root)
+    resolved_root = staged_root.resolve(strict=True)
+    _ensure_source_within_staged(staged_root, staged_root, resolved_root=resolved_root)
     for entry in staged_root.rglob("*"):
         rel = _relative_payload_path(staged_root, entry)
         if entry.is_symlink():
             raise DistributionError(
                 f"Refusing to install distribution containing symlink: {rel}"
             )
-        _ensure_source_within_staged(staged_root, entry)
+        _ensure_source_within_staged(
+            staged_root,
+            entry,
+            resolved_root=resolved_root,
+        )
         if not entry.is_dir() and not entry.is_file():
             raise DistributionError(
                 f"Refusing to install unsupported distribution entry: {rel}"
@@ -573,7 +583,51 @@ def _copy_file_no_follow(source: Path, dest: Path) -> None:
     """Copy a file after replacing any existing destination symlink."""
     if dest.exists() or dest.is_symlink():
         _remove_destination_path(dest)
-    shutil.copy2(source, dest)
+    shutil.copy2(source, dest, follow_symlinks=False)
+
+
+def _copy_dir_no_follow(
+    source: Path,
+    dest: Path,
+    staged_root: Path,
+    *,
+    resolved_root: Optional[Path] = None,
+) -> None:
+    """Recursively copy a directory while refusing symlinks at copy time."""
+    if source.is_symlink():
+        rel = _relative_payload_path(staged_root, source)
+        raise DistributionError(
+            f"Refusing to install distribution containing symlink: {rel}"
+        )
+    _ensure_source_within_staged(staged_root, source, resolved_root=resolved_root)
+    if dest.exists() or dest.is_symlink():
+        _remove_destination_path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for child in source.iterdir():
+        if child.name in USER_OWNED_EXCLUDE:
+            continue
+        if child.is_symlink():
+            rel = _relative_payload_path(staged_root, child)
+            raise DistributionError(
+                f"Refusing to install distribution containing symlink: {rel}"
+            )
+        _ensure_source_within_staged(staged_root, child, resolved_root=resolved_root)
+        child_dest = dest / child.name
+        if child.is_dir():
+            _copy_dir_no_follow(
+                child,
+                child_dest,
+                staged_root,
+                resolved_root=resolved_root,
+            )
+        elif child.is_file():
+            _copy_file_no_follow(child, child_dest)
+        else:
+            rel = _relative_payload_path(staged_root, child)
+            raise DistributionError(
+                f"Refusing to install unsupported distribution entry: {rel}"
+            )
 
 
 def _copy_dist_payload(
@@ -591,6 +645,7 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
     _validate_staged_payload(staged)
+    resolved_root = staged.resolve(strict=True)
 
     for entry in staged.iterdir():
         name = entry.name
@@ -606,13 +661,11 @@ def _copy_dist_payload(
 
         dest = target / name
         if entry.is_dir():
-            if dest.exists() or dest.is_symlink():
-                _remove_destination_path(dest)
-            shutil.copytree(
+            _copy_dir_no_follow(
                 entry,
                 dest,
-                symlinks=False,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
+                staged,
+                resolved_root=resolved_root,
             )
         else:
             _copy_file_no_follow(entry, dest)

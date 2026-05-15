@@ -1059,7 +1059,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "xai" | "deepgram"
         "echo_transcript": False,  # If true, echo successful voice transcripts back to the user
         "echo_mode": "prefix",  # "prefix" prepends Heard: to agent input; "separate" sends a separate gateway message
         "local": {
@@ -1071,6 +1071,12 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "deepgram": {
+            "model": "nova-3",  # nova-3, nova-2, etc.
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "smart_format": True,
+            "punctuate": True,
         },
     },
 

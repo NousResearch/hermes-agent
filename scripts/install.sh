@@ -941,18 +941,21 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+        # Prefer HTTPS for the public install path. This avoids hanging on SSH
+        # auth / host-key prompts in non-interactive curl|bash installs.
+        log_info "Trying HTTPS clone..."
+        if GIT_TERMINAL_PROMPT=0 \
+           git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR" 2>/dev/null; then
+            log_success "Cloned via HTTPS"
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial HTTPS clone
+            # SSH remains as a fallback for environments where HTTPS is blocked.
+            # Keep it fully non-interactive so missing keys cannot hang install.
+            log_info "HTTPS failed, trying SSH..."
+            if GIT_TERMINAL_PROMPT=0 \
+               GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new" \
+               git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+                log_success "Cloned via SSH"
             else
                 log_error "Failed to clone repository"
                 exit 1
@@ -1900,4 +1903,6 @@ main() {
     print_success
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

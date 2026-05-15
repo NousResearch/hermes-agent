@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -367,6 +368,23 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         # path.  Escape single quotes defensively anyway.
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+
+    # Preserve Hermes-managed PATH entries after user shell init files run.
+    # Some dotfiles rebuild PATH from scratch, which drops the active Python
+    # environment and makes console entry points like `hermes` disappear in
+    # terminal-tool subprocesses.
+    critical_bins: list[str] = []
+    current_python_bin = str(Path(sys.executable).resolve().parent)
+    if current_python_bin:
+        critical_bins.append(current_python_bin)
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        critical_bins.append(str(Path(hermes_home) / ".local" / "bin"))
+    seen: set[str] = set()
+    ordered_bins = [b for b in critical_bins if b and not (b in seen or seen.add(b))]
+    if ordered_bins:
+        joined = ":".join(path.replace('"', '\\"') for path in ordered_bins)
+        prelude_parts.append(f'export PATH="{joined}:$PATH"')
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 

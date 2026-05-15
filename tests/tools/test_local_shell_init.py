@@ -7,6 +7,8 @@ tests verify the config-driven prelude that fixes that.
 """
 
 import os
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -268,3 +270,23 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+    def test_shell_init_preserves_hermes_python_bin_on_path(self, tmp_path, monkeypatch):
+        profile = tmp_path / ".profile"
+        profile.write_text('export PATH="/usr/local/bin:/usr/bin"\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                result = env.execute('echo "PATH=$PATH"; command -v python')
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        expected_python_bin = str(Path(sys.executable).resolve().parent)
+        assert expected_python_bin in output

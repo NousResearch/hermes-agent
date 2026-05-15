@@ -2599,6 +2599,9 @@ def _reconfigure_provider(provider: dict, config: dict):
         else:
             _print_info("    Kept current")
 
+    if provider.get("post_setup"):
+        _run_post_setup(provider["post_setup"])
+
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:

@@ -1045,3 +1045,30 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
     provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
     _reconfigure_provider(provider, config)
     assert config["browser"]["use_gateway"] is False
+
+
+@pytest.mark.parametrize("provider_name,post_setup_key", [
+    ("Browserbase", "agent_browser"),
+    ("Browser Use", "agent_browser"),
+    ("Firecrawl", "agent_browser"),
+    ("Camofox", "camofox"),
+])
+def test_reconfigure_provider_runs_post_setup_for_env_var_providers(
+    monkeypatch, provider_name, post_setup_key
+):
+    """_reconfigure_provider() must call _run_post_setup() for providers that have
+    both env_vars and post_setup — parity with _configure_provider() line 2286."""
+    called = []
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: called.append(key))
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda k: None)
+    monkeypatch.setattr("hermes_cli.tools_config._prompt", lambda *a, **kw: "")
+    monkeypatch.setattr("hermes_cli.tools_config.save_env_value", lambda k, v: None)
+
+    provider = next(
+        p
+        for p in TOOL_CATEGORIES["browser"]["providers"]
+        if p["name"] == provider_name
+    )
+    _reconfigure_provider(provider, {})
+
+    assert called == [post_setup_key]

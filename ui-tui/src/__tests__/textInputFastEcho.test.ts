@@ -7,10 +7,11 @@ import { canFastAppendShape, canFastBackspaceShape } from '../components/textInp
 // tests pin the shape preconditions that make that bypass safe.
 //
 // Regression intent: any non-ASCII text — Vietnamese precomposed letters
-// (single grapheme, single byte width but produced via IME composition),
-// combining marks (zero width), CJK (double width), emoji (variable
-// width), or anything that could be produced by an in-flight IME
-// composition — must NOT take the bypass. Closes:
+// (one grapheme, `text.length === 1`, `stringWidth === 1`, but produced
+// via IME composition across multiple keystrokes), combining marks
+// (zero width), CJK (double width), emoji (variable width), or anything
+// that could be produced by an in-flight IME composition — must NOT
+// take the bypass. Closes:
 //   - "TUI is experiencing font errors when using Unicode to type Vietnamese"
 //   - #5221  TUI input box renders incorrectly for CJK / East-Asian wide
 //   - #7443  CLI TUI renders and deletes Chinese characters incorrectly

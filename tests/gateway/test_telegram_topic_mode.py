@@ -1050,5 +1050,106 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     assert tables == set()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Cross-topic Reply leak / stripped-reply recovery
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_two_topic_bindings(session_db):
+    """Create two topics for the same user in topic mode, oldest first."""
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    # Seed two distinct sessions so the bind FK resolves.
+    session_db.create_session(
+        session_id="sess-A",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="sess-B",
+        source="telegram",
+        user_id="208214988",
+    )
+    # Old topic A first, then current topic B (so B is "most recent").
+    src_a = _make_source(thread_id="111")
+    session_db.bind_telegram_topic(
+        chat_id=src_a.chat_id,
+        thread_id=src_a.thread_id,
+        user_id=src_a.user_id,
+        session_key=build_session_key(src_a),
+        session_id="sess-A",
+    )
+    src_b = _make_source(thread_id="222")
+    session_db.bind_telegram_topic(
+        chat_id=src_b.chat_id,
+        thread_id=src_b.thread_id,
+        user_id=src_b.user_id,
+        session_key=build_session_key(src_b),
+        session_id="sess-B",
+    )
+
+
+def test_recover_returns_none_for_known_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
+
+
+def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
+    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+
+
+def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
+    # Stripped plain reply: thread_id is None, topic mode is on.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
+
+
+def test_recover_returns_none_when_topic_mode_disabled(tmp_path):
+    # Non-topic-mode DMs keep the existing strip-to-lobby behavior.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+
+
+def test_recover_returns_none_when_no_bindings_yet(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+
+
+def test_list_telegram_topic_bindings_for_chat(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    rows = db.list_telegram_topic_bindings_for_chat(chat_id="208214988")
+    assert [r["thread_id"] for r in rows] == ["222", "111"]
+
+
+def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
+    # Missing topic-mode tables → [] without auto-migrating.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    assert db.list_telegram_topic_bindings_for_chat(chat_id="208214988") == []
+    tables = {
+        row[0]
+        for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
+        ).fetchall()
+    }
+    assert tables == set()
+
+
+
 
 

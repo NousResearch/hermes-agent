@@ -364,6 +364,106 @@ export const missionControlTheme: DashboardTheme = {
     .text-foreground, .text-foreground\\/80, .text-foreground\\/90 {
       color: #e3e9ef !important;
     }
+
+    /* ---------------------------------------------------------------
+       Button contrast fix.
+
+       Hermes's @nous-research/ui Button bakes "text-background-base"
+       (= dark text) into its base classes — that contrasts well with
+       the canonical primary fill bg-midground (light). But plugins
+       and a handful of internal callers override the bg with
+       bg-background/N, bg-card, or bg-transparent to get a
+       ghost/outline look — and the dark text now sits on a dark fill,
+       i.e. invisible (e.g. "Call Backend API" on /example).
+
+       Detect any button-ish element that has BOTH the dark fill
+       class AND the dark text class, and flip text to MC's grey-white
+       + give it a subtle border so the button is still readable. The
+       primary bg-midground variant is untouched because it doesn't
+       match these selectors. --------------------------------------- */
+    button[class*="bg-background\\/"][class*="text-background-base"],
+    button[class*="bg-card"][class*="text-background-base"],
+    button[class*="bg-transparent"][class*="text-background-base"],
+    [role="button"][class*="bg-background\\/"][class*="text-background-base"] {
+      color: #e3e9ef !important;
+      background-color: rgba(28, 33, 43, 0.65) !important;
+      border-color: #1c212b !important;
+    }
+    button[class*="bg-background\\/"][class*="text-background-base"]:hover,
+    button[class*="bg-card"][class*="text-background-base"]:hover,
+    button[class*="bg-transparent"][class*="text-background-base"]:hover,
+    [role="button"][class*="bg-background\\/"][class*="text-background-base"]:hover {
+      color: #28d2ef !important;
+      background-color: rgba(40, 210, 239, 0.10) !important;
+      border-color: #28d2ef !important;
+    }
+
+    /* ---------------------------------------------------------------
+       Form inputs and selects.
+
+       Inputs in MC's design are a flat dark fill with a subtle border
+       so they stay visible against the dark canvas. Hermes default
+       cascade derives them from midground-mixed-with-background which
+       can drift between themes — pin them to MC's --input/--border
+       so every textbox/select looks identical. --------------------- */
+    input[type="text"], input[type="search"], input[type="email"],
+    input[type="password"], input[type="url"], input[type="number"],
+    textarea, select {
+      background-color: #0e1219 !important;
+      border-color: #1c212b !important;
+      color: #e3e9ef !important;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: #28d2ef !important;
+      outline: 1px solid rgba(40, 210, 239, 0.35) !important;
+    }
+    input::placeholder, textarea::placeholder {
+      color: rgba(227, 233, 239, 0.35) !important;
+    }
+
+    /* ---------------------------------------------------------------
+       Badges & status chips — frequent inconsistency where some use
+       outline (transparent fill + colored border) and some use solid
+       muted fills. Pin both forms to the MC muted slate fill so the
+       horizontal rhythm is consistent. --------------------------- */
+    [data-slot="badge"], .badge {
+      border-color: #1c212b !important;
+    }
+
+    /* ---------------------------------------------------------------
+       Dropdowns / popovers — the open menu surface. shadcn's
+       data-slot="popover-content" / select-content elements rely on
+       bg-popover (#0e1219 above) so most are already correct, but a
+       few use bg-background which I want to keep on the actual page
+       canvas — repaint open menus to the explicit popover fill so
+       they always read as "raised" against the body. ------------- */
+    [data-slot="popover-content"], [data-slot="select-content"],
+    [data-slot="dropdown-menu-content"], [role="listbox"][class*="bg-"] {
+      background-color: #0e1219 !important;
+      border-color: #1c212b !important;
+      color: #e3e9ef !important;
+    }
+
+    /* ---------------------------------------------------------------
+       Tailwind tint colors — capability badges and similar use
+       \`bg-emerald-500/10 text-emerald-700\` which on a dark canvas
+       produces a barely-visible faint bg with low-luminance text
+       (~lum 19 vs body lum 10 → delta < 10). Bump the foreground
+       shade of every common tint up to its -300/-400 cousin so the
+       text is actually readable. The /10-alpha bg stays as-is — it's
+       just a tinted hint, not the main bg. ------------------------ */
+    [class*="text-emerald-500"], [class*="text-emerald-600"], [class*="text-emerald-700"], [class*="text-green-500"], [class*="text-green-600"], [class*="text-green-700"] { color: #34d399 !important; }
+    [class*="text-blue-500"], [class*="text-blue-600"], [class*="text-blue-700"], [class*="text-sky-500"], [class*="text-sky-600"], [class*="text-sky-700"] { color: #60a5fa !important; }
+    [class*="text-purple-500"], [class*="text-purple-600"], [class*="text-purple-700"], [class*="text-violet-500"], [class*="text-violet-600"], [class*="text-violet-700"] { color: #c084fc !important; }
+    [class*="text-amber-500"], [class*="text-amber-600"], [class*="text-amber-700"] { color: #fbbf24 !important; }
+    [class*="text-red-500"], [class*="text-red-600"], [class*="text-red-700"] { color: #f87171 !important; }
+    [class*="text-rose-500"], [class*="text-rose-600"], [class*="text-rose-700"] { color: #fb7185 !important; }
+    [class*="text-cyan-500"], [class*="text-cyan-600"], [class*="text-cyan-700"] { color: #22d3ee !important; }
+    [class*="text-yellow-500"], [class*="text-yellow-600"], [class*="text-yellow-700"] { color: #fcd34d !important; }
+    [class*="text-orange-500"], [class*="text-orange-600"], [class*="text-orange-700"] { color: #fb923c !important; }
+    [class*="text-pink-500"], [class*="text-pink-600"], [class*="text-pink-700"] { color: #f9a8d4 !important; }
+    [class*="text-teal-500"], [class*="text-teal-600"], [class*="text-teal-700"] { color: #2dd4bf !important; }
+    [class*="text-indigo-500"], [class*="text-indigo-600"], [class*="text-indigo-700"] { color: #818cf8 !important; }
   `,
   colorOverrides: {
     // MC --primary / --ring / --void-cyan (187 82% 53%).

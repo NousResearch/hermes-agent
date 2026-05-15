@@ -10432,22 +10432,32 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
-            # Enrich the prompt with image descriptions so the background
-            # agent can see user-attached images (same as the main flow).
+            # Enrich the prompt with media context so the background agent
+            # sees the same user input the foreground path would surface.
             enriched_prompt = prompt
             if media_urls:
                 image_paths = []
+                audio_paths = []
                 for i, path in enumerate(media_urls):
                     mtype = media_types[i] if i < len(media_types) else ""
                     if mtype.startswith("image/"):
                         image_paths.append(path)
+                    if mtype.startswith("audio/"):
+                        audio_paths.append(path)
                 if image_paths:
                     try:
                         enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                            enriched_prompt, image_paths,
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
+                if audio_paths:
+                    try:
+                        enriched_prompt = await self._enrich_message_with_transcription(
+                            enriched_prompt, audio_paths,
+                        )
+                    except Exception as e:
+                        logger.warning("Background task transcription enrichment failed: %s", e)
 
             def run_sync():
                 agent = AIAgent(

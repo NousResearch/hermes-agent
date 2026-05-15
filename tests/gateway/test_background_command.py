@@ -269,6 +269,73 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_audio_attachments_are_transcribed_into_background_prompt(self, monkeypatch):
+        """Background tasks should get the same audio/STT prompt enrichment as foreground turns."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value="prompt [AUDIO]"
+        )
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        captured = {}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+
+            def _run_conversation(*, user_message, task_id=None):
+                captured["user_message"] = user_message
+                return {"final_response": "done", "messages": []}
+
+            mock_agent_instance.run_conversation.side_effect = _run_conversation
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "prompt",
+                source,
+                "bg_test",
+                media_urls=["/tmp/voice.ogg"],
+                media_types=["audio/ogg"],
+            )
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "prompt",
+            ["/tmp/voice.ogg"],
+        )
+        assert captured["user_message"] == "prompt [AUDIO]"
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
         """Background completion metadata must let Telegram send thread id plus reply id."""
         from gateway import run as gateway_run

@@ -498,6 +498,7 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", inject_memory)
     ctx.register_hook("on_session_start", on_new_session)
     ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("on_kanban_event", on_kanban_event)
 ```
 
 ### Hook reference
@@ -506,7 +507,7 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
-| [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
+| [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | block directive to veto |
 | [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
@@ -514,8 +515,9 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`on_kanban_event`](/docs/user-guide/features/hooks#on_kanban_event) | A Kanban task/run lifecycle event commits | `event: dict` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. Exceptions include `pre_tool_call`, which can block a tool; `pre_llm_call`, which can inject context into the conversation; gateway dispatch hooks, which can skip/rewrite/allow; and transform hooks, which can replace text/result values. See the hook reference before relying on a return value.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

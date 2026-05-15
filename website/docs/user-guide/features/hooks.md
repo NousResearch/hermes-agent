@@ -361,13 +361,14 @@ def register(ctx):
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
+    ctx.register_hook("on_kanban_event", my_kanban_observer)
 ```
 
 **General rules for all hooks:**
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Return values are ignored unless a hook's section explicitly documents an action/transform contract. Observer hooks are fire-and-forget.
 
 ### Quick reference
 
@@ -382,6 +383,7 @@ def register(ctx):
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
+| [`on_kanban_event`](#on_kanban_event) | A Kanban task/run lifecycle event commits | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
@@ -850,6 +852,132 @@ def register(ctx):
 :::info
 With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `subagent_stop` fires many times per turn. Keep your callback fast; push expensive work to a background queue.
 :::
+
+---
+
+### `on_kanban_event`
+
+Fires after a Kanban task/run lifecycle event is written and the surrounding Kanban write transaction commits. This is an observer hook for plugins that maintain external indexes, relationship graphs, notifications, or dashboards from the Kanban board.
+
+**Callback signature:**
+
+```python
+def my_callback(event: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `event` | `dict` | Versioned, sanitized lifecycle event envelope. See schema below. |
+
+**Fires:** In `hermes_cli/kanban_db.py`, after `write_txn()` commits. Event rows are appended inside the transaction, then delivered after commit. Failed mutations and rollbacks do not emit this hook. Hook failures are logged and do not roll back the Kanban write.
+
+**Return value:** Ignored. This hook is observer-only; plugins cannot veto, rewrite, or delay Kanban state changes.
+
+**Delivery contract:** This is an in-process notification hook, not a durable event bus. If the process exits after committing the Kanban DB row but before invoking plugin callbacks, the hook may be missed. Plugins that require durable catch-up should keep their own cursor over Kanban `task_events` and treat `on_kanban_event` as the fast path.
+
+**Schema:**
+
+```jsonc
+{
+  "schema_version": 1,
+  "event_id": 123,
+  "event_type": "kanban.task_completed",
+  "emitted_at": 1760000000,
+  "board": "default",
+  "tenant": null,
+  "task_id": "t_abcd1234",
+  "run_id": 456,
+  "source": "kanban_db",
+  "actor": null,
+  "origin_plugin": null,
+  "correlation_id": null,
+  "status_before": null,
+  "status_after": "done",
+  "assignee_before": null,
+  "assignee_after": "reviewer",
+  "relationships": [
+    {
+      "subject_type": "profile",
+      "subject_id": "reviewer",
+      "relation": "completed",
+      "object_type": "task",
+      "object_id": "t_abcd1234"
+    }
+  ],
+  "payload": {
+    "title_preview": "Fix failing integration test",
+    "workspace_kind": "worktree",
+    "priority": 0,
+    "summary_len": 240,
+    "summary_present": true,
+    "result_len": 1200,
+    "metadata_keys": ["checks", "pr_url"]
+  }
+}
+```
+
+Top-level fields with no known value yet, such as `actor`, `origin_plugin`, `correlation_id`, and `status_before`, are nullable reserved fields for future attribution and causality support.
+
+**Event types:**
+
+| Event type | Meaning |
+|------------|---------|
+| `kanban.task_created` | Task row was created. |
+| `kanban.task_assigned` | Task assignee changed. |
+| `kanban.dependency_linked` / `kanban.dependency_unlinked` | Parent/child task dependency changed. |
+| `kanban.comment_added` | Comment row was added. |
+| `kanban.task_promoted` | Task became dispatchable after dependencies cleared. |
+| `kanban.task_claimed` | Worker claimed a task attempt. |
+| `kanban.worker_spawned` | Dispatcher spawned a worker process for the task. |
+| `kanban.task_completed` | Task reached `done`. |
+| `kanban.task_blocked` / `kanban.task_unblocked` | Task blocked state changed. |
+| `kanban.task_archived` | Task was archived. |
+| `kanban.run_reclaimed` | Stale run claim was reclaimed. |
+| `kanban.run_failed` | Run ended due to timeout, crash, spawn failure, give-up, or protocol violation. Check `payload.outcome` for the specific failure kind. |
+
+**Privacy and boundedness:**
+
+The event payload is designed for routing and indexing, not raw content replication. Task bodies, comments, results, summaries, block reasons, metadata values, process IDs, logs, environment values, commands, and workspace paths are not exposed as raw text. Prefer length/presence fields and metadata keys when building downstream indexes.
+
+`title_preview` is intentionally included as bounded display text so dashboards and graph plugins can label events. Treat task titles as visible operational metadata; do not put secrets in Kanban titles.
+
+**Example — enqueue Kanban events for background processing:**
+
+```python
+import json
+import queue
+import threading
+from pathlib import Path
+
+_events = queue.Queue(maxsize=1000)
+
+
+def _worker():
+    path = Path.home() / ".hermes" / "kanban-events.jsonl"
+    while True:
+        event = _events.get()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(event, sort_keys=True) + "\n")
+        finally:
+            _events.task_done()
+
+
+def on_kanban_event(event, **kwargs):
+    try:
+        _events.put_nowait(event)
+    except queue.Full:
+        # Never block Kanban writes on a slow observer.
+        pass
+
+
+def register(ctx):
+    threading.Thread(target=_worker, daemon=True).start()
+    ctx.register_hook("on_kanban_event", on_kanban_event)
+```
+
+**Use cases:** Relationship-memory plugins, assignment analytics, external notification bridges, dashboard/event-log replication, durable catch-up workers keyed by `(board, event_id)`.
 
 ---
 

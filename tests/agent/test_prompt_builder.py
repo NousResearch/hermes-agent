@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -48,6 +49,18 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_hermes_agent_help_guidance_covers_uncertainty_triggers(self):
+        # Still covers original trigger
+        assert "configuring, setting up, or using" in HERMES_AGENT_HELP_GUIDANCE
+        # New uncertainty triggers
+        assert "uncertain about" in HERMES_AGENT_HELP_GUIDANCE
+        assert "your own capabilities" in HERMES_AGENT_HELP_GUIDANCE
+        assert "cached knowledge" in HERMES_AGENT_HELP_GUIDANCE
+        # Source code as ground truth
+        assert "source code" in HERMES_AGENT_HELP_GUIDANCE
+        # Reference to the new lookup table
+        assert "live-documentation-sources.md" in HERMES_AGENT_HELP_GUIDANCE
 
 
 # =========================================================================

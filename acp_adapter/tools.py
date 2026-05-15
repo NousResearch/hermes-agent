@@ -202,6 +202,28 @@ def _json_loads_maybe(value: Optional[str]) -> Any:
         return None
 
 
+def _tool_result_failed(result: Optional[str]) -> bool:
+    """Return True when a structured Hermes tool result clearly failed.
+
+    Keep this deliberately conservative. Plain text can contain words like
+    "error" because tests failed or a command printed diagnostics; Zed should
+    only receive ACP failed status for structured tool-level failures.
+    """
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict):
+        return False
+
+    for key in ("success", "ok"):
+        if data.get(key) is False:
+            return True
+
+    exit_code = data.get("exit_code", data.get("returncode"))
+    if isinstance(exit_code, int) and exit_code != 0:
+        return True
+
+    return False
+
+
 def _truncate_text(text: str, limit: int = 5000) -> str:
     if len(text) <= limit:
         return text
@@ -1296,7 +1318,7 @@ def build_tool_complete(
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="completed",
+        status="failed" if _tool_result_failed(result) else "completed",
         content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
     )

@@ -3958,11 +3958,13 @@ class AIAgent:
                 parts.append(f"Ray {ray_id}")
             return " — ".join(parts)
 
-        # JSON body errors from OpenAI/Anthropic SDKs
+        # JSON body errors from OpenAI/Anthropic/codex SDKs.  Some wrap fields
+        # under `error` ({"error": {"message": ..., "type": ...}}); codex puts
+        # them at the top level ({"message": ..., "type": ..., "resets_in_seconds": ...}).
         body = getattr(error, "body", None)
         if isinstance(body, dict):
-            err = body.get("error") if isinstance(body.get("error"), dict) else None
-            msg = err.get("message") if err else body.get("message")
+            err = body["error"] if isinstance(body.get("error"), dict) else body
+            msg = err.get("message") if isinstance(err, dict) else None
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
@@ -3971,7 +3973,7 @@ class AIAgent:
                 # openai-codex).  resets_in_seconds is a separate field next
                 # to message, so plain message extraction loses it.
                 suffix = ""
-                if err and err.get("type") == "usage_limit_reached":
+                if err.get("type") == "usage_limit_reached":
                     resets_in = err.get("resets_in_seconds")
                     if isinstance(resets_in, (int, float)) and resets_in > 0:
                         if resets_in >= 86400:

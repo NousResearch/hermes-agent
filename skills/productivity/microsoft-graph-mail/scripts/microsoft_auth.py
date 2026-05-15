@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 import secrets
+import stat
 import sys
 import time
 from pathlib import Path
@@ -80,6 +81,25 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
+def _write_json(path: Path, payload: dict, *, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(tmp_path, flags, mode)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle, indent=2)
+        os.chmod(tmp_path, mode)
+        tmp_path.replace(path)
+        os.chmod(path, mode)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _load_client_config() -> dict:
     config = _load_json(CLIENT_CONFIG_PATH)
     if not config.get("client_id"):
@@ -120,35 +140,31 @@ def configure_client(client_id: str, tenant: str | None = None, redirect_uri: st
         sys.exit(1)
 
     CLIENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CLIENT_CONFIG_PATH.write_text(
-        json.dumps(
-            {
-                "client_id": client_id,
-                "tenant": tenant,
-                "redirect_uri": redirect_uri,
-                "auth_flow": "authorization_code_pkce",
-            },
-            indent=2,
-        )
+    _write_json(
+        CLIENT_CONFIG_PATH,
+        {
+            "client_id": client_id,
+            "tenant": tenant,
+            "redirect_uri": redirect_uri,
+            "auth_flow": "authorization_code_pkce",
+        },
     )
     print(f"OK: Microsoft Graph client metadata saved to {CLIENT_CONFIG_PATH}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str, config: dict) -> None:
-    PENDING_AUTH_PATH.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                # Snapshot the tenant and redirect_uri used for this specific
-                # authorization request so the token exchange later matches the
-                # authorize call exactly, even if the client config changes.
-                "tenant": config["tenant"],
-                "redirect_uri": config["redirect_uri"],
-                "created_at": int(time.time()),
-            },
-            indent=2,
-        )
+    _write_json(
+        PENDING_AUTH_PATH,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            # Snapshot the tenant and redirect_uri used for this specific
+            # authorization request so the token exchange later matches the
+            # authorize call exactly, even if the client config changes.
+            "tenant": config["tenant"],
+            "redirect_uri": config["redirect_uri"],
+            "created_at": int(time.time()),
+        },
     )
 
 
@@ -249,7 +265,7 @@ def _persist_token_response(response: dict, config: dict, previous: dict | None 
             pass
     payload["client_id"] = config["client_id"]
     payload["tenant"] = config["tenant"]
-    TOKEN_PATH.write_text(json.dumps(payload, indent=2))
+    _write_json(TOKEN_PATH, payload)
     return payload
 
 
@@ -257,7 +273,7 @@ def exchange_auth_code(code: str) -> None:
     config = _load_client_config()
     pending = _load_pending_auth()
     code, returned_state = _extract_code_and_state(code)
-    if returned_state and returned_state != pending["state"]:
+    if returned_state != pending["state"]:
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
         sys.exit(1)
 
@@ -288,12 +304,12 @@ def exchange_auth_code(code: str) -> None:
         print("WARNING: Microsoft did not return a refresh token; re-authentication may be required.")
 
 
-def refresh_token() -> bool:
+def refresh_token(*, emit_status: bool = True) -> bool:
     config = _load_client_config()
     current = _load_json(TOKEN_PATH)
     refresh = current.get("refresh_token")
     if not refresh:
-        print("TOKEN_INVALID: No refresh token. Run setup again.")
+        print("TOKEN_INVALID: No refresh token. Run setup again.", file=sys.stderr)
         return False
     token_response = _request_token(
         current.get("tenant") or config["tenant"],
@@ -306,10 +322,11 @@ def refresh_token() -> bool:
     )
     missing = _missing_required_scopes(token_response)
     if missing:
-        print("REFRESH_FAILED: refreshed token missing Mail.Read/User.Read. Run setup again.")
+        print("REFRESH_FAILED: refreshed token missing Mail.Read/User.Read. Run setup again.", file=sys.stderr)
         return False
     _persist_token_response(token_response, config, previous=current)
-    print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
+    if emit_status:
+        print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
     return True
 
 
@@ -337,7 +354,7 @@ def get_valid_access_token() -> str:
     payload = _load_json(TOKEN_PATH)
     expires_at = int(payload.get("expires_at") or 0)
     if not payload.get("access_token") or expires_at <= int(time.time()) + 300:
-        if not refresh_token():
+        if not refresh_token(emit_status=False):
             sys.exit(1)
         payload = _load_json(TOKEN_PATH)
     missing = _missing_required_scopes(payload)

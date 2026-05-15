@@ -212,3 +212,13 @@ def test_limits_requested_result_count(graph_module, monkeypatch):
     graph_module.list_messages(argparse.Namespace(max=500))
 
     assert factory.client.requests[0]["params"]["$top"] == 25
+
+
+def test_list_messages_keeps_stdout_json_clean_when_token_refreshes(graph_module, monkeypatch, capsys):
+    factory = FakeClientFactory([FakeResponse(payload={"value": []})])
+    monkeypatch.setattr(graph_module.httpx, "Client", factory)
+    monkeypatch.setattr(graph_module, "get_valid_access_token", lambda: "refreshed-token")
+
+    graph_module.list_messages(argparse.Namespace(max=1))
+
+    assert json.loads(capsys.readouterr().out) == []

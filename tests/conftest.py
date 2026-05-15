@@ -476,12 +476,14 @@ def _reset_module_state():
     except Exception:
         pass
 
-    # --- agent.auxiliary_client — runtime main provider/model override ---
-    # Set per-turn by AIAgent.run_conversation; tests that import it must
-    # see a clean state so config.yaml fallback works as expected.
+    # --- agent.auxiliary_client — runtime main provider/model override and
+    #     payment-error health cache. Both are process-global in production;
+    #     reset them per test so one worker's fallback/402 test does not make
+    #     later auxiliary-client tests skip otherwise-available providers.
     try:
         from agent import auxiliary_client as _aux_mod
         _aux_mod.clear_runtime_main()
+        _aux_mod._reset_aux_unhealthy_cache()
     except Exception:
         pass
 

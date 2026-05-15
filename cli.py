@@ -2413,6 +2413,7 @@ def _looks_like_slash_command(text: str) -> bool:
 from agent.skill_commands import (
     scan_skill_commands,
     build_skill_invocation_message,
+    get_skill_commands,
     build_preloaded_skills_prompt,
 )
 
@@ -9604,6 +9605,11 @@ class HermesCLI:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
+
+            # Sync module-level _skill_commands so the Tab-completion lambda
+            # (captured at SlashCommandCompleter init) sees the updated dict.
+            global _skill_commands
+            _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)

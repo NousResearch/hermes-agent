@@ -23,6 +23,7 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_server_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -994,20 +995,20 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 429
         return exc
 
-    def test_non_payment_error_not_caught(self, monkeypatch):
-        """Non-payment/non-connection errors (500) should NOT trigger fallback."""
+    def test_non_server_error_not_caught(self, monkeypatch):
+        """Non-payment/non-connection/non-server errors (400) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
-        server_err = Exception("Internal Server Error")
-        server_err.status_code = 500
-        primary_client.chat.completions.create.side_effect = server_err
+        bad_req_err = Exception("Bad Request: invalid model")
+        bad_req_err.status_code = 400
+        primary_client.chat.completions.create.side_effect = bad_req_err
 
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "google/gemini-3-flash-preview", None, None, None)):
-            with pytest.raises(Exception, match="Internal Server Error"):
+            with pytest.raises(Exception, match="Bad Request"):
                 call_llm(
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
@@ -1037,6 +1038,65 @@ class TestCallLlmPaymentFallback:
                 messages=[{"role": "user", "content": "hello"}],
             )
         # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
+
+    def test_503_server_error_triggers_fallback(self, monkeypatch):
+        """503 server errors should trigger fallback to next provider (#25822)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        server_err = Exception("Gemini HTTP 503 (UNAVAILABLE): This model is currently experiencing high demand.")
+        server_err.status_code = 503
+        primary_client.chat.completions.create.side_effect = server_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
+
+    def test_503_fallback_even_with_explicit_provider(self, monkeypatch):
+        """503 server errors should trigger fallback even for explicit providers (#25822).
+
+        Unlike payment/rate-limit errors, server errors are transient and
+        indicate the endpoint is temporarily broken regardless of whether it
+        was explicitly chosen by the user.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        server_err = Exception("Service Unavailable: 503")
+        server_err.status_code = 503
+        primary_client.chat.completions.create.side_effect = server_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gemini")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("gemini", "gemini-3-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used even though provider was explicit
         assert fallback_client.chat.completions.create.called
 
 # ---------------------------------------------------------------------------
@@ -1125,6 +1185,99 @@ class TestIsConnectionError:
         err = Exception("Internal Server Error")
         err.status_code = 500
         assert _is_connection_error(err) is False
+
+
+# ---------------------------------------------------------------------------
+# _is_server_error coverage (#25822)
+# ---------------------------------------------------------------------------
+
+
+class TestIsServerError:
+    """Tests for _is_server_error detection of transient 5xx errors."""
+
+    def test_500_status_code(self):
+        err = Exception("Internal Server Error")
+        err.status_code = 500
+        assert _is_server_error(err) is True
+
+    def test_502_status_code(self):
+        err = Exception("Bad Gateway")
+        err.status_code = 502
+        assert _is_server_error(err) is True
+
+    def test_503_status_code(self):
+        """Gemini UNAVAILABLE returns HTTP 503."""
+        err = Exception("Gemini HTTP 503 (UNAVAILABLE): This model is currently experiencing high demand.")
+        err.status_code = 503
+        assert _is_server_error(err) is True
+
+    def test_504_status_code(self):
+        err = Exception("Gateway Timeout")
+        err.status_code = 504
+        assert _is_server_error(err) is True
+
+    def test_599_status_code(self):
+        """Any 5xx should match."""
+        err = Exception("Network Connect Timeout Error")
+        err.status_code = 599
+        assert _is_server_error(err) is True
+
+    def test_400_is_not_server_error(self):
+        err = Exception("Bad Request: invalid model")
+        err.status_code = 400
+        assert _is_server_error(err) is False
+
+    def test_429_is_not_server_error(self):
+        """Rate limits are handled by _is_rate_limit_error, not _is_server_error."""
+        err = Exception("Rate limit exceeded")
+        err.status_code = 429
+        assert _is_server_error(err) is False
+
+    def test_402_is_not_server_error(self):
+        err = Exception("Payment Required")
+        err.status_code = 402
+        assert _is_server_error(err) is False
+
+    def test_no_status_code_with_503_text(self):
+        """Some providers embed 503 in error message without setting .status_code."""
+        err = Exception("Gemini HTTP 503 (UNAVAILABLE): high demand")
+        assert _is_server_error(err) is True
+
+    def test_no_status_code_with_service_unavailable_text(self):
+        err = Exception("503 service unavailable - please try again later")
+        assert _is_server_error(err) is True
+
+    def test_no_status_code_with_bad_gateway_text(self):
+        err = Exception("502 Bad Gateway")
+        assert _is_server_error(err) is True
+
+    def test_no_status_code_with_unavailable_keyword(self):
+        """Gemini-specific text pattern."""
+        err = Exception("The model is currently unavailable due to high demand")
+        assert _is_server_error(err) is True
+
+    def test_no_status_code_no_5xx_keywords(self):
+        err = Exception("connection reset")
+        assert _is_server_error(err) is False
+
+    def test_400_text_not_server_error(self):
+        err = Exception("Bad Request: 400 error")
+        err.status_code = 400
+        assert _is_server_error(err) is False
+
+    def test_internal_server_error_classname(self):
+        """OpenAI SDK InternalServerError detection by class name."""
+        class InternalServerError(Exception):
+            pass
+        err = InternalServerError("something went wrong")
+        assert _is_server_error(err) is True
+
+    def test_service_unavailable_classname(self):
+        """Detection by class name for providers that use ServiceUnavailable."""
+        class ServiceUnavailable(Exception):
+            pass
+        err = ServiceUnavailable("service temporarily unavailable")
+        assert _is_server_error(err) is True
 
 
 class TestKimiTemperatureOmitted:

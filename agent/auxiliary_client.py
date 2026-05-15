@@ -38,6 +38,15 @@ Payment / credit exhaustion fallback:
   call_llm() automatically retries with the next available provider in the
   auto-detection chain.  This handles the common case where a user depletes
   their OpenRouter balance but has Codex OAuth or another provider available.
+
+Server error (5xx) fallback:
+  When a resolved provider returns a transient 5xx error (500, 502, 503, 504,
+  etc.), call_llm() automatically retries with the next available provider.
+  Unlike payment/rate-limit errors, server error fallback applies even when
+  the user explicitly configured a provider — 5xx errors are transient and
+  indicate the endpoint is temporarily broken regardless of provider choice.
+  This ensures tasks like vision analysis don't fail when Gemini or other
+  providers experience high demand.  (#25822)
 """
 
 import json
@@ -2060,6 +2069,43 @@ def _is_connection_error(exc: Exception) -> bool:
         "remoteprotocolerror",
         "localprotocolerror",
     )):
+        return True
+    return False
+
+
+def _is_server_error(exc: Exception) -> bool:
+    """Detect transient HTTP 5xx server errors that warrant provider fallback.
+
+    Returns True for 500 (Internal Server Error), 502 (Bad Gateway),
+    503 (Service Unavailable), 504 (Gateway Timeout), and similar server-side
+    failures.  Unlike payment or rate-limit errors, 5xx errors are transient
+    and indicate the endpoint is temporarily broken — falling back to a
+    different provider is always better than surfacing a cryptic error to the
+    user.
+
+    Handles both ``.status_code`` attribute (OpenAI SDK) and common 5xx text
+    patterns in the error message for broader provider compatibility.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 500 <= status < 600:
+        return True
+    err_lower = str(exc).lower()
+    # Match common 5xx status code patterns in error strings (some providers
+    # embed the code in the message without setting .status_code).
+    if any(kw in err_lower for kw in (
+        "502 bad gateway", "503 service unavailable", "504 gateway timeout",
+        "500 internal server error", "http/50", "http/51", "http/52", "http/53",
+        "520 web server", "521 web server", "522 connection timed out",
+        "523 origin is unreachable", "524 a timeout occurred",
+        "525 ssl handshake", "526 invalid ssl certificate",
+        "527 railgun error", "530",
+        # Gemini-specific text patterns
+        "unavailable", "high demand",
+    )):
+        return True
+    # Match the OpenAI SDK error class names for server errors
+    err_type = type(exc).__name__
+    if any(kw in err_type for kw in ("InternalServerError", "ServiceUnavailable")):
         return True
     return False
 
@@ -4240,6 +4286,7 @@ def call_llm(
                     _is_payment_error(retry_err)
                     or _is_connection_error(retry_err)
                     or _is_auth_error(retry_err)
+                    or _is_server_error(retry_err)
                     or "max_tokens" in retry_err_str
                     or "unsupported_parameter" in retry_err_str
                 ):
@@ -4271,7 +4318,7 @@ def call_llm(
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err) or _is_server_error(retry_err)):
                     raise
                 first_err = retry_err
 
@@ -4334,7 +4381,7 @@ def call_llm(
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
-                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err) or _is_server_error(retry_err)):
                         raise
                     recovery_err = retry_err
             if _recover_provider_pool(pool_provider, recovery_err):
@@ -4372,20 +4419,28 @@ def call_llm(
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
         #
-        # ── Rate-limit fallback (#13579) ─────────────────────────────
-        # When the provider returns a 429 rate-limit (not billing), fall
-        # back to an alternative provider instead of exhausting retries
-        # against the same rate-limited endpoint.
+        # ── Payment / connection / rate-limit / server-error fallback ────
+        # When the provider returns a 429 rate-limit (not billing), a
+        # connection error, or a 5xx server error, fall back to an
+        # alternative provider instead of exhausting retries against the
+        # same broken endpoint.
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
+        #
+        # Server errors (5xx) are the exception: they are transient and
+        # indicate the endpoint is temporarily broken regardless of whether
+        # it was explicitly chosen.  Falling back is always better than
+        # surfacing a cryptic 503 to the user.  (#25822)
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        is_server_err = _is_server_error(first_err)
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4397,6 +4452,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif is_server_err:
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -4591,6 +4648,7 @@ async def async_call_llm(
                     _is_payment_error(retry_err)
                     or _is_connection_error(retry_err)
                     or _is_auth_error(retry_err)
+                    or _is_server_error(retry_err)
                     or "max_tokens" in retry_err_str
                     or "unsupported_parameter" in retry_err_str
                 ):
@@ -4622,7 +4680,7 @@ async def async_call_llm(
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err) or _is_server_error(retry_err)):
                     raise
                 first_err = retry_err
 
@@ -4683,7 +4741,7 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
                 except Exception as retry_err:
-                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err) or _is_server_error(retry_err)):
                         raise
                     recovery_err = retry_err
             if _recover_provider_pool(pool_provider, recovery_err):
@@ -4707,14 +4765,16 @@ async def async_call_llm(
                     effective_extra_body=effective_extra_body,
                 )
 
-        # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        # ── Payment / connection / rate-limit / server-error fallback (mirrors sync call_llm) ──
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        is_server_err = _is_server_error(first_err)
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
@@ -4722,6 +4782,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif is_server_err:
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

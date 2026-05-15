@@ -106,7 +106,7 @@ def _sudo_status() -> tuple[bool, str]:
         return False, "disabled"
 
     if result.returncode == 0:
-        return True, "enabled (passwordless)"
+        return True, "enabled (non-interactive)"
     return False, "disabled"
 
 

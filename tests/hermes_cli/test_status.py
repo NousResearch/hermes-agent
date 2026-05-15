@@ -30,6 +30,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: None)
 
     def _unexpected_systemctl(*args, **kwargs):
         raise AssertionError("systemctl should not be called in the Termux status view")
@@ -144,7 +145,7 @@ def test_show_status_reports_passwordless_sudo(monkeypatch, capsys, tmp_path):
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Sudo:         ✓ enabled (passwordless)" in output
+    assert "Sudo:         ✓ enabled (non-interactive)" in output
 
 
 def test_show_status_reports_sudo_password(monkeypatch, capsys, tmp_path):

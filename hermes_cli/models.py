@@ -469,6 +469,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
     "cloudflare": [
+        # 2026 frontier models
         "@cf/meta/llama-4-scout-17b",
         "@cf/meta/llama-4-70b",
         "@cf/meta/llama-3.1-8b-instruct",
@@ -477,16 +478,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "@cf/meta/llama-3-70b-instruct",
         "@cf/mistral/mistral-7b-instruct-v0.1",
         "@cf/mistral/mistral-small-3.1-24b-instruct-2503",
+        # Google models on CF
         "@cf/google/gemma-4-26b-a4b-it",
         "@cf/google/gemma-4-2b-it",
         "@cf/google/gemma-3-27b-it",
         "@cf/google/gemma-27b-it",
         "@cf/google/gemma-7b-it",
+        # Moonshot / Kimi on CF
         "@cf/moonshotai/kimi-k2.6",
         "@cf/moonshotai/kimi-k2.5",
+        # NVIDIA on CF
         "@cf/nvidia/nemotron-mini-4b-instruct",
+        # Hermes fine-tunes
         "@hf/nousresearch/hermes-2-pro-llama-3-8b",
         "@hf/nousresearch/hermes-3-llama-3.1-8b",
+        # Open-weight community models
         "@cf/qwen/qwen1.5-7b-chat-awq",
         "@cf/qwen/qwen2.5-7b-instruct",
         "@cf/phi-2/phi-2",

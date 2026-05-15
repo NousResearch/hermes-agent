@@ -3586,6 +3586,17 @@ def resolve_provider_client(
         if explicit_base_url:
             base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
+        # Cloudflare Workers AI: resolve {account_id} placeholder and
+        # optionally rewrite to AI Gateway URL.
+        if provider == "cloudflare":
+            from hermes_cli.config import get_env_value
+            account_id = get_env_value("CLOUDFLARE_ACCOUNT_ID") or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+            if account_id:
+                base_url = base_url.replace("{account_id}", account_id)
+            gateway_id = os.getenv("CLOUDFLARE_GATEWAY_ID", "").strip()
+            if gateway_id and account_id:
+                base_url = f"https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}"
+
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 

@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import stat
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -179,6 +180,28 @@ class TestBackup:
             # Skins
             assert "skins/cyber.yaml" in names
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+    def test_backup_archive_is_owner_only_under_permissive_umask(self, tmp_path, monkeypatch):
+        """Backup archives contain secrets and must not be group/world readable."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        old_umask = os.umask(0o022)
+        try:
+            from hermes_cli.backup import run_backup
+            run_backup(args)
+        finally:
+            os.umask(old_umask)
+
+        assert stat.S_IMODE(out_zip.stat().st_mode) == 0o600
+
     def test_excludes_hermes_agent(self, tmp_path, monkeypatch):
         """Backup does NOT include hermes-agent/ directory."""
         hermes_home = tmp_path / ".hermes"
@@ -334,6 +357,45 @@ class TestImport:
         assert (hermes_home / ".env").read_text() == "OPENROUTER_API_KEY=sk-test\n"
         assert (hermes_home / "skills" / "my-skill" / "SKILL.md").read_text() == "# My Skill\n"
         assert (hermes_home / "profiles" / "coder" / "config.yaml").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+    def test_import_secures_restored_tree_under_permissive_umask(self, tmp_path, monkeypatch):
+        """Fresh imports must preserve private Hermes directory/file permissions."""
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            ".env": "OPENAI_API_KEY=sk-test\n",
+            "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-ant\n",
+            "skills/my-skill/SKILL.md": "# My Skill\n",
+        })
+
+        old_umask = os.umask(0o022)
+        try:
+            from hermes_cli.backup import run_import
+            run_import(Namespace(zipfile=str(zip_path), force=True))
+        finally:
+            os.umask(old_umask)
+
+        for directory in (
+            hermes_home,
+            hermes_home / "profiles",
+            hermes_home / "profiles" / "coder",
+            hermes_home / "skills",
+            hermes_home / "skills" / "my-skill",
+        ):
+            assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+        for restored_file in (
+            hermes_home / "config.yaml",
+            hermes_home / ".env",
+            hermes_home / "profiles" / "coder" / ".env",
+            hermes_home / "skills" / "my-skill" / "SKILL.md",
+        ):
+            assert stat.S_IMODE(restored_file.stat().st_mode) == 0o600
 
     def test_strips_hermes_prefix(self, tmp_path, monkeypatch):
         """Import strips .hermes/ prefix if all entries share it."""
@@ -1283,6 +1345,23 @@ class TestPreUpdateBackup:
         root.mkdir()
         _make_hermes_tree(root)
         return root
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+    def test_pre_update_backup_archive_is_owner_only(self, tmp_path):
+        """Automatic full backups also contain secrets and must be private."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        old_umask = os.umask(0o022)
+        try:
+            from hermes_cli.backup import create_pre_update_backup
+            backup = create_pre_update_backup(hermes_home)
+        finally:
+            os.umask(old_umask)
+
+        assert backup is not None
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
     def test_creates_backup_under_backups_dir(self, hermes_home):
         from hermes_cli.backup import create_pre_update_backup

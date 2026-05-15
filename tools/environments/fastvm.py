@@ -320,6 +320,13 @@ class FastVMEnvironment(BaseEnvironment):
         self._sync_manager: FileSyncManager | None = None
 
         if _client is None:
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+                _lazy_ensure("terminal.fastvm", prompt=False)
+            except ImportError:
+                pass
+            except Exception as exc:
+                raise ImportError(str(exc)) from exc
             from fastvm import FastvmClient
 
             _client = FastvmClient()

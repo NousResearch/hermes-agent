@@ -1663,7 +1663,19 @@ class AIAgent:
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     from agent.auxiliary_client import build_or_headers
-                    client_kwargs["default_headers"] = build_or_headers()
+                    # Merge profile.default_headers on top of Hermes's OR base
+                    # headers so per-profile attribution (HTTP-Referer /
+                    # X-Title) overrides the library default. Profile wins on
+                    # conflict.
+                    _or_headers = build_or_headers()
+                    try:
+                        from providers import get_provider_profile as _gpf_or
+                        _ph_or = _gpf_or(self.provider)
+                        if _ph_or and _ph_or.default_headers:
+                            _or_headers.update(_ph_or.default_headers)
+                    except Exception:
+                        pass
+                    client_kwargs["default_headers"] = _or_headers
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
@@ -7337,7 +7349,18 @@ class AIAgent:
         from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
 
         if base_url_host_matches(base_url, "openrouter.ai"):
-            self._client_kwargs["default_headers"] = build_or_headers()
+            # Merge profile.default_headers on top of Hermes's OR base headers
+            # so per-profile attribution (HTTP-Referer / X-Title) overrides
+            # the library default. Profile wins on conflict.
+            _or_headers = build_or_headers()
+            try:
+                from providers import get_provider_profile as _gpf_or
+                _ph_or = _gpf_or(self.provider)
+                if _ph_or and _ph_or.default_headers:
+                    _or_headers.update(_ph_or.default_headers)
+            except Exception:
+                pass
+            self._client_kwargs["default_headers"] = _or_headers
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):

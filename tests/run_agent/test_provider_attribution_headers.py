@@ -154,3 +154,58 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
     assert "X-OpenRouter-Cache" not in headers
     assert "X-OpenRouter-Cache-TTL" not in headers
+
+
+@patch("run_agent.OpenAI")
+def test_openrouter_merges_profile_default_headers(mock_openai):
+    """Profile.default_headers must merge into the OR base headers and win
+    on conflict. Regression test for the silent-drop bug where the OR
+    branch unconditionally replaced default_headers.
+    """
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    fake_profile = MagicMock()
+    fake_profile.default_headers = {
+        "HTTP-Referer": "openzeke",
+        "X-Title": "cardstream:klinker",
+    }
+    with patch("providers.get_provider_profile", return_value=fake_profile):
+        agent._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    # Profile wins on conflict.
+    assert headers["HTTP-Referer"] == "openzeke"
+    assert headers["X-Title"] == "cardstream:klinker"
+    # Non-conflicting OR base headers survive.
+    assert headers["X-OpenRouter-Categories"] == "productivity,cli-agent"
+
+
+@patch("run_agent.OpenAI")
+def test_openrouter_no_profile_headers_unchanged(mock_openai):
+    """When the profile sets no default_headers, the OR branch must
+    return exactly build_or_headers() — no regression for existing
+    users.
+    """
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+    assert headers["X-Title"] == "Hermes Agent"

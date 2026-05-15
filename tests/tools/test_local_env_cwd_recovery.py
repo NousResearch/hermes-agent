@@ -51,6 +51,35 @@ class TestResolveSafeCwd:
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
 
+    def test_expands_tilde_to_home_directory(self):
+        """``~`` must be expanded before the ``os.path.isdir`` check so that
+        ``terminal(background=True, workdir="~/Projects/...")`` does not fall
+        back to ``tempfile.gettempdir()``.
+
+        Regression coverage for
+        https://github.com/NousResearch/hermes-agent/issues/26151
+        """
+        home = os.path.expanduser("~")
+        result = _resolve_safe_cwd("~")
+        assert result == home, (
+            f"Expected tilde to expand to {home!r}, got {result!r}"
+        )
+
+    def test_expands_tilde_subdirectory(self, tmp_path, monkeypatch):
+        """A ``~/subdir`` path that exists after expansion must be returned
+        as-is (expanded) rather than triggering the ``/tmp`` fallback."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        subdir = tmp_path / "myproject"
+        subdir.mkdir()
+        result = _resolve_safe_cwd("~/myproject")
+        assert result == str(subdir)
+
+    def test_expands_env_vars_in_workdir(self, tmp_path, monkeypatch):
+        """``$HOME`` and other env-var references must also be expanded."""
+        monkeypatch.setenv("MY_PROJECT", str(tmp_path))
+        result = _resolve_safe_cwd("$MY_PROJECT")
+        assert result == str(tmp_path)
+
 
 def _fake_interrupt():
     return threading.Event()

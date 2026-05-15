@@ -29,7 +29,14 @@ def _resolve_safe_cwd(cwd: str) -> str:
     (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
+
+    ``~`` and ``$HOME``-style references are expanded before the directory
+    check so that paths like ``~/Projects/myapp`` are resolved correctly
+    instead of silently falling back to ``tempfile.gettempdir()``.
+    See https://github.com/NousResearch/hermes-agent/issues/26151
     """
+    if cwd:
+        cwd = os.path.expandvars(os.path.expanduser(cwd))
     if cwd and os.path.isdir(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""

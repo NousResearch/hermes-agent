@@ -666,25 +666,46 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _mapping_or_empty(value: Any, *, section: str, skin_name: str) -> Dict[str, Any]:
+    """Return a mapping value or an empty dict when the section type is invalid."""
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    logger.warning(
+        "Skin '%s' has invalid '%s' section type (%s); ignoring section",
+        skin_name,
+        section,
+        type(value).__name__,
+    )
+    return {}
+
+
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
+    skin_name = str(data.get("name", "unknown"))
+    color_overrides = _mapping_or_empty(data.get("colors"), section="colors", skin_name=skin_name)
+    spinner_overrides = _mapping_or_empty(data.get("spinner"), section="spinner", skin_name=skin_name)
+    branding_overrides = _mapping_or_empty(data.get("branding"), section="branding", skin_name=skin_name)
+    emoji_overrides = _mapping_or_empty(data.get("tool_emojis"), section="tool_emojis", skin_name=skin_name)
+
     colors = dict(default.get("colors", {}))
-    colors.update(data.get("colors", {}))
+    colors.update(color_overrides)
     spinner = dict(default.get("spinner", {}))
-    spinner.update(data.get("spinner", {}))
+    spinner.update(spinner_overrides)
     branding = dict(default.get("branding", {}))
-    branding.update(data.get("branding", {}))
+    branding.update(branding_overrides)
 
     return SkinConfig(
-        name=data.get("name", "unknown"),
+        name=skin_name,
         description=data.get("description", ""),
         colors=colors,
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
-        tool_emojis=data.get("tool_emojis", {}),
+        tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )

@@ -1407,6 +1407,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
+            _mark_provider_unhealthy("openrouter", ttl=60)
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
@@ -1415,6 +1416,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
+        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1446,6 +1448,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
                 _remaining,
             )
+            _mark_provider_unhealthy("nous", ttl=_remaining)
             return None, None
     except Exception:
         pass
@@ -1453,7 +1456,21 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
+        logger.warning(
+            "Auxiliary Nous client unavailable: no Nous authentication found "
+            "(run: hermes auth)."
+        )
+        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
+    if runtime is None and nous:
+        # Runtime credential mint failed but stored Nous auth is still present.
+        # Falls back to the raw stored token below; surface a debug line so
+        # operators investigating expired/invalid sessions have a breadcrumb,
+        # without blocking the fallback path the rest of this function relies on.
+        logger.debug(
+            "Auxiliary Nous: runtime credential mint failed; falling back to "
+            "stored auth.json token."
+        )
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
@@ -4432,7 +4449,7 @@ def extract_content_or_reasoning(response) -> str:
       1. ``message.content`` — strip inline think/reasoning blocks, check for
          remaining non-whitespace text.
       2. ``message.reasoning`` / ``message.reasoning_content`` — direct
-         structured reasoning fields (DeepSeek, Moonshot, Novita, etc.).
+         structured reasoning fields (DeepSeek, Moonshot, NovitaAI, etc.).
       3. ``message.reasoning_details`` — OpenRouter unified array format.
 
     Returns the best available text, or ``""`` if nothing found.

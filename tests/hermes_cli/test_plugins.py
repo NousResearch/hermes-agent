@@ -538,6 +538,95 @@ class TestPreToolCallBlocking:
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
 
+class TestThreadToolWhitelist:
+    """Tests for the thread-local tool whitelist used by background review forks."""
+
+    def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory", "skill_manage"})
+        try:
+            assert get_pre_tool_call_block_message("memory", {}) is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_disallowed_tool_blocked_with_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist(
+            {"memory"}, deny_msg_fmt="denied: {tool_name}"
+        )
+        try:
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg == "denied: terminal"
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_clear_restores_unrestricted_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory"})
+        clear_thread_tool_whitelist()
+        # After clearing, any tool should pass through to plugin hooks (which
+        # return [] here, so result is None).
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_whitelist_is_thread_local(self, monkeypatch):
+        """Setting a whitelist in one thread must NOT leak into another."""
+        import threading
+
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Main thread: install a restrictive whitelist.
+        set_thread_tool_whitelist({"memory"})
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) is not None
+
+            # Worker thread: should NOT inherit main thread's whitelist.
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert result["msg"] is None, (
+                "thread-local whitelist leaked across threads"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
+
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
 

@@ -1,23 +1,20 @@
-"""Brave Search web search provider (free tier).
+"""Brave Search (free tier) — plugin form.
 
-Brave Search's Data-for-Search API offers a free tier (2,000 queries/mo at the
-time of writing) after signing up at https://brave.com/search/api/.  This
-provider implements ``WebSearchProvider`` only — the Data-for-Search endpoint
-returns search results, it does not extract/crawl arbitrary URLs.
+Subclasses :class:`agent.web_search_provider.WebSearchProvider` (the
+plugin-facing ABC). The legacy in-tree module
+``tools.web_providers.brave_free`` was removed in the same commit that
+moved this code under ``plugins/``; this file is now the canonical
+implementation.
 
-Configuration::
+Config keys this provider responds to::
 
-    # ~/.hermes/.env
-    BRAVE_SEARCH_API_KEY=your-subscription-token
-
-    # ~/.hermes/config.yaml
     web:
-      search_backend: "brave-free"
-      extract_backend: "firecrawl"    # pair with an extract provider if needed
+      search_backend: "brave-free"     # explicit per-capability
+      backend: "brave-free"            # shared fallback
 
-The API uses the ``X-Subscription-Token`` header.  Free-tier keys are rate
-limited (1 qps) and capped at 2k queries/month; see the Brave dashboard for
-current quotas.
+Auth env var::
+
+    BRAVE_SEARCH_API_KEY=...    # https://brave.com/search/api/ (free tier)
 """
 
 from __future__ import annotations
@@ -26,49 +23,45 @@ import logging
 import os
 from typing import Any, Dict
 
-from tools.web_providers.base import WebSearchProvider
+from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
-class BraveFreeSearchProvider(WebSearchProvider):
-    """Search via the Brave Search API (free tier).
+class BraveFreeWebSearchProvider(WebSearchProvider):
+    """Search-only Brave provider using the free-tier Data-for-Search API.
 
-    Requires ``BRAVE_SEARCH_API_KEY`` to be set. The value is passed as the
-    ``X-Subscription-Token`` header. No extract capability — pair with
-    Firecrawl/Tavily/Exa/Parallel when you also need ``web_extract``.
+    Free tier is 2,000 queries/month (1 qps). No content-extraction capability —
+    users pair this with Firecrawl/Tavily/Exa for ``web_extract``.
     """
 
-    def provider_name(self) -> str:
+    @property
+    def name(self) -> str:
+        # Hyphen form preserved for backward compat with the existing
+        # ``web.search_backend: "brave-free"`` config keys users have set.
         return "brave-free"
 
-    def is_configured(self) -> bool:
+    @property
+    def display_name(self) -> str:
+        return "Brave Search (Free)"
+
+    def is_available(self) -> bool:
         """Return True when ``BRAVE_SEARCH_API_KEY`` is set to a non-empty value."""
         return bool(os.getenv("BRAVE_SEARCH_API_KEY", "").strip())
+
+    def supports_search(self) -> bool:
+        return True
+
+    def supports_extract(self) -> bool:
+        return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a search against the Brave Search API.
 
-        Returns normalized results::
-
-            {
-                "success": True,
-                "data": {
-                    "web": [
-                        {
-                            "title": str,
-                            "url": str,
-                            "description": str,
-                            "position": int,
-                        },
-                        ...
-                    ]
-                }
-            }
-
-        On failure returns ``{"success": False, "error": str}``.
+        Returns ``{"success": True, "data": {"web": [{"title", "url", "description", "position"}]}}``
+        on success, or ``{"success": False, "error": str}`` on failure.
         """
         import httpx
 
@@ -128,3 +121,17 @@ class BraveFreeSearchProvider(WebSearchProvider):
         )
 
         return {"success": True, "data": {"web": web_results}}
+
+    def get_setup_schema(self) -> Dict[str, Any]:
+        return {
+            "name": "Brave Search (Free)",
+            "badge": "free",
+            "tag": "Free-tier API key — 2k queries/mo, search only.",
+            "env_vars": [
+                {
+                    "key": "BRAVE_SEARCH_API_KEY",
+                    "prompt": "Brave Search API key (free tier)",
+                    "url": "https://brave.com/search/api/",
+                },
+            ],
+        }

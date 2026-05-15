@@ -364,6 +364,18 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Number of non-system messages to protect at the head of the transcript, in
+  # ADDITION to the system prompt (which is always implicitly protected).
+  # Head messages are NEVER summarized — they survive every compression
+  # indefinitely. This gives stable early context for short/medium sessions,
+  # but in long-running sessions that rely on rolling compaction the pinned
+  # opening turns may not match how you want the session framed over time.
+  # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
+  # and recent tail) — the cleanest configuration for long-running sessions.
+  # Default 3 preserves the system prompt plus the first three non-system
+  # head messages, matching the pre-feature behaviour.
+  protect_first_n: 3
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 
@@ -669,6 +681,16 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+# Discord-specific settings (config.yaml top-level, not under platforms:):
+#
+# discord:
+#   require_mention: true            # Require @mention in server channels (default: true)
+#   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   reactions: true                  # Show processing reactions (default: true)
+#   history_backfill: true           # Recover missed channel messages on mention (default: true)
+#   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

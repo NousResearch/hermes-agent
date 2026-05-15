@@ -6173,6 +6173,12 @@ class GatewayRunner:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
+            # /subgoal is safe mid-run — it only modifies the goal's
+            # subgoals list, which the judge reads at the next turn
+            # boundary. No race with the running turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
+                return await self._handle_subgoal_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -6554,6 +6560,9 @@ class GatewayRunner:
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
+        if canonical == "subgoal":
+            return await self._handle_subgoal_command(event)
+
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
@@ -6799,6 +6808,12 @@ class GatewayRunner:
         )
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
+
+        # Prepend channel context from history backfill (if any).  This
+        # happens after sender-prefix so the prefix only applies to the
+        # trigger message, not the backfill block.
+        if getattr(event, "channel_context", None):
+            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
         if event.media_urls:
             image_paths = []
@@ -9524,6 +9539,57 @@ class GatewayRunner:
 
         return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
 
+    async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
+        """Handle /subgoal for gateway platforms (mirror of CLI handler).
+
+        Subgoals are extra criteria appended to the active goal mid-loop.
+        They modify state read at the next turn boundary, so this is safe
+        to invoke while the agent is running.
+        """
+        args = (event.get_command_args() or "").strip()
+        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        if mgr is None:
+            return t("gateway.goal.unavailable")
+        if not mgr.has_goal():
+            return "No active goal. Set one with /goal <text>."
+
+        # No args → list current subgoals.
+        if not args:
+            return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+
+        tokens = args.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                return "Usage: /subgoal remove <n>"
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                return "/subgoal remove: <n> must be an integer (1-based index)."
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                return f"/subgoal remove: {exc}"
+            return f"✓ Removed subgoal {idx}: {removed}"
+
+        if verb == "clear":
+            try:
+                prev = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                return f"/subgoal clear: {exc}"
+            if prev:
+                return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
+            return "No subgoals to clear."
+
+        try:
+            text = mgr.add_subgoal(args)
+        except (ValueError, RuntimeError) as exc:
+            return f"/subgoal: {exc}"
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        return f"✓ Added subgoal {idx}: {text}"
+
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
         adapter = self.adapters.get(source.platform)
@@ -10295,6 +10361,10 @@ class GatewayRunner:
 
         event_message_id = self._reply_anchor_for_event(event)
 
+        # Forward image/audio attachments so the background agent can see them.
+        media_urls = list(event.media_urls) if event.media_urls else []
+        media_types = list(event.media_types) if event.media_types else []
+
         # Fire-and-forget the background task
         _task = asyncio.create_task(
             self._run_background_task(
@@ -10302,6 +10372,8 @@ class GatewayRunner:
                 source,
                 task_id,
                 event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
             )
         )
         self._background_tasks.add(_task)
@@ -10316,9 +10388,14 @@ class GatewayRunner:
         source: "SessionSource",
         task_id: str,
         event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
+
+        media_urls = media_urls or []
+        media_types = media_types or []
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -10355,6 +10432,23 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # Enrich the prompt with image descriptions so the background
+            # agent can see user-attached images (same as the main flow).
+            enriched_prompt = prompt
+            if media_urls:
+                image_paths = []
+                for i, path in enumerate(media_urls):
+                    mtype = media_types[i] if i < len(media_types) else ""
+                    if mtype.startswith("image/"):
+                        image_paths.append(path)
+                if image_paths:
+                    try:
+                        enriched_prompt = await self._enrich_message_with_vision(
+                            prompt, image_paths,
+                        )
+                    except Exception as e:
+                        logger.warning("Background task vision enrichment failed: %s", e)
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -10386,7 +10480,7 @@ class GatewayRunner:
                 )
                 try:
                     return agent.run_conversation(
-                        user_message=prompt,
+                        user_message=enriched_prompt,
                         task_id=task_id,
                     )
                 finally:
@@ -16069,6 +16163,7 @@ class GatewayRunner:
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
+                        or (_sc and getattr(_sc, "final_content_delivered", False))
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
@@ -16230,12 +16325,16 @@ class GatewayRunner:
             # response_previewed means the interim_assistant_callback already
             # sent the final text via the adapter (non-streaming path).
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _content_delivered = bool(
+                _sc and getattr(_sc, "final_content_delivered", False)
+            )
+            if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
+                    _content_delivered,
                 )
                 response["already_sent"] = True
 

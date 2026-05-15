@@ -353,13 +353,61 @@ class TestMigrate:
             ], None
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
 
-        report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
+        report = migrate({}, codex_home=tmp_path, discover_plugins=True)
         text = (tmp_path / "config.toml").read_text()
         assert '[plugins."github@openai-curated"]' in text
         assert '[plugins."google-calendar@openai-curated"]' in text
         assert "enabled = true" in text
         assert "google-calendar@openai-curated" in report.migrated_plugins
         assert "github@openai-curated" in report.migrated_plugins
+
+    def test_plugin_discovery_skips_unavailable_plugins(self):
+        """Plugins where codex reports availability != AVAILABLE should
+        be skipped — they're broken/uninstallable on codex's side, so
+        migrating them would write config that fails at activation
+        time. Cf. openclaw#80815."""
+        from hermes_cli.codex_runtime_plugin_migration import _query_codex_plugins
+        from unittest.mock import patch
+
+        # Fake a plugin/list response where one plugin is unavailable
+        fake_response = {
+            "marketplaces": [{
+                "name": "openai-curated",
+                "plugins": [
+                    {"name": "good-plugin", "installed": True,
+                     "enabled": True, "availability": "AVAILABLE"},
+                    {"name": "broken-plugin", "installed": True,
+                     "enabled": True, "availability": "UNAVAILABLE"},
+                    {"name": "auth-pending", "installed": True,
+                     "enabled": True, "availability": "REQUIRES_AUTH"},
+                    # Plugin without availability field — pass through
+                    # (older codex versions or marketplaces that don't
+                    # set it should still work).
+                    {"name": "legacy-plugin", "installed": True,
+                     "enabled": True},
+                ]
+            }]
+        }
+
+        class FakeClient:
+            def __init__(self, **kw): pass
+            def initialize(self, **kw): pass
+            def request(self, method, params, timeout=None):
+                return fake_response
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        with patch("agent.transports.codex_app_server.CodexAppServerClient",
+                   FakeClient):
+            plugins, err = _query_codex_plugins()
+
+        assert err is None
+        names = [p["name"] for p in plugins]
+        assert "good-plugin" in names
+        assert "legacy-plugin" in names  # no field → don't skip
+        assert "broken-plugin" not in names
+        assert "auth-pending" not in names
 
     def test_plugin_discovery_failure_non_fatal(self, tmp_path, monkeypatch):
         """If codex isn't installed or RPC fails, MCP migration still

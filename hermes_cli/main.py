@@ -7419,21 +7419,24 @@ def _finalize_update_output(state):
 
 def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
+    from hermes_cli.config import detect_install_method
+    method = detect_install_method(PROJECT_ROOT)
+    if method == "pip":
+        from hermes_cli.config import recommended_update_command
+        from hermes_cli.banner import check_via_pypi
+        result = check_via_pypi()
+        if result is None:
+            print("✗ Could not reach PyPI to check for updates.")
+            sys.exit(1)
+        elif result == 0:
+            print("✓ Already up to date.")
+        else:
+            print("⚕ Update available on PyPI.")
+            print(f"  Run '{recommended_update_command()}' to install.")
+        return
+
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
-        from hermes_cli.config import detect_install_method, recommended_update_command
-        if detect_install_method(PROJECT_ROOT) == "pip":
-            from hermes_cli.banner import _check_via_pypi
-            result = _check_via_pypi()
-            if result is None:
-                print("✗ Could not reach PyPI to check for updates.")
-                sys.exit(1)
-            elif result == 0:
-                print("✓ Already up to date.")
-            else:
-                print(f"⚕ Update available on PyPI.")
-                print(f"  Run '{recommended_update_command()}' to install.")
-            return
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
@@ -7712,15 +7715,15 @@ def cmd_update(args):
 def _cmd_update_pip(args):
     """Update Hermes via pip (for PyPI installs)."""
     from hermes_cli import __version__
-    from hermes_cli.config import recommended_update_command_for_method
 
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
-    cmd_str = recommended_update_command_for_method("pip")
-    cmd = cmd_str.split()
-    if cmd[0] == "pip":
-        cmd = [sys.executable, "-m", "pip"] + cmd[1:]
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)

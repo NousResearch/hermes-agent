@@ -618,6 +618,42 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_tool_complete_includes_live_usage_snapshot(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="test-model",
+        session_input_tokens=120,
+        session_output_tokens=30,
+        session_total_tokens=150,
+        session_api_calls=2,
+        context_compressor=types.SimpleNamespace(
+            context_length=1000,
+            last_prompt_tokens=250,
+            compression_count=0,
+        ),
+    )
+    server._sessions["sid"] = {
+        "agent": agent,
+        "edit_snapshots": {},
+        "tool_started_at": {},
+        "tool_progress_mode": "compact",
+    }
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: True)
+
+    try:
+        with patch("tui_gateway.server._emit") as emit:
+            server._on_tool_complete("sid", "tool-1", "read_file", {}, "ok")
+    finally:
+        server._sessions.pop("sid", None)
+
+    emit.assert_called_once()
+    event, sid, payload = emit.call_args.args
+    assert event == "tool.complete"
+    assert sid == "sid"
+    assert payload["usage"]["context_used"] == 250
+    assert payload["usage"]["context_max"] == 1000
+    assert payload["usage"]["total"] == 150
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")

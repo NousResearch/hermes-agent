@@ -13,7 +13,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -24,6 +24,12 @@ import { getUiState, patchUiState } from './uiStore.js'
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+
+const patchUsage = (usage?: Usage) => {
+  if (usage) {
+    patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+  }
+}
 
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
@@ -294,6 +300,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'thinking.delta': {
         const text = ev.payload?.text
 
+        patchUsage(ev.payload?.usage)
+
         if (text !== undefined) {
           const value = String(text)
           scheduleThinkingStatus(value || statusFromBusy())
@@ -460,6 +468,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'reasoning.delta':
+        patchUsage(ev.payload?.usage)
+
         if (ev.payload?.text) {
           turnController.recordReasoningDelta(ev.payload.text)
         }
@@ -491,6 +501,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'tool.complete': {
+        patchUsage(ev.payload?.usage)
+
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
@@ -674,9 +686,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus('ready')
 
-        if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
-        }
+        patchUsage(ev.payload?.usage)
 
         return
       }

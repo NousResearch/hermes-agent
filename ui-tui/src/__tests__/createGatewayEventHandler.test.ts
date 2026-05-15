@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -57,6 +57,25 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('updates usage from mid-turn tool completion events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ usage: { context_max: 1000, context_used: 100, total: 100 } })
+
+    onEvent({
+      payload: {
+        name: 'read_file',
+        summary: 'read file',
+        tool_id: 'tool-1',
+        usage: { context_max: 1000, context_percent: 25, context_used: 250, total: 250 }
+      },
+      type: 'tool.complete'
+    } as any)
+
+    expect(getUiState().usage).toMatchObject({ context_max: 1000, context_percent: 25, context_used: 250, total: 250 })
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

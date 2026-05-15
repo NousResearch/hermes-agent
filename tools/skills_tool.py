@@ -827,6 +827,7 @@ def _serve_plugin_skill(
                 content,
                 skill_md.parent,
                 session_id=session_id,
+                allow_inline_shell=False,
             )
         except Exception:
             logger.debug(
@@ -860,9 +861,10 @@ def skill_view(
             Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
-        preprocess: Apply configured SKILL.md template and inline shell rendering
-            to main skill content. Internal slash/preload callers disable this
-            because they render the skill message themselves.
+        preprocess: Apply safe configured SKILL.md rendering to main skill
+            content. Inline shell snippets are not executed from this
+            model-callable view tool; internal slash/preload callers render
+            trusted activation messages separately.
 
     Returns:
         JSON string with skill content or error message
@@ -1338,6 +1340,7 @@ def skill_view(
                     content,
                     skill_dir,
                     session_id=task_id,
+                    allow_inline_shell=False,
                 )
             except Exception:
                 logger.debug(

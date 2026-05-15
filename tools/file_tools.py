@@ -392,6 +392,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "fastvm_live_resume": config.get("fastvm_live_resume", True),
                     "fastvm_launch_timeout": config.get("fastvm_launch_timeout", 300),
                     "fastvm_snapshot_timeout": config.get("fastvm_snapshot_timeout", 300),
+                    "fastvm_lease_ttl_seconds": config.get("fastvm_lease_ttl_seconds", 900),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),

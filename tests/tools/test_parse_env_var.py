@@ -40,6 +40,24 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_computes_fastvm_lease_ttl(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "fastvm",
+            "TERMINAL_TIMEOUT": "800",
+            "TERMINAL_LIFETIME_SECONDS": "300",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["fastvm_lease_ttl_seconds"] == 1600
+
+    def test_get_env_config_fastvm_lease_ttl_has_floor(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "fastvm",
+            "TERMINAL_TIMEOUT": "60",
+            "TERMINAL_LIFETIME_SECONDS": "120",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["fastvm_lease_ttl_seconds"] == 900
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:

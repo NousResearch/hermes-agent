@@ -16,6 +16,7 @@ def _make_env_config(**overrides):
         "fastvm_live_resume": True,
         "fastvm_launch_timeout": 123,
         "fastvm_snapshot_timeout": 456,
+        "fastvm_lease_ttl_seconds": 789,
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 180,
@@ -77,3 +78,4 @@ class TestFileToolsContainerConfig:
         assert cc.get("fastvm_live_resume") is True
         assert cc.get("fastvm_launch_timeout") == 123
         assert cc.get("fastvm_snapshot_timeout") == 456
+        assert cc.get("fastvm_lease_ttl_seconds") == 789

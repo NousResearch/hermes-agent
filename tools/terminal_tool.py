@@ -1093,6 +1093,10 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
 
+    timeout = _parse_env_var("TERMINAL_TIMEOUT", "180")
+    lifetime_seconds = _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300")
+    fastvm_lease_ttl_seconds = max(2 * max(timeout, lifetime_seconds), 900)
+
     return {
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
@@ -1107,11 +1111,12 @@ def _get_env_config() -> Dict[str, Any]:
         "fastvm_live_resume": os.getenv("TERMINAL_FASTVM_LIVE_RESUME", "true").lower() in ("true", "1", "yes", "on"),
         "fastvm_launch_timeout": _parse_env_var("TERMINAL_FASTVM_LAUNCH_TIMEOUT", "300"),
         "fastvm_snapshot_timeout": _parse_env_var("TERMINAL_FASTVM_SNAPSHOT_TIMEOUT", "300"),
+        "fastvm_lease_ttl_seconds": fastvm_lease_ttl_seconds,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": timeout,
+        "lifetime_seconds": lifetime_seconds,
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -1294,6 +1299,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
             launch_timeout=int(cc.get("fastvm_launch_timeout") or 300),
             snapshot_timeout=int(cc.get("fastvm_snapshot_timeout") or 300),
+            lease_ttl_seconds=int(cc.get("fastvm_lease_ttl_seconds") or 900),
         )
 
     elif env_type == "ssh":
@@ -1883,6 +1889,7 @@ def terminal_tool(
                                 "fastvm_live_resume": config.get("fastvm_live_resume", True),
                                 "fastvm_launch_timeout": config.get("fastvm_launch_timeout", 300),
                                 "fastvm_snapshot_timeout": config.get("fastvm_snapshot_timeout", 300),
+                                "fastvm_lease_ttl_seconds": config.get("fastvm_lease_ttl_seconds", 900),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),

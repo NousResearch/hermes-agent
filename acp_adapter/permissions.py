@@ -111,21 +111,28 @@ def make_approval_callback(
         allow_permanent: bool = True,
         **_: object,
     ) -> str:
+        from agent.async_utils import safe_schedule_threadsafe
+
         options = _build_permission_options(allow_permanent=allow_permanent)
 
-        future = None
+        tool_call = _build_permission_tool_call(command, description)
+        coro = request_permission_fn(
+            session_id=session_id,
+            tool_call=tool_call,
+            options=options,
+        )
+        future = safe_schedule_threadsafe(
+            coro, loop,
+            logger=logger,
+            log_message="Permission request: failed to schedule on loop",
+        )
+        if future is None:
+            return "deny"
+
         try:
-            tool_call = _build_permission_tool_call(command, description)
-            coro = request_permission_fn(
-                session_id=session_id,
-                tool_call=tool_call,
-                options=options,
-            )
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
             response = future.result(timeout=timeout)
         except (FutureTimeout, Exception) as exc:
-            if future is not None:
-                future.cancel()
+            future.cancel()
             logger.warning("Permission request timed out or failed: %s", exc)
             return "deny"
 

@@ -5,6 +5,12 @@ on:
   push:
     branches: [main, ci/selfhosted-minimal-20260514-1910]
   workflow_dispatch:
+    inputs:
+      run_broad_diagnostic:
+        description: 'Run broad diagnostic suite on heavy runner'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -74,6 +80,7 @@ jobs:
             tests/test_run_agent_kanban_lifecycle_guard.py
 
   broad-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_broad_diagnostic == true }}
     runs-on: [self-hosted, linux, x64, hermes-heavy]
     timeout-minutes: 30
     continue-on-error: true

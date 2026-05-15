@@ -90,3 +90,90 @@ def test_mcporter_list_returns_text_when_not_json(monkeypatch, tmp_path):
     monkeypatch.setattr(mcporter_tool.subprocess, "run", fake_run)
     raw = mcporter_tool._list_handler({})
     assert "web-reader" in json.loads(raw)["result"]
+
+
+def test_mcporter_materializes_env_secret_to_temp_config(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "mcporter.json"
+    cfg_path.write_text(
+        '{"mcpServers":{"web-reader":{"baseUrl":"https://example.test/mcp",'
+        '"headers":{"Authorization":"Bearer ${env:ZAI_MCP_TOKEN}"}}}}\n',
+        encoding="utf-8",
+    )
+    calls = []
+    used_config = {}
+    monkeypatch.setenv("MCPORTER_CONFIG", str(cfg_path))
+    monkeypatch.setenv("ZAI_MCP_TOKEN", "resolved-token")
+    monkeypatch.setattr(mcporter_tool.shutil, "which", lambda cmd: "/usr/bin/npx")
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        materialized = Path(command[command.index("--config") + 1])
+        used_config["path"] = materialized
+        used_config["dir_mode"] = oct(materialized.parent.stat().st_mode & 0o777)
+        used_config["data"] = json.loads(materialized.read_text(encoding="utf-8"))
+
+        class Proc:
+            returncode = 0
+            stdout = '{"ok": true}'
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(mcporter_tool.subprocess, "run", fake_run)
+    raw = mcporter_tool._list_handler({})
+
+    assert json.loads(raw)["result"] == {"ok": True}
+    assert calls[0][calls[0].index("--config") + 1] != str(cfg_path)
+    assert used_config["data"]["mcpServers"]["web-reader"]["headers"]["Authorization"] == "Bearer resolved-token"
+    assert not used_config["path"].exists()
+    assert used_config["dir_mode"] == "0o700"
+
+
+def test_mcporter_materializes_vault_secret_with_mocked_resolver(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "mcporter.json"
+    cfg_path.write_text(
+        '{"mcpServers":{"web-reader":{"headers":{"Authorization":"Bearer ${vault:prod/hermes/zai_mcp_token}"}}}}\n',
+        encoding="utf-8",
+    )
+    captured = {}
+    monkeypatch.setenv("MCPORTER_CONFIG", str(cfg_path))
+    monkeypatch.setattr(mcporter_tool.shutil, "which", lambda cmd: "/usr/bin/npx")
+    monkeypatch.setattr(mcporter_tool, "_resolve_vault_secret", lambda ref: "vault-token" if ref == "prod/hermes/zai_mcp_token" else None)
+
+    def fake_run(command, **kwargs):
+        materialized = Path(command[command.index("--config") + 1])
+        captured["data"] = json.loads(materialized.read_text(encoding="utf-8"))
+
+        class Proc:
+            returncode = 0
+            stdout = '{"ok": true}'
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(mcporter_tool.subprocess, "run", fake_run)
+    raw = mcporter_tool._schema_handler({"server": "web-reader"})
+
+    assert json.loads(raw)["schema"] == {"ok": True}
+    assert captured["data"]["mcpServers"]["web-reader"]["headers"]["Authorization"] == "Bearer vault-token"
+
+
+def test_mcporter_unresolved_secret_blocks_call_without_leaking(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "mcporter.json"
+    cfg_path.write_text(
+        '{"mcpServers":{"web-reader":{"headers":{"Authorization":"Bearer ${env:MISSING_MCP_TOKEN}"}}}}\n',
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setenv("MCPORTER_CONFIG", str(cfg_path))
+    monkeypatch.delenv("MISSING_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(mcporter_tool.shutil, "which", lambda cmd: "/usr/bin/npx")
+    monkeypatch.setattr(mcporter_tool.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+
+    raw = mcporter_tool._list_handler({})
+    err = json.loads(raw)["error"]
+
+    assert calls == []
+    assert "Unresolved mcporter secret placeholder" in err
+    assert "MISSING_MCP_TOKEN" in err
+    assert "${env:MISSING_MCP_TOKEN}" not in err

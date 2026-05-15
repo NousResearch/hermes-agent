@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from tools.registry import registry
 
@@ -19,6 +21,82 @@ _SECRET_PATTERNS = [
     re.compile(r"(Authorization\s*[:=]\s*)[^\s,;}]+", re.IGNORECASE),
     re.compile(r"\b(?:sk|ghp|gho|github_pat)_[A-Za-z0-9_\-]{8,}\b"),
 ]
+_SECRET_PLACEHOLDER_RE = re.compile(r"\$\{(env|vault):([^}]+)\}")
+
+
+class _McporterSecretResolutionError(RuntimeError):
+    """Raised when a mcporter config placeholder cannot be resolved."""
+
+
+def _resolve_vault_secret(ref: str) -> str | None:
+    """Resolve a Hermes/agent-vault secret reference.
+
+    The first implementation is intentionally conservative and pluggable: tests
+    and deployments can monkeypatch this function, while production use can
+    provide values through namespaced environment variables until a first-class
+    vault API is available in-process.  A vault ref like
+    ``prod/hermes/zai_mcp_token`` maps to ``HERMES_VAULT_PROD_HERMES_ZAI_MCP_TOKEN``.
+    """
+    env_name = "HERMES_VAULT_" + re.sub(r"[^A-Za-z0-9]+", "_", ref).strip("_").upper()
+    return os.environ.get(env_name)
+
+
+def _resolve_secret_placeholder(match: re.Match[str]) -> str:
+    kind, ref = match.group(1), match.group(2).strip()
+    if kind == "env":
+        value = os.environ.get(ref)
+    else:
+        value = _resolve_vault_secret(ref)
+    if value is None:
+        raise _McporterSecretResolutionError(
+            f"Unresolved mcporter secret placeholder: {kind}:{ref}"
+        )
+    return value
+
+
+def _resolve_secret_placeholders(value: Any) -> Any:
+    if isinstance(value, str):
+        return _SECRET_PLACEHOLDER_RE.sub(_resolve_secret_placeholder, value)
+    if isinstance(value, list):
+        return [_resolve_secret_placeholders(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _resolve_secret_placeholders(item) for key, item in value.items()}
+    return value
+
+
+@contextmanager
+def _materialized_mcporter_config(config_path: str) -> Iterator[str]:
+    """Yield a config path with Hermes secret placeholders resolved.
+
+    If the config contains no supported placeholders, the original path is used.
+    Otherwise, a 0600 temp JSON file under a 0700 temp directory is created and
+    removed after mcporter exits.
+    """
+    source = Path(config_path).expanduser()
+    raw = source.read_text(encoding="utf-8")
+    if not _SECRET_PLACEHOLDER_RE.search(raw):
+        yield str(source)
+        return
+
+    data = json.loads(raw)
+    resolved = _resolve_secret_placeholders(data)
+    temp_dir = Path(tempfile.mkdtemp(prefix="mcporter-config-"))
+    os.chmod(temp_dir, 0o700)
+    temp_path = temp_dir / "mcporter.json"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(temp_path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(resolved, fh, ensure_ascii=False)
+        yield str(temp_path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        finally:
+            try:
+                temp_dir.rmdir()
+            except OSError:
+                pass
 
 
 def _sanitize_error(text: str) -> str:
@@ -86,15 +164,18 @@ def _run_mcporter(extra_args: list[str], timeout: int | None = None) -> dict[str
     if not shutil.which(cfg["command"]):
         return {"error": f"mcporter command not found: {cfg['command']}"}
 
-    command = [cfg["command"], *cfg.get("args", []), "--config", cfg["config_path"], *extra_args]
     try:
-        proc = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout or cfg["timeout"],
-            check=False,
-        )
+        with _materialized_mcporter_config(str(cfg["config_path"])) as config_path:
+            command = [cfg["command"], *cfg.get("args", []), "--config", config_path, *extra_args]
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout or cfg["timeout"],
+                check=False,
+            )
+    except _McporterSecretResolutionError as exc:
+        return {"error": _sanitize_error(str(exc))}
     except subprocess.TimeoutExpired:
         return {"error": f"mcporter command timed out after {timeout or cfg['timeout']}s"}
     except Exception as exc:

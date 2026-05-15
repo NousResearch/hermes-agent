@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "web-search-prime-env": {
+      "baseUrl": "https://api.z.ai/api/mcp/web_search_prime/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:ZAI_MCP_TOKEN}",
+        "accept": "application/json, text/event-stream"
+      }
+    },
+    "web-search-prime-vault": {
+      "baseUrl": "https://api.z.ai/api/mcp/web_search_prime/mcp",
+      "headers": {
+        "Authorization": "Bearer ${vault:prod/hermes/zai_mcp_token}",
+        "accept": "application/json, text/event-stream"
+      }
+    },
+    "ouroboros": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "ouroboros-ai[mcp]",
+        "ouroboros",
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

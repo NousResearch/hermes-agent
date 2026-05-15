@@ -494,6 +494,106 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+# =============================================================================
+# Audit hooks
+# =============================================================================
+
+def _is_mutating_tool(tool_name: str) -> bool:
+    """Determine if a tool is mutating based on name patterns."""
+    mutating_patterns = (
+        "create", "update", "delete", "remove", "exec", "run",
+        "write", "edit", "patch", "deploy", "restart", "stop",
+        "kill", "install", "uninstall", "apply",
+    )
+    return any(p in tool_name.lower() for p in mutating_patterns)
+
+
+def _emit_audit_request(
+    function_name: str,
+    function_args: Dict[str, Any],
+    session_id: str,
+) -> None:
+    """Emit RequestReceived audit event before tool execution."""
+    from audit import get_audit_engine
+    from audit.events import OperationContext
+
+    engine = get_audit_engine()
+    if not engine:
+        return
+
+    # Try to get session context from hermes_logging
+    user = ""
+    channel = ""
+    platform = ""
+    try:
+        from hermes_logging import _session_context
+        session_id_val = getattr(_session_context, "session_id", None)
+        if session_id_val:
+            # Try to get user/channel from session state if available
+            pass
+    except Exception:
+        pass
+
+    context = OperationContext(
+        user=user,
+        verb="execute",
+        resource=function_name,
+        op_type="Mutate" if _is_mutating_tool(function_name) else "Read",
+        platform=platform,
+        channel=channel,
+        session_id=session_id,
+        source="agent",
+    )
+
+    engine.emit_request_received(context, request_body=function_args)
+
+
+def _emit_audit_response(
+    function_name: str,
+    function_args: Dict[str, Any],
+    result: str,
+    session_id: str,
+) -> None:
+    """Emit ResponseComplete audit event after tool execution."""
+    from audit import get_audit_engine
+    from audit.events import OperationContext
+
+    engine = get_audit_engine()
+    if not engine:
+        return
+
+    user = ""
+    channel = ""
+    platform = ""
+
+    context = OperationContext(
+        user=user,
+        verb="execute",
+        resource=function_name,
+        op_type="Mutate" if _is_mutating_tool(function_name) else "Read",
+        platform=platform,
+        channel=channel,
+        session_id=session_id,
+        source="agent",
+    )
+
+    # Try to parse result and determine success
+    response_code = 0
+    try:
+        import json
+        result_data = json.loads(result)
+        if isinstance(result_data, dict) and "error" in result_data:
+            response_code = 1
+    except Exception:
+        pass
+
+    engine.emit_response_complete(
+        context,
+        response_body={"result": result[:1000] if result else None},
+        response_code=response_code,
+    )
+
+
 # =========================================================================
 # Tool argument type coercion
 # =========================================================================
@@ -771,6 +871,16 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
+
+        # Audit hook: emit RequestReceived before tool execution
+        try:
+            _emit_audit_request(
+                function_name, function_args,
+                session_id=session_id or "",
+            )
+        except Exception:
+            pass  # Audit failures should not affect tool execution
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -787,6 +897,15 @@ def handle_function_call(
                 user_task=user_task,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        # Audit hook: emit ResponseComplete after successful execution
+        try:
+            _emit_audit_response(
+                function_name, function_args, result,
+                session_id=session_id or "",
+            )
+        except Exception:
+            pass  # Audit failures should not affect tool execution
 
         try:
             from hermes_cli.plugins import invoke_hook

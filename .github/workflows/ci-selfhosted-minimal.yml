@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: [self-hosted, linux, x64, hermes-local]
+    runs-on: [self-hosted, linux, x64, hermes-light]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -37,7 +37,7 @@ jobs:
           ruff check .
 
   tests-targeted:
-    runs-on: [self-hosted, linux, x64, hermes-local]
+    runs-on: [self-hosted, linux, x64, hermes-heavy]
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -60,4 +60,4 @@ jobs:
           NOUS_API_KEY: ''
         run: |
           . .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n 3

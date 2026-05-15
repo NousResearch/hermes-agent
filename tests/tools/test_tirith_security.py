@@ -225,6 +225,30 @@ class TestPathExpansion:
 
 
 # ---------------------------------------------------------------------------
+# Platform target detection
+# ---------------------------------------------------------------------------
+
+class TestTargetDetection:
+    @patch("tools.tirith_security.platform.machine", return_value="AMD64")
+    @patch("tools.tirith_security.platform.system", return_value="Windows")
+    def test_detect_target_windows_amd64(self, mock_system, mock_machine):
+        from tools.tirith_security import _detect_target
+        assert _detect_target() == "x86_64-pc-windows-msvc"
+
+    @patch("tools.tirith_security.platform.machine", return_value="x86_64")
+    @patch("tools.tirith_security.platform.system", return_value="MSYS_NT-10.0")
+    def test_detect_target_msys_x86_64(self, mock_system, mock_machine):
+        from tools.tirith_security import _detect_target
+        assert _detect_target() == "x86_64-pc-windows-msvc"
+
+    @patch("tools.tirith_security.platform.machine", return_value="ARM64")
+    @patch("tools.tirith_security.platform.system", return_value="Windows")
+    def test_detect_target_windows_arm64_unsupported(self, mock_system, mock_machine):
+        from tools.tirith_security import _detect_target
+        assert _detect_target() is None
+
+
+# ---------------------------------------------------------------------------
 # Findings cap + summary cap
 # ---------------------------------------------------------------------------
 
@@ -617,6 +641,42 @@ class TestCosignVerification:
         assert reason == "binary_not_in_archive"
         assert mock_checksum.called  # reached SHA-256 step
         assert mock_cosign.called  # cosign was invoked
+
+    @patch("tools.tirith_security.os.chmod")
+    @patch("tools.tirith_security.os.stat")
+    @patch("tools.tirith_security.shutil.move")
+    @patch("tools.tirith_security._extract_release_binary", return_value="/tmp/tirith.exe")
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._download_file")
+    @patch("tools.tirith_security._hermes_bin_dir", return_value="/hermes/bin")
+    @patch("tools.tirith_security._detect_target", return_value="x86_64-pc-windows-msvc")
+    def test_install_windows_uses_zip_archive_and_exe_dest(
+        self,
+        mock_target,
+        mock_bin_dir,
+        mock_dl,
+        mock_which,
+        mock_checksum,
+        mock_extract,
+        mock_move,
+        mock_stat,
+        mock_chmod,
+    ):
+        """Windows installs should fetch the zip asset and keep the .exe suffix."""
+        from tools.tirith_security import _install_tirith
+
+        mock_stat.return_value = type("Stat", (), {"st_mode": 0o644})()
+
+        path, reason = _install_tirith()
+
+        assert reason == ""
+        assert path == "/hermes/bin/tirith.exe"
+        assert mock_dl.call_args_list[0].args[0].endswith(
+            "/tirith-x86_64-pc-windows-msvc.zip"
+        )
+        mock_extract.assert_called_once()
+        mock_move.assert_called_once_with("/tmp/tirith.exe", "/hermes/bin/tirith.exe")
 
 
 # ---------------------------------------------------------------------------

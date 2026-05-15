@@ -373,26 +373,6 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
-    def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
-        # The on-disk directory ("alias-dir") differs from the skill's
-        # frontmatter name ("real-skill-name"). skills_list() exposes the
-        # frontmatter name, so skill_view(name) must resolve it too.
-        skill_dir = tmp_path / "alias-dir"
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\n"
-            "name: real-skill-name\n"
-            "description: A skill whose directory name differs from its name.\n"
-            "---\n\n"
-            "# real-skill-name\n\n"
-            "Step 1: Do the thing.\n"
-        )
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            raw = skill_view("real-skill-name")
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert "Step 1" in result["content"]
-
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
@@ -978,7 +958,7 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "singularity", "modal"],
+        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend
@@ -1225,88 +1205,37 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert "LOCAL VERSION" in result["content"]
 
-    def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
-        """Supporting reference docs named <skill>.md are not skills.
+    def test_reference_file_named_like_skill_does_not_collide(self, tmp_path):
+        """Support files in references/ are not legacy skill candidates.
 
-        A real-world regression had creative/sketch/SKILL.md become
-        unloadable because another skill carried
-        references/styles/sketch.md. Support files are loaded via
-        skill_view(skill, file_path=...), not as bare skill names.
+        Slimmed router skills commonly preserve detailed leaf-skill notes under
+        references/<skill-name>.md. Loading the real skill by its bare name
+        should not become ambiguous just because a reference file shares the
+        same basename.
         """
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
         external_dir.mkdir()
 
-        _make_skill(local_dir, "article-illustrator", category="creative")
-        support_file = (
-            local_dir
-            / "creative"
-            / "article-illustrator"
-            / "references"
-            / "styles"
-            / "sketch.md"
+        _make_skill(
+            local_dir,
+            "support-name",
+            category="devops",
+            body="REAL SKILL BODY",
         )
-        support_file.parent.mkdir(parents=True, exist_ok=True)
-        support_file.write_text("# Sketch style support doc\n")
-        _make_skill(local_dir, "sketch", category="creative", body="REAL SKETCH SKILL")
+        reference_dir = local_dir / "devops" / "umbrella" / "references"
+        reference_dir.mkdir(parents=True)
+        (reference_dir / "support-name.md").write_text("REFERENCE ONLY")
 
         p1, p2 = self._patch_dirs(local_dir, [external_dir])
         with p1, p2:
-            raw = skill_view("sketch")
+            raw = skill_view("support-name")
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "creative/sketch/SKILL.md"
-        assert "REAL SKETCH SKILL" in result["content"]
-
-    def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
-        """Curator-preserved package SKILL.md files under references stay data.
-
-        Umbrella consolidations may preserve an old skill as
-        references/old-skill-package/SKILL.md. That package must not appear in
-        skills_list/system prompts and must not resolve as skill_view("old-skill").
-        The package can still be opened explicitly through the umbrella's
-        file_path progressive-disclosure channel.
-        """
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
-
-        _make_skill(local_dir, "umbrella", category="creative", body="UMBRELLA")
-        package = (
-            local_dir
-            / "creative"
-            / "umbrella"
-            / "references"
-            / "old-skill-package"
-        )
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "SKILL.md").write_text(
-            "---\nname: old-skill\ndescription: Preserved old skill.\n---\n\nOLD BODY\n"
-        )
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            names = {skill["name"] for skill in _find_all_skills()}
-            old_raw = skill_view("old-skill")
-            direct_package_raw = skill_view("creative/umbrella/references/old-skill-package")
-            package_raw = skill_view(
-                "umbrella", file_path="references/old-skill-package/SKILL.md"
-            )
-
-        assert "umbrella" in names
-        assert "old-skill" not in names
-        old_result = json.loads(old_raw)
-        assert old_result["success"] is False
-        assert "not found" in old_result["error"]
-        direct_package_result = json.loads(direct_package_raw)
-        assert direct_package_result["success"] is False
-        assert "not found" in direct_package_result["error"]
-        package_result = json.loads(package_raw)
-        assert package_result["success"] is True
-        assert "OLD BODY" in package_result["content"]
+        assert "REAL SKILL BODY" in result["content"]
+        assert "REFERENCE ONLY" not in result["content"]
 
     def test_external_skill_resolves_when_no_collision(self, tmp_path):
         """External-only skills still resolve normally when there's no

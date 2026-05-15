@@ -170,6 +170,23 @@ async def test_hook_error_does_not_break_reset(mock_invoke_hook):
 
 @pytest.mark.asyncio
 @patch("hermes_cli.plugins.invoke_hook")
+async def test_reset_uses_literal_fallback_when_locale_keys_missing(mock_invoke_hook, monkeypatch):
+    """A stale/missing locale catalog must not leak gateway.reset.* keys to users."""
+    from gateway import run as gateway_run
+
+    runner = _make_runner()
+    monkeypatch.setattr(gateway_run, "t", lambda key, **kwargs: key)
+    monkeypatch.setattr("hermes_cli.tips.get_random_tip", lambda: "Use /tools to inspect tools.")
+
+    result = await runner._handle_reset_command(_make_event("/new"))
+
+    assert "gateway.reset" not in result
+    assert "✨ Session reset! Starting fresh." in result
+    assert "✦ Tip: Use /tools to inspect tools." in result
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
 async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     """Regression test for #14981.
 

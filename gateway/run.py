@@ -8246,12 +8246,31 @@ class GatewayRunner:
         except Exception:
             session_info = ""
 
+        def _reset_text(key: str, fallback: str, **kwargs) -> str:
+            """Translate a reset-message key, but keep /new readable if locales are stale."""
+            try:
+                value = t(key, **kwargs)
+            except Exception:
+                value = key
+            if value == key:
+                try:
+                    return fallback.format(**kwargs)
+                except Exception:
+                    return fallback
+            return value
+
         if new_entry:
-            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
+            header = self._telegram_topic_new_header(source) or _reset_text(
+                "gateway.reset.header_default",
+                "✨ Session reset! Starting fresh.",
+            )
         else:
             # No existing session, just create one
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
-            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
+            header = self._telegram_topic_new_header(source) or _reset_text(
+                "gateway.reset.header_new",
+                "✨ New session started!",
+            )
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
@@ -8262,18 +8281,33 @@ class GatewayRunner:
                 sanitized = SessionDB.sanitize_title(_title_arg)
             except ValueError as e:
                 sanitized = None
-                _title_note = t("gateway.reset.title_rejected", error=str(e))
+                _title_note = _reset_text(
+                    "gateway.reset.title_rejected",
+                    "\n⚠️ Title rejected: {error}",
+                    error=str(e),
+                )
             if sanitized:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
-                    header = t("gateway.reset.header_titled", title=sanitized)
+                    header = _reset_text(
+                        "gateway.reset.header_titled",
+                        "✨ New session started: {title}",
+                        title=sanitized,
+                    )
                 except ValueError as e:
-                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
+                    _title_note = _reset_text(
+                        "gateway.reset.title_error_untitled",
+                        "\n⚠️ {error} — session started untitled.",
+                        error=str(e),
+                    )
                 except Exception:
                     pass
             elif not _title_note:
                 # sanitize_title returned empty (whitespace-only / unprintable)
-                _title_note = t("gateway.reset.title_empty_untitled")
+                _title_note = _reset_text(
+                    "gateway.reset.title_empty_untitled",
+                    "\n⚠️ Title is empty after cleanup — session started untitled.",
+                )
         header = header + _title_note
 
         # When /new runs inside a Telegram DM topic lane, rewrite the
@@ -8299,7 +8333,11 @@ class GatewayRunner:
         # Append a random tip to the reset message
         try:
             from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            _tip_line = _reset_text(
+                "gateway.reset.tip",
+                "\n✦ Tip: {tip}",
+                tip=get_random_tip(),
+            )
         except Exception:
             _tip_line = ""
 

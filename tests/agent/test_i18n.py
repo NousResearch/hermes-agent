@@ -41,6 +41,21 @@ def test_all_locales_exist():
         assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
+def test_reset_gateway_keys_exist_in_english_catalog():
+    """Critical /new response keys must not regress to visible dotted paths."""
+    en = _flatten(_load_raw("en"))
+    for key in [
+        "gateway.reset.header_default",
+        "gateway.reset.header_new",
+        "gateway.reset.header_titled",
+        "gateway.reset.title_rejected",
+        "gateway.reset.title_error_untitled",
+        "gateway.reset.title_empty_untitled",
+        "gateway.reset.tip",
+    ]:
+        assert en.get(key), f"missing locales/en.yaml key: {key}"
+
+
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
 def test_catalog_keys_match_english(lang: str):
     """Every non-English catalog must have exactly the same key set as English."""

@@ -4,6 +4,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,9 +22,8 @@ import { fuzzyRank } from "@/lib/fuzzy";
  * Two invocation modes:
  *
  * 1. Chat-session mode (ChatSidebar) — pass `gw` + `sessionId`. The picker
- *    loads options via `model.options` JSON-RPC and emits the result as a
- *    slash command string (`/model <model> --provider <slug> [--global]`)
- *    through `onSubmit`, which the ChatPage pipes to `slashExec`.
+ *    loads options via `model.options` JSON-RPC and applies the choice via
+ *    `config.set`, so expensive-model confirmation can happen before switch.
  *
  * 2. Standalone mode (ModelsPage, Config settings) — pass a `loader` and
  *    `onApply`. The picker fetches options via the REST endpoint and calls
@@ -47,6 +47,23 @@ interface ModelOptionsResponse {
   providers?: ModelOptionProvider[];
 }
 
+interface ExpensiveModelConfirmResponse {
+  confirm_message?: string;
+  confirm_required?: boolean;
+  warning?: string;
+}
+
+interface ConfigSetResponse extends ExpensiveModelConfirmResponse {
+  value?: string;
+}
+
+interface PendingExpensiveConfirm {
+  message: string;
+  model: string;
+  persistGlobal: boolean;
+  provider: string;
+}
+
 interface Props {
   /** Chat-mode: when present, picker emits a slash command via onSubmit. */
   gw?: GatewayClient;
@@ -56,10 +73,14 @@ interface Props {
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
   loader?(): Promise<ModelOptionsResponse>;
   onApply?(args: {
+    confirmExpensiveModel?: boolean;
     provider: string;
     model: string;
     persistGlobal: boolean;
-  }): Promise<void> | void;
+  }):
+    | Promise<ExpensiveModelConfirmResponse | void>
+    | ExpensiveModelConfirmResponse
+    | void;
 
   onClose(): void;
   title?: string;
@@ -90,6 +111,8 @@ export function ModelPickerDialog(props: Props) {
   const [query, setQuery] = useState("");
   const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
   const [applying, setApplying] = useState(false);
+  const [pendingConfirm, setPendingConfirm] =
+    useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
   // Load providers + models on open.
@@ -179,16 +202,65 @@ export function ModelPickerDialog(props: Props) {
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
-  const confirm = async () => {
-    if (!canConfirm || !selectedProvider) return;
+  const applySelection = async (
+    confirmExpensiveModel = false,
+    forced?: PendingExpensiveConfirm,
+  ) => {
+    const providerSlug = forced?.provider ?? selectedProvider?.slug ?? "";
+    const model = forced?.model ?? selectedModel;
+    const shouldPersistGlobal = forced?.persistGlobal ?? persistGlobal;
+
+    if (!providerSlug || !model || applying) return;
+
     if (standalone && onApply) {
       setApplying(true);
       try {
-        await onApply({
-          provider: selectedProvider.slug,
-          model: selectedModel,
-          persistGlobal,
+        const result = await onApply({
+          confirmExpensiveModel,
+          provider: providerSlug,
+          model,
+          persistGlobal: shouldPersistGlobal,
         });
+        if (result?.confirm_required) {
+          setPendingConfirm({
+            provider: providerSlug,
+            model,
+            persistGlobal: shouldPersistGlobal,
+            message:
+              result.confirm_message ||
+              result.warning ||
+              "This model has unusually high known pricing.",
+          });
+          return;
+        }
+        onClose();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setApplying(false);
+      }
+    } else if (gw && sessionId) {
+      setApplying(true);
+      try {
+        const global = shouldPersistGlobal ? " --global" : "";
+        const result = await gw.request<ConfigSetResponse>("config.set", {
+          confirm_expensive_model: confirmExpensiveModel,
+          key: "model",
+          session_id: sessionId,
+          value: `${model} --provider ${providerSlug}${global}`,
+        });
+        if (result?.confirm_required) {
+          setPendingConfirm({
+            provider: providerSlug,
+            model,
+            persistGlobal: shouldPersistGlobal,
+            message:
+              result.confirm_message ||
+              result.warning ||
+              "This model has unusually high known pricing.",
+          });
+          return;
+        }
         onClose();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -196,12 +268,15 @@ export function ModelPickerDialog(props: Props) {
         setApplying(false);
       }
     } else if (onSubmit) {
-      const global = persistGlobal ? " --global" : "";
-      onSubmit(
-        `/model ${selectedModel} --provider ${selectedProvider.slug}${global}`,
-      );
+      const global = shouldPersistGlobal ? " --global" : "";
+      onSubmit(`/model ${model} --provider ${providerSlug}${global}`);
       onClose();
     }
+  };
+
+  const confirm = () => {
+    if (!canConfirm) return;
+    void applySelection();
   };
 
   // Portal to document.body: the main dashboard column in App.tsx is
@@ -280,8 +355,12 @@ export function ModelPickerDialog(props: Props) {
             onSelect={setSelectedModel}
             onConfirm={(m) => {
               setSelectedModel(m);
-              // Confirm on next tick so state settles.
-              window.setTimeout(confirm, 0);
+              void applySelection(false, {
+                provider: selectedProvider?.slug ?? "",
+                model: m,
+                persistGlobal,
+                message: "",
+              });
             }}
           />
         </div>
@@ -320,6 +399,22 @@ export function ModelPickerDialog(props: Props) {
           </div>
         </footer>
       </div>
+      <ConfirmDialog
+        open={!!pendingConfirm}
+        title="Expensive Model Warning"
+        description={pendingConfirm?.message}
+        destructive
+        confirmLabel="Switch anyway"
+        cancelLabel="Cancel"
+        loading={applying}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingConfirm;
+          if (!pending) return;
+          setPendingConfirm(null);
+          void applySelection(true, pending);
+        }}
+      />
     </div>,
     document.body,
   );

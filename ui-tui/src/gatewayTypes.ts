@@ -103,6 +103,8 @@ export interface ConfigGetValueResponse {
 }
 
 export interface ConfigSetResponse {
+  confirm_message?: string
+  confirm_required?: boolean
   credential_warning?: string
   history_reset?: boolean
   info?: SessionInfo

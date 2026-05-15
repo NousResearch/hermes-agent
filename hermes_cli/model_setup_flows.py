@@ -64,7 +64,12 @@ def _model_flow_openrouter(config, current_model=""):
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
 
     selected = _prompt_model_selection(
-        openrouter_models, current_model=current_model, pricing=pricing
+        openrouter_models,
+        current_model=current_model,
+        pricing=pricing,
+        confirm_provider="openrouter",
+        confirm_base_url=OPENROUTER_BASE_URL,
+        confirm_api_key=_resolved or existing_key,
     )
     if selected:
         _save_model_choice(selected)
@@ -273,6 +278,9 @@ def _model_flow_nous(config, current_model="", args=None):
         unavailable_models=unavailable_models,
         portal_url=_nous_portal_url,
         unavailable_message=unavailable_message,
+        confirm_provider="nous",
+        confirm_base_url=creds.get("base_url", ""),
+        confirm_api_key=creds.get("api_key", ""),
     )
     if selected:
         _save_model_choice(selected)
@@ -385,7 +393,13 @@ def _model_flow_openai_codex(config, current_model=""):
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
-    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    selected = _prompt_model_selection(
+        codex_models,
+        current_model=current_model,
+        confirm_provider="openai-codex",
+        confirm_base_url=DEFAULT_CODEX_BASE_URL,
+        confirm_api_key=_codex_token or "",
+    )
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
@@ -520,7 +534,12 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
     default = current_model or (models[0] if models else "qwen3-coder-plus")
-    selected = _prompt_model_selection(models, current_model=default)
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="qwen-oauth",
+        confirm_base_url=DEFAULT_QWEN_BASE_URL,
+    )
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
@@ -569,7 +588,12 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     from hermes_cli.models import _PROVIDER_MODELS
 
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
-    selected = _prompt_model_selection(model_ids, current_model)
+    selected = _prompt_model_selection(
+        model_ids,
+        current_model,
+        confirm_provider="minimax-oauth",
+        confirm_base_url=creds["base_url"],
+    )
     if not selected:
         return
     _save_model_choice(selected)
@@ -638,7 +662,12 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
 
     models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
     default = current_model or (models[0] if models else "gemini-3-flash-preview")
-    selected = _prompt_model_selection(models, current_model=default)
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="google-gemini-cli",
+        confirm_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    )
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider(
@@ -1563,7 +1592,11 @@ def _model_flow_copilot(config, current_model=""):
 
     if model_list:
         selected = _prompt_model_selection(
-            model_list, current_model=normalized_current_model
+            model_list,
+            current_model=normalized_current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=api_key,
         )
     else:
         try:
@@ -1701,6 +1734,9 @@ def _model_flow_copilot_acp(config, current_model=""):
         selected = _prompt_model_selection(
             model_list,
             current_model=normalized_current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=catalog_api_key,
         )
     else:
         try:
@@ -1805,7 +1841,13 @@ def _model_flow_kimi(config, current_model=""):
         model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Enter model name: ").strip()
@@ -1913,7 +1955,13 @@ def _model_flow_stepfun(config, current_model=""):
             )
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Model name: ").strip()
@@ -1989,7 +2037,13 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print(f"  Showing {len(model_list)} curated models")
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="custom",
+            confirm_base_url=mantle_base_url,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("  Model ID: ").strip()
@@ -2178,7 +2232,12 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 4. Model selection
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="bedrock",
+            confirm_base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+        )
     else:
         try:
             selected = input("  Model ID: ").strip()
@@ -2462,7 +2521,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
     else:
         try:
             selected = input("Model name: ").strip()
@@ -2619,7 +2684,11 @@ def _model_flow_anthropic(config, current_model=""):
     # Model selection
     model_list = _PROVIDER_MODELS.get("anthropic", [])
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="anthropic",
+        )
     else:
         try:
             selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()

@@ -37,6 +37,16 @@ def _make_run_side_effect(
             stdout = "" if clean_status else " M hermes_cli/main.py\n"
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
+        # git merge-base --is-ancestor checks
+        if "merge-base --is-ancestor" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        # git rev-parse --short for check output
+        if "rev-parse --short" in joined:
+            ref = str(cmd[-1])
+            values = {"HEAD": "1111111", "upstream/main": "2222222", tracking_ref: "3333333"}
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{values.get(ref, 'abcdef0')}\n", stderr="")
+
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
@@ -60,6 +70,11 @@ def mock_upstream_args():
 @pytest.fixture
 def mock_sync_fork_args():
     return SimpleNamespace(sync_fork=True)
+
+
+@pytest.fixture
+def mock_sync_fork_check_args():
+    return SimpleNamespace(sync_fork=True, check=True)
 
 
 class TestCmdUpdateBranchFallback:
@@ -191,10 +206,49 @@ class TestCmdUpdateBranchFallback:
         assert "git fetch myfork batumi/live" in commands
         assert any(c.startswith("git branch backup/pre-sync-fork-") for c in commands)
         assert "git merge --no-edit upstream/main" in commands
-        assert "git push myfork batumi/live-deploy:batumi/live" in commands
+        assert "git merge-base --is-ancestor upstream/main HEAD" in commands
+        assert "git push myfork HEAD:batumi/live" in commands
 
         captured = capsys.readouterr()
         assert "Synced myfork/batumi/live with upstream/main" in captured.out
+
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_sync_fork_check_reports_without_merging_or_pushing(
+        self, mock_run, _mock_which, mock_sync_fork_check_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            commit_count="0",
+        )
+
+        cmd_update(mock_sync_fork_check_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert "git remote get-url upstream" in commands
+        assert "git fetch upstream main" in commands
+        assert "git fetch myfork batumi/live" in commands
+        assert "git merge-base --is-ancestor upstream/main HEAD" in commands
+        assert all("merge --no-edit upstream/main" not in c for c in commands)
+        assert all(c != "git push myfork HEAD:batumi/live" for c in commands)
+
+        captured = capsys.readouterr()
+        assert "Sync-fork check" in captured.out
+        assert "No merge or push performed" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_sync_fork_cannot_combine_check_with_upstream(
+        self, mock_run, _mock_which
+    ):
+        with pytest.raises(SystemExit):
+            cmd_update(SimpleNamespace(sync_fork=True, upstream=True, check=True))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert all("merge --no-edit upstream/main" not in c for c in commands)
+        assert all("push" not in c for c in commands)
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

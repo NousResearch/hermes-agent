@@ -6763,6 +6763,7 @@ def _sync_tracking_branch_with_upstream(
     *,
     current_branch: str,
     target: dict[str, str | bool],
+    check_only: bool = False,
 ) -> None:
     """Merge official upstream/main into the current branch and push tracking ref.
 
@@ -6811,6 +6812,8 @@ def _sync_tracking_branch_with_upstream(
         sys.exit(1)
 
     print("→ Syncing fork tracking branch with official upstream...")
+    if check_only:
+        print("  → Sync-fork check: inspecting refs only")
     print("  → Fetching upstream/main")
     upstream_fetch = subprocess.run(
         git_cmd + ["fetch", "upstream", "main"],
@@ -6836,6 +6839,32 @@ def _sync_tracking_branch_with_upstream(
         if tracking_fetch.stderr.strip():
             print(f"  {tracking_fetch.stderr.strip().splitlines()[0]}")
         sys.exit(1)
+
+    def _short_ref(ref: str) -> str:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--short", ref],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+    upstream_in_head = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", "upstream/main", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    ).returncode == 0
+
+    if check_only:
+        print("  Sync-fork check:")
+        print(f"    branch: {current_branch}")
+        print(f"    tracking: {remote_ref} @ {_short_ref(remote_ref)}")
+        print(f"    HEAD: {_short_ref('HEAD')}")
+        print(f"    upstream/main: {_short_ref('upstream/main')}")
+        print(f"    upstream included: {'yes' if upstream_in_head else 'no'}")
+        print("  ✓ No merge or push performed")
+        return
 
     stamp = _time.strftime("%Y%m%d-%H%M%S")
     backup_branch = f"backup/pre-sync-fork-{stamp}"
@@ -6870,9 +6899,19 @@ def _sync_tracking_branch_with_upstream(
             print(f"  {merge.stderr.strip().splitlines()[0]}")
         sys.exit(1)
 
+    verify_merge = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", "upstream/main", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if verify_merge.returncode != 0:
+        print("✗ Merge completed but HEAD does not contain upstream/main; aborting push.")
+        sys.exit(1)
+
     print(f"  → Pushing {current_branch} to {remote_ref}")
     push = subprocess.run(
-        git_cmd + ["push", remote, f"{current_branch}:{branch}"],
+        git_cmd + ["push", remote, f"HEAD:{branch}"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -7760,7 +7799,7 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
-    if getattr(args, "check", False):
+    if getattr(args, "check", False) and not getattr(args, "sync_fork", False):
         _cmd_update_check(args)
         return
 
@@ -7880,6 +7919,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 PROJECT_ROOT,
                 current_branch=current_branch,
                 target=target,
+                check_only=bool(getattr(args, "check", False)),
             )
         remote = str(target["remote"])
         branch = str(target["branch"])

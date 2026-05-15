@@ -1092,7 +1092,7 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     hostname = base_url_hostname(normalized)
     if hostname == "api.anthropic.com":
         return True
-    if hostname == "api.kimi.com" and "/coding" in normalized:
+    if hostname == "api.kimi.com" and "/coding" in normalized and "/coding/v1" not in normalized:
         return True
     return False
 

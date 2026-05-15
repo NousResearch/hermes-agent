@@ -488,6 +488,13 @@ def get_anthropic_key() -> str:
 # (the correct target). Using "/coding/v1" here would produce
 # "/coding/v1/v1/messages" (a 404).
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
+# OpenAI-compatible endpoint for sk-kimi-* keys.  /coding/v1 speaks the
+# standard chat.completions wire format (verified 2026-05).  The Anthropic
+# path (/coding without /v1) drops thinking because Kimi requires
+# reasoning_content on tool-call history that the Anthropic transport
+# doesn't preserve.  Using /coding/v1 lets the chat_completions transport
+# handle thinking via extra_body — the intended path for agentic use.
+KIMI_CODE_OPENAI_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
@@ -502,7 +509,7 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     if not api_key:
         return default_url
     if api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
+        return KIMI_CODE_OPENAI_BASE_URL
     return default_url
 
 

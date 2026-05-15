@@ -15,6 +15,7 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    KIMI_CODE_OPENAI_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
@@ -906,7 +907,7 @@ class TestResolveKimiBaseUrl:
 
     def test_sk_kimi_prefix_routes_to_kimi_code(self):
         url = _resolve_kimi_base_url("sk-kimi-abc123", MOONSHOT_DEFAULT_URL, "")
-        assert url == KIMI_CODE_BASE_URL
+        assert url == KIMI_CODE_OPENAI_BASE_URL
 
     def test_legacy_key_uses_default(self):
         url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, "")
@@ -935,7 +936,7 @@ class TestKimiCodeStatusAutoDetect:
         monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key-123")
         status = get_api_key_provider_status("kimi-coding")
         assert status["configured"] is True
-        assert status["base_url"] == KIMI_CODE_BASE_URL
+        assert status["base_url"] == KIMI_CODE_OPENAI_BASE_URL
 
     def test_legacy_key_gets_moonshot_url(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "sk-legacy-test-key")
@@ -957,7 +958,7 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-secret-key")
         creds = resolve_api_key_provider_credentials("kimi-coding")
         assert creds["api_key"] == "sk-kimi-secret-key"
-        assert creds["base_url"] == KIMI_CODE_BASE_URL
+        assert creds["base_url"] == KIMI_CODE_OPENAI_BASE_URL
 
     def test_legacy_key_gets_moonshot_url(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "sk-legacy-secret-key")

@@ -220,6 +220,23 @@ class TestCreateSkill:
             result = _create_skill("my-skill", "no frontmatter here")
         assert result["success"] is False
 
+    def test_create_rejects_permanent_negative_tool_learning(self, tmp_path):
+        content = VALID_SKILL_CONTENT + "\nNever use browser tools because browser tools do not work.\n"
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is False
+        assert "permanent avoidance rule" in result["error"]
+
+    def test_create_allows_transient_tool_failure_with_revalidation(self, tmp_path):
+        content = (
+            VALID_SKILL_CONTENT
+            + "\nBrowser launch failed in this environment because Playwright was missing. "
+              "Treat this as transient and revalidate after setup changes.\n"
+        )
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is True
+
     def test_create_rejects_category_traversal(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -279,6 +296,17 @@ class TestPatchSkill:
         assert result["success"] is True
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
+
+    def test_patch_rejects_permanent_negative_tool_learning(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill(
+                "my-skill",
+                "Do the thing.",
+                "Never use browser tools because browser tools do not work.",
+            )
+        assert result["success"] is False
+        assert "unsafe operational learning" in result["error"]
 
     def test_patch_nonexistent_string(self, tmp_path):
         with _skill_dir(tmp_path):

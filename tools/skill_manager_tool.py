@@ -268,6 +268,48 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+_NEGATIVE_TOOL_LEARNING_RE = re.compile(
+    r"\b("
+    r"browser|web|playwright|terminal|shell|python|docker|git|filesystem|file"
+    r")\b[^\n]{0,80}\b("
+    r"do not use|don't use|avoid|never use|cannot|can't|does not work|do not work|"
+    r"not work|not working|don't work|"
+    r"fails?|broken|unavailable"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_NEGATIVE_LEARNING_QUALIFIERS = (
+    "transient",
+    "temporary",
+    "current environment",
+    "this environment",
+    "until revalidated",
+    "revalidate",
+    "retry",
+    "re-test",
+    "retest",
+    "after setup changes",
+    "not a permanent constraint",
+    "missing dependency",
+    "migration",
+)
+
+
+def _validate_negative_operational_learning(content: str) -> Optional[str]:
+    """Reject durable skills that encode transient tool failures as permanent rules."""
+    lowered = content.lower()
+    if not _NEGATIVE_TOOL_LEARNING_RE.search(content):
+        return None
+    if any(token in lowered for token in _NEGATIVE_LEARNING_QUALIFIERS):
+        return None
+    return (
+        "Skill content appears to encode a tool/environment failure as a permanent "
+        "avoidance rule. Scope it as transient, include a revalidation condition, "
+        "or record the exact setup prerequisite instead."
+    )
+
+
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
@@ -390,6 +432,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
+    err = _validate_negative_operational_learning(content)
+    if err:
+        return {"success": False, "error": err}
+
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
@@ -434,6 +480,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return {"success": False, "error": err}
 
     err = _validate_content_size(content)
+    if err:
+        return {"success": False, "error": err}
+
+    err = _validate_negative_operational_learning(content)
     if err:
         return {"success": False, "error": err}
 
@@ -537,6 +587,12 @@ def _patch_skill(
             return {
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
+            }
+        err = _validate_negative_operational_learning(new_content)
+        if err:
+            return {
+                "success": False,
+                "error": f"Patch would create unsafe operational learning: {err}",
             }
 
     original_content = content  # for rollback

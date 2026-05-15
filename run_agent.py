@@ -1095,6 +1095,102 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+_PROJECT_STATUS_REQUEST_RE = re.compile(
+    r"\b("
+    r"status|where are we|bring me up to date|continue|resume|pick up|"
+    r"what'?s left|remaining work|remaining phases|project state|current state|"
+    r"进展|状态|继续|接着|剩下|还剩"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROJECT_STATUS_CJK_TERMS = ("进展", "状态", "继续", "接着", "剩下", "还剩")
+
+
+def _looks_like_project_status_request(text: str) -> bool:
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return bool(_PROJECT_STATUS_REQUEST_RE.search(text)) or any(term in text for term in _PROJECT_STATUS_CJK_TERMS)
+
+
+def _run_readonly_git(args: list[str], cwd: Path, timeout: float = 3.0) -> str:
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return f"<git command failed: {exc}>"
+    output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        return output or f"<git exited {proc.returncode}>"
+    return output
+
+
+def _find_project_status_docs(git_root: Path, limit: int = 4) -> list[Path]:
+    candidates = (
+        "STATUS.md", "PROJECT_STATUS.md", "PROGRESS.md", "TODO.md",
+        "ROADMAP.md", "PLAN.md", "CURRENT.md",
+        "docs/STATUS.md", "docs/PROJECT_STATUS.md", "docs/PROGRESS.md",
+        "docs/TODO.md", "docs/ROADMAP.md", "docs/PLAN.md",
+    )
+    found: list[Path] = []
+    for rel in candidates:
+        path = git_root / rel
+        if path.is_file():
+            found.append(path)
+            if len(found) >= limit:
+                break
+    return found
+
+
+def _build_project_status_baseline(user_message: str, cwd: str | Path | None = None) -> str:
+    """Build read-only current repo evidence for status/continue-work requests."""
+    if not _looks_like_project_status_request(user_message):
+        return ""
+
+    cwd_path = Path(cwd or os.getenv("TERMINAL_CWD") or os.getcwd()).expanduser().resolve()
+    git_root_raw = _run_readonly_git(["rev-parse", "--show-toplevel"], cwd_path)
+    if not git_root_raw or git_root_raw.startswith("<") or "not a git repository" in git_root_raw.lower():
+        return ""
+
+    git_root = Path(git_root_raw.splitlines()[-1]).expanduser().resolve()
+    status = _run_readonly_git(["status", "--short", "--branch"], git_root)
+    docs = _find_project_status_docs(git_root)
+
+    lines = [
+        "<project-status-baseline>",
+        "[System note: Current disk/git evidence is higher authority than memory or session summaries for project status. Reconcile contradictions before making status claims or editing files.]",
+        f"cwd: {cwd_path}",
+        f"git_root: {git_root}",
+        "git_status:",
+        status or "<clean/no output>",
+    ]
+    if docs:
+        lines.append("status_docs:")
+        for doc in docs:
+            rel = doc.relative_to(git_root)
+            lines.append(f"- {rel}")
+            try:
+                text = doc.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception as exc:
+                text = f"<read failed: {exc}>"
+            if text:
+                excerpt = text[:1200]
+                if len(text) > len(excerpt):
+                    excerpt += "\n...[truncated]"
+                lines.append(f"  excerpt:\n{excerpt}")
+    lines.append("</project-status-baseline>")
+    return "\n".join(lines)
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -12021,6 +12117,11 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        try:
+            _project_status_baseline = _build_project_status_baseline(original_user_message)
+        except Exception as exc:
+            logger.debug("Project status baseline build failed: %s", exc)
+            _project_status_baseline = ""
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -12433,6 +12534,8 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                    if _project_status_baseline:
+                        _injections.append(_project_status_baseline)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

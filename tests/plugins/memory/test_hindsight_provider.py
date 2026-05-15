@@ -219,6 +219,7 @@ class TestConfig:
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
+            sync_recall=True,
         )
         assert p._tags == ["tag1", "tag2"]
         assert p._retain_tags == ["tag1", "tag2"]
@@ -237,6 +238,7 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+        assert p._sync_recall is True
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
@@ -591,6 +593,26 @@ class TestPrefetch:
         result = p.prefetch("test")
         assert result.startswith("Custom header:")
         assert "- memory line" in result
+
+    def test_sync_recall_prefetch_uses_current_query(self, provider_with_config):
+        p = provider_with_config(sync_recall=True)
+        p._prefetch_result = "- stale memory from prior turn"
+
+        result = p.prefetch("current query")
+
+        assert "- Memory 1" in result
+        assert "- Memory 2" in result
+        assert "stale memory" not in result
+        assert p._client.arecall.call_args.kwargs["query"] == "current query"
+
+    def test_sync_recall_prefetch_respects_reflect_method(self, provider_with_config):
+        p = provider_with_config(sync_recall=True, recall_prefetch_method="reflect")
+
+        result = p.prefetch("current topic")
+
+        assert "Synthesized answer" in result
+        p._client.areflect.assert_called_once()
+        assert p._client.areflect.call_args.kwargs["query"] == "current topic"
 
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
         p = provider_with_config(memory_mode="tools")
@@ -1214,6 +1236,7 @@ class TestConfigSchema:
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
             "llm_model", "bank_id", "bank_id_template", "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
+            "sync_recall",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",

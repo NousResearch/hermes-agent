@@ -185,6 +185,7 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
 )
+from agent.credential_pool import STATUS_EXHAUSTED
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -7409,7 +7410,7 @@ class AIAgent:
             # where has_retried_429 (a local var) gets reset on each new prompt,
             # causing the pool to retry the same exhausted credential forever.
             current_entry = pool.current()
-            if current_entry and current_entry.last_status == "exhausted":
+            if current_entry and current_entry.last_status == STATUS_EXHAUSTED:
                 logger.info(
                     "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
                     current_entry.last_status,

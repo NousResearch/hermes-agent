@@ -73,6 +73,8 @@ Examples:
     hermes dashboard              Start web UI dashboard (port 9119)
     hermes dashboard --stop       Stop running dashboard processes
     hermes dashboard --status     List running dashboard processes
+    hermes update-sources check   Audit external plugins/dashboards
+    hermes update-sources apply   Apply audit-passed external updates
 
 For more help on a command:
     hermes <command> --help

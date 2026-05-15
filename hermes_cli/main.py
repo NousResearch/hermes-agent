@@ -11982,6 +11982,71 @@ Examples:
     update_parser.set_defaults(func=cmd_update)
 
     # =========================================================================
+    # update-sources command
+    # =========================================================================
+    def cmd_update_sources(args):
+        """Manage external update sources (plugins, dashboards, MCP repos)."""
+        from hermes_cli.update_sources import run_check, run_apply, print_report
+
+        subcmd = getattr(args, "update_sources_command", None)
+        if subcmd == "apply":
+            report = run_apply(
+                source_name=getattr(args, "source", None),
+                yes=getattr(args, "yes", False),
+                approve_review=getattr(args, "approve_review", False),
+            )
+        else:
+            # Default / "check"
+            report = run_check()
+        print_report(report)
+        # Exit with error if anything was blocked
+        if report.get("summary", {}).get("blocked", 0) > 0:
+            sys.exit(1)
+
+    us_parser = subparsers.add_parser(
+        "update-sources",
+        help="Check/apply updates for external components (plugins, dashboards)",
+        description=(
+            "Discover, audit, and update external git-backed components "
+            "(plugins, dashboard web dist, MCP helper repos). "
+            "'check' fetches metadata and runs audit without mutating files. "
+            "'apply' updates only sources that pass the security audit."
+        ),
+    )
+    us_subparsers = us_parser.add_subparsers(dest="update_sources_command")
+
+    us_check = us_subparsers.add_parser(
+        "check",
+        help="Fetch metadata and audit external sources (no mutations)",
+    )
+    us_check.add_argument(
+        "--json", action="store_true", help="Output raw JSON report",
+    )
+
+    us_apply = us_subparsers.add_parser(
+        "apply",
+        help="Apply audit-passed updates for external sources",
+    )
+    us_apply.add_argument(
+        "--source",
+        metavar="NAME",
+        help="Only update the named source",
+    )
+    us_apply.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip interactive confirmation",
+    )
+    us_apply.add_argument(
+        "--approve-review",
+        action="store_true",
+        dest="approve_review",
+        help="Also approve review-level findings (eval, subprocess, etc.)",
+    )
+
+    us_parser.set_defaults(func=cmd_update_sources)
+
+    # =========================================================================
     # uninstall command
     # =========================================================================
     uninstall_parser = subparsers.add_parser(

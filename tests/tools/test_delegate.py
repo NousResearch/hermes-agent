@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -32,6 +33,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _load_config,
 )
 
 
@@ -890,6 +892,42 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    def test_provider_endpoint_preserves_provider_routing(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-delegation",
+        }
+
+        with patch("hermes_cli.runtime_provider._get_model_config", return_value={}):
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["model"], "deepseek-v4-flash")
+        self.assertEqual(creds["provider"], "deepseek")
+        self.assertEqual(creds["base_url"], "https://api.deepseek.com/v1")
+        self.assertEqual(creds["api_key"], "sk-delegation")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
+    def test_runtime_cli_config_expands_delegation_env_refs(self):
+        cli_module = SimpleNamespace(
+            CLI_CONFIG={
+                "delegation": {
+                    "provider": "deepseek",
+                    "api_key": "${HERMES_DELEGATION_TEST_KEY}",
+                }
+            }
+        )
+        with patch.dict(sys.modules, {"cli": cli_module}), patch.dict(
+            os.environ,
+            {"HERMES_DELEGATION_TEST_KEY": "sk-expanded"},
+            clear=False,
+        ):
+            cfg = _load_config()
+
+        self.assertEqual(cfg["api_key"], "sk-expanded")
+
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so
         # _build_child_agent inherits the parent's key (effective_api_key = override or parent).
@@ -1032,6 +1070,47 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], "sk-or-key")
             self.assertNotEqual(kwargs["base_url"], parent.base_url)
             self.assertNotEqual(kwargs["api_key"], parent.api_key)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None)
+    def test_provider_override_clears_parent_acp_transport(
+        self, mock_pool, mock_cfg
+    ):
+        """A direct provider override must not inherit the parent's ACP command."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "copilot-acp"
+        parent.base_url = "acp://copilot"
+        parent.api_key = "copilot-acp"
+        parent.api_mode = "chat_completions"
+        parent.acp_command = "copilot"
+        parent.acp_args = ["--stdio"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use DeepSeek",
+                context=None,
+                toolsets=["terminal"],
+                model="deepseek-v4-flash",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="deepseek",
+                override_base_url="https://api.deepseek.com/v1",
+                override_api_key="sk-delegation",
+                override_api_mode="chat_completions",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "deepseek")
+        self.assertEqual(kwargs["model"], "deepseek-v4-flash")
+        self.assertEqual(kwargs["base_url"], "https://api.deepseek.com/v1")
+        self.assertEqual(kwargs["api_key"], "sk-delegation")
+        self.assertIsNone(kwargs["acp_command"])
+        self.assertEqual(kwargs["acp_args"], [])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

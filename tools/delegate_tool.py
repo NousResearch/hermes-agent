@@ -2340,18 +2340,21 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    If ``delegation.base_url`` is configured without a concrete provider,
+    subagents use that direct OpenAI-compatible endpoint. ``delegation.api_key``
+    overrides the key; when omitted, ``api_key`` is returned as ``None`` so
+    ``_build_child_agent`` inherits the parent agent's key
+    (``effective_api_key = override_api_key or parent_api_key``). This lets
+    providers that store their key outside ``OPENAI_API_KEY`` (e.g.
+    ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work without a duplicate config
+    entry.
 
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
     provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
+    subagents run on a completely different provider:model pair. Configured
+    ``delegation.base_url`` and ``delegation.api_key`` values are passed as
+    explicit overrides so provider-specific routing is preserved.
 
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
@@ -2363,7 +2366,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
-    if configured_base_url:
+    direct_endpoint_only = configured_base_url and (
+        not configured_provider
+        or configured_provider.lower() in {"auto", "custom", "openrouter"}
+    )
+    if direct_endpoint_only:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -2410,7 +2417,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
+        runtime = resolve_runtime_provider(
+            requested=configured_provider,
+            explicit_api_key=configured_api_key,
+            explicit_base_url=configured_base_url,
+            target_model=configured_model,
+        )
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -2450,6 +2462,12 @@ def _load_config() -> dict:
 
         cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
+            try:
+                from hermes_cli.config import _expand_env_vars
+
+                cfg = _expand_env_vars(cfg)
+            except Exception:
+                pass
             return cfg
     except Exception:
         pass

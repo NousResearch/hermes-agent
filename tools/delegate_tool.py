@@ -747,6 +747,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    skills: Optional[List[str]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -811,6 +812,12 @@ def _build_child_system_prompt(
             "final summary, not your workers.\n\n"
             f"NOTE: You are at depth {child_depth}. The delegation tree "
             f"is capped at max_spawn_depth={max_spawn_depth}. {child_note}"
+        )
+    if skills:
+        parts.append(
+            "## Scoped Skills\n"
+            "The following skills are available to you:\n"
+            + "\n".join(f"- {s}" for s in skills)
         )
     return "\n".join(parts)
 
@@ -1818,6 +1825,13 @@ def _build_child_agent(
         else:
             child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
+    # ── Skill scoping (方案 A) ────────────────────────────────────────
+    child_skills: list[str] = []
+    if agent_id and profile:
+        child_skills = list(profile.get("skills") or [])
+    if child_skills and "skills" not in child_toolsets:
+        child_toolsets = list(child_toolsets) + ["skills"]
+
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
     # orchestrator capability is granted by role, not inherited — see the
@@ -1864,6 +1878,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        skills=child_skills,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)

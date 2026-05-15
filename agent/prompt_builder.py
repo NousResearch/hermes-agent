@@ -16,9 +16,11 @@ from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
+    extract_skill_agents,
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
+    get_agent_profile_skills,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -146,6 +148,18 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
 )
+
+# P2: Main-agent whitelist — only these skills are loaded for agent_id="hermes"
+HERMES_CORE_SKILLS: frozenset[str] = frozenset({
+    "hermes-knowledge-architecture",
+    "hermes-cron-management",
+    "hermes-subagent-delegation",
+    "hermes-gateway-debug",
+    "hermes-multi-agent-research",
+    "hermes-webui",
+    "hermes-agent-skill-authoring",
+    "office-hours",
+})
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
@@ -715,9 +729,29 @@ def _skill_should_show(
     return True
 
 
+def _skill_matches_agent(
+    frontmatter_name: str,
+    category: str,
+    agent_id: str | None,
+    agent_profile_skills: set[str] | None,
+) -> bool:
+    """方案 A bidirectional lock: skill is shown to agent_id only when
+    the agent's registry profile lists this skill in its ``skills`` array.
+
+    When *agent_id* is None (main agent without whitelist) or either side
+    has empty/no filtering, the skill passes (backward compatible).
+    """
+    if agent_id is None:
+        return True  # No scoping — show everything
+    if agent_profile_skills is None:
+        return True  # No agent-side filtering — show everything
+    return frontmatter_name in agent_profile_skills
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    agent_id: "str | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -749,6 +783,17 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # ── Agent-scoped skill filtering ──────────────────────────────
+    agent_profile_skills: set[str] | None = None
+    if agent_id is not None:
+        profile_skills = get_agent_profile_skills(agent_id)
+        if profile_skills:
+            agent_profile_skills = set(profile_skills)
+        # P2: Main-agent whitelist — agent_id="hermes" only loads core skills
+        if agent_id == "hermes":
+            agent_profile_skills = HERMES_CORE_SKILLS
+
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -756,6 +801,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        agent_id,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -782,6 +828,10 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if agent_id is not None and not _skill_matches_agent(
+                frontmatter_name, category, agent_id, agent_profile_skills
+            ):
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -806,6 +856,10 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if agent_id is not None and not _skill_matches_agent(
+                entry["frontmatter_name"], entry["category"], agent_id, agent_profile_skills
+            ):
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -861,6 +915,10 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if agent_id is not None and not _skill_matches_agent(
+                    frontmatter_name, entry["category"], agent_id, agent_profile_skills
+                ):
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

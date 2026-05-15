@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -566,4 +567,75 @@ def check_skill_permission_risk(manifest: Dict[str, Any]) -> List[str]:
             risks.append("⚠️ 请求 hook 权限（UNTRUSTED skill 不能注册 transform hook）")
 
     return risks
+
+
+def extract_skill_agents(frontmatter: dict) -> list[str]:
+    """Extract the ``agents`` list from parsed skill frontmatter.
+
+    Skills declare agent eligibility via a top-level ``agents`` list.
+    Returns an empty list when the field is absent or invalid.
+    """
+    agents = frontmatter.get("agents")
+    if not agents:
+        return []
+    if isinstance(agents, str):
+        agents = [agents]
+    if not isinstance(agents, list):
+        return []
+    return [str(a).strip() for a in agents if str(a).strip()]
+
+
+def get_agent_profile_skills(
+    agent_id: str,
+    registry_path: str | Path | None = None,
+) -> list[str]:
+    """Read the ``skills`` list from an agent's subagent_profile.
+
+    Args:
+        agent_id: The agent identifier (matches the key in agent-registry.json).
+        registry_path: Optional explicit path to agent-registry.json.
+                       Defaults to ``~/.hermes/config/agent-registry.json`` via get_hermes_home().
+
+    Returns:
+        A list of skill names, or an empty list if the agent has no skills
+        declared or the registry file is missing/invalid.
+    """
+    if registry_path is None:
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = get_hermes_home()
+        except Exception:
+            hermes_home = Path.home() / ".hermes"
+        registry_path = hermes_home / "config" / "agent-registry.json"
+
+    registry_path = Path(registry_path)
+    if not registry_path.exists():
+        logger.warning("Agent registry not found: %s", registry_path)
+        return []
+
+    try:
+        raw = registry_path.read_text(encoding="utf-8")
+        registry = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Failed to read agent registry: %s", e)
+        return []
+
+    agents = registry.get("agents", {})
+    agent_config = agents.get(agent_id)
+    if not agent_config:
+        logger.debug("Agent '%s' not found in registry", agent_id)
+        return []
+
+    profile = agent_config.get("subagent_profile")
+    if not profile:
+        return []
+
+    skills = profile.get("skills")
+    if not skills:
+        return []
+    if isinstance(skills, str):
+        skills = [skills]
+    if not isinstance(skills, list):
+        return []
+    return [str(s).strip() for s in skills if str(s).strip()]
 

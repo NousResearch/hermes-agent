@@ -74,6 +74,49 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_get_platform_tools_uses_top_level_toolsets_for_cli():
+    config = {"toolsets": ["terminal", "file"]}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "file" in enabled
+    assert "web" not in enabled
+
+
+def test_get_platform_tools_uses_model_toolsets_for_cli_when_platform_unset():
+    config = {"model": {"toolsets": ["terminal", "file"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "file" in enabled
+    assert "web" not in enabled
+
+
+def test_get_platform_tools_expands_minimal_alias_for_cli():
+    config = {"model": {"toolsets": "minimal"}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+
+
+def test_get_platform_tools_platform_config_wins_over_model_toolsets():
+    config = {
+        "model": {"toolsets": ["terminal", "file"]},
+        "platform_toolsets": {"cli": ["web"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+
+
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 

@@ -101,6 +101,17 @@ _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
 }
 
 
+_DETERMINISTIC_TOOLSET_ALIASES: Dict[str, List[str]] = {
+    # Users often reach for these datagen distribution names when trying to
+    # shrink local-runtime payloads. Expand the deterministic ones into the
+    # actual runtime toolsets they represent.
+    "minimal": ["web"],
+    "terminal_only": ["terminal", "file"],
+    "terminal_web": ["terminal", "file", "web"],
+    "browser_only": ["browser"],
+}
+
+
 def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """Return True if ``ts_key`` is configurable on ``platform``.
 
@@ -144,6 +155,38 @@ def _get_plugin_toolset_keys() -> set:
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
+
+
+def _normalize_configured_toolset_names(raw: object) -> Optional[List[str]]:
+    """Normalize a config value into a runtime toolset-name list."""
+    if raw is None:
+        return None
+
+    if isinstance(raw, str):
+        raw_items = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        raw_items = [str(part).strip() for part in raw]
+    else:
+        return None
+
+    normalized: List[str] = []
+    for item in raw_items:
+        if not item:
+            continue
+        normalized.extend(_DETERMINISTIC_TOOLSET_ALIASES.get(item, [item]))
+    return normalized
+
+
+def _get_legacy_cli_toolset_names(config: dict) -> Optional[List[str]]:
+    """Back-compat for legacy CLI-wide toolset config keys."""
+    legacy_toolsets = _normalize_configured_toolset_names(config.get("toolsets"))
+    if legacy_toolsets is not None:
+        return legacy_toolsets
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        return _normalize_configured_toolset_names(model_cfg.get("toolsets"))
+    return None
 
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
@@ -990,13 +1033,18 @@ def _get_platform_tools(
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
+        if platform == "cli":
+            legacy_toolsets = _get_legacy_cli_toolset_names(config)
+            if legacy_toolsets is not None:
+                toolset_names = legacy_toolsets
         plat_info = PLATFORMS.get(platform)
-        if plat_info:
-            default_ts = plat_info["default_toolset"]
-        else:
-            # Plugin platform — derive toolset name from platform key
-            default_ts = f"hermes-{platform}"
-        toolset_names = [default_ts]
+        if toolset_names is None:
+            if plat_info:
+                default_ts = plat_info["default_toolset"]
+            else:
+                # Plugin platform — derive toolset name from platform key
+                default_ts = f"hermes-{platform}"
+            toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
     # Normalise to str so downstream sorted() never mixes types.

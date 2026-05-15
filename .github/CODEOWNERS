@@ -1,0 +1,20 @@
+# Minimal ownership map for critical surfaces
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: repository maintainers
+* @DIZ-admin
+
+# CI / governance
+/.github/workflows/ @DIZ-admin
+/.github/dependabot.yml @DIZ-admin
+/SECURITY.md @DIZ-admin
+/CONTRIBUTING.md @DIZ-admin
+
+# Core runtime and orchestration
+/run_agent.py @DIZ-admin
+/model_tools.py @DIZ-admin
+/toolsets.py @DIZ-admin
+/hermes_cli/ @DIZ-admin
+/gateway/ @DIZ-admin
+/tools/ @DIZ-admin
+/cron/ @DIZ-admin

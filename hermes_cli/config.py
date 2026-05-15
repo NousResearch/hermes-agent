@@ -451,6 +451,10 @@ DEFAULT_CONFIG = {
         # Full live pre-dispatch frontdesk gate. Off by default because it can
         # consume natural-language inputs before the main model sees them.
         "frontdesk_live_enabled": False,
+        # Durable SQLite bridge for the live default worker lane. Off by
+        # default; when enabled, worker lifecycle is mirrored into the
+        # FrontdeskStore without replacing the in-memory runtime.
+        "frontdesk_durable_store_enabled": False,
     },
 
     "agent": {

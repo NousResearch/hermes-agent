@@ -1229,6 +1229,7 @@ class GatewayRunner:
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _orchestration_status_queries_enabled: bool = False
+    frontdesk_durable_store_enabled: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1250,6 +1251,7 @@ class GatewayRunner:
         self._fallback_model = self._load_fallback_model()
         self._orchestration_status_queries_enabled = self._load_orchestration_status_queries_enabled()
         self.frontdesk_live_enabled = self._load_frontdesk_live_enabled()
+        self.frontdesk_durable_store_enabled = self._load_frontdesk_durable_store_enabled()
         if self.frontdesk_live_enabled:
             try:
                 from agent.frontdesk_live import ensure_default_worker_lane
@@ -2481,6 +2483,26 @@ class GatewayRunner:
                     cfg = _y.safe_load(_f) or {}
                 return is_truthy_value(
                     cfg_get(cfg, "orchestration", "frontdesk_live_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _load_frontdesk_durable_store_enabled() -> bool:
+        """Load the opt-in durable frontdesk worker-lane bridge gate."""
+        raw = os.getenv("HERMES_FRONTDESK_DURABLE_STORE", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "frontdesk_durable_store_enabled"),
                     default=False,
                 )
         except Exception:

@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
 import time
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
 from utils import is_truthy_value
 
 
+_LOG = logging.getLogger(__name__)
 _DEFAULT_WORKER_LANE = "main"
 _DEFAULT_WORKER_TIMEOUT_SECONDS = 60 * 60
+_DEFAULT_DURABLE_LEASE_SECONDS = 60 * 60 * 6
 _FRONTDESK_NOTIFIERS: dict[tuple[int, str | None], Callable[[str], Any]] = {}
 
 
@@ -42,6 +47,234 @@ def _worker_artifact_paths(task_id: str | None) -> dict[str, Path]:
         "summary": worker_dir / "summary.md",
         "stderr": worker_dir / "stderr.log",
     }
+
+
+def frontdesk_durable_store_path() -> Path:
+    """Return the default durable frontdesk SQLite path under Hermes home."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "frontdesk" / "frontdesk.sqlite3"
+
+
+def _cfg_bool(owner: Any, session: dict | None, key: str) -> bool | None:
+    for carrier in (session, owner):
+        if not carrier:
+            continue
+        if isinstance(carrier, dict):
+            if key in carrier:
+                return is_truthy_value(carrier.get(key), default=False)
+            cfg = carrier.get("config")
+        else:
+            if hasattr(carrier, key):
+                return is_truthy_value(getattr(carrier, key), default=False)
+            private_key = f"_{key}"
+            if hasattr(carrier, private_key):
+                return is_truthy_value(getattr(carrier, private_key), default=False)
+            cfg = getattr(carrier, "config", None)
+        if isinstance(cfg, dict):
+            orchestration = cfg.get("orchestration") or {}
+            if isinstance(orchestration, dict):
+                raw = orchestration.get(key)
+                if raw is not None:
+                    return is_truthy_value(raw, default=False)
+    return None
+
+
+def frontdesk_durable_store_enabled(owner: Any, *, session: dict | None = None) -> bool:
+    """Return whether the durable live-worker bridge is explicitly enabled."""
+    configured = _cfg_bool(owner, session, "frontdesk_durable_store_enabled")
+    if configured is not None:
+        return configured
+    raw = os.getenv("HERMES_FRONTDESK_DURABLE_STORE", "").strip()
+    if raw:
+        return is_truthy_value(raw, default=False)
+    return False
+
+
+def _owner_durable_store_path(owner: Any, session: dict | None = None) -> Path:
+    for carrier in (session, owner):
+        if not carrier:
+            continue
+        if isinstance(carrier, dict):
+            raw = carrier.get("frontdesk_durable_store_path") or carrier.get(
+                "_frontdesk_durable_store_path"
+            )
+            cfg = carrier.get("config")
+        else:
+            raw = getattr(carrier, "frontdesk_durable_store_path", None) or getattr(
+                carrier, "_frontdesk_durable_store_path", None
+            )
+            cfg = getattr(carrier, "config", None)
+        if raw:
+            return Path(raw)
+        if isinstance(cfg, dict):
+            orchestration = cfg.get("orchestration") or {}
+            if isinstance(orchestration, dict):
+                raw = orchestration.get("frontdesk_durable_store_path")
+                if raw:
+                    return Path(raw)
+    return frontdesk_durable_store_path()
+
+
+def _record_dict(record: Any) -> dict[str, Any]:
+    return asdict(record)
+
+
+def recover_durable_frontdesk_store(
+    *,
+    path: str | os.PathLike[str] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Recover expired durable leases without launching replacement workers."""
+    from agent.frontdesk_store import FrontdeskStore
+
+    db_path = Path(path) if path is not None else frontdesk_durable_store_path()
+    store = FrontdeskStore(db_path)
+    try:
+        recovered = store.recover_expired_leases(now=now)
+        task_ids = {job.task_id for job in recovered}
+        tasks = [store.get_task(task_id) for task_id in sorted(task_ids)]
+        return {
+            "path": str(db_path),
+            "recovered_jobs": [_record_dict(job) for job in recovered],
+            "tasks": [_record_dict(task) for task in tasks if task is not None],
+        }
+    finally:
+        store.close()
+
+
+class _DurableWorkerBridge:
+    def __init__(
+        self,
+        *,
+        store: Any,
+        task_id: str,
+        job_id: str,
+        lease_owner: str,
+        attempt: int,
+    ) -> None:
+        self.store = store
+        self.task_id = task_id
+        self.job_id = job_id
+        self.lease_owner = lease_owner
+        self.attempt = attempt
+
+    def heartbeat(
+        self,
+        *,
+        pid: str | int | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self.store.heartbeat_job(
+            self.job_id,
+            lease_owner=self.lease_owner,
+            attempt=self.attempt,
+            extend_seconds=_DEFAULT_DURABLE_LEASE_SECONDS,
+            pid=pid,
+            session_id=session_id,
+        )
+
+    def complete(
+        self,
+        *,
+        success: bool,
+        cancelled: bool = False,
+        result: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        exit_status: str | int | None = None,
+    ) -> None:
+        self.heartbeat()
+        self.store.complete_worker_job(
+            self.job_id,
+            success=success,
+            cancelled=cancelled,
+            lease_owner=self.lease_owner,
+            attempt=self.attempt,
+            exit_status=exit_status,
+            result=result or {},
+            artifacts=artifacts or [],
+        )
+
+    def close(self) -> None:
+        self.store.close()
+
+
+def _artifact_records(paths: dict[str, Path]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for kind, path in paths.items():
+        record: dict[str, Any] = {"path": str(path), "type": kind}
+        try:
+            if path.exists():
+                record["size"] = path.stat().st_size
+        except OSError:
+            pass
+        records.append(record)
+    return records
+
+
+def _begin_durable_worker_bridge(
+    owner: Any,
+    *,
+    spec: Any,
+    worker_id: str | None,
+    paths: dict[str, Path],
+    session: dict | None = None,
+) -> _DurableWorkerBridge | None:
+    if not frontdesk_durable_store_enabled(owner, session=session):
+        return None
+    from agent.frontdesk_store import FrontdeskStore, JOB_WORKER
+
+    db_path = _owner_durable_store_path(owner, session)
+    store = None
+    try:
+        store = FrontdeskStore(db_path)
+        task_id = spec.task_id or f"task-{uuid.uuid4().hex}"
+        metadata = spec.metadata if isinstance(spec.metadata, dict) else {}
+        session_key = metadata.get("session_key") if isinstance(metadata.get("session_key"), str) else None
+        source_surface = (
+            metadata.get("source_surface") if isinstance(metadata.get("source_surface"), str) else None
+        )
+        origin = {
+            "platform": source_surface or "frontdesk_live",
+            "session_key": session_key,
+            "source_surface": source_surface,
+            "in_memory_task_id": spec.task_id,
+            "in_memory_worker_id": worker_id,
+            "worker_lane": getattr(spec, "lane", None),
+            "frontdesk_fingerprint": metadata.get("frontdesk_fingerprint"),
+            "artifact_paths": {key: str(path) for key, path in paths.items()},
+        }
+        durable_task, durable_job = store.create_task_with_worker_job(
+            spec.goal,
+            session_key=session_key,
+            origin=origin,
+            task_id=task_id,
+        )
+        del durable_task
+        lease_owner = f"frontdesk-live:{os.getpid()}:{id(owner)}:{worker_id or task_id}"
+        claimed = store.claim_job(
+            kind=JOB_WORKER,
+            job_id=durable_job.id,
+            lease_owner=lease_owner,
+            lease_seconds=_DEFAULT_DURABLE_LEASE_SECONDS,
+            session_id=worker_id,
+        )
+        if claimed is None:
+            raise RuntimeError(f"durable worker job was not claimable: {durable_job.id}")
+        bridge = _DurableWorkerBridge(
+            store=store,
+            task_id=task_id,
+            job_id=claimed.id,
+            lease_owner=lease_owner,
+            attempt=claimed.attempt,
+        )
+        bridge.heartbeat(session_id=worker_id)
+        return bridge
+    except Exception:
+        if store is not None:
+            store.close()
+        _LOG.exception("frontdesk durable bridge initialization failed; continuing without durable mirror")
+        return None
 
 
 def _write_text_artifact(path: Path | None, text: str) -> None:
@@ -187,6 +420,8 @@ def ensure_default_worker_lane(
     *,
     session_key: str | None = None,
     notify_callback: Callable[[str], Any] | None = None,
+    durable_store_enabled: bool | None = None,
+    durable_store_path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Ensure every live frontdesk runtime has a default worker lane.
 
@@ -197,6 +432,17 @@ def ensure_default_worker_lane(
     """
     from agent.orchestration_runtime import get_or_create_orchestration_runtime
     from agent.worker_lanes import ThreadWorkerLane, WorkerSpec, CancelToken
+
+    if durable_store_enabled is not None:
+        try:
+            setattr(owner, "frontdesk_durable_store_enabled", bool(durable_store_enabled))
+        except Exception:
+            pass
+    if durable_store_path is not None:
+        try:
+            setattr(owner, "_frontdesk_durable_store_path", str(durable_store_path))
+        except Exception:
+            pass
 
     runtime = get_or_create_orchestration_runtime(owner)
     if notify_callback is not None:
@@ -211,6 +457,12 @@ def ensure_default_worker_lane(
     def runner(spec: WorkerSpec, token: CancelToken) -> str:
         worker_id = _linked_worker_id(runtime, spec.task_id)
         paths = _worker_artifact_paths(spec.task_id)
+        durable = _begin_durable_worker_bridge(
+            owner,
+            spec=spec,
+            worker_id=worker_id,
+            paths=paths,
+        )
         try:
             runtime.task_registry.update_frontdesk_metadata(
                 spec.task_id,
@@ -229,6 +481,11 @@ def ensure_default_worker_lane(
                 )
             except Exception:
                 pass
+            if durable is not None:
+                try:
+                    durable.heartbeat(pid=pid, session_id=worker_id)
+                except Exception:
+                    _LOG.exception("frontdesk durable bridge heartbeat failed; continuing worker lane")
 
         try:
             result = run_default_worker(
@@ -245,6 +502,28 @@ def ensure_default_worker_lane(
 
             status = "cancelled" if isinstance(exc, WorkerCancelled) else "failed"
             summary = "worker cancelled" if status == "cancelled" else "worker failed"
+            if durable is not None:
+                try:
+                    try:
+                        durable.complete(
+                            success=False,
+                            cancelled=status == "cancelled",
+                            exit_status=status,
+                            result={
+                                "status": status,
+                                "summary": summary,
+                                "error": str(exc) or type(exc).__name__,
+                                "in_memory_task_id": spec.task_id,
+                                "in_memory_worker_id": worker_id,
+                            },
+                            artifacts=_artifact_records(paths),
+                        )
+                    except Exception:
+                        _LOG.exception(
+                            "frontdesk durable bridge failure completion failed; preserving original worker error"
+                        )
+                finally:
+                    durable.close()
             _attach_worker_result(
                 runtime,
                 task_id=spec.task_id,
@@ -255,6 +534,26 @@ def ensure_default_worker_lane(
                 paths=paths,
             )
             raise
+        if durable is not None:
+            try:
+                try:
+                    durable.complete(
+                        success=True,
+                        exit_status=0,
+                        result={
+                            "status": "succeeded",
+                            "summary": result,
+                            "in_memory_task_id": spec.task_id,
+                            "in_memory_worker_id": worker_id,
+                        },
+                        artifacts=_artifact_records(paths),
+                    )
+                except Exception:
+                    _LOG.exception(
+                        "frontdesk durable bridge success completion failed; continuing in-memory worker lane"
+                    )
+            finally:
+                durable.close()
         _attach_worker_result(
             runtime,
             task_id=spec.task_id,

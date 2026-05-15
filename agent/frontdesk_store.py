@@ -614,6 +614,7 @@ class FrontdeskStore:
         self,
         *,
         kind: str | None = None,
+        job_id: str | None = None,
         lease_owner: str,
         lease_seconds: float,
         now: float | None = None,
@@ -631,10 +632,14 @@ class FrontdeskStore:
             if kind is not None:
                 kind_clause = " AND kind = ?"
                 params.append(_validate_kind(kind))
+            job_clause = ""
+            if job_id is not None:
+                job_clause = " AND id = ?"
+                params.append(str(job_id))
             row = self._conn.execute(
                 f"""
                 SELECT * FROM frontdesk_jobs
-                WHERE state = ?{kind_clause}
+                WHERE state = ?{kind_clause}{job_clause}
                 ORDER BY created_at, id
                 LIMIT 1
                 """,
@@ -689,6 +694,8 @@ class FrontdeskStore:
         attempt: int,
         extend_seconds: float | None = None,
         now: float | None = None,
+        pid: str | int | None = None,
+        session_id: str | None = None,
     ) -> FrontdeskJobRecord:
         beat_at = _now() if now is None else float(now)
         with self._transaction():
@@ -702,10 +709,20 @@ class FrontdeskStore:
             self._conn.execute(
                 """
                 UPDATE frontdesk_jobs
-                SET heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+                SET heartbeat_at = ?, lease_expires_at = ?,
+                    pid = COALESCE(?, pid),
+                    session_id = COALESCE(?, session_id),
+                    updated_at = ?
                 WHERE id = ?
                 """,
-                (beat_at, lease_expires_at, beat_at, job_id),
+                (
+                    beat_at,
+                    lease_expires_at,
+                    _string_or_none(pid),
+                    session_id,
+                    beat_at,
+                    job_id,
+                ),
             )
             self._insert_event("job_heartbeat", task_id=job.task_id, job_id=job_id, now=beat_at)
             return self._job(job_id)
@@ -780,6 +797,7 @@ class FrontdeskStore:
         success: bool,
         lease_owner: str,
         attempt: int,
+        cancelled: bool = False,
         exit_status: str | int | None = None,
         result: dict[str, Any] | None = None,
         artifacts: Iterable[dict[str, Any]] | None = None,
@@ -803,7 +821,7 @@ class FrontdeskStore:
                 return job, reviewer
             self._claim_token_matches(job, lease_owner=lease_owner, attempt=attempt)
 
-            final_state = JOB_SUCCEEDED if success else JOB_FAILED
+            final_state = JOB_SUCCEEDED if success else (JOB_CANCELLED if cancelled else JOB_FAILED)
             self._conn.execute(
                 """
                 UPDATE frontdesk_jobs
@@ -830,7 +848,11 @@ class FrontdeskStore:
                 "worker_job_completed",
                 task_id=job.task_id,
                 job_id=job_id,
-                payload={"success": bool(success), "exit_status": _string_or_none(exit_status)},
+                payload={
+                    "success": bool(success),
+                    "cancelled": bool(cancelled),
+                    "exit_status": _string_or_none(exit_status),
+                },
                 now=completed_at,
             )
             reviewer: FrontdeskJobRecord | None = None
@@ -841,9 +863,10 @@ class FrontdeskStore:
                 )
                 reviewer = self._ensure_reviewer_job(task_id=job.task_id, now=completed_at)
             else:
+                task_state = FRONTDESK_CANCELLED if cancelled else FRONTDESK_ERROR
                 self._conn.execute(
                     "UPDATE frontdesk_tasks SET state = ?, updated_at = ? WHERE id = ?",
-                    (FRONTDESK_ERROR, completed_at, job.task_id),
+                    (task_state, completed_at, job.task_id),
                 )
             return self._job(job_id), reviewer
 

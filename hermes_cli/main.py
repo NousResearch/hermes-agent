@@ -1024,6 +1024,14 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
+    """Find a pre-built TUI entry.js bundled in the wheel."""
+    if hermes_cli_dir is None:
+        hermes_cli_dir = Path(__file__).parent
+    bundled = hermes_cli_dir / "tui_dist" / "entry.js"
+    return bundled if bundled.is_file() else None
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1057,6 +1065,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
+
+        # 1b. Bundled in wheel (pip install)
+        bundled = _find_bundled_tui()
+        if bundled is not None:
+            node = _node_bin("node")
+            return [node, str(bundled)], bundled.parent
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).

@@ -103,7 +103,6 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Advanced',
           items: [
-            'user-guide/features/rl-training',
             'user-guide/features/spotify',
           ],
         },
@@ -238,7 +237,6 @@ const sidebars: SidebarsConfig = {
             'developer-guide/tools-runtime',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
-            'developer-guide/environments',
             'developer-guide/trajectory-format',
           ],
         },

@@ -41,15 +41,15 @@ _DEP_DESCRIPTIONS = {
 
 
 def _has_system_browser() -> bool:
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
         if shutil.which(name):
             return True
     return False
 
 
 def _has_hermes_agent_browser() -> bool:
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    return (Path(hermes_home) / "node_modules" / ".bin" / "agent-browser").is_file()
+    from hermes_constants import get_hermes_home
+    return (get_hermes_home() / "node_modules" / ".bin" / "agent-browser").is_file()
 
 
 def _find_install_script(

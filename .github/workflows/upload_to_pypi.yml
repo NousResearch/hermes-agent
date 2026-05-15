@@ -93,9 +93,10 @@ jobs:
             sleep 10
           done
           echo "::warning::Release $GITHUB_REF_NAME not found after 5 minutes — skipping signature upload"
-          exit 1
+          echo "skip_sign=true" >> "$GITHUB_ENV"
 
       - name: Sign with Sigstore
+        if: env.skip_sign != 'true'
         uses: sigstore/gh-action-sigstore-python@v3.0.0
         with:
           inputs: >-
@@ -103,6 +104,7 @@ jobs:
             ./dist/*.whl
 
       - name: Attach signed artifacts to GitHub Release
+        if: env.skip_sign != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         # release.py already created the GitHub Release — just upload

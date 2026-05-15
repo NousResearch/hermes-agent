@@ -2,8 +2,9 @@ name: Auto-merge
 
 on:
   # synchronize/opened/reopened make Auto-merge VISIBLE in the PR's check
-  # list as a quick passing check (the script no-ops on these events).
-  # `labeled` and `pull_request_review` are the real evaluation triggers.
+  # list as a quick passing status. The script posts a pending status and
+  # returns immediately on these events — it does NOT poll. The real
+  # evaluation runs on workflow_run / pull_request_review / labeled events.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   pull_request_review:
@@ -48,7 +49,7 @@ jobs:
       (github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'labeled' || github.event.label.name == 'reviewed'))
     # No polling needed for workflow_run — it fires after CI finishes.
-    # For pull_request / pull_request_review events a poll loop waits for CI.
+    # For pull_request_review / labeled events a short poll loop waits for CI.
     timeout-minutes: 30
 
     steps:
@@ -84,9 +85,13 @@ jobs:
               }
             }
 
-            // ── Status-only first pass ─────────────────────────────────────────
-            // On push/open/reopen: post a pending status so the PR's check list
-            // shows something, then fall through to the polling evaluation below.
+            // ── Status-only fast path for push/open/reopen ─────────────────────
+            // On synchronize/opened/reopened: post a pending status so the PR's
+            // check list shows something, then RETURN immediately. The real
+            // evaluation will fire on workflow_run events as CI completes, and
+            // on pull_request_review / labeled events. Returning here avoids
+            // sitting in a long poll loop that the concurrency group cancels
+            // every time another trigger arrives.
             if (context.eventName === 'pull_request') {
               const action = context.payload.action;
               if (action === 'synchronize' || action === 'opened' || action === 'reopened') {
@@ -94,10 +99,10 @@ jobs:
                 await setStatus(sha, 'pending',
                   'Waiting for CI to finish and a qualifying review.');
                 core.info(
-                  `Event '${action}' for ${sha.slice(0,7)} — polling until CI completes.`
+                  `Event '${action}' for ${sha.slice(0,7)} — status posted; ` +
+                  `workflow_run events will trigger the real evaluation.`
                 );
-                // Fall through — the poll loop below waits for checks to finish
-                // before evaluating merge conditions.
+                return;
               }
             }
 
@@ -200,7 +205,7 @@ jobs:
             // ── 4. Wait for all checks to complete ────────────────────────────
             // workflow_run: another suite may still be running — exit and let the
             // next workflow_run completion re-evaluate.
-            // pull_request / pull_request_review: poll up to 25 min so the status
+            // pull_request_review / labeled: poll up to 25 min so the status
             // transitions automatically without any manual action.
             let pendingRuns = externalRuns.filter(r => r.status !== 'completed');
             if (pendingRuns.length > 0) {

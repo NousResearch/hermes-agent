@@ -31,10 +31,17 @@ def _send_update(
     update: Any,
 ) -> None:
     """Fire-and-forget an ACP session update from a worker thread."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    future = safe_schedule_threadsafe(
+        conn.session_update(session_id, update),
+        loop,
+        logger=logger,
+        log_message="Failed to send ACP update",
+    )
+    if future is None:
+        return
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            conn.session_update(session_id, update), loop
-        )
         future.result(timeout=5)
     except Exception:
         logger.debug("Failed to send ACP update", exc_info=True)

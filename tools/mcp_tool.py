@@ -1781,7 +1781,7 @@ def _handle_auth_error_and_retry(
         return await manager.handle_401(server_name, None)
 
     try:
-        recovered = _run_on_mcp_loop(_recover(), timeout=10)
+        recovered = _run_on_mcp_loop(_recover, timeout=10)
     except Exception as rec_exc:
         logger.warning(
             "MCP OAuth '%s': recovery attempt failed: %s",
@@ -2054,19 +2054,35 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
+def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
+
+    Accepts either a coroutine object or a zero-arg callable that returns one.
+    Callers can pass a factory to avoid constructing coroutine objects when
+    the MCP loop is unavailable (which would otherwise leak the coroutine
+    frame and emit ``"coroutine was never awaited"`` warnings).
 
     Poll in short intervals so the calling agent thread can honor user
     interrupts while the MCP work is still running on the background loop.
     """
     from tools.interrupt import is_interrupted
+    from agent.async_utils import safe_schedule_threadsafe
 
     with _lock:
         loop = _mcp_loop
     if loop is None or not loop.is_running():
+        if asyncio.iscoroutine(coro_or_factory):
+            coro_or_factory.close()
         raise RuntimeError("MCP event loop is not running")
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+    future = safe_schedule_threadsafe(
+        coro, loop,
+        logger=logger,
+        log_message="MCP scheduling failed",
+    )
+    if future is None:
+        raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
     deadline = None if timeout is None else start_time + timeout
 
@@ -2263,7 +2279,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             result = _call_once()
@@ -2343,7 +2359,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2403,7 +2419,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2466,7 +2482,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return json.dumps({"prompts": prompts}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2537,7 +2553,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return json.dumps(resp, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -3121,7 +3137,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _run_on_mcp_loop(_discover_all(), timeout=120)
+        _run_on_mcp_loop(_discover_all, timeout=120)
     finally:
         if _was_interrupted:
             _set_interrupt(True)
@@ -3289,7 +3305,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         )
 
     try:
-        _run_on_mcp_loop(_probe_all(), timeout=120)
+        _run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
         logger.debug("MCP probe failed: %s", exc)
     finally:
@@ -3329,11 +3345,17 @@ def shutdown_mcp_servers():
     with _lock:
         loop = _mcp_loop
     if loop is not None and loop.is_running():
-        try:
-            future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
-            future.result(timeout=15)
-        except Exception as exc:
-            logger.debug("Error during MCP shutdown: %s", exc)
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            _shutdown(), loop,
+            logger=logger,
+            log_message="MCP shutdown: failed to schedule",
+        )
+        if future is not None:
+            try:
+                future.result(timeout=15)
+            except Exception as exc:
+                logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
 

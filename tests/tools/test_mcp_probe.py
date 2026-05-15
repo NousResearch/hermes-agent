@@ -69,7 +69,8 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._stop_mcp_loop"):
 
             # Simulate running the async probe
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -110,7 +111,8 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -144,7 +146,8 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -198,7 +201,8 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)

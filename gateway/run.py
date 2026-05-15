@@ -3481,6 +3481,7 @@ class GatewayRunner:
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
+        startup_degraded_reason: Optional[str] = None
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
@@ -3612,16 +3613,16 @@ class GatewayRunner:
                 return True
             if enabled_platform_count > 0:
                 if startup_retryable_errors:
-                    # At least one platform attempted a connection and failed —
-                    # this is a real startup error that should block the gateway.
+                    # All observed startup failures are retryable. Keep the
+                    # process alive so the reconnect watcher can recover instead
+                    # of relying on service-manager restart loops.
                     reason = "; ".join(startup_retryable_errors)
-                    logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
-                    try:
-                        from gateway.status import write_runtime_status
-                        write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-                    except Exception:
-                        pass
-                    return False
+                    startup_degraded_reason = reason
+                    logger.warning(
+                        "Gateway failed to connect any messaging platform at startup; "
+                        "keeping process alive for reconnect watcher: %s",
+                        reason,
+                    )
                 # All enabled platforms had no adapter (missing library or credentials).
                 # In fleet deployments the same config.yaml is shared across nodes that
                 # may only have credentials for a subset of platforms.  Rather than
@@ -3641,7 +3642,10 @@ class GatewayRunner:
         self._wire_teams_pipeline_runtime()
 
         self._running = True
-        self._update_runtime_status("running")
+        if startup_degraded_reason and connected_count == 0 and self._failed_platforms:
+            self._update_runtime_status("degraded", startup_degraded_reason)
+        else:
+            self._update_runtime_status("running", None)
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)

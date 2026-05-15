@@ -64,7 +64,7 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, tmp_path):
+async def test_runner_degrades_for_retryable_startup_errors(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(
         platforms={
@@ -75,16 +75,21 @@ async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, 
     runner = GatewayRunner(config)
 
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _RetryableFailureAdapter())
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
 
     ok = await runner.start()
 
-    assert ok is False
+    assert ok is True
     assert runner.should_exit_cleanly is False
     state = read_runtime_status()
-    assert state["gateway_state"] == "startup_failed"
+    assert state["gateway_state"] == "degraded"
     assert "temporary DNS resolution failure" in state["exit_reason"]
     assert state["platforms"]["telegram"]["state"] == "retrying"
     assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
+    assert Platform.TELEGRAM in runner._failed_platforms
+
+    await runner.stop()
 
 
 @pytest.mark.asyncio

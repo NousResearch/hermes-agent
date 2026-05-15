@@ -943,3 +943,53 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+IMMUTABLE_SKILL_CONTENT = """\
+---
+name: locked-skill
+description: Cannot be modified by the agent.
+metadata:
+  hermes:
+    immutable: true
+---
+
+# Locked Skill
+
+Original body with OLD_MARKER.
+"""
+
+
+class TestImmutableSkillGuard:
+    def test_immutable_frontmatter_blocks_skill_manage_mutations(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert json.loads(skill_manage(action="create", name="locked-skill", content=IMMUTABLE_SKILL_CONTENT))["success"] is True
+
+            attempts = [
+                skill_manage(action="patch", name="locked-skill", old_string="OLD_MARKER", new_string="NEW_MARKER"),
+                skill_manage(action="edit", name="locked-skill", content=VALID_SKILL_CONTENT_2),
+                skill_manage(action="write_file", name="locked-skill", file_path="references/note.md", file_content="note"),
+                skill_manage(action="remove_file", name="locked-skill", file_path="references/note.md"),
+                skill_manage(action="delete", name="locked-skill", absorbed_into=""),
+            ]
+            content = (tmp_path / "locked-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        for raw in attempts:
+            result = json.loads(raw)
+            assert result["success"] is False
+            assert "immutable" in result["error"]
+        assert "OLD_MARKER" in content
+
+    def test_create_rejects_shadowing_existing_immutable_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "external"
+        external_skill = external / "locked-skill"
+        external_skill.mkdir(parents=True)
+        (external_skill / "SKILL.md").write_text(IMMUTABLE_SKILL_CONTENT, encoding="utf-8")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[local, external]):
+            raw = skill_manage(action="create", name="locked-skill", content=VALID_SKILL_CONTENT)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "already exists" in result["error"]

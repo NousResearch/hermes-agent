@@ -161,6 +161,39 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _is_immutable_skill(skill_dir: Path) -> bool:
+    """Return True when SKILL.md declares metadata.hermes.immutable: true."""
+    try:
+        skill_md = skill_dir / "SKILL.md"
+        content = skill_md.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            return False
+        end_match = re.search(r'\n---\s*\n', content[3:])
+        if not end_match:
+            return False
+        parsed = yaml.safe_load(content[3:end_match.start() + 3])
+        if not isinstance(parsed, dict):
+            return False
+        metadata = parsed.get("metadata")
+        hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
+        value = hermes_meta.get("immutable") if isinstance(hermes_meta, dict) else parsed.get("immutable")
+        return is_truthy_value(value, default=False)
+    except Exception:
+        logger.debug("immutable skill lookup failed for %s", skill_dir, exc_info=True)
+        return False
+
+
+def _immutable_guard(name: str, skill_dir: Path, action: str) -> Optional[str]:
+    """Return refusal text when skill frontmatter marks it immutable."""
+    if not _is_immutable_skill(skill_dir):
+        return None
+    return (
+        f"Skill '{name}' is immutable and cannot be modified by "
+        f"skill_manage(action='{action}'). Ask the user to edit or unlock "
+        f"the skill outside the agent if changes are required."
+    )
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -441,6 +474,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    immutable_err = _immutable_guard(name, existing["path"], "edit")
+    if immutable_err:
+        return {"success": False, "error": immutable_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -482,6 +519,9 @@ def _patch_skill(
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+    immutable_err = _immutable_guard(name, skill_dir, "patch")
+    if immutable_err:
+        return {"success": False, "error": immutable_err}
 
     if file_path:
         # Patching a supporting file
@@ -570,6 +610,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
+    immutable_err = _immutable_guard(name, existing["path"], "delete")
+    if immutable_err:
+        return {"success": False, "error": immutable_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -638,6 +682,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
+    immutable_err = _immutable_guard(name, existing["path"], "write_file")
+    if immutable_err:
+        return {"success": False, "error": immutable_err}
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
@@ -674,6 +721,9 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+    immutable_err = _immutable_guard(name, skill_dir, "remove_file")
+    if immutable_err:
+        return {"success": False, "error": immutable_err}
 
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:

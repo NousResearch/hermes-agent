@@ -1,0 +1,86 @@
+# Auto-sync this fork's ``main`` from the upstream
+# (``NousResearch/hermes-agent``) ``main`` branch.
+#
+# Runs hourly on a cron schedule and on manual ``workflow_dispatch``.
+# Uses the official "merge-upstream" REST endpoint, which performs a
+# fast-forward merge from the parent repository when there are no
+# conflicts. On conflicts the API returns ``merge_type=none`` and the
+# step fails — open the run log to see the API response and reconcile
+# locally.
+#
+# Auth: the default ``GITHUB_TOKEN`` issued to this workflow has
+# ``contents: write`` on the fork (see the ``permissions:`` block
+# below) and is the *fork owner*'s token in the API call's eyes, so no
+# personal access token (PAT) or extra secret is required. The
+# ``merge-upstream`` endpoint is specifically designed for this case —
+# see https://docs.github.com/en/rest/branches/branches#sync-a-fork-branch-with-the-upstream-repository
+#
+# To disable temporarily: comment out the ``schedule:`` block or set
+# the repo-level Actions toggle off. To run once on demand: GitHub UI
+# → Actions → "Sync fork with upstream" → "Run workflow".
+
+name: Sync fork with upstream
+
+on:
+  schedule:
+    # Hourly at minute 17 to avoid the top-of-hour spike where GitHub
+    # delays / drops scheduled workflows under load.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+# Single concurrent run; queued runs cancel any in-flight one so we
+# don't pile up retries when GitHub Actions is slow.
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Fast-forward main from upstream
+    runs-on: ubuntu-latest
+    # Skip on the canonical upstream repo — only forks need this.
+    if: github.repository != 'NousResearch/hermes-agent'
+    steps:
+      - name: Merge upstream/main into fork/main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Repo:   $GITHUB_REPOSITORY"
+          echo "Branch: main"
+          response=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            -f branch=main)
+          echo "API response:"
+          echo "$response"
+          merge_type=$(echo "$response" | jq -r '.merge_type // "none"')
+          base_branch=$(echo "$response" | jq -r '.base_branch // "unknown"')
+          echo
+          echo "merge_type=$merge_type"
+          echo "base_branch=$base_branch"
+          case "$merge_type" in
+            fast-forward)
+              echo "Fork main fast-forwarded to upstream main."
+              ;;
+            none)
+              # "none" is returned both when already up-to-date AND
+              # when there is a conflict. Inspect the message to tell
+              # them apart and fail only on real conflicts.
+              msg=$(echo "$response" | jq -r '.message // ""')
+              if echo "$msg" | grep -qiE "up.?to.?date|already"; then
+                echo "Fork main is already up-to-date with upstream."
+              else
+                echo "::error::Merge from upstream did not run cleanly: $msg"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Sync succeeded with merge_type=$merge_type."
+              ;;
+          esac

@@ -34,7 +34,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -73,6 +73,29 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+
+
+def _try_lazy_install_faster_whisper() -> bool:
+    """Attempt to lazy-install the ``stt.faster_whisper`` feature.
+
+    The faster-whisper wheel pulls in heavy native deps (ctranslate2,
+    onnxruntime) so the default Docker image and the base pip install
+    intentionally do not ship it.  When a user explicitly opts into local
+    STT via ``stt.provider: local``, install on first use — mirroring the
+    pattern used by gateway/platforms/* and other tools/* modules.
+
+    Returns ``True`` if faster-whisper is importable after the call.
+    """
+    global _HAS_FASTER_WHISPER
+    if _HAS_FASTER_WHISPER:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("stt.faster_whisper", prompt=False)
+    except Exception:
+        return False
+    _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+    return _HAS_FASTER_WHISPER
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -216,6 +239,13 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
+            # Try lazy-install — same pattern as gateway/platforms/* and
+            # other tools/* modules.  Local STT is an opt-in extra, so the
+            # default Docker image doesn't ship faster-whisper; users who
+            # explicitly set `stt.provider: local` have opted in and the
+            # install should "just work" on first use.
+            if _try_lazy_install_faster_whisper():
+                return "local"
             if _has_local_command():
                 return "local_command"
             logger.warning(
@@ -280,6 +310,11 @@ def _get_provider(stt_config: dict) -> str:
     # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
+    #
+    # Auto-detect deliberately does NOT lazy-install faster-whisper —
+    # that would impose a multi-MB download (ctranslate2 + onnxruntime)
+    # on users who didn't ask for local STT.  Lazy install only triggers
+    # when the user has explicitly set ``stt.provider: local``.
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -893,6 +928,67 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     }
 
 
+def _is_local_or_private_url(url: str) -> bool:
+    """Return True when ``url``'s host is local/loopback/RFC-1918/.local/.lan.
+
+    Local STT servers (faster-whisper-server, speaches, vLLM-whisper,
+    ollama variants, ...) speak the OpenAI ``/v1/audio/transcriptions``
+    protocol but don't authenticate. Forcing the user to write
+    ``api_key: not-needed`` in config.yaml to satisfy a "non-empty"
+    guard is a footgun: an empty / missing key combined with a clearly
+    local ``base_url`` should mean "no auth needed", not "fall back to
+    the managed gateway".
+
+    Match criteria (any one is sufficient):
+
+    * Hostname is ``localhost`` (case-insensitive)
+    * IPv4 in 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    * IPv6 ``::1`` / ``fc00::/7``
+    * Hostname ends in ``.local``, ``.lan``, or ``.internal``
+
+    Anything else (including bare hostnames without a TLD that happen
+    to resolve internally via /etc/hosts) returns ``False`` so the
+    auth requirement still applies for ambiguous configurations.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url if "://" in url else f"//{url}")
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    if host in {"localhost", "::1"}:
+        return True
+    # IPv4 private ranges
+    if host.replace(".", "").isdigit() and host.count(".") == 3:
+        try:
+            octets = [int(p) for p in host.split(".")]
+        except ValueError:
+            return False
+        if len(octets) == 4 and all(0 <= o <= 255 for o in octets):
+            a, b, _, _ = octets
+            if a == 127:
+                return True
+            if a == 10:
+                return True
+            if a == 172 and 16 <= b <= 31:
+                return True
+            if a == 192 and b == 168:
+                return True
+        return False
+    # IPv6 ULA range (fc00::/7) — quick prefix check; covers most cases
+    # without pulling in ipaddress module on this hot path.
+    if host.startswith(("fc", "fd")) and ":" in host:
+        return True
+    # Mnemonic suffixes commonly used for LAN names
+    for suffix in (".local", ".lan", ".internal"):
+        if host.endswith(suffix):
+            return True
+    return False
+
+
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
     stt_config = _load_stt_config()
@@ -901,6 +997,17 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     cfg_base_url = openai_cfg.get("base_url", "")
     if cfg_api_key:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+
+    # Local / private STT endpoints (faster-whisper-server, speaches,
+    # vLLM-whisper, etc.) speak the OpenAI audio protocol but don't
+    # authenticate. When ``base_url`` is clearly pointing at one of
+    # those, treat the missing key as "no auth needed" instead of
+    # falling back to the managed gateway / failing with an error.
+    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+        # Empty key is OK; OpenAI SDK will send "Authorization: Bearer "
+        # which local servers ignore.  Sentinel string keeps explicit
+        # auth-aware servers happy if they need *something*.
+        return "not-needed", cfg_base_url
 
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:

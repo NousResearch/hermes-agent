@@ -683,11 +683,19 @@ class _CodexCompletionsAdapter:
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":
                         effort = "low"
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    # Env-var escape hatch (see agent/transports/codex.py
+                    # _reasoning_include_disabled): for non-reasoning OpenAI
+                    # models at api.openai.com, the Responses API rejects
+                    # include=["reasoning.encrypted_content"] with HTTP 400.
+                    _disable_include = (
+                        os.getenv("HERMES_DISABLE_REASONING_INCLUDE", "") or ""
+                    ).strip().lower() in {"1", "true", "yes", "on"}
+                    if not _disable_include:
+                        resp_kwargs["reasoning"] = {
+                            "effort": effort,
+                            "summary": "auto",
+                        }
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")

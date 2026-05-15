@@ -5,10 +5,30 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+
+def _reasoning_include_disabled() -> bool:
+    """Return True if the user has opted out of ``reasoning.encrypted_content``.
+
+    ``include: ["reasoning.encrypted_content"]`` is only accepted by the
+    Responses API on reasoning-capable models (o-series, gpt-5*).  For
+    non-reasoning models the API returns:
+
+        HTTP 400: Encrypted content is not supported with this model.
+
+    Users targeting a non-reasoning OpenAI model (e.g. gpt-4o-mini) via
+    ``base_url: https://api.openai.com/v1`` can set
+    ``HERMES_DISABLE_REASONING_INCLUDE=true`` in ``~/.hermes/.env`` to
+    suppress the include parameter on every Responses-API request.
+    """
+    return (os.getenv("HERMES_DISABLE_REASONING_INCLUDE", "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -107,10 +127,18 @@ class ResponsesApiTransport(ProviderTransport):
         if not is_github_responses and not is_xai_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
+        # Env-var escape hatch: when targeting a non-reasoning OpenAI model
+        # via the Responses API (e.g. gpt-4o-mini at api.openai.com), the
+        # API rejects ``include: ["reasoning.encrypted_content"]`` with
+        # HTTP 400.  Allow users to opt out so all encrypted-content
+        # additions below are suppressed.
+        _include_reasoning = not _reasoning_include_disabled()
+
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
-            kwargs["include"] = ["reasoning.encrypted_content"]
+            if _include_reasoning:
+                kwargs["include"] = ["reasoning.encrypted_content"]
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when
@@ -124,8 +152,9 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
+                if _include_reasoning:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = ["reasoning.encrypted_content"]
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

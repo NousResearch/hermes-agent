@@ -1520,6 +1520,37 @@ class GatewayRunner:
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
 
+    @staticmethod
+    def _default_voice_mode() -> str:
+        """Return the per-chat voice-reply mode default for **new** chats.
+
+        Operators can change the out-of-the-box behavior of every newly
+        seen Telegram/Discord/Slack/etc chat by setting
+        ``HERMES_VOICE_MODE_DEFAULT`` in ``~/.hermes/.env``:
+
+          * ``off``         — text replies only (the stock default; safe).
+          * ``voice_only``  — replies are spoken as audio messages only.
+          * ``all``         — replies are sent as text **and** spoken
+                              (the ``/voice tts`` command's mode).
+
+        Per-chat overrides via ``/voice on|off|tts`` still take
+        precedence — this env var only seeds the initial state for a
+        chat the gateway has never seen before.  Unknown values fall
+        back to ``"off"`` and a warning is logged once at first use.
+        """
+        raw = (os.getenv("HERMES_VOICE_MODE_DEFAULT", "") or "").strip().lower()
+        if not raw:
+            return "off"
+        if raw in {"off", "voice_only", "all"}:
+            return raw
+        # Lazy import to avoid pulling logging into staticmethod scope.
+        logger.warning(
+            "HERMES_VOICE_MODE_DEFAULT=%r is not a recognised voice mode "
+            "(expected off / voice_only / all). Falling back to 'off'.",
+            raw,
+        )
+        return "off"
+
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
@@ -6855,34 +6886,16 @@ class GatewayRunner:
                     message_text,
                     audio_paths,
                 )
-                _stt_fail_markers = (
-                    "No STT provider",
-                    "STT is disabled",
-                    "can't listen",
-                    "VOICE_TOOLS_OPENAI_KEY",
-                )
-                if any(marker in message_text for marker in _stt_fail_markers):
-                    _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _stt_adapter:
-                        try:
-                            _stt_msg = (
-                                "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`pip install faster-whisper` in the Hermes venv) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
-                            if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
-                            await _stt_adapter.send(
-                                source.chat_id,
-                                _stt_msg,
-                                metadata=_stt_meta,
-                            )
-                        except Exception:
-                            pass
+                # NOTE: Previously, when transcription failed (e.g. no STT
+                # provider configured), the gateway also emitted a hardcoded
+                # English notice via `_stt_adapter.send()`. That bypassed the
+                # LLM and produced two replies — one pre-canned English clip
+                # (TTS spoke it aloud!) and one correct, localized LLM reply
+                # from the enriched message text. The enrichment step above
+                # already appends a localized failure note to the prompt, so
+                # the LLM produces a single coherent reply in the user's
+                # language. The hardcoded send has therefore been removed.
+                # See BUG-3 in the deployment bug tracker for details.
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -9831,7 +9844,7 @@ class GatewayRunner:
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
-            mode = self._voice_mode.get(voice_key, "off")
+            mode = self._voice_mode.get(voice_key, self._default_voice_mode())
             labels = {
                 "off": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
@@ -9855,7 +9868,7 @@ class GatewayRunner:
             return t("gateway.voice.status_mode", label=labels.get(mode, mode))
         else:
             # Toggle: off → on, on/all → off
-            current = self._voice_mode.get(voice_key, "off")
+            current = self._voice_mode.get(voice_key, self._default_voice_mode())
             if current == "off":
                 self._voice_mode[voice_key] = "voice_only"
                 self._save_voice_modes()
@@ -10084,7 +10097,10 @@ class GatewayRunner:
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_mode = self._voice_mode.get(
+            self._voice_key(event.source.platform, chat_id),
+            self._default_voice_mode(),
+        )
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
@@ -13242,40 +13258,36 @@ class GatewayRunner:
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    # Pass the transcript through as a plain quoted line.
+                    # Earlier wording ("The user sent a voice message~
+                    # Here's what they said: ...") was being treated by
+                    # the LLM as a meta-instruction to *talk about* the
+                    # voice mode rather than reply to its content — and,
+                    # combined with old failure templates that mentioned
+                    # "no STT provider", contaminated future turns so
+                    # the model kept volunteering STT-setup advice even
+                    # after STT started working.
+                    enriched_parts.append(f'"{transcript}"')
                 else:
                     error = result.get("error", "unknown error")
-                    if (
-                        "No STT provider" in error
-                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
-                    ):
-                        _no_stt_note = (
-                            "[The user sent a voice message but I can't listen "
-                            "to it right now — no STT provider is configured. "
-                            "A direct message has already been sent to the user "
-                            "with setup instructions."
-                        )
-                        if self._has_setup_skill():
-                            _no_stt_note += (
-                                " You have a skill called hermes-agent-setup "
-                                "that can help users configure Hermes features "
-                                "including voice, tools, and more."
-                            )
-                        _no_stt_note += "]"
-                        enriched_parts.append(_no_stt_note)
-                    else:
-                        enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
-                        )
+                    # All failure branches: a single, minimal, neutral
+                    # note. Do NOT mention "no STT provider configured",
+                    # "setup instructions", or "hermes-agent-setup skill"
+                    # — those phrases poisoned future turns. Do NOT
+                    # claim a direct message was sent: the gateway no
+                    # longer sends one (see commit history for BUG-3).
+                    # Cause is logged for operator diagnosis but kept out
+                    # of the LLM-visible prompt.
+                    logger.info(
+                        "Voice transcription failed for %s: %s", path, error
+                    )
+                    enriched_parts.append(
+                        "[voice message could not be transcribed]"
+                    )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
+                    "[voice message could not be transcribed]"
                 )
 
         if enriched_parts:

@@ -526,6 +526,42 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
+    # -- context reference registration -------------------------------------
+
+    def register_context_reference(self, provider) -> None:
+        """Register a custom @-prefix context reference provider.
+
+        ``provider`` must be an instance of
+        :class:`agent.context_references.ContextReferenceProvider`.  The
+        ``provider.prefix`` attribute defines the @-prefix (e.g. ``"issue"``
+        creates ``@issue:...``).  Built-in prefixes (diff, staged, file,
+        folder, git, url) are reserved and will be rejected.
+        """
+        from agent.context_references import (
+            ContextReferenceProvider as _CRP,
+            register_context_reference_provider as _register,
+        )
+
+        if not isinstance(provider, _CRP):
+            logger.warning(
+                "Plugin '%s' tried to register a context reference provider "
+                "that does not inherit from ContextReferenceProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        try:
+            _register(provider)
+        except ValueError as exc:
+            logger.warning(
+                "Plugin '%s' context reference registration failed: %s",
+                self.manifest.name, exc,
+            )
+            return
+        logger.info(
+            "Plugin '%s' registered context reference: @%s:",
+            self.manifest.name, provider.prefix,
+        )
+
     # -- image gen provider registration ------------------------------------
 
     def register_image_gen_provider(self, provider) -> None:

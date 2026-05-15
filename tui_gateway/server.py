@@ -5022,6 +5022,17 @@ def _(rid, params: dict) -> dict:
                 {"text": "@url:", "display": "@url:", "meta": "fetch url"},
                 {"text": "@git:", "display": "@git:", "meta": "git log"},
             ]
+            # Append plugin-registered context reference prefixes
+            try:
+                from agent.context_references import get_context_reference_providers
+                for _pfx, _prov in sorted(get_context_reference_providers().items()):
+                    items.append({
+                        "text": f"@{_pfx}:",
+                        "display": f"@{_pfx}:",
+                        "meta": _prov.description or f"plugin: {_pfx}",
+                    })
+            except Exception:
+                pass
             return _ok(rid, {"items": items})
 
         # Accept both `@folder:path` and the bare `@folder` form so the user
@@ -5032,6 +5043,33 @@ def _(rid, params: dict) -> dict:
         elif is_context and query.startswith(("file:", "folder:")):
             prefix_tag, _, tail = query.partition(":")
             path_part = tail
+        # Plugin context reference autocomplete
+        if is_context and ":" in query:
+            _pfx, _, _qval = query.partition(":")
+            if _pfx not in {"file", "folder", "url", "git", "diff", "staged"}:
+                try:
+                    from agent.context_references import get_context_reference_providers as _gcr
+                    _prov = _gcr().get(_pfx)
+                    if _prov is not None:
+                        _coro = _prov.autocomplete(_qval, limit=20)
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            loop = None
+                        if loop and loop.is_running():
+                            import concurrent.futures as _cf
+                            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                                _ac = _pool.submit(asyncio.run, _coro).result()
+                        else:
+                            _ac = asyncio.run(_coro)
+                        items = [
+                            {"text": f"@{_pfx}:{it.text}", "display": it.display, "meta": it.meta}
+                            for it in _ac
+                        ]
+                        return _ok(rid, {"items": items})
+                except Exception:
+                    pass
+
         else:
             prefix_tag = ""
             path_part = query if is_context else query

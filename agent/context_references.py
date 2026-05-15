@@ -13,10 +13,78 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 
+from abc import ABC, abstractmethod
+
+# ---------------------------------------------------------------------------
+# Plugin context-reference provider API (Issue #26193)
+# ---------------------------------------------------------------------------
+
+BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
+
+_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+
+
+class ContextCompletionItem:
+    """A single autocomplete result from a context reference provider."""
+
+    __slots__ = ("text", "display", "meta")
+
+    def __init__(self, text: str, display: str = "", meta: str = "") -> None:
+        self.text = text
+        self.display = display or text
+        self.meta = meta
+
+
+class ContextReferenceProvider(ABC):
+    """Base class for plugin-registered @-prefix context reference providers.
+
+    Plugins subclass this and register via
+    ``PluginContext.register_context_reference()``.
+    """
+
+    prefix: str = ""  # e.g. "issue", "channel", "doc"
+    description: str = ""  # shown in autocomplete meta column
+
+    @abstractmethod
+    async def autocomplete(self, query: str, *, limit: int = 10) -> list[ContextCompletionItem]:
+        """Return autocomplete items for the given query string."""
+        ...
+
+    @abstractmethod
+    async def expand(self, target: str) -> str | None:
+        """Expand *target* to prompt content.  Return ``None`` to skip."""
+        ...
+
+
+def register_context_reference_provider(provider: ContextReferenceProvider) -> None:
+    """Register a plugin context reference provider."""
+    if not isinstance(provider, ContextReferenceProvider):
+        raise TypeError("provider must be a ContextReferenceProvider instance")
+    prefix = provider.prefix.lower().strip()
+    if not prefix:
+        raise ValueError("prefix must be a non-empty string")
+    if prefix in BUILTIN_PREFIXES:
+        raise ValueError(f"prefix '{prefix}' is reserved for built-in references")
+    if prefix in _context_reference_providers:
+        raise ValueError(f"prefix '{prefix}' is already registered")
+    _context_reference_providers[prefix] = provider
+
+
+def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
+    """Return a snapshot of all registered plugin providers."""
+    return dict(_context_reference_providers)
+
+
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
     rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
+# Plugin fallback pattern – catches any @<word>:<value> not handled by the
+# built-in regex so that plugin-registered prefixes can be resolved.
+_PLUGIN_REFERENCE_PATTERN = re.compile(
+    rf"(?<![\w/])@(?P<kind>[a-zA-Z][a-zA-Z0-9_-]*):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+)"
+)
+
 TRAILING_PUNCTUATION = ",.;!?"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
@@ -98,6 +166,27 @@ def parse_context_references(message: str) -> list[ContextReference]:
                 line_end=line_end,
             )
         )
+
+    # Second pass: resolve plugin-registered prefixes the built-in pattern missed
+    if _context_reference_providers:
+        for match in _PLUGIN_REFERENCE_PATTERN.finditer(message):
+            kind = match.group("kind")
+            if kind in BUILTIN_PREFIXES:
+                continue
+            # Skip if already captured by the built-in pattern
+            if any(r.kind == kind and r.start == match.start() for r in refs):
+                continue
+            if kind in _context_reference_providers:
+                value = _strip_trailing_punctuation(match.group("value") or "")
+                refs.append(
+                    ContextReference(
+                        raw=match.group(0),
+                        kind=kind,
+                        target=_strip_reference_wrappers(value),
+                        start=match.start(),
+                        end=match.end(),
+                    )
+                )
 
     return refs
 
@@ -229,6 +318,16 @@ async def _expand_reference(
             return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
+
+    # Plugin-provided context references
+    provider = _context_reference_providers.get(ref.kind)
+    if provider is not None:
+        try:
+            plugin_content = await provider.expand(ref.target)
+            if plugin_content is not None:
+                return None, f"📌 {ref.raw} ({estimate_tokens_rough(plugin_content)} tokens)\n{plugin_content}"
+        except Exception as exc:
+            return f"{ref.raw}: plugin expansion error: {exc}", None
 
     return f"{ref.raw}: unsupported reference type", None
 

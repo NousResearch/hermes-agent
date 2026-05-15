@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -156,6 +156,39 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Structural Markdown: patterns that indicate multi-sentence/structured content.
+# If any of these are present, the message is too complex for a simple text/post reply.
+_STRUCTURAL_MD_RE = re.compile(
+    r"(^#{1,6}\s)"                       # ATX headings
+    r"|(^```)"                            # code fences
+    r"|(^\s*[-*+]\s)"                     # unordered lists
+    r"|(^\s*\d+\.\s)"                     # ordered lists
+    r"|(^\|.*\|$)"                        # table rows
+    r"|(^>\s)"                            # blockquotes
+    r"|(^\s*---+?\s*$)",                  # horizontal rules
+    re.MULTILINE,
+)
+_SIMPLE_MESSAGE_MAX_LENGTH = 100
+
+def _is_simple_message(text: str) -> bool:
+    """True if content is a brief one-sentence reply that doesn't need card layout.
+
+    Simple messages go through the existing text/post pipeline. Anything
+    longer or structurally richer gets wrapped in an interactive card for
+    better rendering (no post/md bugs, native table support, consistent layout).
+    """
+    content = text.strip()
+    if not content:
+        return True
+    # Multi-line → definitely structured
+    if "\n" in content:
+        return False
+    # Contains structural markdown → not simple
+    if _STRUCTURAL_MD_RE.search(content):
+        return False
+    # Short single-line → simple acknowledgment
+    return len(content) <= _SIMPLE_MESSAGE_MAX_LENGTH
+
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -393,6 +426,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    streaming: bool = False
 
 
 @dataclass
@@ -556,6 +590,138 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _parse_markdown_table(lines: List[str], start_idx: int) -> Tuple[List[str], int]:
+    """Parse a markdown table starting at start_idx.
+
+    Returns (parsed_rows, end_idx) where each row is a list of cell strings,
+    and end_idx is the line after the last table line.
+    """
+    # Find table end
+    j = start_idx
+    while j < len(lines) and lines[j].strip().startswith("|"):
+        j += 1
+    table_lines = lines[start_idx:j]
+
+    # Parse header
+    header_line = table_lines[0].strip().strip("|")
+    headers = [h.strip() for h in header_line.split("|")]
+
+    # Parse data rows (skip separator line at index 1)
+    data_lines = table_lines[2:] if len(table_lines) > 2 else []
+    rows = []
+    for rl in data_lines:
+        cells = [c.strip() for c in rl.strip().strip("|").split("|")]
+        rows.append(cells)
+
+    return headers, rows, j
+
+
+def _build_table_element(headers: List[str], rows: List[List[str]]) -> Dict[str, Any]:
+    """Build a native Feishu card table element from parsed headers and rows."""
+    columns = []
+    for ci, header in enumerate(headers):
+        columns.append({
+            "name": f"col_{ci}",
+            "display_name": header,
+            "width": "auto",
+            "data_type": "text",
+            "horizontal_align": "center" if ci == 0 else "left",
+        })
+
+    table_rows = []
+    for row_cells in rows:
+        row = {}
+        for ci in range(len(headers)):
+            val = row_cells[ci] if ci < len(row_cells) else ""
+            row[f"col_{ci}"] = val
+        table_rows.append(row)
+
+    return {
+        "tag": "table",
+        "page_size": 20,
+        "row_height": "middle",
+        "header_style": {
+            "text_align": "center",
+            "text_size": "normal",
+            "background_style": "grey",
+            "text_color": "grey",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        "rows": table_rows,
+    }
+
+
+def _find_next_table(lines: List[str], start: int = 0) -> Optional[int]:
+    """Find the next markdown table starting from line index `start`.
+
+    Returns the line index of the table header, or None if no table found.
+    """
+    i = start
+    while i < len(lines) - 1:
+        curr = lines[i].strip()
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if curr.startswith("|") and nxt.startswith("|") and re.search(r"^[|\-:\s]+$", nxt):
+            return i
+        i += 1
+    return None
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Convert markdown content with tables into a Feishu interactive card.
+
+    Feishu text/post types cannot render markdown tables. This parses ALL
+    tables in the content and builds a card with native table components
+    for proper grid-style rendering (rows + columns, aligned, paginated).
+
+    Supports multiple tables separated by text — each gets its own native
+    table component in the card. Previously only the first table was parsed,
+    causing subsequent tables to appear as raw markdown.
+    """
+    lines = content.split("\n")
+    elements = []
+    cursor = 0
+
+    while True:
+        table_start = _find_next_table(lines, cursor)
+        if table_start is None:
+            break
+
+        # Text before this table
+        if table_start > cursor:
+            text_before = "\n".join(lines[cursor:table_start]).strip()
+            if text_before:
+                elements.append({"tag": "markdown", "content": text_before})
+
+        # Parse this table
+        headers, rows, table_end = _parse_markdown_table(lines, table_start)
+        if headers:
+            elements.append(_build_table_element(headers, rows))
+
+        cursor = table_end
+
+    # Any remaining text after last table
+    remaining = "\n".join(lines[cursor:]).strip()
+    if remaining:
+        elements.append({"tag": "markdown", "content": remaining})
+
+    if not elements:
+        # No content at all
+        return json.dumps({"config": {"wide_screen_mode": True}, "elements": [
+            {"tag": "markdown", "content": "(empty)"},
+            {"tag": "hr"},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": "Hermes Agent"}]},
+        ]}, ensure_ascii=False)
+
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [
+        {"tag": "plain_text", "content": "Hermes Agent"}]})
+
+    card = {"config": {"wide_screen_mode": True}, "elements": elements}
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -1467,6 +1633,11 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Streaming card sessions: message_id → {card_id, sequence, current_text, closed}
+        self._streaming_sessions: Dict[str, Dict[str, Any]] = {}
+        # Card Kit API token cache (avoid fetching per update)
+        self._cardkit_token: Optional[str] = None
+        self._cardkit_token_expires: float = 0
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1567,7 +1738,15 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            streaming=_to_boolean(
+                extra.get("streaming", os.getenv("FEISHU_STREAMING", "false"))
+            ),
         )
+
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:
+        """Streaming cards need explicit finalize=True to close streaming_mode."""
+        return self._settings.streaming
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
         self._app_id = settings.app_id
@@ -1766,6 +1945,20 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # Try streaming card when feishu streaming is enabled.
+        # Always create streaming card on first send (stream consumer sends
+        # small chunks progressively — threshold must be near-zero).
+        if self._settings.streaming:
+            msg_id = await self._create_streaming_card(
+                content=formatted,
+                chat_id=chat_id,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if msg_id:
+                return SendResult(success=True, message_id=msg_id)
+
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1824,6 +2017,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # Route through Card Kit streaming if this message has an active session
+        if message_id in self._streaming_sessions:
+            ok = await self._update_streaming_card(message_id, content, finalize=finalize)
+            if ok:
+                return SendResult(success=True, message_id=message_id)
+            # Fallback: if streaming update fails but session exists, try normal edit
+
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -2535,6 +2736,28 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+
+        # Built-in hook: ack_shift — silent ack write, no agent routing
+        action_value_is_dict = isinstance(action_value, dict)
+        if action_value_is_dict and action_value.get("action") == "ack_shift":
+            ack_date = action_value.get("date", "")
+            if ack_date:
+                try:
+                    from hermes_constants import get_hermes_home
+                    ack_file = get_hermes_home() / "shared" / "shift_ack_status.json"
+                    ack_file.parent.mkdir(parents=True, exist_ok=True)
+                    status = {}
+                    if ack_file.exists():
+                        status = json.loads(ack_file.read_text())
+                    status[ack_date] = {
+                        "acknowledged": True,
+                        "acknowledged_at": datetime.now().isoformat(),
+                    }
+                    ack_file.write_text(json.dumps(status, ensure_ascii=False, indent=2))
+                    logger.info("[Feishu] ack_shift: %s acknowledged silently", ack_date)
+                except Exception as exc:
+                    logger.error("[Feishu] ack_shift write failed: %s", exc)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -4232,16 +4455,21 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
+        # Simple one-sentence replies → existing text/post pipeline.
+        # Structured / multi-sentence content → interactive card for better
+        # rendering (no post/md code-block swallowing, native table support).
+        if _is_simple_message(content):
+            if _MARKDOWN_TABLE_RE.search(content):
+                payload = _build_table_card_payload(content)
+                return "interactive", payload
+            if _MARKDOWN_HINT_RE.search(content):
+                return "post", _build_markdown_post_payload(content)
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Structured content → always card, delegating to the table-card builder
+        # which handles both plain markdown and native table layouts.
+        payload = _build_table_card_payload(content)
+        return "interactive", payload
 
     async def _send_uploaded_file_message(
         self,
@@ -4319,7 +4547,7 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = False  # Always reply to main flow, never create threads
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4733,6 +4961,186 @@ class FeishuAdapter(BasePlatformAdapter):
             return _FEISHU_FILE_UPLOAD_TYPE, "file"
 
         return _FEISHU_FILE_UPLOAD_TYPE, "file"
+
+    # ── Card Kit streaming support ────────────────────────────────────
+    def _cardkit_base_url(self) -> str:
+        if self._domain_name == "lark":
+            return "https://open.larksuite.com/open-apis"
+        return "https://open.feishu.cn/open-apis"
+
+    async def _cardkit_refresh_token(self) -> str:
+        now = time.time()
+        if self._cardkit_token and now < self._cardkit_token_expires - 120:
+            return self._cardkit_token
+        body = json.dumps({"app_id": self._app_id, "app_secret": self._app_secret}).encode()
+        req = Request(
+            f"{self._cardkit_base_url()}/auth/v3/tenant_access_token/internal",
+            data=body, headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            token = data.get("tenant_access_token", "")
+            expire = data.get("expire", 7200)
+            self._cardkit_token = token
+            self._cardkit_token_expires = now + expire
+            return token
+        except Exception as exc:
+            logger.warning("[Feishu] Card Kit token refresh failed: %s", exc)
+            return self._cardkit_token or ""
+
+    async def _create_streaming_card(
+        self, content: str, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict]
+    ) -> Optional[str]:
+        """Create a streaming card and send it. Returns message_id on success."""
+        token = await self._cardkit_refresh_token()
+        if not token:
+            return None
+        base = self._cardkit_base_url()
+        card_json = json.dumps({
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "streaming_config": {
+                    "print_frequency_ms": {"default": 80},
+                    "print_step": {"default": 2},
+                },
+                "summary": {"content": "Match 正在回复..."},
+            },
+            "body": {"elements": [{"tag": "markdown", "content": content, "element_id": "content"}]},
+        }, ensure_ascii=False)
+        payload = json.dumps({"type": "card_json", "data": card_json}, ensure_ascii=False).encode("utf-8")
+        req = Request(
+            f"{base}/cardkit/v1/cards",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        try:
+            with urlopen(req, timeout=15) as resp:
+                create_data = json.loads(resp.read())
+        except Exception as exc:
+            logger.warning("[Feishu] Create streaming card failed: %s", exc)
+            return None
+        if create_data.get("code") != 0:
+            logger.warning("[Feishu] Create streaming card error: %s", create_data.get("msg", ""))
+            return None
+        card_id = create_data.get("data", {}).get("card_id")
+        if not card_id:
+            return None
+        card_content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        send_res = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=card_content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        message_id = self._extract_response_field(send_res, "message_id")
+        if message_id:
+            self._streaming_sessions[message_id] = {
+                "card_id": card_id,
+                "sequence": 1,
+                "current_text": content,
+                "closed": False,
+            }
+            logger.info("[Feishu] Streaming card created: card_id=%s, message_id=%s", card_id, message_id)
+            return message_id
+        await self._close_streaming_card_raw(card_id, token, base, content)
+        return None
+
+    async def _update_streaming_card(self, message_id: str, text: str, *, finalize: bool = False) -> bool:
+        session = self._streaming_sessions.get(message_id)
+        if not session or session["closed"]:
+            return False
+        card_id = session["card_id"]
+        token = await self._cardkit_refresh_token()
+        if not token:
+            return False
+        base = self._cardkit_base_url()
+        session["sequence"] += 1
+        seq = session["sequence"]
+        payload = json.dumps({
+            "content": text,
+            "sequence": seq,
+            "uuid": f"s_{card_id}_{seq}",
+        }, ensure_ascii=False).encode("utf-8")
+        req = Request(
+            f"{base}/cardkit/v1/cards/{card_id}/elements/content/content",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            method="PUT",
+        )
+        try:
+            with urlopen(req, timeout=10) as resp:
+                resp_data = json.loads(resp.read())
+            if resp_data.get("code") != 0:
+                logger.warning("[Feishu] Update streaming card '%s': %s", card_id, resp_data.get("msg", ""))
+                return False
+            session["current_text"] = text
+        except Exception as exc:
+            logger.warning("[Feishu] Update streaming card failed: %s", exc)
+            session["current_text"] = text  # still track last text even on failure
+            return False
+        if finalize:
+            await self._close_streaming_card(message_id, text)
+        return True
+
+    async def _close_streaming_card(self, message_id: str, final_text: str) -> None:
+        session = self._streaming_sessions.get(message_id)
+        if not session or session["closed"]:
+            return
+        session["closed"] = True
+        card_id = session.get("card_id", "")
+        if not card_id:
+            return
+        token = await self._cardkit_refresh_token()
+        if not token:
+            return
+        base = self._cardkit_base_url()
+        await self._close_streaming_card_raw(card_id, token, base, final_text)
+
+    async def _close_streaming_card_raw(
+        self, card_id: str, token: str, base: str, final_text: str
+    ) -> None:
+        summary = final_text[:150].replace("\n", " ").strip() if final_text else ""
+        seq = self._streaming_sessions.get(
+            next((m for m, s in self._streaming_sessions.items() if s.get("card_id") == card_id), ""),
+            {}
+        ).get("sequence", 1) + 1
+        payload = json.dumps({
+            "settings": json.dumps({
+                "config": {
+                    "streaming_mode": False,
+                    "summary": {"content": summary or "[Done]"},
+                },
+            }, ensure_ascii=False),
+            "sequence": seq,
+            "uuid": f"c_{card_id}_{seq}",
+        }, ensure_ascii=False).encode("utf-8")
+        req = Request(
+            f"{base}/cardkit/v1/cards/{card_id}/settings",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            method="PATCH",
+        )
+        try:
+            with urlopen(req, timeout=10) as resp:
+                json.loads(resp.read())
+            logger.info("[Feishu] Streaming card closed: card_id=%s", card_id)
+        except Exception as exc:
+            logger.warning("[Feishu] Close streaming card '%s' failed: %s", card_id, exc)
+        for mid, sess in list(self._streaming_sessions.items()):
+            if sess.get("card_id") == card_id:
+                del self._streaming_sessions[mid]
 
 
 # =============================================================================

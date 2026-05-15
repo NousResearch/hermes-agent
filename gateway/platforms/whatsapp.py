@@ -493,13 +493,45 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
+            self._set_fatal_error(
+                "whatsapp_node_missing",
+                "Node.js is not installed — install Node.js and re-run `hermes gateway`.",
+                retryable=False,
+            )
             return False
         
         bridge_path = Path(self._bridge_script)
         if not bridge_path.exists():
             logger.warning("[%s] Bridge script not found: %s", self.name, bridge_path)
+            self._set_fatal_error(
+                "whatsapp_bridge_missing",
+                f"WhatsApp bridge script missing at {bridge_path}.",
+                retryable=False,
+            )
             return False
-        
+
+        # Pre-flight: skip the 30s bridge bootstrap entirely if the user
+        # never finished pairing.  Without creds.json the bridge prints
+        # QR codes to its log file and never reaches status:connected,
+        # so every gateway restart paid the 30s timeout + queued WhatsApp
+        # for indefinite retries.  Mark non-retryable so the user gets a
+        # clear "run hermes whatsapp" message instead of the watcher
+        # silently hammering an unconfigured platform.
+        creds_path = self._session_path / "creds.json"
+        if not creds_path.exists():
+            logger.warning(
+                "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
+                "Run `hermes whatsapp` to pair, or remove WHATSAPP_ENABLED from "
+                "your .env to disable.",
+                self.name, creds_path,
+            )
+            self._set_fatal_error(
+                "whatsapp_not_paired",
+                "WhatsApp enabled but not paired — run `hermes whatsapp` to pair.",
+                retryable=False,
+            )
+            return False
+
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
         # Acquire scoped lock to prevent duplicate sessions

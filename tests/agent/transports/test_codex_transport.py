@@ -117,13 +117,8 @@ class TestCodexBuildKwargs:
             session_id="conv-xai-1",
             is_xai_responses=True,
         )
-        # Top-level prompt_cache_key must NOT be set for xAI — the SDK
-        # signature drop is what motivated the extra_body indirection in
-        # the first place. The cache-routing field must travel in the
-        # body via extra_body.
         assert "prompt_cache_key" not in kw
         assert kw.get("extra_body", {}).get("prompt_cache_key") == "conv-xai-1"
-        # Header kept as belt-and-braces.
         assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-xai-1"
 
     def test_xai_responses_extra_body_preserves_caller_fields(self, transport):

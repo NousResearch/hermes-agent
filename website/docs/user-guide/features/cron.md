@@ -522,6 +522,86 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 
 When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
 
+#### Recipes: cheap pre-run gates
+
+The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should spend any LLM tokens at all. Three patterns cover most use cases.
+
+**File-change gate** — only run when a watched file has new content since the last successful tick. The scheduler records each job's `last_run_at`; compare it against the file's mtime.
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/feed-changed.sh
+FEED="$HOME/data/feed.json"
+STATE="$HOME/.hermes/scripts/.feed-changed.last"
+test -f "$FEED" || { echo '{"wakeAgent": false}'; exit 0; }
+mtime=$(stat -c %Y "$FEED")
+last=$(cat "$STATE" 2>/dev/null || echo 0)
+if [ "$mtime" -le "$last" ]; then
+  echo '{"wakeAgent": false}'
+else
+  echo "$mtime" > "$STATE"
+  echo '{"wakeAgent": true}'
+fi
+```
+
+```text
+cronjob(action="create", name="process-feed",
+        schedule="every 30m",
+        script="feed-changed.sh",
+        prompt="A new ~/data/feed.json has landed. Summarize what changed.")
+```
+
+**External-flag gate** — only run when some other process has signalled readiness (e.g. a deploy hook drops a file, a CI job sets a value in your state store).
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/flag-ready.sh
+if test -f /tmp/new-data-ready; then
+  rm -f /tmp/new-data-ready
+  echo '{"wakeAgent": true}'
+else
+  echo '{"wakeAgent": false}'
+fi
+```
+
+```text
+cronjob(action="create", name="nightly-analysis",
+        schedule="0 9 * * *",
+        script="flag-ready.sh",
+        prompt="Run the nightly analysis over today's batch.")
+```
+
+**SQL-count gate** — only run when there are new rows to process in your own database. The script can also pass the count through to the agent via `context`, so the agent knows how much it's looking at without re-querying.
+
+```python
+#!/usr/bin/env python
+# ~/.hermes/scripts/new-rows.py
+import json, sqlite3
+conn = sqlite3.connect("/home/me/data/app.db")
+n = conn.execute(
+    "SELECT COUNT(*) FROM messages WHERE ts > strftime('%s','now','-2 hours')"
+).fetchone()[0]
+if n < 1:
+    print(json.dumps({"wakeAgent": False}))
+else:
+    print(json.dumps({"wakeAgent": True, "context": {"new_rows": n}}))
+```
+
+```text
+cronjob(action="create", name="summarize-new-msgs",
+        schedule="every 2h",
+        script="new-rows.py",
+        prompt="Summarize the new messages from the last 2 hours.")
+```
+
+The same pattern works for any data source you can query from a script — Postgres, an HTTP API, your own state store — without baking a SQL evaluator into the cron subsystem.
+
+:::tip
+Hermes's own `~/.hermes/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
+:::
+
+Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/NousResearch/hermes-agent/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
+
 ### Chaining jobs: `context_from`
 
 A cron job can consume the most recent successful output of one or more other jobs by listing their names (or IDs) in `context_from`:

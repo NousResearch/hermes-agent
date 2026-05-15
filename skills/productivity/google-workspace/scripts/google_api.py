@@ -62,6 +62,11 @@ def _has_trailing_path_separator(value: str) -> bool:
     return value.endswith((os.sep, os.altsep)) if os.altsep else value.endswith(os.sep)
 
 
+def _validate_drive_download_filename(name: str, *, label: str) -> None:
+    if name in {"", ".", ".."}:
+        raise ValueError(f"Unsafe Drive download {label}: path must end with a filename")
+
+
 def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = "") -> Path:
     """Return a cwd-confined, write-safe local path for Drive downloads."""
     if output:
@@ -101,26 +106,57 @@ def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = 
     return resolved
 
 
-def _assert_no_parent_symlinks(path: Path, cwd: Path) -> None:
-    """Raise ValueError if any directory component between *cwd* and *path.parent* is a symlink.
+def _open_drive_download_destination(path: Path, cwd: Path):
+    """Open a Drive download destination without following symlinks in any path component.
 
-    Call this immediately before opening *path* to guard against TOCTOU
-    symlink substitution attacks on newly-created parent directories.
+    Parent directories are created and opened component-by-component via
+    dir_fd-relative operations. Each directory component is opened with
+    O_NOFOLLOW, and the final file is opened with O_NOFOLLOW relative to the
+    already-open parent directory. This avoids symlink-swap races between path
+    validation, parent creation, and the final file open.
     """
-    current = path.parent
-    visited: set[Path] = set()
-    while current not in visited:
-        visited.add(current)
-        if current.is_symlink():
-            raise ValueError(
-                f"Drive download path component is a symlink: {current}; refusing to write"
-            )
-        if current == cwd:
-            break
-        parent = current.parent
-        if parent == current:  # filesystem root — stop regardless of cwd
-            break
-        current = parent
+    try:
+        relative = path.relative_to(cwd)
+    except ValueError as exc:
+        raise ValueError("Unsafe Drive download output path escapes the current directory") from exc
+
+    parts = relative.parts
+    if not parts:
+        raise ValueError("Unsafe Drive download output: path must end with a filename")
+
+    for part in parts:
+        _validate_drive_download_filename(part, label="path component")
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    nofollow_directory_flags = directory_flags | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_TRUNC
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+    dir_fd = os.open(str(cwd), directory_flags)
+    try:
+        for component in parts[:-1]:
+            try:
+                os.mkdir(component, 0o777, dir_fd=dir_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(component, nofollow_directory_flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        fd = os.open(parts[-1], file_flags, 0o666, dir_fd=dir_fd)
+    except OSError as exc:
+        raise ValueError(
+            f"Unsafe Drive download output path contains a symlink or non-directory component: {path}"
+        ) from exc
+    finally:
+        os.close(dir_fd)
+
+    return os.fdopen(fd, "wb")
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -748,19 +784,12 @@ def drive_download(args):
     else:
         request = service.files().get_media(fileId=args.file_id)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     cwd = Path.cwd().resolve()
     try:
-        _assert_no_parent_symlinks(out_path, cwd)
+        fh = _open_drive_download_destination(out_path, cwd)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
-    fd = os.open(
-        str(out_path),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-        0o666,
-    )
-    fh = os.fdopen(fd, "wb")
     try:
         downloader = MediaIoBaseDownload(fh, request)
         done = False

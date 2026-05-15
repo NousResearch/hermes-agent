@@ -344,8 +344,8 @@ def test_drive_download_writes_sanitized_remote_name_inside_cwd(api_module, tmp_
     assert not outside_target.exists()
 
 
-def test_assert_no_parent_symlinks_rejects_symlink_component(api_module, tmp_path):
-    """_assert_no_parent_symlinks raises when a parent directory is a symlink."""
+def test_open_drive_download_destination_rejects_symlink_parent(api_module, tmp_path):
+    """_open_drive_download_destination rejects symlinks in parent components."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     target = tmp_path / "target"
@@ -355,20 +355,37 @@ def test_assert_no_parent_symlinks_rejects_symlink_component(api_module, tmp_pat
     link.symlink_to(target)
 
     path = cwd / "link" / "file.txt"
-    with pytest.raises(ValueError, match="symlink"):
-        api_module._assert_no_parent_symlinks(path, cwd)
+    with pytest.raises(ValueError, match="symlink|non-directory"):
+        api_module._open_drive_download_destination(path, cwd)
 
 
-def test_assert_no_parent_symlinks_allows_real_parents(api_module, tmp_path):
-    """_assert_no_parent_symlinks does not raise for real (non-symlink) parents."""
+def test_open_drive_download_destination_creates_real_parents(api_module, tmp_path):
+    """_open_drive_download_destination creates and writes through real parent dirs."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
-    real_dir = cwd / "real"
-    real_dir.mkdir()
 
-    path = real_dir / "file.txt"
-    # Should not raise
-    api_module._assert_no_parent_symlinks(path, cwd)
+    path = cwd / "real" / "nested" / "file.txt"
+    with api_module._open_drive_download_destination(path, cwd) as fh:
+        fh.write(b"payload")
+
+    assert path.read_bytes() == b"payload"
+    assert path.parent.is_dir()
+
+
+def test_open_drive_download_destination_rejects_final_symlink(api_module, tmp_path):
+    """_open_drive_download_destination rejects a symlink as the final file."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+
+    link = cwd / "file.txt"
+    link.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink|non-directory"):
+        api_module._open_drive_download_destination(link, cwd)
+
+    assert outside.read_text() == "outside"
 
 
 def test_drive_download_rejects_symlink_parent_after_mkdir(api_module, tmp_path, monkeypatch):

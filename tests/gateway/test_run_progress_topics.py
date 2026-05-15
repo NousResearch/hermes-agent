@@ -58,6 +58,26 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class RolloverProgressCaptureAdapter(ProgressCaptureAdapter):
+    MAX_MESSAGE_LENGTH = 45
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._message_counter = 0
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self._message_counter += 1
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=f"progress-{self._message_counter}")
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -116,6 +136,25 @@ class DelayedProgressAgent:
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class TelegramRolloverAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        time.sleep(1.65)
+        self.tool_progress_callback("tool.started", "terminal", "second longer", {})
+        time.sleep(1.65)
+        self.tool_progress_callback("tool.started", "terminal", "x", {})
+        time.sleep(0.2)
         return {
             "final_response": "done",
             "messages": [],
@@ -251,6 +290,54 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
     assert adapter.sent
     assert adapter.sent[0]["metadata"] is None
     assert all(call["metadata"] is None for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_telegram_progress_rolls_over_before_edit_overflow(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TelegramRolloverAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = RolloverProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-rollover",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    progress_sends = [call["content"] for call in adapter.sent if call["content"] != "done"]
+    progress_edits = adapter.edits
+
+    assert result["final_response"] == "done"
+    assert progress_sends[:2] == [
+        '💻 terminal: "first command"',
+        '💻 terminal: "second longer"',
+    ]
+    assert progress_edits, "expected the newest rollover bubble to remain editable"
+    assert progress_edits[-1]["message_id"] == "progress-2"
+    assert progress_edits[-1]["content"] == '💻 terminal: "second longer"\n💻 terminal: "x"'
 
 
 @pytest.mark.asyncio

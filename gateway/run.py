@@ -670,6 +670,32 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _platform_message_limit(adapter: Any) -> Optional[int]:
+    """Return the platform message limit used for progressive edits, if known."""
+    limit = getattr(adapter, "MAX_MESSAGE_LENGTH", None)
+    if limit is None:
+        return None
+    try:
+        parsed = int(limit)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _platform_message_len_fn(adapter: Any):
+    """Return the platform-aware length function for outbound text."""
+    fn = getattr(adapter, "message_len_fn", None)
+    return fn if callable(fn) else len
+
+
+def _text_exceeds_platform_limit(adapter: Any, text: str) -> bool:
+    """Whether *text* would exceed the adapter's single-message edit budget."""
+    limit = _platform_message_limit(adapter)
+    if limit is None:
+        return False
+    return _platform_message_len_fn(adapter)(text) > limit
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -14647,12 +14673,17 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                    rollover_line = None
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
-                        if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                        msg = progress_lines[-1] if progress_lines else base_msg
+                        msg = f"{base_msg} (×{count + 1})"
+                        candidate_lines = (
+                            [*progress_lines[:-1], msg]
+                            if progress_lines
+                            else [msg]
+                        )
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -14669,7 +14700,26 @@ class GatewayRunner:
                         continue
                     else:
                         msg = raw
-                        progress_lines.append(msg)
+                        candidate_lines = [*progress_lines, msg]
+
+                    if (
+                        can_edit
+                        and progress_msg_id is not None
+                        and progress_lines
+                        and _text_exceeds_platform_limit(
+                            adapter,
+                            "\n".join(candidate_lines),
+                        )
+                    ):
+                        # Start a fresh progress bubble before we overflow the
+                        # platform edit limit. Telegram can split oversized
+                        # edits reactively, but live tool-progress updates need
+                        # a stable "current bubble" so later edits don't keep
+                        # replaying the full historical transcript into older
+                        # messages.
+                        rollover_line = msg
+                    else:
+                        progress_lines = candidate_lines
 
                     # Throttle edits: batch rapid tool updates into fewer
                     # API calls to avoid hitting Telegram flood control.
@@ -14687,7 +14737,22 @@ class GatewayRunner:
                     if not _run_still_current():
                         return
 
-                    if can_edit and progress_msg_id is not None:
+                    if rollover_line is not None:
+                        result = await adapter.send(
+                            chat_id=source.chat_id,
+                            content=rollover_line,
+                            reply_to=_progress_reply_to,
+                            metadata=_progress_metadata,
+                        )
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                            progress_lines = [rollover_line]
+                            if _cleanup_progress:
+                                _cleanup_msg_ids.append(str(result.message_id))
+                        else:
+                            can_edit = False
+                            progress_lines = [rollover_line]
+                    elif can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
                         result = await adapter.edit_message(
@@ -14695,7 +14760,9 @@ class GatewayRunner:
                             message_id=progress_msg_id,
                             content=full_text,
                         )
-                        if not result.success:
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                        elif not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — disable further edits,

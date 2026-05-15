@@ -1663,7 +1663,17 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-            
+
+            # Re-trigger typing indicator after sending a message.
+            # Telegram clears the typing state when a new message is delivered,
+            # so without this the "...typing" bubble disappears mid-response
+            # (especially noticeable when the agent sends intermediate progress
+            # messages like "Checking:" before running tools).
+            try:
+                await self.send_typing(chat_id, metadata=metadata)
+            except Exception:
+                pass  # Typing failures are non-fatal
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,

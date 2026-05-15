@@ -664,6 +664,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     if delivery_errors:
         return "; ".join(delivery_errors)
+
+    # -----------------------------------------------------------------
+    # Publish to Hermes Internal Message Bus for durable logging and reactive
+    # delivery via MQTT. Runs after adaptive delivery succeeds.
+    # -----------------------------------------------------------------
+    try:
+        from hermes_event_bus import publish_event
+        priority = 2 if content and content.lstrip().startswith("⚠") else 5
+        publish_event(
+            category="system",
+            event_type="cron_output",
+            priority=priority,
+            payload={
+                "content": content,
+                "job_id": job.get("id", ""),
+                "job_name": job.get("name", ""),
+                "targets": targets,
+                "delivery_method": "legacy",
+            },
+            target_agent="phoenix" if targets else "broadcast",
+        )
+    except Exception:
+        pass  # fail-open
+
     return None
 
 

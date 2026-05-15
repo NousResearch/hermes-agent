@@ -431,6 +431,32 @@ def _query_codex_plugins(
     return out, None
 
 
+def _is_safe_hermes_home(value: str) -> bool:
+    """Reject HERMES_HOME values that would corrupt the user's persistent
+    ~/.codex/config.toml if embedded.
+
+    The migrate() output is written to the user's real codex config and
+    survives across runs. If a test or stray invocation has set
+    HERMES_HOME to an ephemeral path (a pytest tempdir, a deleted dir),
+    embedding that string verbatim points codex's later MCP subprocess
+    spawn at a directory that no longer exists, silently breaking every
+    codex-routed hermes tool call. See #26250.
+    """
+    if not value:
+        return False
+    p = Path(value)
+    if not p.is_dir():
+        return False
+    # Reject pytest tempdir ancestors. pytest-of-<user>/pytest-<N>/popen-gw*
+    # is the canonical leaked path; the prefix `pytest-` covers both pytest
+    # and pytest-xdist worker dirs on macOS (/private/var/folders/...) and
+    # Linux (/tmp/...).
+    for part in p.resolve().parts:
+        if part.startswith("pytest-of-") or part.startswith("pytest-"):
+            return False
+    return True
+
+
 def _build_hermes_tools_mcp_entry() -> dict:
     """Build the codex stdio-transport entry that launches Hermes' own
     tool surface as an MCP server. Codex's subprocess will call back into
@@ -444,10 +470,20 @@ def _build_hermes_tools_mcp_entry() -> dict:
 
     env: dict[str, str] = {}
     # HERMES_HOME passes through if set so the MCP subprocess sees the
-    # same config / auth / sessions DB as the parent CLI.
+    # same config / auth / sessions DB as the parent CLI. Validated first
+    # because the value lands in the user's persistent ~/.codex/config.toml
+    # — a leaked pytest tempdir there would silently brick codex-routed
+    # hermes tool calls until the user hand-fixes the file (#26250).
     hermes_home = os.environ.get("HERMES_HOME")
-    if hermes_home:
+    if hermes_home and _is_safe_hermes_home(hermes_home):
         env["HERMES_HOME"] = hermes_home
+    elif hermes_home:
+        logger.warning(
+            "Not embedding HERMES_HOME=%r in ~/.codex/config.toml: path "
+            "is missing or looks ephemeral. The codex MCP subprocess will "
+            "resolve its own HERMES_HOME on startup.",
+            hermes_home,
+        )
     # PYTHONPATH passes through so a worktree-launched hermes finds the
     # branch's modules instead of the installed package.
     pythonpath = os.environ.get("PYTHONPATH")

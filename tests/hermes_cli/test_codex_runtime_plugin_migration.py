@@ -635,3 +635,99 @@ class TestMigrate:
         assert "Migrated 2 MCP server(s)" in summary
         assert "- a" in summary
         assert "- b" in summary
+
+
+# ---- HERMES_HOME passthrough validation (#26250 Bug C) ----
+
+class TestHermesHomePassthrough:
+    """Validate that _build_hermes_tools_mcp_entry refuses to embed an
+    ephemeral HERMES_HOME into the user's persistent ~/.codex/config.toml.
+
+    The migrate() output survives across runs. A stray pytest tempdir or
+    deleted directory leaked from os.environ would point codex's later
+    MCP subprocess spawn at a path that no longer exists, silently breaking
+    every codex-routed hermes tool call. See #26250.
+    """
+
+    def test_safe_helper_accepts_real_directory(self):
+        from hermes_cli.codex_runtime_plugin_migration import _is_safe_hermes_home
+        # Use this test file's repo root — reliably a real directory and
+        # never under a pytest-of-* hierarchy.
+        repo_root = Path(__file__).resolve().parents[2]
+        assert repo_root.is_dir()
+        assert _is_safe_hermes_home(str(repo_root)) is True
+
+    def test_safe_helper_rejects_empty(self):
+        from hermes_cli.codex_runtime_plugin_migration import _is_safe_hermes_home
+        assert _is_safe_hermes_home("") is False
+
+    def test_safe_helper_rejects_missing_path(self, tmp_path):
+        from hermes_cli.codex_runtime_plugin_migration import _is_safe_hermes_home
+        missing = tmp_path / "does-not-exist"
+        assert _is_safe_hermes_home(str(missing)) is False
+
+    def test_safe_helper_rejects_pytest_tempdir(self, tmp_path):
+        """tmp_path itself lives under pytest-of-<user>/pytest-<N>/ —
+        if the helper accepts it, real pytest tempdirs leak through."""
+        from hermes_cli.codex_runtime_plugin_migration import _is_safe_hermes_home
+        assert _is_safe_hermes_home(str(tmp_path)) is False
+
+    def test_build_entry_skips_pytest_tempdir(self, tmp_path, monkeypatch):
+        from hermes_cli.codex_runtime_plugin_migration import (
+            _build_hermes_tools_mcp_entry,
+        )
+        # Simulate a real test-run leak: HERMES_HOME points at a pytest tempdir.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert "HERMES_HOME" not in env, (
+            "pytest tempdir HERMES_HOME must not be embedded in codex config"
+        )
+
+    def test_build_entry_skips_missing_path(self, tmp_path, monkeypatch):
+        from hermes_cli.codex_runtime_plugin_migration import (
+            _build_hermes_tools_mcp_entry,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nope"))
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert "HERMES_HOME" not in env
+
+    def test_build_entry_skips_unset(self, monkeypatch):
+        from hermes_cli.codex_runtime_plugin_migration import (
+            _build_hermes_tools_mcp_entry,
+        )
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert "HERMES_HOME" not in env
+
+    def test_migrate_does_not_leak_pytest_tempdir_into_config(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: a pytest-tempdir HERMES_HOME in the calling process's
+        environment must NOT appear in the rendered ~/.codex/config.toml.
+
+        Regression guard for the #26250 repro: another test set
+        monkeypatch.setenv("HERMES_HOME", "<pytest tempdir>") on its own
+        worker, then crs.apply() called migrate() against the real
+        Path.home()/".codex" — leaking the tempdir into the user's
+        persistent codex config.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "leaked"))
+        (tmp_path / "leaked").mkdir()  # exists but under pytest-of-*
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        report = migrate(
+            {}, codex_home=codex_home,
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=True,
+        )
+        assert report.written
+        text = (codex_home / "config.toml").read_text()
+        assert "[mcp_servers.hermes-tools]" in text
+        assert "leaked" not in text, (
+            f"HERMES_HOME pytest tempdir leaked into config.toml:\n{text}"
+        )
+        assert "HERMES_HOME" not in text

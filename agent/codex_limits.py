@@ -356,12 +356,38 @@ def discover_auth(paths: list[Path]) -> AuthMaterial:
     return AuthMaterial()
 
 
-def resolve_hermes_codex_auth() -> AuthMaterial:
-    """Resolve a fresh Codex token from Hermes auth, refreshing if needed."""
+def resolve_hermes_codex_auth(*, force_refresh: bool = False) -> AuthMaterial:
+    """Resolve a fresh Codex token from Hermes auth, refreshing if needed.
+
+    Prefer the multi-credential pool because normal OpenAI-Codex inference uses
+    it too.  Falling back to the singleton provider store keeps compatibility
+    with older installs that have not migrated to credential pools yet.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("openai-codex")
+        entry = pool.select()
+        if force_refresh and entry is not None:
+            refreshed = pool.try_refresh_current()
+            if refreshed is not None:
+                entry = refreshed
+        if entry is not None:
+            token = str(entry.access_token or "").strip()
+            if token:
+                label = str(entry.label or entry.id or "pool").strip()
+                return AuthMaterial(
+                    access_token=token,
+                    account_id=chatgpt_account_id_from_jwt(token),
+                    source=f"credential-pool:{label}",
+                )
+    except Exception:
+        pass
+
     try:
         from hermes_cli.auth import resolve_codex_runtime_credentials
 
-        creds = resolve_codex_runtime_credentials()
+        creds = resolve_codex_runtime_credentials(force_refresh=force_refresh)
     except Exception:
         return AuthMaterial()
     token = creds.get("api_key")
@@ -399,8 +425,27 @@ def fetch_wham(timeout: int, usage_url: str, auth_paths: list[Path] | None = Non
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            raise RuntimeError(f"wham/usage rejected the token with HTTP {exc.code}; refresh Codex login") from exc
-        raise RuntimeError(f"wham/usage request failed with HTTP {exc.code}") from exc
+            refreshed_auth = resolve_hermes_codex_auth(force_refresh=True)
+            if refreshed_auth.access_token:
+                retry_headers = dict(headers)
+                retry_headers["Authorization"] = f"Bearer {refreshed_auth.access_token}"
+                retry_headers.pop("ChatGPT-Account-ID", None)
+                if refreshed_auth.account_id:
+                    retry_headers["ChatGPT-Account-ID"] = refreshed_auth.account_id
+                retry_request = urllib.request.Request(usage_url, headers=retry_headers, method="GET")
+                try:
+                    with urllib.request.urlopen(retry_request, timeout=timeout) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                except urllib.error.HTTPError as retry_exc:
+                    if retry_exc.code in (401, 403):
+                        raise RuntimeError(
+                            f"wham/usage rejected the refreshed token with HTTP {retry_exc.code}; refresh Codex login"
+                        ) from retry_exc
+                    raise RuntimeError(f"wham/usage request failed with HTTP {retry_exc.code}") from retry_exc
+            else:
+                raise RuntimeError(f"wham/usage rejected the token with HTTP {exc.code}; refresh Codex login") from exc
+        else:
+            raise RuntimeError(f"wham/usage request failed with HTTP {exc.code}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("wham/usage response was not a JSON object")
     return payload

@@ -128,7 +128,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("limits", "Show Codex subscription rate limits", "Info",
                aliases=("codex-limits", "climits"),
-               args_hint="[--provider auto|app-server|wham] [--json]"),
+               args_hint="[--provider auto|app-server|wham] [--timeout seconds] [--json]"),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

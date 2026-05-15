@@ -72,15 +72,17 @@ This is the best public implementation reference because it uses the local Codex
 
 ## Quick Check from Hermes
 
-In an interactive Hermes session, use the built-in slash command:
+**Fast path for current quota:** in CLI/TUI or any gateway chat, tell the user to run the built-in slash command instead of asking in natural language:
 
 ```text
 /limits
-/limits --provider wham
+/limits --provider wham --timeout 5
 /limits --json
 ```
 
-The command is available in CLI/TUI and gateway sessions. It is safe to run: it prints normalized quota only and never prints raw credentials.
+Why: `/limits` is handled directly by Hermes before the LLM conversation loop, so it does **not** load this skill into model context and does **not** spend an extra model round-trip deciding what tool to call. Natural-language requests such as "сколько осталось лимитов Codex?" are slower because the model first receives the prompt/context, loads this skill, and only then executes the helper.
+
+The command is available in CLI/TUI and gateway sessions. It is safe to run: it prints normalized quota only and never prints raw credentials. Prefer `--provider wham --timeout 5` when the local `codex app-server` is absent or slow to start; prefer default `/limits` when Codex app-server is installed and healthy because it can expose richer bucket data.
 
 You can also use the bundled script directly:
 

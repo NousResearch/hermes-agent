@@ -13614,10 +13614,15 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
             SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(input_tokens), 0) as input_tokens,
+                   COALESCE(SUM(output_tokens), 0) as output_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+                   COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                   COALESCE(SUM(input_tokens), 0)
+                     + COALESCE(SUM(output_tokens), 0)
+                     + COALESCE(SUM(cache_read_tokens), 0)
+                     + COALESCE(SUM(cache_write_tokens), 0) as total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
                    COUNT(*) as sessions,
@@ -13629,21 +13634,33 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
 
         cur2 = db._conn.execute("""
             SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
+                   COALESCE(SUM(input_tokens), 0) as input_tokens,
+                   COALESCE(SUM(output_tokens), 0) as output_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+                   COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                   COALESCE(SUM(input_tokens), 0)
+                     + COALESCE(SUM(output_tokens), 0)
+                     + COALESCE(SUM(cache_read_tokens), 0)
+                     + COALESCE(SUM(cache_write_tokens), 0) as total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            GROUP BY model ORDER BY total_tokens DESC
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
         cur3 = db._conn.execute("""
-            SELECT SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
+            SELECT COALESCE(SUM(input_tokens), 0) as total_input,
+                   COALESCE(SUM(output_tokens), 0) as total_output,
+                   COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
+                   COALESCE(SUM(cache_write_tokens), 0) as total_cache_write,
+                   COALESCE(SUM(reasoning_tokens), 0) as total_reasoning,
+                   COALESCE(SUM(input_tokens), 0)
+                     + COALESCE(SUM(output_tokens), 0)
+                     + COALESCE(SUM(cache_read_tokens), 0)
+                     + COALESCE(SUM(cache_write_tokens), 0) as total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
@@ -13690,20 +13707,30 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
         cur = db._conn.execute("""
             SELECT model,
                    billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(input_tokens), 0) as input_tokens,
+                   COALESCE(SUM(output_tokens), 0) as output_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+                   COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                   COALESCE(SUM(input_tokens), 0)
+                     + COALESCE(SUM(output_tokens), 0)
+                     + COALESCE(SUM(cache_read_tokens), 0)
+                     + COALESCE(SUM(cache_write_tokens), 0) as total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls,
                    SUM(tool_call_count) as tool_calls,
                    MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
+                   AVG(
+                       COALESCE(input_tokens, 0)
+                       + COALESCE(output_tokens, 0)
+                       + COALESCE(cache_read_tokens, 0)
+                       + COALESCE(cache_write_tokens, 0)
+                   ) as avg_tokens_per_session
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
             GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            ORDER BY total_tokens DESC
         """, (cutoff,))
         raw_rows = [dict(r) for r in cur.fetchall()]
 
@@ -13717,6 +13744,30 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
         for row in raw_rows:
             rows_by_model.setdefault(row.get("model") or "", []).append(row)
 
+        accounted_usage_keys = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+            "estimated_cost",
+            "actual_cost",
+            "api_calls",
+            "tool_calls",
+        )
+
+        def has_accounted_usage(row: Dict[str, Any]) -> bool:
+            return any((row.get(key) or 0) != 0 for key in accounted_usage_keys)
+
+        def tracked_token_total(row: Dict[str, Any]) -> float:
+            return row.get("total_tokens") or (
+                (row.get("input_tokens") or 0)
+                + (row.get("output_tokens") or 0)
+                + (row.get("cache_read_tokens") or 0)
+                + (row.get("cache_write_tokens") or 0)
+            )
+
         rows: List[Dict[str, Any]] = []
         for model_rows in rows_by_model.values():
             provider_rows = [r for r in model_rows if r.get("billing_provider")]
@@ -13725,51 +13776,23 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 for row in model_rows:
                     if row is target or row.get("billing_provider"):
                         continue
-                    has_usage = any(
-                        (row.get(key) or 0) != 0
-                        for key in (
-                            "input_tokens",
-                            "output_tokens",
-                            "cache_read_tokens",
-                            "reasoning_tokens",
-                            "estimated_cost",
-                            "actual_cost",
-                            "api_calls",
-                            "tool_calls",
-                        )
-                    )
-                    if has_usage:
+                    if has_accounted_usage(row):
                         continue
                     target["sessions"] = (target.get("sessions") or 0) + (row.get("sessions") or 0)
                     target["last_used_at"] = max(target.get("last_used_at") or 0, row.get("last_used_at") or 0)
-                    total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+                    total_tokens = tracked_token_total(target)
                     sessions = target.get("sessions") or 0
                     target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
                 rows.append(target)
                 rows.extend(
                     r for r in model_rows
                     if r is not target
-                    and (r.get("billing_provider") or any(
-                        (r.get(key) or 0) != 0
-                        for key in (
-                            "input_tokens",
-                            "output_tokens",
-                            "cache_read_tokens",
-                            "reasoning_tokens",
-                            "estimated_cost",
-                            "actual_cost",
-                            "api_calls",
-                            "tool_calls",
-                        )
-                    ))
+                    and (r.get("billing_provider") or has_accounted_usage(r))
                 )
             else:
                 rows.extend(model_rows)
 
-        rows.sort(
-            key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
-            reverse=True,
-        )
+        rows.sort(key=tracked_token_total, reverse=True)
 
         models = []
         for row in rows:
@@ -13797,7 +13820,9 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 "input_tokens": row["input_tokens"],
                 "output_tokens": row["output_tokens"],
                 "cache_read_tokens": row["cache_read_tokens"],
+                "cache_write_tokens": row["cache_write_tokens"],
                 "reasoning_tokens": row["reasoning_tokens"],
+                "total_tokens": row["total_tokens"],
                 "estimated_cost": row["estimated_cost"],
                 "actual_cost": row["actual_cost"],
                 "sessions": row["sessions"],
@@ -13810,10 +13835,15 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
 
         totals_cur = db._conn.execute("""
             SELECT COUNT(DISTINCT model) as distinct_models,
-                   SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
+                   COALESCE(SUM(input_tokens), 0) as total_input,
+                   COALESCE(SUM(output_tokens), 0) as total_output,
+                   COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
+                   COALESCE(SUM(cache_write_tokens), 0) as total_cache_write,
+                   COALESCE(SUM(reasoning_tokens), 0) as total_reasoning,
+                   COALESCE(SUM(input_tokens), 0)
+                     + COALESCE(SUM(output_tokens), 0)
+                     + COALESCE(SUM(cache_read_tokens), 0)
+                     + COALESCE(SUM(cache_write_tokens), 0) as total_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,

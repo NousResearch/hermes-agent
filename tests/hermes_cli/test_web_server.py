@@ -4432,8 +4432,29 @@ class TestNewEndpoints:
                 "deepseek-accounted",
                 input_tokens=20_000,
                 output_tokens=7_100,
+                cache_read_tokens=800,
+                cache_write_tokens=100,
                 billing_provider="openrouter",
                 api_call_count=9,
+            )
+            db.create_session(
+                session_id="cache-write-provider",
+                source="cli",
+                model="cache-write-model",
+            )
+            db.update_token_counts(
+                "cache-write-provider",
+                input_tokens=10,
+                billing_provider="openrouter",
+            )
+            db.create_session(
+                session_id="cache-write-only",
+                source="cli",
+                model="cache-write-model",
+            )
+            db.update_token_counts(
+                "cache-write-only",
+                cache_write_tokens=300,
             )
         finally:
             db.close()
@@ -4447,14 +4468,134 @@ class TestNewEndpoints:
             if row["model"] == "deepseek/deepseek-v4-flash"
         ]
 
+        # The zero-token session-only row folds into the provider row.
         assert len(deepseek_rows) == 1
-        row = deepseek_rows[0]
-        assert row["provider"] == "openrouter"
-        assert row["sessions"] == 2
-        assert row["input_tokens"] == 20_000
-        assert row["output_tokens"] == 7_100
-        assert row["api_calls"] == 9
-        assert row["avg_tokens_per_session"] == 13_550
+        provider_row = deepseek_rows[0]
+        assert provider_row["provider"] == "openrouter"
+        assert provider_row["sessions"] == 2
+        assert provider_row["input_tokens"] == 20_000
+        assert provider_row["output_tokens"] == 7_100
+        assert provider_row["cache_read_tokens"] == 800
+        assert provider_row["cache_write_tokens"] == 100
+        assert provider_row["total_tokens"] == 28_000
+        assert provider_row["api_calls"] == 9
+        assert provider_row["avg_tokens_per_session"] == 14_000
+
+        # A cache-write-only row with no provider is real accounting. It must
+        # remain visible instead of being treated as a disposable zero row.
+        cache_write_rows = [
+            row for row in models
+            if row["model"] == "cache-write-model"
+        ]
+        assert len(cache_write_rows) == 2
+        cache_write_row = next(row for row in cache_write_rows if row["provider"] == "")
+        assert cache_write_row["cache_write_tokens"] == 300
+        assert cache_write_row["total_tokens"] == 300
+
+    def test_analytics_usage_accounts_for_cache_token_buckets(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cache-analytics-test",
+                source="cli",
+                model="gpt-cache-test",
+            )
+            db.update_token_counts(
+                "cache-analytics-test",
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+                reasoning_tokens=7,
+                api_call_count=2,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["totals"]["total_input"] == 100
+        assert data["totals"]["total_output"] == 25
+        assert data["totals"]["total_cache_read"] == 40
+        assert data["totals"]["total_cache_write"] == 5
+        assert data["totals"]["total_reasoning"] == 7
+        assert data["totals"]["total_tokens"] == 170
+
+        assert len(data["daily"]) == 1
+        day = data["daily"][0]
+        assert day["input_tokens"] == 100
+        assert day["output_tokens"] == 25
+        assert day["cache_read_tokens"] == 40
+        assert day["cache_write_tokens"] == 5
+        assert day["reasoning_tokens"] == 7
+        assert day["total_tokens"] == 170
+
+        model = next(row for row in data["by_model"] if row["model"] == "gpt-cache-test")
+        assert model["input_tokens"] == 100
+        assert model["output_tokens"] == 25
+        assert model["cache_read_tokens"] == 40
+        assert model["cache_write_tokens"] == 5
+        assert model["reasoning_tokens"] == 7
+        assert model["total_tokens"] == 170
+
+    def test_analytics_models_accounts_for_cache_token_buckets(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cache-models-analytics-test",
+                source="cli",
+                model="gpt-cache-test",
+            )
+            db.update_token_counts(
+                "cache-models-analytics-test",
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+                reasoning_tokens=7,
+                api_call_count=2,
+            )
+            db.create_session(
+                session_id="plain-models-analytics-test",
+                source="cli",
+                model="gpt-plain-test",
+            )
+            db.update_token_counts(
+                "plain-models-analytics-test",
+                input_tokens=160,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["totals"]["total_input"] == 260
+        assert data["totals"]["total_output"] == 25
+        assert data["totals"]["total_cache_read"] == 40
+        assert data["totals"]["total_cache_write"] == 5
+        assert data["totals"]["total_reasoning"] == 7
+        assert data["totals"]["total_tokens"] == 330
+
+        assert [row["model"] for row in data["models"][:2]] == [
+            "gpt-cache-test",
+            "gpt-plain-test",
+        ]
+        model = next(row for row in data["models"] if row["model"] == "gpt-cache-test")
+        assert model["input_tokens"] == 100
+        assert model["output_tokens"] == 25
+        assert model["cache_read_tokens"] == 40
+        assert model["cache_write_tokens"] == 5
+        assert model["reasoning_tokens"] == 7
+        assert model["total_tokens"] == 170
+        assert model["avg_tokens_per_session"] == 170
 
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB

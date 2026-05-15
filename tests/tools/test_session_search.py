@@ -309,11 +309,27 @@ class TestRecentSessionListing:
 # =========================================================================
 
 class TestSessionSearch:
-    def test_no_db_returns_error(self):
+    def test_no_db_lazily_opens_default_session_db(self, monkeypatch):
+        from unittest.mock import MagicMock
         from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        class FakeSessionDB:
+            def __new__(cls):
+                return mock_db
+
+        import types
+        import sys
+
+        fake_state = types.ModuleType("hermes_state")
+        fake_state.SessionDB = FakeSessionDB
+        monkeypatch.setitem(sys.modules, "hermes_state", fake_state)
+
         result = json.loads(session_search(query="test"))
-        assert result["success"] is False
-        assert "not available" in result["error"].lower()
+        assert result["success"] is True
+        mock_db.search_messages.assert_called_once()
 
     def test_empty_query_returns_error(self):
         from tools.session_search_tool import session_search

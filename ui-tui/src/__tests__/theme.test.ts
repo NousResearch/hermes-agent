@@ -209,6 +209,34 @@ describe('fromSkin', () => {
     expect(theme.color.completionCurrentBg).toBe('#bfbfbf')
   })
 
+  it('uses active completion color as the selection highlight fallback', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ completion_menu_current_bg: '#123456' }, {})
+
+    expect(theme.color.selectionBg).toBe('#123456')
+  })
+
+  it('maps completion meta background colors from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({
+      completion_menu_meta_bg: '#111111',
+      completion_menu_meta_current_bg: '#222222'
+    }, {})
+
+    expect(theme.color.completionMetaBg).toBe('#111111')
+    expect(theme.color.completionMetaCurrentBg).toBe('#222222')
+  })
+
+  it('lets selection_bg override completion highlight colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ completion_menu_current_bg: '#123456', selection_bg: '#654321' }, {})
+
+    expect(theme.color.selectionBg).toBe('#654321')
+  })
+
   it('overrides branding', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$' })

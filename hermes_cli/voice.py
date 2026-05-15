@@ -281,6 +281,8 @@ _recorder_lock = threading.Lock()
 # ── Continuous (VAD) state ───────────────────────────────────────────
 _continuous_lock = threading.Lock()
 _continuous_active = False
+_continuous_stopping = False
+_continuous_auto_restart: bool = True
 _continuous_recorder: Any = None
 
 # ── TTS-vs-STT feedback guard ────────────────────────────────────────
@@ -370,32 +372,43 @@ def start_continuous(
     on_silent_limit: Optional[Callable[[], None]] = None,
     silence_threshold: int = 200,
     silence_duration: float = 3.0,
-) -> None:
+    auto_restart: bool = True,
+) -> bool:
     """Start a VAD-driven continuous recording loop.
 
     The loop calls ``on_transcript(text)`` each time speech is detected and
-    transcribed successfully, then auto-restarts. After
-    ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech
-    picked up at all) the loop stops itself and calls ``on_silent_limit``
-    so the UI can reflect "voice off". Idempotent — calling while already
-    active is a no-op.
+    transcribed successfully. If ``auto_restart`` is True, it auto-restarts
+    for the next turn and resets the no-speech counter for that loop. If
+    ``auto_restart`` is False, the first silence-triggered transcription ends
+    the loop and reports ``"idle"``; no-speech counts are retained across
+    starts so a push-to-talk caller can still enforce the three-strikes guard.
+    After ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech
+    picked up at all) the loop stops itself and calls ``on_silent_limit`` so the
+    UI can reflect "voice off". Returns False if a previous stop is still
+    transcribing/cleaning up; otherwise returns True. Idempotent — calling while
+    already active is a successful no-op.
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
     """
-    global _continuous_active, _continuous_recorder
+    global _continuous_active, _continuous_recorder, _continuous_auto_restart
     global _continuous_on_transcript, _continuous_on_status, _continuous_on_silent_limit
     global _continuous_no_speech_count
 
     with _continuous_lock:
         if _continuous_active:
             _debug("start_continuous: already active — no-op")
-            return
+            return True
+        if _continuous_stopping:
+            _debug("start_continuous: stop/transcribe in progress — busy")
+            return False
         _continuous_active = True
+        _continuous_auto_restart = auto_restart
         _continuous_on_transcript = on_transcript
         _continuous_on_status = on_status
         _continuous_on_silent_limit = on_silent_limit
-        _continuous_no_speech_count = 0
+        if auto_restart:
+            _continuous_no_speech_count = 0
 
         if _continuous_recorder is None:
             _continuous_recorder = create_audio_recorder()
@@ -428,15 +441,18 @@ def start_continuous(
         except Exception:
             pass
 
+    return True
 
-def stop_continuous() -> None:
+
+def stop_continuous(force_transcribe: bool = False) -> None:
     """Stop the active continuous loop and release the microphone.
 
-    Idempotent — calling while not active is a no-op. Any in-flight
-    transcription completes but its result is discarded (the callback
-    checks ``_continuous_active`` before firing).
+    Idempotent — calling while not active is a no-op. If ``force_transcribe`` is
+    True, the recorder stops synchronously, then transcription/cleanup runs on a
+    background thread before reporting ``"idle"``. Otherwise the buffer is
+    discarded.
     """
-    global _continuous_active, _continuous_on_transcript
+    global _continuous_active, _continuous_on_transcript, _continuous_stopping
     global _continuous_on_status, _continuous_on_silent_limit
     global _continuous_recorder, _continuous_no_speech_count
 
@@ -446,18 +462,98 @@ def stop_continuous() -> None:
         _continuous_active = False
         rec = _continuous_recorder
         on_status = _continuous_on_status
+        on_transcript = _continuous_on_transcript
+        on_silent_limit = _continuous_on_silent_limit
+        auto_restart = _continuous_auto_restart
+        track_no_speech = force_transcribe and not auto_restart
+        _continuous_stopping = rec is not None
         _continuous_on_transcript = None
         _continuous_on_status = None
         _continuous_on_silent_limit = None
-        _continuous_no_speech_count = 0
+        if not track_no_speech:
+            _continuous_no_speech_count = 0
 
     if rec is not None:
-        try:
-            # cancel() (not stop()) discards buffered frames — the loop
-            # is over, we don't want to transcribe a half-captured turn.
-            rec.cancel()
-        except Exception as e:
-            logger.warning("failed to cancel recorder: %s", e)
+        if force_transcribe and on_transcript:
+            if on_status:
+                try:
+                    on_status("transcribing")
+                except Exception:
+                    pass
+            try:
+                wav_path = rec.stop()
+            except Exception as e:
+                logger.warning("failed to stop recorder: %s", e)
+                try:
+                    rec.cancel()
+                except Exception as cancel_error:
+                    logger.warning("failed to cancel recorder: %s", cancel_error)
+                wav_path = None
+
+            def _transcribe_and_cleanup():
+                global _continuous_no_speech_count, _continuous_stopping
+                transcript: Optional[str] = None
+                should_halt = False
+
+                try:
+                    if wav_path:
+                        try:
+                            result = transcribe_recording(wav_path)
+                            if result.get("success"):
+                                text = (result.get("transcript") or "").strip()
+                                if text and not is_whisper_hallucination(text):
+                                    transcript = text
+                        finally:
+                            if os.path.isfile(wav_path):
+                                os.unlink(wav_path)
+                except Exception as e:
+                    logger.warning("failed to stop/transcribe recorder: %s", e)
+                finally:
+                    if transcript:
+                        try:
+                            on_transcript(transcript)
+                        except Exception as e:
+                            logger.warning("on_transcript callback raised: %s", e)
+
+                    if track_no_speech:
+                        with _continuous_lock:
+                            if transcript:
+                                _continuous_no_speech_count = 0
+                            else:
+                                _continuous_no_speech_count += 1
+                                should_halt = (
+                                    _continuous_no_speech_count
+                                    >= _CONTINUOUS_NO_SPEECH_LIMIT
+                                )
+                                if should_halt:
+                                    _continuous_no_speech_count = 0
+                        if should_halt and on_silent_limit:
+                            try:
+                                on_silent_limit()
+                            except Exception:
+                                pass
+
+                    _play_beep(frequency=660, count=2)
+                    with _continuous_lock:
+                        _continuous_stopping = False
+                    if on_status:
+                        try:
+                            on_status("idle")
+                        except Exception:
+                            pass
+
+            threading.Thread(target=_transcribe_and_cleanup, daemon=True).start()
+            return
+        else:
+            try:
+                # cancel() (not stop()) discards buffered frames — the loop
+                # is over, we don't want to transcribe a half-captured turn.
+                rec.cancel()
+            except Exception as e:
+                logger.warning("failed to cancel recorder: %s", e)
+
+    with _continuous_lock:
+        _continuous_stopping = False
 
     # Audible "recording stopped" cue (CLI parity: same 660 Hz × 2 the
     # silence-auto-stop path plays).
@@ -603,23 +699,39 @@ def _continuous_on_silence() -> None:
                 _debug("_continuous_on_silence: stopped while waiting for TTS")
                 return
 
-    # Restart for the next turn.
-    _debug(f"_continuous_on_silence: restarting loop (no_speech={no_speech})")
-    _play_beep(frequency=880, count=1)
-    try:
-        rec.start(on_silence_stop=_continuous_on_silence)
-    except Exception as e:
-        logger.error("failed to restart continuous recording: %s", e)
-        _debug(f"_continuous_on_silence: restart raised {type(e).__name__}: {e}")
+    if _continuous_auto_restart:
+        # Restart for the next turn.
+        _debug(f"_continuous_on_silence: restarting loop (no_speech={no_speech})")
+        _play_beep(frequency=880, count=1)
+        try:
+            rec.start(on_silence_stop=_continuous_on_silence)
+        except Exception as e:
+            logger.error("failed to restart continuous recording: %s", e)
+            _debug(f"_continuous_on_silence: restart raised {type(e).__name__}: {e}")
+            with _continuous_lock:
+                _continuous_active = False
+            if on_status:
+                try:
+                    on_status("idle")
+                except Exception:
+                    pass
+            return
+
+        if on_status:
+            try:
+                on_status("listening")
+            except Exception:
+                pass
+    else:
+        # Do not auto-restart. Clean up state and notify idle.
+        _debug("_continuous_on_silence: auto_restart=False, stopping loop")
         with _continuous_lock:
             _continuous_active = False
-        return
-
-    if on_status:
-        try:
-            on_status("listening")
-        except Exception:
-            pass
+        if on_status:
+            try:
+                on_status("idle")
+            except Exception:
+                pass
 
 
 # ── TTS API ──────────────────────────────────────────────────────────

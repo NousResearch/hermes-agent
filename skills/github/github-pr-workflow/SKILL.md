@@ -4,6 +4,7 @@ description: "GitHub PR lifecycle: branch, commit, open, CI, merge."
 version: 1.1.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Pull-Requests, CI/CD, Git, Automation, Merge]

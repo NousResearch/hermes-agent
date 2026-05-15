@@ -88,7 +88,7 @@ Good defaults:
 | **Anthropic** | Claude models directly — Max plan + extra usage credits (OAuth), or API key for pay-per-token | `hermes model` → OAuth login (requires Max + extra credits), or an Anthropic API key |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
-| **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
+| **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` (or the Kimi-Coding-specific `KIMI_CODING_API_KEY`) |
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
@@ -204,7 +204,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 
 ### Multi-line input
 
-Press `Alt+Enter` or `Ctrl+J` to add a new line. Great for pasting code or writing detailed prompts.
+Press `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` to add a new line. `Shift+Enter` requires a terminal that sends it as a distinct sequence (Kitty / foot / WezTerm / Ghostty by default; iTerm2 / Alacritty / VS Code terminal once the Kitty keyboard protocol is enabled). `Alt+Enter` and `Ctrl+J` work in every terminal.
 
 ### Interrupt the agent
 
@@ -240,7 +240,10 @@ hermes config set terminal.backend ssh       # Remote server
 ### Voice mode
 
 ```bash
-pip install "hermes-agent[voice]"
+# From the Hermes install directory (the curl installer placed it at
+# ~/.hermes/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
+cd ~/.hermes/hermes-agent
+uv pip install -e ".[voice]"
 # Includes faster-whisper for free local speech-to-text
 ```
 
@@ -269,10 +272,13 @@ mcp_servers:
 
 ### Editor integration (ACP)
 
+ACP support ships with the standard `[all]` extras, so the curl installer already includes it. Just run:
+
 ```bash
-pip install -e '.[acp]'
 hermes acp
 ```
+
+(If you installed without `[all]`, run `cd ~/.hermes/hermes-agent && uv pip install -e ".[acp]"` first.)
 
 See [ACP Editor Integration](../user-guide/features/acp.md).
 

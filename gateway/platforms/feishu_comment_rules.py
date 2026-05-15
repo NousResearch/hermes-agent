@@ -228,7 +228,7 @@ def _load_pairing_approved() -> set:
     if isinstance(approved, dict):
         return set(approved.keys())
     if isinstance(approved, list):
-        return set(str(u) for u in approved if u)
+        return {str(u) for u in approved if u}
     return set()
 
 

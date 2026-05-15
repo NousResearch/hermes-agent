@@ -57,6 +57,7 @@ DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+CURATOR_REVIEW_TOOLSETS = ["skills"]
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +389,8 @@ CURATOR_REVIEW_PROMPT = (
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n"
+    "      Then archive the old sibling with `skill_manage action=delete` "
+    "after preserving any needed content with `skill_manage action=write_file`.\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -410,8 +410,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "Do not use terminal, file, network, browser, messaging, delegation, "
+    "or cron tools; the curator review is intentionally restricted to "
+    "the skills toolset.\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -1704,6 +1705,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             platform="curator",
             skip_context_files=True,
             skip_memory=True,
+            enabled_toolsets=CURATOR_REVIEW_TOOLSETS,
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0

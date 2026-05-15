@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -411,6 +413,42 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     assert any("stubbed-summary" in s for s in captured)
 
 
+def test_run_llm_review_restricts_agent_to_skills_toolset(curator_env, monkeypatch):
+    """The background curator fork must not inherit all registered toolsets.
+
+    Skill metadata is model-visible and can be attacker-influenced, so the
+    fork must be constrained to the deterministic skill-management surface.
+    """
+    c = importlib.reload(curator_env["curator"])
+    monkeypatch.setattr(c, "_load_config", lambda: {})
+    captured = {}
+
+    class FakeAIAgent:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            self._session_messages = []
+
+        def run_conversation(self, user_message):
+            captured["prompt"] = user_message
+            return {"final_response": "ok"}
+
+        def close(self):
+            captured["closed"] = True
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAIAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    # Call the real implementation; the fixture stubs it by default.
+    result = c._run_llm_review("review prompt")
+
+    assert result["summary"] == "ok"
+    assert captured["kwargs"]["enabled_toolsets"] == c.CURATOR_REVIEW_TOOLSETS
+    assert captured["kwargs"]["enabled_toolsets"] == ["skills"]
+    assert "disabled_toolsets" not in captured["kwargs"]
+    assert captured["closed"] is True
+
+
 def test_run_review_skips_llm_when_no_candidates(curator_env, monkeypatch):
     c = curator_env["curator"]
     # No skills in the dir → no candidates
@@ -536,16 +574,15 @@ def test_curator_review_prompt_has_invariants():
 
 
 def test_curator_review_prompt_points_at_existing_tools_only():
-    """The review prompt must rely on existing tools (skill_manage + terminal)
+    """The review prompt must rely only on the restricted skills toolset
     and must NOT reference bespoke curator tools that are not registered
     model tools."""
     from agent.curator import CURATOR_REVIEW_PROMPT
     assert "skill_manage" in CURATOR_REVIEW_PROMPT
     assert "skills_list" in CURATOR_REVIEW_PROMPT
     assert "skill_view" in CURATOR_REVIEW_PROMPT
-    assert "terminal" in CURATOR_REVIEW_PROMPT.lower()
-    # These would be nice but aren't actually registered as tools — the
-    # curator uses skill_manage + terminal mv instead.
+    assert "restricted to the skills toolset" in CURATOR_REVIEW_PROMPT.lower()
+    # These would be nice but aren't actually registered as tools.
     assert "archive_skill" not in CURATOR_REVIEW_PROMPT
     assert "pin_skill" not in CURATOR_REVIEW_PROMPT
 

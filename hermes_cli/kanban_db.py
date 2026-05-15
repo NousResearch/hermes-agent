@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -102,7 +103,10 @@ _IS_WINDOWS = sys.platform == "win32"
 _KANBAN_LIFECYCLE_HOOK = "on_kanban_event"
 _KANBAN_EVENT_SCHEMA_VERSION = 1
 _KANBAN_EVENT_PREVIEW_CHARS = 300
-_KANBAN_TXN_PENDING_EVENTS: dict[int, list[dict[str, Any]]] = {}
+# sqlite3.Connection is not weak-referenceable on CPython, so keep the
+# short-lived association keyed by the connection object itself and clean it up
+# in write_txn's finally block instead of relying on id(conn) reuse safety.
+_KANBAN_TXN_PENDING_EVENTS: dict[sqlite3.Connection, list[dict[str, Any]]] = {}
 _KANBAN_EVENT_TYPES = {
     "created": "kanban.task_created",
     "assigned": "kanban.task_assigned",
@@ -1208,9 +1212,8 @@ def write_txn(conn: sqlite3.Connection):
     atomic -- at most one concurrent writer can succeed.
     """
     pending_events: list[dict[str, Any]] = []
-    conn_key = id(conn)
-    previous_pending = _KANBAN_TXN_PENDING_EVENTS.get(conn_key)
-    _KANBAN_TXN_PENDING_EVENTS[conn_key] = pending_events
+    previous_pending = _KANBAN_TXN_PENDING_EVENTS.get(conn)
+    _KANBAN_TXN_PENDING_EVENTS[conn] = pending_events
 
     committed = False
     try:
@@ -1225,9 +1228,9 @@ def write_txn(conn: sqlite3.Connection):
             committed = True
     finally:
         if previous_pending is not None:
-            _KANBAN_TXN_PENDING_EVENTS[conn_key] = previous_pending
+            _KANBAN_TXN_PENDING_EVENTS[conn] = previous_pending
         else:
-            _KANBAN_TXN_PENDING_EVENTS.pop(conn_key, None)
+            _KANBAN_TXN_PENDING_EVENTS.pop(conn, None)
 
     if committed:
         for event in pending_events:
@@ -1752,10 +1755,12 @@ def _bounded_jsonish(value: Any) -> Any:
         return value
     if isinstance(value, str):
         return _preview_text(value)
-    if isinstance(value, (list, tuple, set)):
-        return [_bounded_jsonish(v) for v in list(value)[:20]]
+    if isinstance(value, (list, tuple)):
+        return [_bounded_jsonish(v) for v in value[:20]]
+    if isinstance(value, set):
+        return [_bounded_jsonish(v) for v in itertools.islice(value, 20)]
     if isinstance(value, dict):
-        return {str(k): _bounded_jsonish(v) for k, v in list(value.items())[:20]}
+        return {str(k): _bounded_jsonish(v) for k, v in itertools.islice(value.items(), 20)}
     return _preview_text(value)
 
 
@@ -1934,6 +1939,10 @@ def _append_event(
     (task created/edited/archived, dependency promotion) leave it None
     and the row carries NULL.
     """
+    pending = _KANBAN_TXN_PENDING_EVENTS.get(conn)
+    if pending is None:
+        raise RuntimeError("Kanban lifecycle events must be appended inside write_txn")
+
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
     cur = conn.execute(
@@ -1952,11 +1961,7 @@ def _append_event(
         created_at=now,
     )
     if event is not None:
-        pending = _KANBAN_TXN_PENDING_EVENTS.get(id(conn))
-        if pending is not None:
-            pending.append(event)
-        else:
-            _emit_kanban_event(event)
+        pending.append(event)
     return event_id
 
 

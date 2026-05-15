@@ -115,6 +115,41 @@ def test_failed_mutation_does_not_emit_lifecycle_success(kanban_home, captured_e
     assert [e["event_type"] for e in captured_events].count("kanban.dependency_linked") == 1
 
 
+def test_append_event_requires_write_txn_for_after_commit_guarantee(kanban_home, captured_events):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="manual txn guard")
+        event_count = len(kb.list_events(conn, tid))
+        hook_count = len(captured_events)
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(RuntimeError, match="write_txn"):
+                kb._append_event(conn, tid, "commented", {"author": "tester", "len": 1})
+        finally:
+            conn.execute("ROLLBACK")
+
+        assert len(kb.list_events(conn, tid)) == event_count
+        assert len(captured_events) == hook_count
+
+
+def test_bounded_jsonish_does_not_process_items_beyond_cap():
+    class ExplodingRepr:
+        def __str__(self):
+            raise AssertionError("item past the cap should not be stringified")
+
+    big: dict[str, object] = {f"k{i}": i for i in range(20)}
+    big["k20"] = ExplodingRepr()
+    bounded = kb._bounded_jsonish(big)
+    assert len(bounded) == 20
+    assert list(bounded) == [f"k{i}" for i in range(20)]
+
+    values = list(range(20)) + [ExplodingRepr()]
+    assert kb._bounded_jsonish(values) == list(range(20))
+
+    large_set = set(range(1000))
+    assert len(kb._bounded_jsonish(large_set)) == 20
+
+
 def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_events):
     big_body = "body-secret-" + "x" * 5000
     big_comment = "comment-secret-" + "y" * 5000

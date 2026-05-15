@@ -21,12 +21,14 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
+    AmbiguousJobReference,
     create_job,
     get_job,
     list_jobs,
     parse_schedule,
     pause_job,
     remove_job,
+    resolve_job_ref,
     resume_job,
     trigger_job,
     update_job,
@@ -393,12 +395,32 @@ def cronjob(
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
-        job = get_job(job_id)
-        if not job:
+        try:
+            job = resolve_job_ref(job_id)
+        except AmbiguousJobReference as exc:
             return json.dumps(
-                {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "matches": [
+                        {
+                            "id": m["id"],
+                            "name": m.get("name"),
+                            "schedule": m.get("schedule_display"),
+                            "next_run_at": m.get("next_run_at"),
+                        }
+                        for m in exc.matches
+                    ],
+                },
                 indent=2,
             )
+        if not job:
+            return json.dumps(
+                {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                indent=2,
+            )
+        # Resolve to canonical ID (supports name-based lookup)
+        job_id = job["id"]
 
         if normalized == "remove":
             removed = remove_job(job_id)

@@ -321,6 +321,93 @@ class TestPauseResumeJob:
         assert resumed["paused_reason"] is None
 
 
+class TestResolveJobRef:
+    """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""
+
+    def test_resolve_by_exact_id(self, tmp_cron_dir):
+        from cron.jobs import resolve_job_ref
+
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        assert resolve_job_ref(job["id"])["id"] == job["id"]
+
+    def test_resolve_by_name(self, tmp_cron_dir):
+        from cron.jobs import resolve_job_ref
+
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        assert resolve_job_ref("alpha")["id"] == job["id"]
+
+    def test_resolve_by_name_case_insensitive(self, tmp_cron_dir):
+        from cron.jobs import resolve_job_ref
+
+        job = create_job(prompt="A", schedule="1h", name="MyJob")
+        assert resolve_job_ref("myjob")["id"] == job["id"]
+        assert resolve_job_ref("MYJOB")["id"] == job["id"]
+
+    def test_resolve_returns_none_when_not_found(self, tmp_cron_dir):
+        from cron.jobs import resolve_job_ref
+
+        create_job(prompt="A", schedule="1h", name="alpha")
+        assert resolve_job_ref("does-not-exist") is None
+        assert resolve_job_ref("") is None
+
+    def test_resolve_id_wins_over_name(self, tmp_cron_dir):
+        """If a job's name happens to equal another job's ID, ID match wins."""
+        from cron.jobs import resolve_job_ref
+
+        j1 = create_job(prompt="A", schedule="1h")
+        # Create a second job whose name is j1's ID
+        j2 = create_job(prompt="B", schedule="1h", name=j1["id"])
+        # Looking up j1["id"] must return j1, not the colliding-name job j2
+        assert resolve_job_ref(j1["id"])["id"] == j1["id"]
+        assert resolve_job_ref(j1["id"])["id"] != j2["id"]
+
+    def test_resolve_ambiguous_name_raises(self, tmp_cron_dir):
+        """Two jobs sharing a name → refuse to pick, surface both IDs."""
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+
+        j1 = create_job(prompt="A", schedule="1h", name="dup")
+        j2 = create_job(prompt="B", schedule="1h", name="dup")
+        with pytest.raises(AmbiguousJobReference) as exc_info:
+            resolve_job_ref("dup")
+        ids = {m["id"] for m in exc_info.value.matches}
+        assert ids == {j1["id"], j2["id"]}
+        # Error message mentions both IDs so the user can pick one
+        assert j1["id"] in str(exc_info.value)
+        assert j2["id"] in str(exc_info.value)
+
+    def test_trigger_by_name(self, tmp_cron_dir):
+        from cron.jobs import trigger_job
+
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        result = trigger_job("alpha")
+        assert result is not None
+        assert result["id"] == job["id"]
+
+    def test_pause_by_name(self, tmp_cron_dir):
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        result = pause_job("alpha", reason="manual")
+        assert result is not None
+        assert result["id"] == job["id"]
+        assert result["state"] == "paused"
+
+    def test_remove_by_name(self, tmp_cron_dir):
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        assert remove_job("alpha") is True
+        assert get_job(job["id"]) is None
+
+    def test_mutations_refuse_ambiguous_name(self, tmp_cron_dir):
+        """pause/resume/trigger/remove must refuse to act on an ambiguous name."""
+        from cron.jobs import AmbiguousJobReference, trigger_job
+
+        create_job(prompt="A", schedule="1h", name="dup")
+        create_job(prompt="B", schedule="1h", name="dup")
+        for fn in (pause_job, resume_job, trigger_job):
+            with pytest.raises(AmbiguousJobReference):
+                fn("dup")
+        with pytest.raises(AmbiguousJobReference):
+            remove_job("dup")
+
+
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")

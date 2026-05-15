@@ -196,9 +196,15 @@ def cron_create(args):
 
 
 def cron_edit(args):
-    from cron.jobs import get_job
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
-    job = get_job(args.job_id)
+    try:
+        job = resolve_job_ref(args.job_id)
+    except AmbiguousJobReference as exc:
+        print(color(str(exc), Colors.RED))
+        for m in exc.matches:
+            print(f"  {m['id']}  (name: {m.get('name')!r})")
+        return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1

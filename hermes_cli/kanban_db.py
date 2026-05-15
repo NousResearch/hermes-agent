@@ -4150,6 +4150,12 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # Propagate max_runtime_seconds as the terminal tool's default timeout so
+    # the worker's terminal timeout is consistent with the task's runtime cap.
+    # Without this, the worker inherits the profile terminal.timeout (typically
+    # 180s) even when the task allows hours.
+    if task.max_runtime_seconds is not None:
+        env["TERMINAL_TIMEOUT"] = str(task.max_runtime_seconds)
 
     cmd = [
         *_resolve_hermes_argv(),

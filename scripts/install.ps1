@@ -145,19 +145,39 @@ function Test-Python {
     # Python not found — use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
+        # Temporarily relax ErrorActionPreference: uv writes download progress
+        # ("Downloading cpython-3.11.15-windows-x86_64-none (24.5MiB)") to
+        # stderr.  With $ErrorActionPreference = "Stop" (set at the top of this
+        # script) PowerShell wraps stderr lines from native commands as
+        # ErrorRecord objects when captured via 2>&1, then throws a terminating
+        # exception on the first one — even though uv exits 0 and Python was
+        # installed successfully.  Verify success via `uv python find`
+        # afterwards, which is the reliable signal regardless of exit-code
+        # semantics or stderr noise.  This fix was previously landed as
+        # commit ec1714e71 and then lost in a release squash; reapplied here.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         $uvOutput = & $UvCmd python install $PythonVersion 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Python installed: $ver"
-                return $true
-            }
-        } else {
+        $uvExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+
+        # Check if Python is now available (more reliable than exit code
+        # since uv may return non-zero due to "already installed" etc.)
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Success "Python installed: $ver"
+            return $true
+        }
+
+        # uv ran but Python still not findable — show what happened
+        if ($uvExitCode -ne 0) {
             Write-Warn "uv python install output:"
             Write-Host $uvOutput -ForegroundColor DarkGray
         }
     } catch {
+        # Restore EAP in case the try block threw before the assignment
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Write-Warn "uv python install error: $_"
     }
 
@@ -175,15 +195,42 @@ function Test-Python {
         } catch { }
     }
 
-    # Fallback: try system python
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $sysVer = python --version 2>$null
-        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
-            Write-Success "Using system Python: $sysVer"
-            return $true
+    # Fallback: try system python — but skip the Microsoft Store stub.
+    # On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe is a 0-byte
+    # reparse-point stub that prints "Python was not found; run without
+    # arguments to install from the Microsoft Store..." to stdout and exits
+    # non-zero.  Get-Command finds it; invoking it produces a confusing error
+    # that the user sees as our installer crashing.
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        $isStoreStub = $false
+        try {
+            $pythonSource = $pythonCmd.Source
+            if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
+                $isStoreStub = $true
+            } else {
+                # Even outside WindowsApps, a 0-byte file is the stub
+                $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
+                if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
+            }
+        } catch { }
+
+        if (-not $isStoreStub) {
+            try {
+                $prevEAP2 = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                $sysVer = & python --version 2>&1
+                $ErrorActionPreference = $prevEAP2
+                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
+                    Write-Success "Using system Python: $sysVer"
+                    return $true
+                }
+            } catch {
+                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
+            }
         }
     }
-    
+
     Write-Err "Failed to install Python $PythonVersion"
     Write-Info "Install Python 3.11 manually, then re-run this script:"
     Write-Info "  https://www.python.org/downloads/"

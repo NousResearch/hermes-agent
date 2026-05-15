@@ -2370,3 +2370,153 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+class TestRequestChangesFlow:
+    """Issue #25693 — \"Request Changes\" path on the approval prompt.
+
+    The user can ask the agent to revise a dangerous command instead of
+    binary approve/deny.  Both the CLI prompt and the gateway resolver
+    must surface this as a structured ``changes_requested`` response that
+    carries the feedback text into the next agent turn.
+    """
+
+    def test_changes_message_helper_carries_feedback(self):
+        """The message returned to the agent contains the user's feedback
+        with the documented ``[Approval feedback]:`` label so the agent's
+        next turn has unambiguous guidance to revise the command."""
+        msg = approval_module._changes_message(
+            "Use INSERT OR REPLACE instead of DELETE."
+        )
+        assert "BLOCKED" in msg
+        assert "did NOT run" in msg
+        assert "[Approval feedback]:" in msg
+        assert "INSERT OR REPLACE" in msg
+
+    def test_prompt_callback_changes_returns_structured_dict(self):
+        """A CLI callback that returns ``{\"choice\": \"changes\",
+        \"feedback\": ...}`` must pass through ``prompt_dangerous_approval``
+        unchanged so the orchestrator can unwrap it."""
+
+        def cb(command, description, *, allow_permanent=True):
+            return {"choice": "changes", "feedback": "switch DELETE to UPSERT"}
+
+        result = prompt_dangerous_approval(
+            "rm -rf /tmp/x", "rm test", approval_callback=cb,
+        )
+        assert isinstance(result, dict)
+        assert result["choice"] == "changes"
+        assert result["feedback"] == "switch DELETE to UPSERT"
+
+    def test_prompt_callback_plain_string_still_works(self):
+        """Back-compat: callbacks that still return a plain string (the
+        pre-#25693 contract) must keep working unchanged."""
+
+        def cb(command, description, *, allow_permanent=True):
+            return "deny"
+
+        result = prompt_dangerous_approval(
+            "rm -rf /tmp/x", "rm test", approval_callback=cb,
+        )
+        assert result == "deny"
+
+    def test_gateway_resolver_changes_with_feedback(self):
+        """When ``resolve_gateway_approval`` is called with
+        ``choice='changes'`` and feedback text, the approval entry's
+        ``result`` attribute is a dict the agent thread can detect."""
+        approval_module._gateway_queues.clear()
+        session_key = "test-session-changes"
+        entry = approval_module._ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+
+        count = approval_module.resolve_gateway_approval(
+            session_key, "changes", feedback="use UPSERT instead",
+        )
+        assert count == 1
+        assert isinstance(entry.result, dict)
+        assert entry.result["choice"] == "changes"
+        assert entry.result["feedback"] == "use UPSERT instead"
+        assert entry.event.is_set()
+
+    def test_gateway_resolver_changes_empty_feedback_degrades_to_deny(self):
+        """An empty / whitespace-only ``feedback`` must NOT inject an
+        empty user-feedback turn — the resolver degrades to a plain
+        ``deny`` so the agent stops cleanly."""
+        approval_module._gateway_queues.clear()
+        session_key = "test-session-changes-empty"
+        entry = approval_module._ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+
+        count = approval_module.resolve_gateway_approval(
+            session_key, "changes", feedback="   ",
+        )
+        assert count == 1
+        assert entry.result == "deny"
+
+    def test_gateway_resolver_changes_none_feedback_degrades_to_deny(self):
+        """A missing (None) ``feedback`` parameter is also a deny."""
+        approval_module._gateway_queues.clear()
+        session_key = "test-session-changes-none"
+        entry = approval_module._ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+
+        count = approval_module.resolve_gateway_approval(
+            session_key, "changes", feedback=None,
+        )
+        assert count == 1
+        assert entry.result == "deny"
+
+    def test_gateway_resolver_signature_is_backwards_compatible(self):
+        """The new ``feedback`` parameter is keyword-only-by-convention
+        with a default of None, so adapters and tests written before
+        #25693 keep working without code changes."""
+        approval_module._gateway_queues.clear()
+        session_key = "test-session-bc"
+        entry = approval_module._ApprovalEntry({"command": "rm -rf /tmp"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+
+        # Old call signature: positional only, no feedback kwarg.
+        count = approval_module.resolve_gateway_approval(session_key, "once")
+        assert count == 1
+        assert entry.result == "once"
+
+    def test_gateway_resolver_changes_does_not_affect_non_changes_choices(self):
+        """Passing ``feedback`` alongside a non-changes choice is silently
+        ignored — adapters that always pass feedback (perhaps because a
+        button click also captures a comment) must not have their other
+        choices corrupted."""
+        approval_module._gateway_queues.clear()
+        session_key = "test-session-ignore-feedback"
+        entry = approval_module._ApprovalEntry({"command": "rm -rf /tmp"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+
+        approval_module.resolve_gateway_approval(
+            session_key, "always", feedback="should be ignored",
+        )
+        # Plain string — feedback is not attached to non-changes choices.
+        assert entry.result == "always"
+
+    def test_changes_string_alias_in_cli_choice_map(self):
+        """The CLI prompt accepts ``c``/``changes``/``change``/etc. as
+        the choice token (we don't expect users to type the full word).
+        This is checked indirectly by parsing the prompt loop source so
+        the test catches accidental token removals during refactors."""
+        src = Path(approval_module.__file__).read_text(encoding="utf-8")
+        # Spot-check: at minimum the short form 'c' must be present in
+        # the choice loop. The exact alias set is allowed to grow over
+        # time but never shrink without an explicit decision.
+        assert "'c'" in src or '"c"' in src or "'c', 'changes'" in src
+        # And the i18n keys referenced by the loop must exist in the
+        # English catalog so users actually see the prompt.
+        import yaml as _yaml
+        catalog = _yaml.safe_load(
+            (Path(approval_module.__file__).parents[1] / "locales" / "en.yaml")
+            .read_text(encoding="utf-8")
+        )
+        approval_strings = catalog.get("approval", {})
+        for key in ("changes_prompt", "changes_empty", "changes_received"):
+            assert key in approval_strings, f"i18n key approval.{key} missing"

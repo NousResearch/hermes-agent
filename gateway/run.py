@@ -6202,6 +6202,27 @@ class GatewayRunner:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
 
+                # Force-release HTTP clients on any agent still mid-turn —
+                # ``interrupt()`` only flips a flag checked between iterations,
+                # so a subagent blocked inside an LLM API socket read waits
+                # the OS-level connection timeout (12+ min, #26315) until the
+                # client is closed underneath it. ``release_clients()``
+                # recursively closes ``_active_children`` clients too, so a
+                # single parent-level pass cascades to every depth of
+                # delegation.
+                for _sk, _agent in list(self._running_agents.items()):
+                    if _agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    if not hasattr(_agent, "release_clients"):
+                        continue
+                    try:
+                        _agent.release_clients()
+                    except Exception as _e:
+                        logger.debug(
+                            "release_clients failed for %s during shutdown: %s",
+                            _sk, _e,
+                        )
+
                 # Kill lingering tool subprocesses NOW, before we spend more
                 # budget on adapter disconnect / session DB close.  Under
                 # systemd (TimeoutStopSec bounded by drain_timeout+headroom),

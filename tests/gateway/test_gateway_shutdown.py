@@ -245,3 +245,143 @@ async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch
 
     # Only the final catch-all fires on the graceful path.
     assert kill_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_force_releases_clients_after_interrupt_grace(monkeypatch):
+    """On drain timeout, after interrupting and the 5s grace window, any agent
+    still in ``_running_agents`` must have ``release_clients()`` called so
+    delegate subagents blocked on long-running LLM API network reads get
+    unstuck. Without this, a subagent inside ``client.chat.completions.create()``
+    only checks the interrupt flag between iterations — not during the network
+    read itself — and waits for the OS-level connection timeout (12+ minutes
+    observed in #26315) before the interrupt actually takes effect.
+
+    ``release_clients()`` closes the OpenAI/httpx client AND recursively
+    releases each ``_active_children`` subagent's client, so this single
+    parent-level call cascades to every depth of delegation.
+
+    The test deliberately leaves ``_running_agents`` populated through the
+    5s grace wait — that simulates the stuck-subagent case the fix targets.
+    The test takes ~5s as a result, but xdist parallelism amortizes that
+    across the suite.
+    """
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01  # force timeout path
+    adapter.disconnect = AsyncMock()
+
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
+
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # Both must run on the timeout path: interrupt sets the flag, then the
+    # forced release breaks any in-flight network reads.
+    running_agent.interrupt.assert_called_once()
+    running_agent.release_clients.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_does_not_release_clients_on_graceful_path():
+    """Graceful shutdown — drain finishes inside the timeout — must NOT call
+    ``release_clients()`` on agents. The forced release exists only as a
+    timeout-path safety net for stuck delegate subagents; calling it on the
+    graceful path would close clients out from under agents that finished
+    normally and could break any post-turn finalization that still needs the
+    HTTP client (e.g. a final telemetry POST).
+    """
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
+
+    async def finish_agent():
+        await asyncio.sleep(0.05)
+        runner._running_agents.clear()
+
+    asyncio.create_task(finish_agent())
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    running_agent.interrupt.assert_not_called()
+    running_agent.release_clients.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_release_clients_failure_does_not_break_shutdown(monkeypatch):
+    """If one agent's ``release_clients()`` raises, the shutdown sequence must
+    keep going so other agents and the rest of the teardown still run. The
+    forced-release loop is a best-effort safety net, not a hard prerequisite.
+    """
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    disconnect_mock = AsyncMock()
+    adapter.disconnect = disconnect_mock
+
+    bad_agent = MagicMock()
+    bad_agent.release_clients.side_effect = RuntimeError("client already closed")
+    good_agent = MagicMock()
+
+    runner._running_agents = {"bad": bad_agent, "good": good_agent}
+
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # Both attempted; bad agent's failure didn't prevent the good one's release.
+    bad_agent.release_clients.assert_called_once()
+    good_agent.release_clients.assert_called_once()
+    # Adapter disconnect still ran — shutdown completed despite the per-agent
+    # failure.
+    disconnect_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_skips_release_clients_for_pending_sentinel(monkeypatch):
+    """Sentinel entries in ``_running_agents`` represent sessions whose
+    AIAgent hasn't been instantiated yet (the slot is reserved during the
+    build window). They have no ``release_clients`` to call. The forced-
+    release loop must skip them rather than blow up — same pattern that
+    ``_interrupt_running_agents`` already uses for the sentinel.
+    """
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    adapter.disconnect = AsyncMock()
+
+    real_agent = MagicMock()
+    runner._running_agents = {
+        "pending": _AGENT_PENDING_SENTINEL,
+        "real": real_agent,
+    }
+
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # Real agent got the forced release; sentinel was skipped (no AttributeError
+    # raised because the loop returned early via the sentinel guard).
+    real_agent.release_clients.assert_called_once()

@@ -3067,6 +3067,10 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 
+# Keep a little wall-clock budget for the worker to observe a terminal timeout
+# and call kanban_block/kanban_complete before max_runtime_seconds kills it.
+KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
+
 
 @dataclass
 class DispatchResult:
@@ -4077,6 +4081,36 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _worker_terminal_timeout_env(
+    max_runtime_seconds: Optional[int],
+    current_timeout: Optional[str],
+) -> Optional[str]:
+    """Return a worker-scoped TERMINAL_TIMEOUT override, if needed.
+
+    Kanban's ``max_runtime_seconds`` bounds the whole worker attempt. The
+    terminal tool has its own default timeout via ``TERMINAL_TIMEOUT``; when
+    the worker runtime is longer, raise only the child process default so a
+    long command is not killed by the generic terminal default first.
+    """
+    if max_runtime_seconds is None:
+        return None
+    try:
+        runtime = int(max_runtime_seconds)
+    except (TypeError, ValueError):
+        return None
+    if runtime <= 0:
+        return None
+
+    desired = max(1, runtime - KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS)
+    try:
+        existing = int(str(current_timeout).strip()) if current_timeout else 0
+    except (TypeError, ValueError):
+        existing = 0
+    if existing >= desired:
+        return None
+    return str(desired)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -4132,6 +4166,18 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    terminal_timeout = _worker_terminal_timeout_env(
+        task.max_runtime_seconds,
+        env.get("TERMINAL_TIMEOUT"),
+    )
+    if terminal_timeout is not None:
+        env["TERMINAL_TIMEOUT"] = terminal_timeout
+    foreground_timeout = _worker_terminal_timeout_env(
+        task.max_runtime_seconds,
+        env.get("TERMINAL_MAX_FOREGROUND_TIMEOUT"),
+    )
+    if foreground_timeout is not None:
+        env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when the worker activates a profile (`hermes -p <name>`
     # rewrites HERMES_HOME), its kanban paths still match the
@@ -4322,6 +4368,15 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    if task.max_runtime_seconds is not None:
+        terminal_timeout = _worker_terminal_timeout_env(
+            task.max_runtime_seconds,
+            os.environ.get("TERMINAL_TIMEOUT"),
+        )
+        effective_terminal_timeout = terminal_timeout or os.environ.get("TERMINAL_TIMEOUT")
+        lines.append(f"Max runtime: {task.max_runtime_seconds}s")
+        if effective_terminal_timeout:
+            lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     lines.append("")
 
     if task.body and task.body.strip():

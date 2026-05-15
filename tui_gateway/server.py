@@ -4468,13 +4468,15 @@ def _(rid, params: dict) -> dict:
                 return _err(
                     rid, 5000, "internal error: tools.approval is unavailable for security validation."
                 )
-
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
                 cmd,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
@@ -6552,8 +6554,10 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         pass
     try:
+        from tools.environments.local import _sanitize_subprocess_env
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(), env=sanitized_env
         )
         return _ok(
             rid,

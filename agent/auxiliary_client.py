@@ -3093,6 +3093,54 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
+    if pconfig.auth_type == "oauth_minimax":
+        try:
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+            from agent.anthropic_adapter import build_anthropic_client
+        except ImportError:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but required "
+                "auth or anthropic support is unavailable"
+            )
+            return None, None
+
+        try:
+            creds = resolve_minimax_oauth_runtime_credentials()
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but OAuth "
+                "credentials are unavailable: %s",
+                exc,
+            )
+            return None, None
+
+        api_key = str(creds.get("api_key") or "").strip()
+        raw_base_url = str(creds.get("base_url") or pconfig.inference_base_url or "").strip().rstrip("/")
+        if not api_key or not raw_base_url:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth returned incomplete runtime credentials"
+            )
+            return None, None
+
+        final_model = _normalize_resolved_model(
+            model or _get_aux_model_for_provider(provider),
+            provider,
+        )
+        logger.debug("resolve_provider_client: minimax-oauth (%s)", final_model)
+        try:
+            real_client = build_anthropic_client(api_key, raw_base_url)
+        except ImportError as exc:
+            logger.warning(
+                "resolve_provider_client: cannot create MiniMax OAuth client: %s",
+                exc,
+            )
+            return None, None
+        sync_client = AnthropicAuxiliaryClient(
+            real_client, final_model, api_key, raw_base_url, is_oauth=False,
+        )
+        return (_to_async_client(sync_client, final_model, is_vision=is_vision) if async_mode
+                else (sync_client, final_model))
+
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)

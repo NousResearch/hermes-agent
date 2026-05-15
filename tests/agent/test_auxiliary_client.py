@@ -348,6 +348,35 @@ class TestBuildCodexClient:
         assert mock_openai.call_count == 2
 
 
+class TestMiniMaxOAuthAuxiliaryClient:
+    def test_resolve_provider_client_uses_minimax_oauth_credentials(self):
+        real_client = MagicMock(name="minimax-anthropic-client")
+        with (
+            patch("hermes_cli.auth.resolve_minimax_oauth_runtime_credentials", return_value={
+                "api_key": "minimax-oauth-token",
+                "base_url": "https://api.minimax.io/anthropic",
+            }) as mock_creds,
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=real_client) as mock_build,
+        ):
+            from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M2.7")
+
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model == "MiniMax-M2.7"
+        mock_creds.assert_called_once()
+        mock_build.assert_called_once_with("minimax-oauth-token", "https://api.minimax.io/anthropic")
+        assert client.api_key == "minimax-oauth-token"
+        assert client.base_url == "https://api.minimax.io/anthropic"
+
+    def test_minimax_oauth_missing_credentials_returns_none(self):
+        with patch("hermes_cli.auth.resolve_minimax_oauth_runtime_credentials", side_effect=RuntimeError("login required")):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M2.7")
+
+        assert client is None
+        assert model is None
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 

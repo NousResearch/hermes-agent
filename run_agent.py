@@ -3186,6 +3186,45 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
+    def _compression_provider_auth_hint(self, provider: str) -> str:
+        """Return a compact setup hint for a configured compression provider."""
+        provider = (provider or "").strip().lower()
+        if provider == "openrouter":
+            return "set OPENROUTER_API_KEY"
+        if provider in {"nous", "nous-portal"}:
+            return "run `hermes auth add` or `hermes login --provider nous`"
+        if provider in {"openai-codex", "codex"}:
+            return "run `hermes login --provider openai-codex`"
+        if provider == "custom":
+            return "set auxiliary.compression.base_url and auxiliary.compression.api_key"
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+
+            pconfig = PROVIDER_REGISTRY.get(provider)
+            env_vars = getattr(pconfig, "api_key_env_vars", ()) if pconfig else ()
+            if env_vars:
+                return "set " + " or ".join(env_vars)
+        except Exception:
+            pass
+        return f"configure credentials for provider `{provider}`"
+
+    def _compression_missing_provider_warning(self, provider: str) -> str:
+        """Build the startup warning shown when compression has no LLM client."""
+        provider = (provider or "").strip().lower()
+        if provider and provider != "auto":
+            hint = self._compression_provider_auth_hint(provider)
+            return (
+                "⚠ Auxiliary compression provider unavailable "
+                f"(auxiliary.compression.provider={provider}) — context "
+                "compression will drop middle turns without a summary. "
+                f"{hint}, or set auxiliary.compression.provider to auto."
+            )
+        return (
+            "⚠ No auxiliary LLM provider configured — context "
+            "compression will drop middle turns without a summary. "
+            "Run `hermes setup` or set OPENROUTER_API_KEY."
+        )
+
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -3225,17 +3264,20 @@ class AIAgent:
             except Exception:
                 _aux_cfg_provider = ""
             if client is None or not aux_model:
-                msg = (
-                    "⚠ No auxiliary LLM provider configured — context "
-                    "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
-                )
+                msg = self._compression_missing_provider_warning(_aux_cfg_provider)
                 self._compression_warning = msg
                 self._emit_status(msg)
-                logger.warning(
-                    "No auxiliary LLM provider for compression — "
-                    "summaries will be unavailable."
-                )
+                if _aux_cfg_provider and _aux_cfg_provider != "auto":
+                    logger.warning(
+                        "Auxiliary compression provider %s unavailable — "
+                        "summaries will be unavailable.",
+                        _aux_cfg_provider,
+                    )
+                else:
+                    logger.warning(
+                        "No auxiliary LLM provider for compression — "
+                        "summaries will be unavailable."
+                    )
                 return
 
             aux_base_url = str(getattr(client, "base_url", ""))

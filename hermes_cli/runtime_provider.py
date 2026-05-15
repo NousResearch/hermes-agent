@@ -331,6 +331,8 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+            elif _model_prefers_responses_api(str(effective_model or "")):
+                api_mode = "codex_responses"
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -562,7 +564,12 @@ def _resolve_named_custom_runtime(
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        pool_result = _try_resolve_from_custom_pool(
+            base_url,
+            "custom",
+            None,
+            model_name=target_model,
+        )
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result
@@ -577,7 +584,11 @@ def _resolve_named_custom_runtime(
         ) or "no-key-required"
         return {
             "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": (
+                _detect_api_mode_for_url(base_url)
+                or ("codex_responses" if _model_prefers_responses_api(target_model or "") else None)
+                or "chat_completions"
+            ),
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
@@ -647,6 +658,7 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model_cfg = _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -732,6 +744,7 @@ def _resolve_openrouter_runtime(
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
             provider_name=requested_provider if requested_norm != "custom" else None,
+            model_name=target_model or model_cfg.get("default") or "",
         )
         if pool_result:
             return pool_result
@@ -743,6 +756,7 @@ def _resolve_openrouter_runtime(
         "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
+        or ("codex_responses" if _model_prefers_responses_api(target_model or model_cfg.get("default") or "") else None)
         or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
@@ -839,6 +853,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -966,6 +981,10 @@ def _resolve_explicit_runtime(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+                else:
+                    model_name = str(target_model or model_cfg.get("default") or "").strip()
+                    if _model_prefers_responses_api(model_name):
+                        api_mode = "codex_responses"
 
         return {
             "provider": provider,
@@ -997,6 +1016,8 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
+    effective_target_model = target_model or str(model_cfg.get("default") or "").strip() or None
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
@@ -1026,10 +1047,10 @@ def resolve_runtime_provider(
     if requested_provider == "azure-foundry":
         azure_runtime = _resolve_azure_foundry_runtime(
             requested_provider=requested_provider,
-            model_cfg=_get_model_config(),
+            model_cfg=model_cfg,
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
-            target_model=target_model,
+            target_model=effective_target_model,
         )
         return azure_runtime
 
@@ -1037,7 +1058,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
-        target_model=target_model,
+        target_model=effective_target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -1048,13 +1069,13 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=effective_target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1113,7 +1134,7 @@ def resolve_runtime_provider(
                 requested_provider=requested_provider,
                 model_cfg=model_cfg,
                 pool=pool,
-                target_model=target_model,
+                target_model=effective_target_model,
             )
 
     if provider == "nous":
@@ -1420,6 +1441,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=effective_target_model,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

@@ -3047,6 +3047,8 @@ def get_custom_provider_context_length(
         if not isinstance(models, dict):
             continue
         model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict) and "/" in model:
+            model_cfg = models.get(model.rsplit("/", 1)[-1])
         if not isinstance(model_cfg, dict):
             continue
         raw_ctx = model_cfg.get("context_length")

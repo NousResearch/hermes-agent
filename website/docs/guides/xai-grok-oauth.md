@@ -59,13 +59,22 @@ hermes auth add xai-oauth
 
 ### Remote / headless sessions
 
-On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser. Open the URL on any device with a browser, complete the consent flow, and Hermes finishes the loopback exchange when the redirect comes back.
+On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.
 
-If you need to force this behaviour explicitly:
+**Important:** the loopback listener still runs on the remote machine at `127.0.0.1:56121`. The xAI redirect needs to reach *that* listener, so opening the URL on your laptop will fail (`Could not establish connection. We couldn't reach your app.`) unless you forward the port:
 
 ```bash
+# In a separate terminal on your local machine:
+ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+
+# Then in your SSH session on the remote machine:
 hermes auth add xai-oauth --no-browser
+# Open the printed authorize URL in your local browser.
 ```
+
+Through a jump box / bastion: add `-J jump-user@jump-host`.
+
+See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
 
 ## How the Login Works
 
@@ -182,13 +191,17 @@ Hermes detected that the `state` value returned by the authorization server does
 
 ### Logging in from a remote server
 
-On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. Open the URL on any device with a browser and complete the consent there — the loopback callback comes back to your remote host.
-
-You can also force this behaviour:
+On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. The loopback callback listener still binds `127.0.0.1:56121` on the remote host — your laptop's browser can't reach it without an SSH local-forward:
 
 ```bash
+# Local machine, separate terminal:
+ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+
+# Remote machine:
 hermes auth add xai-oauth --no-browser
 ```
+
+Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
 
 ### "No xAI credentials found" error at runtime
 

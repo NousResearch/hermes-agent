@@ -593,7 +593,112 @@
   border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
-/* ---- Dependency editor chips --------------------------------------- */
+/* ---- Dependency editor and linked-task summaries -------------------- */
+
+.hermes-kanban-dependencies-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.hermes-kanban-dependency-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.hermes-kanban-dependency-group-title {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-dependency-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.hermes-kanban-dependency-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: var(--radius-md, 0.375rem);
+  background: color-mix(in srgb, var(--color-card) 88%, var(--color-foreground) 4%);
+}
+.hermes-kanban-dependency-row--missing {
+  opacity: 0.72;
+  border-style: dashed;
+}
+.hermes-kanban-dependency-open {
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.hermes-kanban-dependency-open:hover .hermes-kanban-dependency-title,
+.hermes-kanban-dependency-open:focus-visible .hermes-kanban-dependency-title {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hermes-kanban-dependency-open:disabled {
+  cursor: not-allowed;
+}
+.hermes-kanban-dependency-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-dependency-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  color: var(--color-foreground);
+}
+.hermes-kanban-dependency-status,
+.hermes-kanban-dependency-assignee,
+.hermes-kanban-dependency-state {
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  padding: 0.08rem 0.38rem;
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+.hermes-kanban-dependency-status {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+.hermes-kanban-dependency-status--done { color: var(--color-success, #32a852); }
+.hermes-kanban-dependency-status--ready { color: var(--color-ring); }
+.hermes-kanban-dependency-status--blocked,
+.hermes-kanban-dependency-status--missing { color: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dependency-assignee {
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+.hermes-kanban-dependency-state {
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+}
+.hermes-kanban-dependency-empty {
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+.hermes-kanban-dependency-empty--standalone {
+  padding: 0.35rem 0.45rem;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: var(--radius-md, 0.375rem);
+}
 
 .hermes-kanban-deps-row {
   display: flex;

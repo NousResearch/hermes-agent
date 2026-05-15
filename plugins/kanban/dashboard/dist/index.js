@@ -956,6 +956,7 @@
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
           onRefresh: loadBoard,
+          onOpenTask: function (id) { setSelectedTaskId(id); },
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           assignees: (boardData && boardData.assignees) || [],
@@ -2484,6 +2485,7 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onOpenTask: props.onOpenTask,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -2512,6 +2514,7 @@
     const comments = props.data.comments || [];
     const events = props.data.events || [];
     const links = props.data.links || { parents: [], children: [] };
+    const linkSummaries = props.data.link_summaries || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -2569,11 +2572,12 @@
       }),
       h(DependencyEditor, {
         task: t,
-        links, allTasks: props.allTasks,
+        links, linkSummaries, allTasks: props.allTasks,
         onAddParent: props.onAddParent,
         onRemoveParent: props.onRemoveParent,
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
+        onOpenTask: props.onOpenTask,
       }),
       t.result ? h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
@@ -2913,40 +2917,138 @@
     );
   }
 
+  function dependencyStatusClass(task) {
+    if (!task || task.missing) return "hermes-kanban-dependency-status--missing";
+    return `hermes-kanban-dependency-status--${task.status || "unknown"}`;
+  }
+
+  function dependencyStateLabel(task, relation) {
+    if (!task || task.missing) return "Referenced task unavailable";
+    if (relation === "parent") {
+      if (task.status === "done") return "Parent complete";
+      if (task.status === "archived") return "Parent archived";
+      return "Waiting on parent";
+    }
+    if (task.status === "done") return "Downstream complete";
+    if (task.status === "todo") return "Downstream waiting";
+    return "Downstream";
+  }
+
+  function dependencyStateTitle(task, relation) {
+    if (!task || task.missing) return "Referenced task unavailable";
+    if (relation === "parent") {
+      return task.status === "done"
+        ? "This parent is done."
+        : "Blocks this task until the parent is done.";
+    }
+    return "Unlocks after this task is complete.";
+  }
+
+  function DependencySummaryList(props) {
+    const { t } = useI18n();
+    const summariesById = new Map((props.summaries || []).map(function (item) {
+      return [item.id, item];
+    }));
+    const boardById = new Map((props.allTasks || []).map(function (item) {
+      return [item.id, item];
+    }));
+    const items = (props.ids || []).map(function (id) {
+      return summariesById.get(id) || boardById.get(id) || {
+        id: id,
+        title: null,
+        status: "missing",
+        assignee: null,
+        missing: true,
+      };
+    });
+
+    function openDependencyTask(item) {
+      if (!item || item.missing || !props.onOpenTask) return;
+      props.onOpenTask(item.id);
+    }
+
+    return h("div", { className: "hermes-kanban-dependency-group" },
+      h("div", { className: "hermes-kanban-dependency-group-title" }, props.label),
+      items.length === 0
+        ? h("div", { className: "hermes-kanban-dependency-empty" }, props.emptyText)
+        : h("div", { className: "hermes-kanban-dependency-list", role: "list" },
+            items.map(function (item) {
+              const state = dependencyStateLabel(item, props.relation);
+              const status = item && item.status ? item.status : "missing";
+              return h("div", {
+                key: item.id,
+                className: cn(
+                  "hermes-kanban-dependency-row",
+                  item.missing && "hermes-kanban-dependency-row--missing",
+                ),
+                role: "listitem",
+              },
+                h("button", {
+                  type: "button",
+                  className: "hermes-kanban-dependency-open",
+                  disabled: !!item.missing || !props.onOpenTask,
+                  onClick: function () { openDependencyTask(item); },
+                  title: item.missing ? state : `${tx(t, "openLinkedTask", "Open linked task")} ${item.id}`,
+                  "aria-label": `${tx(t, "openLinkedTask", "Open linked task")} ${item.id}`,
+                },
+                  h("span", { className: "hermes-kanban-dependency-id" }, item.id),
+                  h("span", { className: "hermes-kanban-dependency-title" },
+                    item.title || tx(t, "missingDependencyTitle", "Referenced task unavailable")),
+                ),
+                h("span", {
+                  className: cn("hermes-kanban-dependency-status", dependencyStatusClass(item)),
+                  title: status,
+                }, status),
+                item.assignee ? h("span", { className: "hermes-kanban-dependency-assignee" }, item.assignee) : null,
+                h("span", {
+                  className: "hermes-kanban-dependency-state",
+                  title: dependencyStateTitle(item, props.relation),
+                }, state),
+                props.onRemove ? h("button", {
+                  type: "button",
+                  className: "hermes-kanban-dep-chip-x",
+                  onClick: function () { props.onRemove(item.id); },
+                  title: tx(t, "removeDependency", "Remove dependency"),
+                  "aria-label": `${tx(t, "removeDependency", "Remove dependency")} ${item.id}`,
+                }, "×") : null,
+              );
+            }),
+          ),
+    );
+  }
+
   function DependencyEditor(props) {
     const { t } = useI18n();
-    const { task, links, allTasks } = props;
+    const { task, links, linkSummaries, allTasks } = props;
     const [newParent, setNewParent] = useState("");
     const [newChild, setNewChild] = useState("");
+    const parentIds = (links && links.parents) || [];
+    const childIds = (links && links.children) || [];
+    const summaries = linkSummaries || { parents: [], children: [] };
+    const standalone = parentIds.length === 0 && childIds.length === 0;
     // Filter out self + existing links when offering the "add" dropdown.
     const candidatesFor = function (excludeSet) {
       return (allTasks || []).filter(function (tk) {
         return tk.id !== task.id && !excludeSet.has(tk.id);
       });
     };
-    const parentExclude = new Set([task.id, ...(links.parents || [])]);
-    const childExclude  = new Set([task.id, ...(links.children || [])]);
+    const parentExclude = new Set([task.id, ...parentIds]);
+    const childExclude  = new Set([task.id, ...childIds]);
 
-    return h("div", { className: "hermes-kanban-section" },
+    return h("div", { className: "hermes-kanban-section hermes-kanban-dependencies-section" },
       h("div", { className: "hermes-kanban-section-head" }, tx(t, "dependencies", "Dependencies")),
-      h("div", { className: "hermes-kanban-deps-row" },
-        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "parents", "Parents:")),
-        h("div", { className: "hermes-kanban-deps-chips" },
-          (links.parents || []).length === 0
-            ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
-            : (links.parents || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveParent(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
-              }),
-        ),
-      ),
+      standalone ? h("div", { className: "hermes-kanban-dependency-empty hermes-kanban-dependency-empty--standalone" },
+        tx(t, "standaloneTask", "Standalone task — no linked parents or children.")) : null,
+      h(DependencySummaryList, {
+        label: tx(t, "parents", "Parents"),
+        relation: "parent",
+        ids: parentIds,
+        summaries: summaries.parents || [],
+        allTasks: allTasks,
+        emptyText: tx(t, "noParentTasks", "No parent tasks."),
+        onOpenTask: props.onOpenTask,
+        onRemove: props.onRemoveParent,
+      }),
       h("div", { className: "hermes-kanban-deps-row" },
         h(Select, Object.assign({
           value: newParent,
@@ -2967,24 +3069,16 @@
           size: "sm",
         }, "+ parent"),
       ),
-      h("div", { className: "hermes-kanban-deps-row" },
-        h("span", { className: "hermes-kanban-deps-label" }, tx(t, "children", "Children:")),
-        h("div", { className: "hermes-kanban-deps-chips" },
-          (links.children || []).length === 0
-            ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
-            : (links.children || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveChild(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
-              }),
-        ),
-      ),
+      h(DependencySummaryList, {
+        label: tx(t, "children", "Children"),
+        relation: "child",
+        ids: childIds,
+        summaries: summaries.children || [],
+        allTasks: allTasks,
+        emptyText: tx(t, "noChildTasks", "No downstream child tasks."),
+        onOpenTask: props.onOpenTask,
+        onRemove: props.onRemoveChild,
+      }),
       h("div", { className: "hermes-kanban-deps-row" },
         h(Select, Object.assign({
           value: newChild,

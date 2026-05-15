@@ -194,6 +194,49 @@ def test_task_detail_includes_links_and_events(client):
     assert len(data["events"]) >= 1
 
 
+def test_task_detail_includes_safe_dependency_summaries(client):
+    """Drawer payload should resolve linked task summaries without leaking full rows."""
+
+    parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Spec parent", "assignee": "specifier"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Implementation child", "parents": [parent["id"]]},
+    ).json()["task"]
+    downstream = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Verify downstream", "parents": [child["id"]]},
+    ).json()["task"]
+
+    r = client.get(f"/api/plugins/kanban/tasks/{child['id']}")
+    assert r.status_code == 200
+    data = r.json()
+
+    assert data["link_summaries"]["parents"] == [
+        {
+            "id": parent["id"],
+            "title": "Spec parent",
+            "status": "ready",
+            "assignee": "specifier",
+        }
+    ]
+    assert data["link_summaries"]["children"] == [
+        {
+            "id": downstream["id"],
+            "title": "Verify downstream",
+            "status": "todo",
+            "assignee": None,
+        }
+    ]
+    for summary in data["link_summaries"]["parents"] + data["link_summaries"]["children"]:
+        assert set(summary) <= {"id", "title", "status", "assignee", "missing"}
+        assert "body" not in summary
+        assert "result" not in summary
+        assert "workspace_path" not in summary
+
+
 def test_task_detail_404_on_unknown(client):
     r = client.get("/api/plugins/kanban/tasks/does-not-exist")
     assert r.status_code == 404
@@ -747,6 +790,33 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
     assert parent_select in bundle
     assert child_select in bundle
+
+
+def test_dashboard_dependency_section_surfaces_navigable_task_summaries():
+    """Drawer dependencies should show rich, accessible linked-task rows."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text()
+
+    assert "function DependencySummaryList" in bundle
+    assert "function openDependencyTask" in bundle
+    assert "Waiting on parent" in bundle
+    assert "Blocks this task" in bundle
+    assert "Downstream" in bundle
+    assert "Standalone task — no linked parents or children." in bundle
+    assert "Referenced task unavailable" in bundle
+    assert "Open linked task" in bundle
+    assert "onOpenTask: props.onOpenTask" in bundle
+    assert "setSelectedTaskId(id);" in bundle
+    assert "hermes-kanban-dependency-row" in css
+    assert "hermes-kanban-dependency-status" in css
+    assert "hermes-kanban-dependency-state" in css
+    assert "api.github.com" not in bundle.lower()
 
 
 def test_bulk_archive(client):

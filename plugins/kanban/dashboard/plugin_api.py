@@ -334,6 +334,46 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     return {"parents": parents, "children": children}
 
 
+def _dependency_summaries_for(
+    conn: sqlite3.Connection,
+    links: dict[str, list[str]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Return safe drawer summaries for linked parent/child tasks.
+
+    The drawer only needs public task identifiers and compact state. Avoid
+    full task serialization here so body/result/workspace fields never leak
+    through dependency rows.
+    """
+
+    def resolve(ids: list[str]) -> list[dict[str, Any]]:
+        if not ids:
+            return []
+        placeholders = ",".join(["?"] * len(ids))
+        rows = conn.execute(
+            f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({placeholders})",
+            tuple(ids),
+        ).fetchall()
+        by_id = {r["id"]: dict(r) for r in rows}
+        return [
+            by_id.get(
+                task_id,
+                {
+                    "id": task_id,
+                    "title": None,
+                    "status": "missing",
+                    "assignee": None,
+                    "missing": True,
+                },
+            )
+            for task_id in ids
+        ]
+
+    return {
+        "parents": resolve(links.get("parents") or []),
+        "children": resolve(links.get("children") or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
@@ -487,11 +527,13 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        links = _links_for(conn, task_id)
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
-            "links": _links_for(conn, task_id),
+            "links": links,
+            "link_summaries": _dependency_summaries_for(conn, links),
             "runs": [_run_dict(r) for r in kanban_db.list_runs(conn, task_id)],
         }
     finally:

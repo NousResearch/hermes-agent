@@ -203,6 +203,29 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def interrupt_all_subagents(message: str = "Parent agent interrupted") -> int:
+    """Request every currently registered subagent to stop.
+
+    This is intentionally best-effort. It is used by gateway shutdown/restart
+    paths as a process-wide safety net in addition to parent-agent interrupt
+    propagation.
+    """
+    with _active_subagents_lock:
+        records = list(_active_subagents.items())
+
+    interrupted = 0
+    for subagent_id, record in records:
+        agent = record.get("agent") if isinstance(record, dict) else None
+        if agent is None:
+            continue
+        try:
+            agent.interrupt(message)
+            interrupted += 1
+        except Exception as exc:
+            logger.debug("interrupt_all_subagents(%s) failed: %s", subagent_id, exc)
+    return interrupted
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
@@ -517,6 +540,10 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+class _ParentInterruptedError(Exception):
+    """Raised when delegate_task should stop waiting for a child agent."""
 
 
 # ---------------------------------------------------------------------------
@@ -1506,23 +1533,46 @@ def _run_single_child(
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
-            result = _child_future.result(timeout=child_timeout)
+            deadline = time.monotonic() + child_timeout
+            while True:
+                if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    raise _ParentInterruptedError("Parent agent interrupted")
+
+                remaining = deadline - time.monotonic()
+                try:
+                    result = _child_future.result(timeout=max(0.0, min(0.5, remaining)))
+                    break
+                except FuturesTimeoutError:
+                    if remaining <= 0:
+                        raise
         except Exception as _timeout_exc:
+            is_interrupted = isinstance(_timeout_exc, _ParentInterruptedError)
+            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             # Signal the child to stop so its thread can exit cleanly.
             try:
                 if hasattr(child, "interrupt"):
-                    child.interrupt()
+                    interrupt_message = str(_timeout_exc) if is_interrupted else None
+                    if interrupt_message is None:
+                        child.interrupt()
+                    else:
+                        try:
+                            child.interrupt(interrupt_message)
+                        except TypeError:
+                            child.interrupt()
                 elif hasattr(child, "_interrupt_requested"):
                     child._interrupt_requested = True
             except Exception:
                 pass
 
-            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(
                 "Subagent %d %s after %.1fs",
                 task_index,
-                "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}",
+                (
+                    "interrupted by parent"
+                    if is_interrupted
+                    else "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}"
+                ),
                 duration,
             )
 
@@ -1557,16 +1607,40 @@ def _run_single_child(
                     child_progress_cb(
                         "subagent.complete",
                         preview=(
-                            f"Timed out after {duration}s"
+                            "Interrupted by parent agent"
+                            if is_interrupted
+                            else f"Timed out after {duration}s"
                             if is_timeout
                             else str(_timeout_exc)
                         ),
-                        status="timeout" if is_timeout else "error",
+                        status=(
+                            "interrupted"
+                            if is_interrupted
+                            else "timeout" if is_timeout else "error"
+                        ),
                         duration_seconds=duration,
                         summary="",
                     )
                 except Exception:
                     pass
+
+            try:
+                _child_future.cancel()
+            except Exception:
+                pass
+
+            if is_interrupted:
+                return {
+                    "task_index": task_index,
+                    "status": "interrupted",
+                    "summary": None,
+                    "error": "Parent agent interrupted -- child was asked to stop",
+                    "exit_reason": "interrupted",
+                    "api_calls": child_api_calls,
+                    "duration_seconds": duration,
+                    "_child_role": getattr(child, "_delegate_role", None),
+                    "diagnostic_path": diagnostic_path,
+                }
 
             if is_timeout:
                 if child_api_calls == 0:
@@ -1601,7 +1675,10 @@ def _run_single_child(
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
-            _timeout_executor.shutdown(wait=False)
+            try:
+                _timeout_executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                _timeout_executor.shutdown(wait=False)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -2089,7 +2166,9 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_children)
+        abandon_pending = False
+        try:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -2147,6 +2226,12 @@ def delegate_task(
                             }
                         results.append(entry)
                         completed_count += 1
+                    for f in pending:
+                        try:
+                            f.cancel()
+                        except Exception:
+                            pass
+                    abandon_pending = True
                     break
 
                 from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
@@ -2199,6 +2284,12 @@ def delegate_task(
                             )
                         except Exception as e:
                             logger.debug("Spinner update_text failed: %s", e)
+
+        finally:
+            try:
+                executor.shutdown(wait=not abandon_pending, cancel_futures=abandon_pending)
+            except TypeError:
+                executor.shutdown(wait=not abandon_pending)
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])

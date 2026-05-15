@@ -2731,6 +2731,21 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+        GatewayRunner._interrupt_active_subagents(self, reason)
+
+    def _interrupt_active_subagents(self, reason: str) -> None:
+        """Best-effort process-wide interrupt for delegated child agents."""
+        try:
+            from tools.delegate_tool import interrupt_all_subagents
+
+            count = interrupt_all_subagents(reason)
+            if count:
+                logger.debug(
+                    "Interrupted %d active delegated subagent(s) during shutdown",
+                    count,
+                )
+        except Exception as e:
+            logger.debug("Failed interrupting delegated subagents during shutdown: %s", e)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
@@ -5010,6 +5025,12 @@ class GatewayRunner:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
             self._finalize_shutdown_agents(active_agents)
+            GatewayRunner._interrupt_active_subagents(
+                self,
+                _INTERRUPT_REASON_GATEWAY_RESTART
+                if self._restart_requested
+                else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+            )
 
             # Also shut down memory providers on idle cached agents.
             # _finalize_shutdown_agents only handles agents that were

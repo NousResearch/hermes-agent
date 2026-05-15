@@ -1924,7 +1924,7 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
+            effective_cwd = os.path.expanduser(os.path.expandvars(workdir or cwd))
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(

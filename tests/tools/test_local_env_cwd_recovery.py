@@ -50,6 +50,32 @@ class TestResolveSafeCwd:
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+    def test_expands_tilde_to_home_directory(self):
+        """_resolve_safe_cwd should expand ~ to the user's home directory."""
+        home = os.path.expanduser("~")
+        assert _resolve_safe_cwd("~") == home
+        assert _resolve_safe_cwd("~/").rstrip("/") == home
+
+    def test_expands_tilde_in_subdirectory(self):
+        """_resolve_safe_cwd should expand ~/subdir when the subdir exists."""
+        home_sub = os.path.join(os.path.expanduser("~"), ".hermes")
+        if os.path.isdir(home_sub):
+            assert _resolve_safe_cwd("~/.hermes") == home_sub
+
+    def test_expands_env_vars_in_path(self):
+        """_resolve_safe_cwd should expand $HOME and similar env vars."""
+        home = os.environ.get("HOME", "")
+        if home:
+            resolved = _resolve_safe_cwd("$HOME")
+            assert resolved == home
+
+    def test_expands_tilde_and_still_falls_back_when_not_found(self):
+        """After expansion, if the path doesn't exist, should walk up ancestors."""
+        home = os.path.expanduser("~")
+        result = _resolve_safe_cwd("~/nonexistent_path_xyzzy")
+        # Should fall back to home (nearest existing ancestor), not gettempdir()
+        assert result == home
+
 
 
 def _fake_interrupt():

@@ -482,7 +482,7 @@ class SlackAdapter(BasePlatformAdapter):
             "text": text,
         }
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.post(
                     ctx["response_url"],
                     json=payload,

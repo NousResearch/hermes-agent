@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 
@@ -18,11 +19,13 @@ def list_templates() -> list[str]:
 
 
 def render_template(template_name: str, server_name: str) -> str:
-    template_path = TEMPLATE_DIR / f"{template_name}.py"
-    if not template_path.exists():
+    if template_name not in list_templates():
         available = ", ".join(list_templates())
         raise SystemExit(f"Unknown template '{template_name}'. Available: {available}")
-    return template_path.read_text(encoding="utf-8").replace(PLACEHOLDER, server_name)
+
+    template_path = TEMPLATE_DIR / f"{template_name}.py"
+    escaped_server_name = json.dumps(server_name)[1:-1]
+    return template_path.read_text(encoding="utf-8").replace(PLACEHOLDER, escaped_server_name)
 
 
 def main() -> int:

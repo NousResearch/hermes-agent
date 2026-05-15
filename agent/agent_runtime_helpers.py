@@ -1825,7 +1825,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None) -> str:
+                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 pre_tool_rewrite_args: Optional[dict] = None) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -1858,10 +1859,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from hermes_cli.plugins import get_pre_tool_call_block_message, get_pre_tool_call_arg_overrides
+            block_message, hook_results = get_pre_tool_call_block_message(
                 function_name,
-                function_args,
+                copy.deepcopy(function_args),
                 task_id=effective_task_id or "",
                 session_id=getattr(agent, "session_id", "") or "",
                 tool_call_id=tool_call_id or "",
@@ -1869,6 +1870,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
             )
+            rewrite_args = get_pre_tool_call_arg_overrides(hook_results)
+            if rewrite_args:
+                function_args = {**function_args, **rewrite_args}
+                try:
+                    from model_tools import coerce_tool_args
+                    function_args = coerce_tool_args(function_name, function_args)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    elif pre_tool_rewrite_args:
+        function_args = {**function_args, **pre_tool_rewrite_args}
+        try:
+            from model_tools import coerce_tool_args
+            function_args = coerce_tool_args(function_name, function_args)
         except Exception:
             pass
     if block_message is not None:

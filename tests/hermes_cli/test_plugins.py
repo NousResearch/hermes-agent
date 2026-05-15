@@ -822,7 +822,7 @@ class TestPreToolCallBlocking:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "block", "message": "blocked by plugin"}],
         )
-        assert get_pre_tool_call_block_message("todo", {}, task_id="t1") == "blocked by plugin"
+        assert get_pre_tool_call_block_message("todo", {}, task_id="t1") == ("blocked by plugin", [{"action": "block", "message": "blocked by plugin"}])
 
     def test_invalid_returns_are_ignored(self, monkeypatch):
         """Various malformed hook returns should not trigger a block."""
@@ -837,14 +837,19 @@ class TestPreToolCallBlocking:
                 {"action": "block", "message": 123},     # message not str
             ],
         )
-        assert get_pre_tool_call_block_message("todo", {}, task_id="t1") is None
+        result = get_pre_tool_call_block_message("todo", {}, task_id="t1")
+        block_msg, hook_results = result
+        assert block_msg is None
+        # hook_results contains the raw returns from invoke_hook (unchanged)
+        assert len(hook_results) == 6
 
     def test_none_when_no_hooks(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
-        assert get_pre_tool_call_block_message("web_search", {"q": "test"}) is None
+        result = get_pre_tool_call_block_message("web_search", {"q": "test"})
+        assert result == (None, [])
 
     def test_first_valid_block_wins(self, monkeypatch):
         monkeypatch.setattr(
@@ -855,7 +860,8 @@ class TestPreToolCallBlocking:
                 {"action": "block", "message": "second blocker"},
             ],
         )
-        assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
+        result = get_pre_tool_call_block_message("terminal", {})
+        assert result[0] == "first blocker"
 
 
 class TestThreadToolWhitelist:

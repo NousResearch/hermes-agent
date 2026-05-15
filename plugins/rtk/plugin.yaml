@@ -1,0 +1,6 @@
+name: rtk
+version: "1.0.0"
+description: "RTK (Runtime Toolkit) command rewriting — saves tokens by routing terminal commands through rtk"
+author: jleechan
+provides_hooks:
+  - pre_tool_call

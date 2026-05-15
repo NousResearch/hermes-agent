@@ -2,7 +2,50 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# RTK plugin module bootstrap
+# ---------------------------------------------------------------------------
+# Tests in test_rtk_plugin.py import ``from hermes_plugins.rtk import ...``.
+# The ``hermes_plugins`` namespace is created at runtime by the plugin
+# manager, so we load the bundled copy eagerly here so the imports succeed.
+# ---------------------------------------------------------------------------
+
+def _load_rtk_plugin():
+    """Load the RTK plugin module into hermes_plugins.rtk namespace."""
+    if "hermes_plugins.rtk" in sys.modules:
+        return sys.modules["hermes_plugins.rtk"]
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_dir = repo_root / "plugins" / "rtk"
+
+    # Ensure parent namespace package exists
+    if "hermes_plugins" not in sys.modules:
+        ns = types.ModuleType("hermes_plugins")
+        ns.__path__ = []
+        sys.modules["hermes_plugins"] = ns
+
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.rtk",
+        plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = "hermes_plugins.rtk"
+    mod.__path__ = [str(plugin_dir)]
+    sys.modules["hermes_plugins.rtk"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_load_rtk_plugin()
 
 
 @pytest.fixture

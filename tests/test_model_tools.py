@@ -350,7 +350,7 @@ class TestPreToolCallBlocking:
                             lambda *a, **kw: json.dumps({"ok": True}))
 
         # Step 1: caller checks for a block directive (this fires pre_tool_call once).
-        block = get_pre_tool_call_block_message(
+        block, _hook_results = get_pre_tool_call_block_message(
             "web_search", {"q": "test"}, task_id="t1",
         )
         assert block is None

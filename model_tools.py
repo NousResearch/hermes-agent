@@ -908,6 +908,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    pre_tool_rewrite_args: Optional[Dict[str, Any]] = None,
     skip_tool_request_middleware: bool = False,
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -1055,8 +1056,8 @@ def handle_function_call(
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_block_message, get_pre_tool_call_arg_overrides
+                block_message, hook_results = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
                     task_id=task_id or "",
@@ -1066,6 +1067,10 @@ def handle_function_call(
                     api_request_id=api_request_id or "",
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                rewrite_args = get_pre_tool_call_arg_overrides(hook_results)
+                if rewrite_args:
+                    function_args = {**function_args, **rewrite_args}
+                    function_args = coerce_tool_args(function_name, function_args)
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
@@ -1086,6 +1091,9 @@ def handle_function_call(
                     middleware_trace=list(_tool_middleware_trace),
                 )
                 return result
+        elif pre_tool_rewrite_args:
+            function_args = {**function_args, **pre_tool_rewrite_args}
+            function_args = coerce_tool_args(function_name, function_args)
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths

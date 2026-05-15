@@ -814,6 +814,8 @@ AUTHOR_MAP = {
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
     # Debug share upload-time redaction (May 2026)
     "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
+    # is_local_endpoint mDNS/.lan/unqualified hostnames fix (May 2026)
+    "bzarnitz13@gmail.com": "Beandon13",  # PR #20359
 }
 
 

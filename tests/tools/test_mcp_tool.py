@@ -398,6 +398,77 @@ class TestCheckFunction:
 
 
 # ---------------------------------------------------------------------------
+# MCP loop runner
+# ---------------------------------------------------------------------------
+
+class TestRunOnMcpLoop:
+    def test_scheduler_failure_closes_factory_coroutine(self):
+        """If run_coroutine_threadsafe raises, the factory's coroutine is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        created = {"coro": None}
+
+        async def _sample():
+            return "ok"
+
+        def factory():
+            created["coro"] = _sample()
+            return created["coro"]
+
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+
+        with patch.object(mcp, "_mcp_loop", fake_loop):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch(
+                    "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                    side_effect=RuntimeError("scheduler down"),
+                ):
+                    with pytest.raises(RuntimeError):
+                        mcp._run_on_mcp_loop(factory)
+                gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+    def test_dead_loop_closes_passed_coroutine(self):
+        """If loop is None, a passed coroutine (not factory) is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        async def _sample():
+            return "ok"
+
+        coro = _sample()
+        with patch.object(mcp, "_mcp_loop", None):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with pytest.raises(RuntimeError, match="not running"):
+                    mcp._run_on_mcp_loop(coro)
+                gc.collect()
+
+        assert coro.cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+
+# ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
 
@@ -406,7 +477,8 @@ class TestToolHandler:
 
     def _patch_mcp_loop(self, coro_side_effect=None):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         if coro_side_effect:
             return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=coro_side_effect)
@@ -485,7 +557,8 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            def _interrupting_run(coro, timeout=30):
+            def _interrupting_run(coro_or_factory, timeout=30):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 coro.close()
                 raise InterruptedError("User sent a new message")
             with patch(
@@ -1792,7 +1865,8 @@ class TestUtilityHandlers:
 
     def _patch_mcp_loop(self):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
 

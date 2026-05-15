@@ -192,6 +192,7 @@ const sidebars: SidebarsConfig = {
         'guides/aws-bedrock',
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
+        'guides/oauth-over-ssh',
         'guides/microsoft-graph-app-registration',
         'guides/operate-teams-meeting-pipeline',
       ],

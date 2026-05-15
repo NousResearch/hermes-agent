@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# lint validation trigger: no-op comment to exercise GitHub workflow
 """Diff ruff + ty diagnostic reports between two git refs.
 
 Produces a Markdown summary suitable for `$GITHUB_STEP_SUMMARY` and for PR

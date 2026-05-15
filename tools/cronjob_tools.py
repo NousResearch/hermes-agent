@@ -662,14 +662,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
 }
 
 
-def _is_truthy_env(var_name: str) -> bool:
-    """Return True only for explicit truthy env values."""
-    value = os.getenv(var_name)
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
@@ -677,11 +669,18 @@ def check_cronjob_requirements() -> bool:
     Available in interactive CLI mode and gateway/messaging platforms.
     The cron system is internal (JSON file-based scheduler ticked by the gateway),
     so no external crontab executable is required.
+
+    Session env vars must hold an explicit truthy string (``1``, ``true``,
+    ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
+    leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
+    every consumer of these flags agrees on the truthy set.
     """
-    return bool(
-        _is_truthy_env("HERMES_INTERACTIVE")
-        or _is_truthy_env("HERMES_GATEWAY_SESSION")
-        or _is_truthy_env("HERMES_EXEC_ASK")
+    from utils import env_var_enabled
+
+    return (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or env_var_enabled("HERMES_GATEWAY_SESSION")
+        or env_var_enabled("HERMES_EXEC_ASK")
     )
 
 

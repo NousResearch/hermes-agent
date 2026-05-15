@@ -200,42 +200,129 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
+const SAFETY_MARGIN = 4
+const MIN_COL_WIDTH = 3
+const COL_GAP = 2 // the '  ' between columns
+const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
+
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
-  // Column widths in *display cells*, not UTF-16 code units.  CJK
-  // glyphs and most emoji render as two cells but `String#length`
-  // counts them as one, which collapses Chinese / Japanese / Korean
-  // tables into drift across rows.  `stringWidth` (Bun.stringWidth
-  // fast path + an East-Asian-width-aware fallback, memoised in
-  // @hermes/ink) returns the actual cell count.
-  const cellWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
+  // Guard: empty table
+  if (rows.length === 0 || rows[0]!.length === 0) return null
 
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => cellWidth(r[ci] ?? ''))))
+  const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
-  // Thin divider under the header.  Without it tables look like prose
-  // with extra spacing because the header is just accent-coloured text
-  // (#15534).  We avoid full borders on purpose — column widths come
-  // from `stringWidth(...)`, so the dividers and the row content stay
-  // in sync on CJK / emoji tables; tab-style column gaps still read
-  // cleanly without the boxed look.
-  const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+  // Minimum width: longest word in a cell (to avoid breaking words)
+  const minCellWidth = (raw: string) => {
+    const text = stripInlineMarkup(raw)
+    const words = text.split(/\s+/).filter(w => w.length > 0)
+    if (words.length === 0) return MIN_COL_WIDTH
+    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+  }
 
+  const numCols = rows[0]!.length
+
+  // Normalize ragged rows: ensure every row has exactly numCols cells
+  const normalizedRows = rows.map(row => {
+    if (row.length >= numCols) return row.slice(0, numCols)
+    return [...row, ...Array<string>(numCols - row.length).fill('')]
+  })
+
+  // Ideal widths: max cell content per column
+  const idealWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => cellDisplayWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Min widths: longest word per column
+  const minWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => minCellWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Available width: cols minus table padding minus column gaps minus safety.
+  // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
+  // but NOT this table's paddingLeft — we subtract it here.
+  const gapOverhead = (numCols - 1) * COL_GAP
+  const availableWidth = cols
+    ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
+    : Infinity
+
+  const totalIdeal = idealWidths.reduce((a, b) => a + b, 0)
+  const totalMin = minWidths.reduce((a, b) => a + b, 0)
+
+  let columnWidths: number[]
+  let needsWrap = false
+
+  if (totalIdeal <= availableWidth) {
+    // Tier 1: everything fits at ideal widths
+    columnWidths = idealWidths
+  } else if (totalMin <= availableWidth) {
+    // Tier 2: proportional shrink — distribute extra space beyond minimums
+    needsWrap = true
+    const extraSpace = availableWidth - totalMin
+    const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
+    const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+    if (totalOverflow === 0) {
+      columnWidths = [...minWidths]
+    } else {
+      const rawAlloc = minWidths.map((min, i) =>
+        min + (overflows[i]! / totalOverflow) * extraSpace
+      )
+      columnWidths = rawAlloc.map(v => Math.floor(v))
+      // Distribute rounding remainders to columns with largest fractional part
+      let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+        .sort((a, b) => b.frac - a.frac)
+      for (const { i } of fracs) {
+        if (remainder <= 0) break
+        columnWidths[i]!++
+        remainder--
+      }
+    }
+  } else {
+    // Tier 3: even min-widths don't fit — scale proportionally, allow hard breaks
+    needsWrap = true
+    const scaleFactor = availableWidth / totalMin
+    const rawAlloc = minWidths.map(w => w * scaleFactor)
+    columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
+    let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+      .sort((a, b) => b.frac - a.frac)
+    for (const { i } of fracs) {
+      if (remainder <= 0) break
+      columnWidths[i]!++
+      remainder--
+    }
+  }
+
+  // Build a single full-line string for a row (all cells concatenated with padding + gaps).
+  // All cells render as plain text via stripInlineMarkup.
+  // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
+  // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
+  const buildRowString = (row: string[]): string =>
+    row.map((cell, ci) => {
+      const text = stripInlineMarkup(cell)
+      const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+      const gap = ci < numCols - 1 ? '  ' : ''
+      return text + pad + gap
+    }).join('')
+
+  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+
+  // Render: one <Text> per visual line, wrap="truncate-end" prevents Ink reflow.
+  // This follows free-code's model (MarkdownTable.tsx L320) of building complete
+  // row strings and rendering as a single block.
   return (
-    <Box flexDirection="column" key={k} paddingLeft={2}>
-      {rows.map((row, ri) => (
+    <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+      {normalizedRows.map((row, ri) => (
         <Fragment key={ri}>
-          <Box>
-            {widths.map((w, ci) => (
-              <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
-                <MdInline t={t} text={row[ci] ?? ''} />
-                {' '.repeat(Math.max(0, w - cellWidth(row[ci] ?? '')))}
-                {ci < widths.length - 1 ? '  ' : ''}
-              </Text>
-            ))}
-          </Box>
-          {ri === 0 && rows.length > 1 ? (
-            <Text color={t.color.muted} dimColor>
-              {sep}
-            </Text>
+          <Text
+            bold={ri === 0}
+            color={ri === 0 ? t.color.accent : undefined}
+            wrap="truncate-end"
+          >
+            {buildRowString(row)}
+          </Text>
+          {ri === 0 && normalizedRows.length > 1 ? (
+            <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
           ) : null}
         </Fragment>
       ))}
